@@ -1,0 +1,24 @@
+
+Sylk Mobile deliverables
+
+API
+
+ * https://github.com/AGProjects/sylkrtc.js
+
+ Curently missing text chat support
+
+Electron version features +
+
+ https://github.com/react-native-webrtc/react-native-webrtc
+
+ * iOS >10 and Android support >8.0
+ * Native dialer integration
+ * Wake-up notifications
+ * Audio device switch
+ * Front/back camera switch
+ * Video codec support: VP8, VP9, H264
+ * History menu (outgoing/incoming/favorites)
+ * Ear proximity detect (switch camera and earpiece)
+ * Display rotation detection (portrait/landscape)
+ * Address-book search integration
+
