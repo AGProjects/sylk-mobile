@@ -32,7 +32,7 @@ end
 platform :android do
   desc "Push a new beta build to Google Play Store"
   lane :beta do
-    gradle(task: 'assemble', build_type: 'Release')
+    gradle(task: 'assemble', build_type: 'Release', project_dir: './android/')
     upload_to_play_store(track: 'beta')
   end
 end
