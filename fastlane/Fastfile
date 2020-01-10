@@ -10,7 +10,7 @@
 #     https://docs.fastlane.tools/plugins/available-plugins
 #
 
-fastlane_version '2.137.0'
+fastlane_version '2.140.0'
 
 before_all do
   ensure_git_branch
@@ -30,5 +30,9 @@ platform :ios do
 end
 
 platform :android do
-  # Android Lanes
+  desc "Push a new beta build to Google Play Store"
+  lane :beta do
+    gradle(task: 'assemble', build_type: 'Release')
+    upload_to_play_store(track: 'beta')
+  end
 end
