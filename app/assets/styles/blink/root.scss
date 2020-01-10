@@ -1,0 +1,107 @@
+@import './variables';
+@import './mixins';
+
+.root {
+    color: $base-foreground-color;
+    text-align: center;
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: stretch;
+    flex: 1;
+    height: 100%;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: 0;
+}
+
+// Padding for spacing
+.inner {
+    padding: 30px;
+}
+
+.inner-small {
+    padding: 10px;
+}
+
+// Stckiy layer to top
+.sticky-wrapper {
+    position: sticky;
+    top: -1px;
+    z-index: 1;
+    margin-top: calc(50vh - 159px);
+    margin-right: -20px;
+    margin-left: -20px;
+}
+
+.sticky {
+    //sass-lint:disable-block no-color-literals, property-sort-order
+    background-color: $black-less-transparent;
+    //background: linear-gradient(180deg, $black 0%, rgba($black, .95) 15%, rgba($black, .55) 80%, rgba($black, 0) 100%);
+}
+
+
+// Cover
+
+.cover {
+    padding: 0 20px;
+
+    .btn-lg {
+        padding: 10px 20px;
+        font-weight: bold;
+    }
+}
+
+// Scroll main section
+
+.scroll {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 50px);
+    margin-top: 50px;
+    overflow-x: hidden;
+    overflow-y: auto;
+
+    .footer {
+        position: static;
+        padding-top: 10px;
+    }
+}
+
+// Footer
+
+.footer {
+    position: absolute;
+    bottom: 0;
+    font-size: 11px;
+    color: $white-transparent;
+    text-shadow: 0 1px 3px $black-transparent;
+    width: 100%;
+}
+
+// Handle the widths
+.cover-container,
+.half-width {
+    width: 100%; // Must be percentage or pixels for horizontal alignment
+}
+
+
+@media (min-width: 992px) {
+    .half-width {
+        width: 500px;
+        margin: auto;
+    }
+}
+
+// Helper to include shadow if footer is not displayed from main
+.extra-shadow {
+    position: fixed;
+    bottom: -100px;
+    z-index: 10;
+    width: 100vw;
+    height: 100px;
+    margin: 0 -20px;
+    //box-shadow: 0 -5px 100px $black-transparent;
+}

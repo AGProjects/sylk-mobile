@@ -1,0 +1,23 @@
+.container {
+    flex: 1;
+    height: 100%;
+    width: 100%;
+    display: flex;
+}
+
+.video {
+}
+
+.buttonContainer {
+    position: absolute;
+    bottom: 100;
+    width: 100%;
+    z-index: 99;
+    justify-content: center;
+    align-items: center;
+}
+
+.button {
+    background-color: rgba(#a94442, .8);
+}
+

@@ -1,0 +1,161 @@
+.conference-drawer {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    color: $gray;
+
+    .header {
+        padding-bottom: 9px;
+        border-bottom: 1px solid $light-gray;
+
+        &:nth-child(n+2) {
+            margin-top: 25px;
+        }
+
+        + .list-group {
+            margin-top: -11px;
+        }
+    }
+
+    .drawer-body {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        padding: 15px;
+        overflow: hidden;
+        text-align: left;
+    }
+
+    .drawer-log {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+
+        pre {
+            background-color: $white;
+        }
+
+        .log-entry {
+            display: flex;
+            padding-bottom: 4px;
+            margin-bottom: 4px;
+            background-color: $white;
+            border-bottom: 1px solid $light-gray;
+
+            .idx {
+                display: flex;
+                align-items: center;
+                padding-right: 8px;
+                color: $light-gray;
+            }
+
+            &:last-of-type {
+                margin-bottom: 0;
+                border-bottom: 0 !important;
+            }
+        }
+    }
+
+    .drawer-files {
+        display: flex;
+        flex-direction: column;
+        max-height: 100%;
+
+        .list-group {
+            width: 350px;
+            margin-bottom: -15px;
+            margin-left: -15px;
+            overflow-x: hidden;
+            overflow-y: auto;
+
+            .list-group-item {
+                margin-left: 0;
+            }
+        }
+
+        .file-link {
+            display: flex;
+            justify-content: space-between;
+
+            span {
+                padding: 0 2px;
+            }
+        }
+
+        a {
+            width: 250px;
+            overflow: hidden;
+            font-weight: bold;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+
+        .small {
+            margin-bottom: 2px;
+        }
+    }
+
+    h2 {
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        font-size: 18px;
+        font-weight: 300;
+    }
+
+    .list-group {
+        width: 320px;
+    }
+
+    .list-group-item {
+        margin-right: -15px;
+        margin-left: -15px;
+
+        &:first-of-type {
+            border-top-right-radius: 0;
+            border-top-left-radius: 0;
+        }
+
+        &:last-of-type {
+            border-bottom-right-radius: 0;
+            border-bottom-left-radius: 0;
+        }
+    }
+
+    .vertical-center {
+        vertical-align: middle;
+
+        h4 {
+            margin-top: 5px;
+        }
+    }
+
+    .btn-default {
+        color: $gray;
+        background-color: $white;
+        border-color: $light-gray;
+
+        &:focus {
+            &,
+            &:active {
+                outline: 0;
+            }
+        }
+    }
+
+    label {
+        width: 25%;
+    }
+
+    .form-group {
+        margin-bottom: 2px;
+
+        &:last-of-type {
+            margin-bottom: 15px;
+        }
+    }
+
+    .dropdown {
+        width: 75%;
+    }
+}

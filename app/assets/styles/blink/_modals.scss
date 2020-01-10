@@ -1,0 +1,45 @@
+
+.modal-content {
+    a {
+        &,
+        &:focus,
+        &:hover {
+            color: $bootstrap-primary;
+        }
+
+        &.btn-primary {
+            color: $white;
+        }
+    }
+}
+
+.modal-body {
+    .lead {
+        font-size: 16px;
+    }
+}
+
+.modal,
+.modal-backdrop {
+    z-index: 9999 !important;
+}
+
+// Modal colors, text should not be white
+
+.modal-body,
+.modal-header,
+.modal-footer {
+    color: $gray;
+}
+
+.modal-danger > .modal-content > .modal-header {
+    padding: 10px;
+    color: $bootstrap-danger !important;
+    background-color: $bootstrap-danger-bg;
+    border-color: $boostrap-danger-border;
+    border-radius: 6px 6px 0 0;
+}
+
+.modal-danger > .modal-content {
+    border-color: $boostrap-danger-border;
+}

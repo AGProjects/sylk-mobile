@@ -1,0 +1,18 @@
+.container {
+
+}
+
+.buttonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    padding-top: 10px;
+}
+
+.button {
+    background-color: white;
+    margin: 10px;
+}
+
+.hangupButton {
+    background-color: rgba(#a94442, .8);
+}

@@ -1,0 +1,52 @@
+// Custom default button
+.btn-default {
+    &,
+    &:hover,
+    &:focus {
+        color: $default-button-foreground-color;
+        text-shadow: none; // Prevent inheritence from `body`
+        background-color: $default-button-background-color;
+        border: 1px solid $default-button-background-color;
+    }
+}
+
+// Round Button
+
+%btn-round {
+    margin: 4px;
+    border-radius: 50%;
+    opacity: .9;
+}
+
+.btn-round {
+    @extend %btn-round;
+    width: 45px;
+    height: 45px;
+    font-size: 20px;
+}
+
+.btn-round-big {
+    @extend %btn-round;
+    width: 55px;
+    height: 55px;
+    font-size: 22px;
+}
+
+.btn-round-xxl {
+    @extend %btn-round;
+    width: 65px;
+    height: 65px;
+    font-size: 24px;
+}
+
+.btn-link,
+.btn-round,
+.btn-round-big,
+.btn-round-xxl {
+    &:focus {
+        &,
+        &:active {
+            outline: 0;
+        }
+    }
+}

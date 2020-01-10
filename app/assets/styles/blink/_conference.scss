@@ -1,0 +1,286 @@
+.conference-buttons {
+    padding-top: 10px;
+    margin: auto;
+    overflow: hidden;
+}
+
+.conference-top-buttons {
+    position: absolute;
+    top: -4px;
+    right: 0;
+    margin-top: 3.5px;
+
+    .btn-link {
+        color: $lighter-gray;
+
+        &:hover {
+            color: $white;
+        }
+    }
+}
+
+.conference-thumbnails {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 2;
+    max-height: 114px;
+    min-height: 114px;
+
+    .participant-container {
+        width: $video-thumbnail-width !important;
+        height: $video-thumbnail-height !important;
+        margin: 5px;
+
+        video {
+            width: 100% ;
+            height: 100% ;
+            background-color: $gray;
+            border: 1px solid $white;
+            border-radius: 10px;
+        }
+    }
+
+    .conference-active {
+        box-shadow: 0 0 10px 2px $bootstrap-base;
+    }
+
+    .mute {
+        position: absolute;
+        top: 25px;
+        z-index: 2;
+        width: 87px;
+
+        button {
+            transform: translateX(50%);
+        }
+    }
+
+    .mute-self {
+        position: absolute;
+        top: 39px;
+        z-index: 2;
+        width: 136px;
+        text-align: center;
+
+        i {
+            transform: translateX(50%);
+        }
+    }
+
+    .left-arrow {
+        float: left;
+        margin-left: 15px;
+        color: $light-gray;
+        transform: translateY(50%);
+    }
+
+    .right-arrow {
+        float: right;
+        margin-right: 15px;
+        color: $light-gray;
+        transform: translateY(50%);
+    }
+
+    .carousel {
+        margin-right: 50px !important;
+        margin-left: 50px !important;
+        overflow: hidden;
+    }
+
+    .carousel-list {
+        padding-bottom: 17px;
+        margin: auto !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+    }
+}
+
+// Carousel Animation
+
+.carousel-enter {
+    animation: fadeIn ease .5s;
+}
+
+.carousel-exit {
+    &.carousel-exit-active {
+        animation: fadeOutDown ease .3s;
+    }
+}
+
+.conference {
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    flex-direction: row;
+    justify-content: center;
+    width: 100% !important;
+    height: 100% !important;
+    margin-right: 0;
+    overflow: hidden;
+    transition: margin 225ms cubic-bezier(0, 0, .2, 1) 0ms, width 225ms cubic-bezier(0, 0, .2, 1) 0ms;
+
+    &.drawer-visible {
+        width: calc(100% - 350px) !important;
+        margin-right: 350px;
+    }
+
+    .matrix {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: center;
+        width: 100%;
+        max-height: 100vh;
+        min-height: 100vh;
+    }
+
+    .call-header {
+        .container-fluid {
+            position: relative;
+        }
+    }
+
+    .two-columns {
+        .remote-video {
+            flex: 0 0 calc(50% - 12px);
+        }
+    }
+
+    .three-columns {
+        .remote-video {
+            flex: 0 0 calc(33% - 18px);
+        }
+    }
+
+    .one-row {
+        padding-top: calc(25vh - 8px);
+        padding-bottom: calc(25vh - 8px);
+
+        .remote-video {
+            height: calc(50vh - 8px);
+            min-height: calc(50vh - 8px);
+        }
+
+        video {
+            &.poster {
+                @include background-image-retina($video-big-poster-image, 350px, 350px);
+                background-color: $black-transparent;
+            }
+        }
+    }
+
+    .two-row {
+        .remote-video {
+            height: calc(50vh - 8px);
+            min-height: calc(50vh - 8px);
+        }
+
+        &.three-columns {
+            padding-top: calc(17vh - 4px);
+            padding-bottom: calc(17vh - 4px);
+
+            .remote-video {
+                height: calc(33vh - 8px);
+                min-height: calc(33vh - 8px);
+            }
+        }
+    }
+
+    .three-row {
+        .remote-video {
+            height: calc(33vh - 16px);
+            min-height: calc(33vh - 16px);
+        }
+    }
+
+    .remote-video {
+        position: relative;
+        margin: 4px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border: 3px solid $white-transparent;
+
+        &.conference-active {
+            box-shadow: 0 0 10px 2px $bootstrap-base;
+        }
+
+        &.large {
+            z-index: 0;
+            flex: none;
+            width: 100% !important;
+            height: auto !important;
+            max-height: calc(100vh);
+            min-height: 100%;
+            margin: 0;
+            border-width: 0;
+        }
+
+        .controls {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 1;
+            display: flex;
+            align-items: flex-end;
+            flex-direction: row;
+            max-height: 114px;
+            min-height: 114px;
+            padding-left: 20px;
+            box-shadow: inset 0 -100px 60px -60px $black-less-transparent;
+
+            .lead {
+                margin-bottom: 10px;
+            }
+        }
+
+        .controls-top {
+            position: absolute;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            flex-direction: row;
+            max-height: 50px;
+            min-height: 50px;
+            padding-left: 20px;
+
+            .lead {
+                margin-bottom: 10px;
+            }
+        }
+    }
+
+    .video {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        object-fit: cover;
+    }
+
+    video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+
+        &.large {
+            &.fit {
+                width: auto !important;
+            }
+        }
+    }
+
+    .fit {
+        background-color: $white-transparent !important;
+        object-fit: contain !important;
+    }
+
+
+}

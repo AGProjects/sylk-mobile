@@ -1,0 +1,86 @@
+// Sound animation
+
+.animate-sound1 {
+    animation: fade-custom 3s ease-in-out infinite;
+}
+
+@keyframes fade-custom {
+    from {opacity: 0;}
+    to {opacity: 1;}
+}
+
+
+// BELL
+@keyframes ring {
+    0% {
+        transform: rotate(-15deg);
+    }
+
+    2% {
+        transform: rotate(15deg);
+    }
+
+    4% {
+        transform: rotate(-18deg);
+    }
+
+    6% {
+        transform: rotate(18deg);
+    }
+
+    8% {
+        transform: rotate(-22deg);
+    }
+
+    10% {
+        transform: rotate(22deg);
+    }
+
+    12% {
+        transform: rotate(-18deg);
+    }
+
+    14% {
+        transform: rotate(18deg);
+    }
+
+    16% {
+        transform: rotate(-12deg);
+    }
+
+    18% {
+        transform: rotate(12deg);
+    }
+
+    20% {
+        transform: rotate(0deg);
+    }
+}
+
+.faa-ring {
+    &.animated {
+        animation: ring 2s ease infinite;
+        transform-origin-x: 50%;
+        transform-origin-y: 0;
+        transform-origin-z: initial;
+
+        &.faa-fast {
+            animation: ring 1s ease infinite;
+        }
+
+        &.faa-slow {
+            animation: ring 3s ease infinite;
+        }
+    }
+}
+
+// Incoming Modal animation
+.incoming-modal-enter {
+    animation: fadeIn ease .3s;
+}
+
+.incoming-modal-exit {
+    &.incoming-modal-exit-active {
+        animation: fadeOut ease .3s;
+    }
+}

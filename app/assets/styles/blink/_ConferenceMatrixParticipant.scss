@@ -1,0 +1,20 @@
+.container {
+    flex: 1;
+}
+
+.videoContainer {
+    flex: 1;
+}
+
+.videoLarge {
+    width: 100%;
+    min-height: 100%;
+    border: 1px green solid;
+}
+
+.video {
+    margin: 0 auto;
+    width: 90%;
+    height: 500px;
+    border: 1px yellow solid;
+}
