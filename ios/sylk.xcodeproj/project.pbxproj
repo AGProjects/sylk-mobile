@@ -7,34 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		007F05CD046B4EA387EC4FA0 /* Octicons.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 16F8C88D0BB542C7BDD8C492 /* Octicons.ttf */; };
 		00E356F31AD99517003FC87E /* sylkTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 00E356F21AD99517003FC87E /* sylkTests.m */; };
-		06E4215B94974D1EB24FBE62 /* Ionicons.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B0040D4144904BA28481D28C /* Ionicons.ttf */; };
-		0B3DBE453C64488F95AF8533 /* AntDesign.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 671D4DAF69E7476BA7978555 /* AntDesign.ttf */; };
-		0F120D4D65714CD2A45E69D7 /* Feather.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9B61C54627484A56BC2A9F98 /* Feather.ttf */; };
 		13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.m */; };
 		13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB11A68108700A75B9A /* LaunchScreen.xib */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
-		29D5FE151E14442FA7F6DBC8 /* FontAwesome5_Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F5DBADB972DD4EC78B35AEC7 /* FontAwesome5_Regular.ttf */; };
 		2BAAA3AAA657695FEC28A353 /* libPods-sylk.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 49A21E9CE6F6D41897DDF38D /* libPods-sylk.a */; };
 		2D02E4BC1E0B4A80006451C7 /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.m */; };
 		2D02E4BD1E0B4A84006451C7 /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		2D02E4BF1E0B4AB3006451C7 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
 		2DCD954D1E0B4F2C00145EB5 /* sylkTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 00E356F21AD99517003FC87E /* sylkTests.m */; };
-		44D6917438644D769F0D1B86 /* FontAwesome5_Brands.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 71521CAD4ABB4743BEBB2695 /* FontAwesome5_Brands.ttf */; };
-		4B537AF831184A408CF71E17 /* SimpleLineIcons.ttf in Resources */ = {isa = PBXBuildFile; fileRef = ECE2C9FB9E504DD58FD917F4 /* SimpleLineIcons.ttf */; };
-		50FCA2345C7A40F8AAFEFC8E /* FontAwesome5_Solid.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 89A695E1F7D84682917D7A81 /* FontAwesome5_Solid.ttf */; };
 		6167D4A601229A7369CC95C2 /* libPods-sylk-tvOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 97E31D80CC3854DFCF4BE29A /* libPods-sylk-tvOS.a */; };
-		73EEEF7A4DFF4464BF5B3585 /* Fontisto.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CCD62FF165FB4D40AB7112F7 /* Fontisto.ttf */; };
 		836AC13CB62B671217B01187 /* libPods-sylk-tvOSTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = ECAE7D40ED513B47A64B1E5C /* libPods-sylk-tvOSTests.a */; };
-		85DD658E3E5E440295DD59A3 /* FontAwesome.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CED7F526111B4006B8F219F0 /* FontAwesome.ttf */; };
-		9920CA86EB26464FA9FCE7ED /* Foundation.ttf in Resources */ = {isa = PBXBuildFile; fileRef = E9A068D7794A48C1A05373F8 /* Foundation.ttf */; };
-		9BCCD55A27E14029BED280FE /* EvilIcons.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2E731AC43DE748B89D20AFE1 /* EvilIcons.ttf */; };
-		BD4A5A9922484C94BA9F5638 /* MaterialCommunityIcons.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 81AA696C92584612895065F5 /* MaterialCommunityIcons.ttf */; };
-		BDFD08AE2D9B4D099A2BD4D9 /* Zocial.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C1EEC850E910413BBAA6C838 /* Zocial.ttf */; };
-		D4E2C139FA8C44E5A2F52590 /* Entypo.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0C6A7EDC60DD46C6B68BC085 /* Entypo.ttf */; };
-		F60CB71846DA47DD93036BF8 /* MaterialIcons.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 409CEF65070048FEA6F61E15 /* MaterialIcons.ttf */; };
 		F94FA55B6581AED0640B0A11 /* libPods-sylkTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = DB529F1F69462E254A0E3D32 /* libPods-sylkTests.a */; };
 /* End PBXBuildFile section */
 
@@ -289,6 +273,7 @@
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				1D5DA56729EF19F4B4E9DC20 /* [CP] Embed Pods Frameworks */,
 				9E9762271833D196894E6D8D /* [CP] Copy Pods Resources */,
+				64ABC0CA23C8B98D00C218D4 /* Remove ios simulator architectures for webrtc */,
 			);
 			buildRules = (
 			);
@@ -402,22 +387,6 @@
 			files = (
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */,
-				0B3DBE453C64488F95AF8533 /* AntDesign.ttf in Resources */,
-				D4E2C139FA8C44E5A2F52590 /* Entypo.ttf in Resources */,
-				9BCCD55A27E14029BED280FE /* EvilIcons.ttf in Resources */,
-				0F120D4D65714CD2A45E69D7 /* Feather.ttf in Resources */,
-				85DD658E3E5E440295DD59A3 /* FontAwesome.ttf in Resources */,
-				44D6917438644D769F0D1B86 /* FontAwesome5_Brands.ttf in Resources */,
-				29D5FE151E14442FA7F6DBC8 /* FontAwesome5_Regular.ttf in Resources */,
-				50FCA2345C7A40F8AAFEFC8E /* FontAwesome5_Solid.ttf in Resources */,
-				73EEEF7A4DFF4464BF5B3585 /* Fontisto.ttf in Resources */,
-				9920CA86EB26464FA9FCE7ED /* Foundation.ttf in Resources */,
-				06E4215B94974D1EB24FBE62 /* Ionicons.ttf in Resources */,
-				BD4A5A9922484C94BA9F5638 /* MaterialCommunityIcons.ttf in Resources */,
-				F60CB71846DA47DD93036BF8 /* MaterialIcons.ttf in Resources */,
-				007F05CD046B4EA387EC4FA0 /* Octicons.ttf in Resources */,
-				4B537AF831184A408CF71E17 /* SimpleLineIcons.ttf in Resources */,
-				BDFD08AE2D9B4D099A2BD4D9 /* Zocial.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -451,7 +420,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export NODE_BINARY=node\n../node_modules/react-native/scripts/react-native-xcode.sh";
+			shellScript = "export NODE_BINARY=node\n../node_modules/react-native/scripts/react-native-xcode.sh\n";
 		};
 		055009ADC1419E2CAF4EEE8F /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -550,6 +519,24 @@
 			shellPath = /bin/sh;
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
+		};
+		64ABC0CA23C8B98D00C218D4 /* Remove ios simulator architectures for webrtc */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Remove ios simulator architectures for webrtc";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "APP_PATH=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\n\n# This script loops through the frameworks embedded in the application and\n# removes unused architectures.\nfind \"$APP_PATH\" -name '*.framework' -type d | while read -r FRAMEWORK\ndo\nFRAMEWORK_EXECUTABLE_NAME=$(defaults read \"$FRAMEWORK/Info.plist\" CFBundleExecutable)\nFRAMEWORK_EXECUTABLE_PATH=\"$FRAMEWORK/$FRAMEWORK_EXECUTABLE_NAME\"\necho \"Executable is $FRAMEWORK_EXECUTABLE_PATH\"\n\nEXTRACTED_ARCHS=()\n\nfor ARCH in $ARCHS\ndo\necho \"Extracting $ARCH from $FRAMEWORK_EXECUTABLE_NAME\"\nlipo -extract \"$ARCH\" \"$FRAMEWORK_EXECUTABLE_PATH\" -o \"$FRAMEWORK_EXECUTABLE_PATH-$ARCH\"\nEXTRACTED_ARCHS+=(\"$FRAMEWORK_EXECUTABLE_PATH-$ARCH\")\ndone\n\necho \"Merging extracted architectures: ${ARCHS}\"\nlipo -o \"$FRAMEWORK_EXECUTABLE_PATH-merged\" -create \"${EXTRACTED_ARCHS[@]}\"\nrm \"${EXTRACTED_ARCHS[@]}\"\n\necho \"Replacing original executable with thinned version\"\nrm \"$FRAMEWORK_EXECUTABLE_PATH\"\nmv \"$FRAMEWORK_EXECUTABLE_PATH-merged\" \"$FRAMEWORK_EXECUTABLE_PATH\"\n\ndone\n\n\n";
 		};
 		72653B04819DEBB531AAF947 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -773,7 +760,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = NO;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				INFOPLIST_FILE = sylk/Info.plist;
@@ -785,7 +772,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios";
 				PRODUCT_NAME = sylk;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -796,7 +783,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				INFOPLIST_FILE = sylk/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
@@ -807,7 +794,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios";
 				PRODUCT_NAME = sylk;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
@@ -972,7 +959,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -1020,7 +1007,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				VALIDATE_PRODUCT = YES;

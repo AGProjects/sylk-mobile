@@ -18,8 +18,8 @@
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
 
-  RCTSetLogThreshold(RCTLogLevelInfo - 1);
-  RTCSetMinDebugLogLevel(RTCLoggingSeverityInfo);
+  // RCTSetLogThreshold(RCTLogLevelInfo - 1);
+  // RTCSetMinDebugLogLevel(RTCLoggingSeverityInfo);
 
 
   RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
