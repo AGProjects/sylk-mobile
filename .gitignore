@@ -58,3 +58,4 @@ buck-out/
 # CocoaPods
 /ios/Pods/
 fastlane/report.xml
+sylk.app.dSYM.zip
