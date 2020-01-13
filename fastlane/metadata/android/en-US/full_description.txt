@@ -1,0 +1,1 @@
+Sylk WebRTC Client, focused on multiparty conferencing, is the companion client for SylkServer. You can use it to create one to one or multy-party sessions using standard SIP adddrsses.

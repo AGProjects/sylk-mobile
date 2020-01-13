@@ -1,0 +1,1 @@
+Sylk Client is the WebRTC client companion for SylkServer

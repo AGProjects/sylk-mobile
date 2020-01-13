@@ -12,27 +12,45 @@
 
 fastlane_version '2.140.0'
 
-before_all do
-  ensure_git_branch
-  ensure_git_status_clean
-  git_pull
-end
+#before_all do
+#  ensure_git_branch
+#  ensure_git_status_clean
+#  git_pull
+#end
 
 default_platform(:ios)
 
 platform :ios do
   desc "Push a new beta build to TestFlight"
   lane :beta do
+
     increment_build_number(xcodeproj: "./ios/sylk.xcodeproj")
+
     build_app(export_xcargs: "-allowProvisioningUpdates", workspace: "./ios/sylk.xcworkspace", scheme: "sylk")
+
     upload_to_testflight
+
   end
 end
 
 platform :android do
   desc "Push a new beta build to Google Play Store"
   lane :beta do
-    gradle(task: 'assemble', build_type: 'Release', project_dir: './android/')
-    upload_to_play_store(track: 'beta')
+
+    gradle(task: 'clean', project_dir: "android/") # <- Fixes it
+
+    increment_version_code(app_project_dir: '**/app')
+    increment_version_name(
+      app_project_dir: '**/app',
+      bump_type: 'minor'
+    )
+
+    gradle(task: 'bundle', build_type: 'Release', project_dir: './android/', properties: {
+      "android.enableJetifier" => "true",
+      "android.useAndroidX" => "true"
+    })
+
+    upload_to_play_store(track: 'beta', package_name: 'com.agprojects.sylk', skip_upload_apk: true)
+
   end
 end
