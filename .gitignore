@@ -40,6 +40,7 @@ buck-out/
 \.buckd/
 *.keystore
 !debug.keystore
+!sylk-upload-key.keystore
 
 # fastlane
 #
