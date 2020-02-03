@@ -15,7 +15,7 @@ class DTMFModal extends Component {
         DEBUG('DTMF tone was sent: ' + tone);
 
         dtmf.stopTone();//don't play a tone at the same time as another
-        dtmf.playTone(dtmf['DTMF_' + tone], 1000);
+        dtmf.playTone(dtmf['DTMF_' + tone], 500);
 
         if (this.props.call !== null && this.props.call.state === 'established') {
             this.props.call.sendDtmf(tone);

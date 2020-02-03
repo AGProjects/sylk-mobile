@@ -22,7 +22,7 @@ class NotificationCenter extends Component {
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
         this.setState({
             visible: true,
-            autoDismiss: 3,
+            autoDismiss: 6,
             title: title,
             message: options.body
         });

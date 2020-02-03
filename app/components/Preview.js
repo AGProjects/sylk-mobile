@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import debug from 'react-native-debug';
 import { View } from 'react-native';
@@ -105,6 +105,7 @@ class Preview extends Component {
         e.preventDefault();
         if (device.label !== this.state.mic.label && device.label !== this.state.camera.label) {
             this.props.setDevice(device);
+            this.setState({showDrawer: false});
         }
     }
 
@@ -124,11 +125,11 @@ class Preview extends Component {
         this.devices.forEach((device) => {
             if (device.kind === 'videoinput') {
                 cameras.push(
-                    <List.Item key={device.deviceId} style={{width: '350px'}} onPress={this.setDevice(device)} active={device.label === this.state.camera.label} title={device.label} />
+                    <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.camera.label} title={device.label} />
                 );
             } else if (device.kind === 'audioinput') {
                 mics.push(
-                    <List.Item key={device.deviceId} style={{width: '350px'}} onPress={this.setDevice(device)} active={device.label === this.state.mic.label} title={device.label} />
+                    <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.mic.label} title={device.label} />
                 );
             }
         });
@@ -137,7 +138,7 @@ class Preview extends Component {
         let header = null;
         if (this.state.camera !== '') {
             header = (
-                <View>
+                <Fragment>
                     <Appbar.Header>
                         <Appbar.Content
                             title="Preview"
@@ -148,7 +149,7 @@ class Preview extends Component {
                         : null }
                     </Appbar.Header>
                     <VolumeBar localMedia={this.props.localMedia} />
-                </View>
+                </Fragment>
             );
         }
 
@@ -168,15 +169,13 @@ class Preview extends Component {
         console.log(this.state.streamURL);
 
         return (
-            <View>
+            <View style={{flex: 1}}>
                 {header}
+                <View style={styles.buttonContainer}>
+                    <IconButton style={styles.button} color="white" onPress={this.hangupCall} icon="power" size={48} />
+                </View>
                 <View style={styles.container}>
-                    { this.state.streamURL ?
-                        <RTCView style={styles.video} streamURL={this.state.streamURL.toURL()} mirror={true}/>
-                    : null }
-                    <View style={styles.buttonContainer}>
-                        <IconButton style={styles.button} color="white" onPress={this.hangupCall} icon="power" size={48} />
-                    </View>
+                    <RTCView style={styles.video} streamURL={this.state.streamURL ? this.state.streamURL.toURL() : null} mirror={true}/>
                 </View>
                 <ConferenceDrawer show={this.state.showDrawer} close={this.toggleDrawer}>
                     {drawercontent}

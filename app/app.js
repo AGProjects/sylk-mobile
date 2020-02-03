@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import { View, SafeAreaView, ImageBackground } from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
@@ -851,7 +851,7 @@ class Blink extends Component {
             return false;
         };
         return (
-            <View>
+            <Fragment>
                 <NavigationBar
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
@@ -868,7 +868,7 @@ class Blink extends Component {
                     key = {this.state.missedTargetUri}
                     serverHistory = {this.state.serverHistory}
                 />
-            </View>
+            </Fragment>
         );
     }
 
@@ -880,14 +880,14 @@ class Blink extends Component {
             return false;
         };
         return (
-            <View>
+            <Fragment>
                 <Preview
                     localMedia = {this.state.localMedia}
                     hangupCall = {this.hangupCall}
                     setDevice = {this.setDevice}
                     selectedDevices = {this.state.devices}
                 />
-            </View>
+            </Fragment>
         );
     }
 
