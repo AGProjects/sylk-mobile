@@ -1,0 +1,44 @@
+.container {
+    flex: 1;
+}
+
+.remoteVideoContainer {
+
+}
+
+.localVideoContainer {
+    flex: 1;
+    justify-content: flex-end;
+}
+
+.video {
+
+}
+
+.localVideo {
+    height: 100px;
+    width: 100px;
+    object-fit: fill;
+}
+
+.buttonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    // position: absolute;
+    // right: 0;
+    // bottom: 0;
+    // left: 0;
+    // z-index: 1;
+    // padding-bottom: 35px;
+    // margin: auto;
+    // overflow: hidden;
+}
+
+.button {
+    background-color: white;
+    margin: 10px;
+}
+
+.hangupButton {
+    background-color: rgba(#a94442, .8);
+}

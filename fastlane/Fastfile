@@ -39,16 +39,30 @@ platform :android do
 
     gradle(task: 'clean', project_dir: "android/") # <- Fixes it
 
-    increment_version_code(app_project_dir: '**/app')
-    increment_version_name(
+    next_version_code = increment_version_code(
+      app_project_dir: '**/app'
+    )
+	  UI.message(next_version_code)
+    set_value_in_build(
+      key: 'versionCode',
+      value: next_version_code
+    )
+
+    next_version_name = increment_version_name(
       app_project_dir: '**/app',
       bump_type: 'minor'
+    )
+    UI.message(next_version_name)
+    set_value_in_build(
+      key: 'versionName',
+      value: next_version_name
     )
 
     gradle(task: 'bundle', build_type: 'Release', project_dir: './android/', properties: {
       "android.enableJetifier" => "true",
       "android.useAndroidX" => "true"
     })
+
 
     upload_to_play_store(track: 'beta', package_name: 'com.agprojects.sylk', skip_upload_apk: true)
 

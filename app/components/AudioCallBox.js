@@ -176,11 +176,13 @@ class AudioCallBox extends Component {
                         onPress={this.hangupCall}
                     />
                 </View>
-                <DTMFModal
-                    show={this.state.showDtmfModal}
-                    hide={this.hideDtmfModal}
-                    call={this.props.call}
-                />
+                { this.props.call && this.props.call.state === 'established' ?
+                    <DTMFModal
+                        show={this.state.showDtmfModal}
+                        hide={this.hideDtmfModal}
+                        call={this.props.call}
+                    />
+                : null }
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
                     call={this.props.call}

@@ -6,6 +6,8 @@ import moment from 'moment';
 import momentFormat from 'moment-duration-format';
 import autoBind from 'auto-bind';
 import { Appbar } from 'react-native-paper';
+import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+
 
 class CallOverlay extends React.Component {
     constructor(props) {

@@ -15,9 +15,9 @@ class DTMFModal extends Component {
         DEBUG('DTMF tone was sent: ' + tone);
 
         dtmf.stopTone();//don't play a tone at the same time as another
-        dtmf.playTone(tone, 1000);
+        dtmf.playTone(dtmf['DTMF_' + tone], 1000);
 
-        if (this.props.call !== null) {
+        if (this.props.call !== null && this.props.call.state === 'established') {
             this.props.call.sendDtmf(tone);
         }
     }
@@ -45,9 +45,9 @@ class DTMFModal extends Component {
                                 <Button style={styles.button} key="dtmfButton9" onPress={this.sendDtmf.bind(this, '9')}>9</Button>
                             </View>
                             <View style={styles.row}>
-                                <Button style={styles.button} key="dtmfButtonStar" onPress={this.sendDtmf.bind(this, '*')}>*</Button>
+                                <Button style={styles.button} key="dtmfButtonStar" onPress={this.sendDtmf.bind(this, 'STAR')}>*</Button>
                                 <Button style={styles.button} key="dtmfButton0" onPress={this.sendDtmf.bind(this, '0')}>0</Button>
-                                <Button style={styles.button} key="dtmfButtonHash" onPress={this.sendDtmf.bind(this, '#')}>#</Button>
+                                <Button style={styles.button} key="dtmfButtonHash" onPress={this.sendDtmf.bind(this, 'POUND')}>#</Button>
                             </View>
                         </View>
                     </Surface>

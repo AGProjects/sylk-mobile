@@ -2,6 +2,8 @@
 
 secretfile filter=git-crypt diff=git-crypt
 sylk-upload-key.keystore filter=git-crypt diff=git-crypt
-gradle.properties filter=git-crypt diff=git-crypt
+fastlane/.env filter=git-crypt diff=git-crypt
+api-7060987251070375447-396770-ee04a2a01cae.json filter=git-crypt diff=git-crypt
+
 
 .gitattributes !filter !diff

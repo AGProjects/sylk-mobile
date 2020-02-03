@@ -480,6 +480,7 @@ class Blink extends Component {
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
+            DEBUG('Got local Media', localStream);
             this.setState({status: null, loading: null, localMedia: localStream});
             if (nextRoute !== null) {
                 history.push(nextRoute);

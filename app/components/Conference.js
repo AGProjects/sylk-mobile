@@ -106,4 +106,4 @@ Conference.propTypes = {
 };
 
 
-module.exports = Conference;
+export default Conference;

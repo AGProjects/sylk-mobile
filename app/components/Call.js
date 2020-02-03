@@ -80,7 +80,9 @@ class Call extends Component {
     startCall() {
         assert(this.props.currentCall === null, 'currentCall is not null');
         let options = {pcConfig: {iceServers: config.iceServers}};
+        console.log('passing in a local Media stream', this.props.localMedia)
         options.localStream = this.props.localMedia;
+        console.log('starting a call', this.props.targetUri);
         let call = this.props.account.call(this.props.targetUri, options);
         call.on('stateChanged', this.callStateChanged);
     }
@@ -151,7 +153,7 @@ class Call extends Component {
             }
         }
         return (
-            <View>
+            <View style={{flex: 1}}>
                 {box}
             </View>
         );
@@ -161,7 +163,7 @@ class Call extends Component {
 Call.propTypes = {
     account                 : PropTypes.object.isRequired,
     hangupCall              : PropTypes.func.isRequired,
-    shareScreen             : PropTypes.func.isRequired,
+    shareScreen             : PropTypes.func,
     currentCall             : PropTypes.object,
     escalateToConference    : PropTypes.func,
     localMedia              : PropTypes.object,
