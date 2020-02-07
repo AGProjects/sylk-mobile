@@ -2,19 +2,20 @@
     flex: 1;
 }
 
-.videoContainer {
-    flex: 1;
+.soloContainer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
 }
 
-.videoLarge {
+.videoContainer {
+    height: 100%;
     width: 100%;
-    min-height: 100%;
-    border: 1px green solid;
 }
 
 .video {
-    margin: 0 auto;
-    width: 90%;
-    height: 500px;
-    border: 1px yellow solid;
+    height: 100%;
+    width: 100%;
 }

@@ -446,7 +446,11 @@ class ConferenceBox extends Component {
                         </Paragraph>
                         <View className="text-center">
                             <View className="btn-group">
-                                <IconButton className="btn btn-primary" onPress={this.toggleInviteModal} icon="account-plus" />
+                                <IconButton
+                                    size={36}
+                                    onPress={this.toggleInviteModal}
+                                    icon="account-plus"
+                                />
                                 <IconButton className="btn btn-primary" onPress={this.handleClipboardButton} icon="copy" />
                                 <IconButton className="btn btn-primary" onPress={this.handleEmailButton} alt="Send email" icon="email" />
                             </View>
@@ -494,16 +498,46 @@ class ConferenceBox extends Component {
 
         const bottomButtons = [];
         bottomButtons.push(
-            <IconButton size={24} style={styles.button} key="shareButton" title="Share link to this conference" icon="account-plus" onPress={this.shareModal} />
+            <IconButton
+                size={36}
+                style={styles.button}
+                title="Share link to this conference"
+                icon="account-plus"
+                onPress={this.shareModal}
+            />
         );
-        bottomButtons.push(<IconButton size={24} style={styles.button} key="muteVideo" title="Mute/unmute video" onPress={this.muteVideo} icon={muteVideoButtonIcons}/>);
-        bottomButtons.push(<IconButton size={24} style={styles.button} key="muteAudio" title="Mute/unmute audio" onPress={this.muteAudio} icon={muteButtonIcons}/>);
         bottomButtons.push(
-            <View key="shareFiles">
-                <IconButton size={24} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
-            </View>
+            <IconButton
+                size={36}
+                style={styles.button}
+                title="Mute/unmute video"
+                onPress={this.muteVideo}
+                icon={muteVideoButtonIcons}
+            />
         );
-        bottomButtons.push(<IconButton size={24} style={[styles.button, styles.hangupButton]} key="hangupButton" title="Leave conference" className="btn btn-round btn-danger" onPress={this.hangup} icon="phone-hangup"/>);
+        bottomButtons.push(
+            <IconButton
+                size={36}
+                style={styles.button}
+                title="Mute/unmute audio"
+                onPress={this.muteAudio}
+                icon={muteButtonIcons}
+            />
+        );
+        // bottomButtons.push(
+        //     <View key="shareFiles">
+        //         <IconButton size={36} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
+        //     </View>
+        // );
+        bottomButtons.push(
+            <IconButton
+                size={36}
+                style={[styles.button, styles.hangupButton]}
+                title="Leave conference"
+                onPress={this.hangup}
+                icon="phone-hangup"
+            />
+        );
         buttons.bottom = bottomButtons;
 
         const participants = [];
@@ -534,16 +568,11 @@ class ConferenceBox extends Component {
         let videos = [];
         if (this.state.participants.length === 0) {
             videos.push(
-                <RTCView style={styles.wholePageVideo} ref="largeVideo" key="largeVideo" poster="assets/images/transparent-1px.png" streamURL={this.state.largeVideoStream ? this.state.largeVideoStream.toURL() : null} />
+                <RTCView objectFit="cover" style={styles.wholePageVideo} ref="largeVideo" poster="assets/images/transparent-1px.png" streamURL={this.state.largeVideoStream ? this.state.largeVideoStream.toURL() : null} />
             );
         } else {
             const activeSpeakers = this.state.activeSpeakers;
             const activeSpeakersCount = activeSpeakers.length;
-            matrixClasses = classNames({
-                'matrix'        : true,
-                'one-row'       : activeSpeakersCount === 2,
-                'two-columns'   : activeSpeakersCount === 2
-            });
 
             if (activeSpeakersCount > 0) {
                 activeSpeakers.forEach((p) => {
@@ -576,14 +605,7 @@ class ConferenceBox extends Component {
                     );
                 });
             } else {
-                matrixClasses = classNames({
-                    'matrix'        : true,
-                    'one-row'       : this.state.participants.length === 2 ,
-                    'two-row'       : this.state.participants.length >= 3 && this.state.participants.length < 7,
-                    'three-row'     : this.state.participants.length >= 7,
-                    'two-columns'   : this.state.participants.length >= 2 || this.state.participants.length <= 4,
-                    'three-columns' : this.state.participants.length > 4
-                });
+
                 this.state.participants.forEach((p) => {
                     videos.push(
                         <ConferenceMatrixParticipant
@@ -603,20 +625,6 @@ class ConferenceBox extends Component {
             }
         }
 
-        let drawerContent = (
-            <Fragment>
-                <ConferenceDrawerSpeakerSelection
-                    participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
-                    selected={this.handleActiveSpeakerSelected}
-                    activeSpeakers={this.state.activeSpeakers}
-                />
-                <ConferenceDrawerParticipantList>
-                    {drawerParticipants}
-                </ConferenceDrawerParticipantList>
-                <ConferenceDrawerLog log={this.state.eventLog} />
-            </Fragment>
-        );
-
         let filesDrawerContent = (
             <ConferenceDrawerFiles
                 sharedFiles={this.state.sharedFiles}
@@ -624,27 +632,16 @@ class ConferenceBox extends Component {
             />
         );
 
-        let appbar = (
-            <ConferenceHeader
-                        show={true}
-                        remoteIdentity={remoteIdentity}
-                        participants={this.state.participants}
-                        buttons={buttons}
-                    />
-        );
-
         return (
-            <View style={{flex: 1}}>
-                {appbar}
-                {/* <input
-                    style={{display:'none'}}
-                    id="outlined-button-file"
-                    multiple
-                    type="file"
-                    onChange={this.handleFiles}
-                /> */}
-                <View style={styles.container}>
-                    <View style={styles.videoContainer}>
+            <View style={styles.container}>
+                <ConferenceHeader
+                    show={true}
+                    remoteIdentity={remoteIdentity}
+                    participants={this.state.participants}
+                    buttons={buttons}
+                />
+                <View style={styles.conferenceContainer}>
+                    <View style={styles.videosContainer}>
                         {videos}
                     </View>
                     <View style={styles.carouselContainer}>
@@ -664,7 +661,15 @@ class ConferenceBox extends Component {
                     show={this.state.showDrawer}
                     close={this.toggleDrawer}
                 >
-                    {drawerContent}
+                    <ConferenceDrawerSpeakerSelection
+                        participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
+                        selected={this.handleActiveSpeakerSelected}
+                        activeSpeakers={this.state.activeSpeakers}
+                    />
+                    <ConferenceDrawerParticipantList>
+                        {drawerParticipants}
+                    </ConferenceDrawerParticipantList>
+                    <ConferenceDrawerLog log={this.state.eventLog} />
                 </ConferenceDrawer>
             </View>
         );

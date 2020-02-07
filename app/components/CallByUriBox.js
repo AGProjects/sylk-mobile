@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import { Title, Button, TextInput } from 'react-native-paper';
@@ -60,21 +60,12 @@ class CallByUriBox extends Component {
                 />
             );
         } else {
-            const classes = classNames({
-                'capitalize' : true,
-                'btn'        : true,
-                'btn-lg'     : true,
-                'btn-block'  : true,
-                'btn-default': !validInput,
-                'btn-primary': validInput
-            });
-
             content = (
-                <View>
+                <Fragment>
                     <Title>You've been invited to call {this.props.targetUri}</Title>
-                        <View className="input-group">
+                        <View>
                             <TextInput id="inputName"
-                                className="form-control"
+                                mode="outlined"
                                 label="Name"
                                 placeholder="Enter your name"
                                 value={this.state.displayName}
@@ -83,16 +74,14 @@ class CallByUriBox extends Component {
                                 autoFocus
                             />
                         </View>
-                        <Button type="submit" className={classes} disabled={!validInput} onPress={this.handleSubmit} icon="camera">Call</Button>
-                </View>
+                        <Button type="submit" disabled={!validInput} onPress={this.handleSubmit} icon="camera">Call</Button>
+                </Fragment>
             );
         }
 
         return (
             <View className="cover-container">
-                <View className="inner cover" >
-                    {content}
-                </View>
+                {content}
             </View>
         );
     }
@@ -111,4 +100,4 @@ CallByUriBox.propTypes = {
 };
 
 
-module.exports = CallByUriBox;
+export default CallByUriBox;

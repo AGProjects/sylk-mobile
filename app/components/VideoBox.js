@@ -9,6 +9,7 @@ import { RTCView } from 'react-native-webrtc';
 
 import CallOverlay from './CallOverlay';
 import EscalateConferenceModal from './EscalateConferenceModal';
+import DTMFModal from './DTMFModal';
 
 import styles from '../assets/styles/blink/_VideoBox.scss';
 
@@ -29,7 +30,8 @@ class VideoBox extends Component {
             remoteSharesScreen: false,
             showEscalateConferenceModal: false,
             localStream: null,
-            remoteStream: null
+            remoteStream: null,
+            showDtmfModal: false
         };
 
         this.overlayTimer = null;
@@ -77,6 +79,14 @@ class VideoBox extends Component {
         // clearTimeout(this.overlayTimer);
         // this.remoteVideo.current.removeEventListener('playing', this.handleRemoteVideoPlaying);
         // this.exitFullscreen();
+    }
+
+    showDtmfModal() {
+        this.setState({showDtmfModal: true});
+    }
+
+    hideDtmfModal() {
+        this.setState({showDtmfModal: false});
     }
 
     handleFullscreen(event) {
@@ -169,7 +179,7 @@ class VideoBox extends Component {
 
     render() {
         if (this.props.call == null) {
-            return (<View></View>);
+            return null;
         }
 
         const localVideoClasses = classNames({
@@ -241,12 +251,6 @@ class VideoBox extends Component {
             // );
         }
 
-        let {height, width} = Dimensions.get('window');
-        let videoStyle = {
-            height,
-            width
-        };
-
         console.log('local media stream in videobox', this.state);
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
@@ -266,20 +270,52 @@ class VideoBox extends Component {
                 {/* </TransitionGroup> */}
                 {this.state.remoteVideoShow ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
-                        <RTCView id="remoteVideo" style={[styles.video, videoStyle]} poster="assets/images/transparent-1px.png" ref={this.remoteVideo} streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null} />
+                        <RTCView objectFit='cover' style={[styles.video, styles.remoteVideo]} poster="assets/images/transparent-1px.png" ref={this.remoteVideo} streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null} />
                     </View>
                 : null }
                 { this.state.localVideoShow ?
                     <View style={[styles.container, styles.localVideoContainer]}>
-                        <RTCView style={[styles.video, styles.localVideo]} id="localVideo" ref={this.localVideo} streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
+                        <RTCView objectFit='cover' style={[styles.video, styles.localVideo]} ref={this.localVideo} streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
                     </View>
                 : null }
                 <View style={styles.buttonContainer}>
-                    <IconButton style={styles.button} key="escalateButton" onPress={this.toggleEscalateConferenceModal} icon="account-plus" />
-                    <IconButton style={styles.button} key="muteVideo" onPress={this.muteAudio} icon={muteButtonIcons} />
-                    <IconButton style={styles.button} key="muteAudio" onPress={this.muteVideo} icon={muteVideoButtonIcons} />
-                    <IconButton style={[styles.button, styles.hangupButton]} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" />
+                    <IconButton
+                        size={36}
+                        style={styles.button}
+                        onPress={this.toggleEscalateConferenceModal}
+                        icon="account-plus"
+                    />
+                    <IconButton
+                        size={36}
+                        style={styles.button}
+                        onPress={this.muteAudio}
+                        icon={muteButtonIcons}
+                    />
+                    <IconButton
+                        size={36}
+                        style={styles.button}
+                        icon="dialpad"
+                        onPress={this.showDtmfModal}
+                        disabled={!(this.props.call && this.props.call.state === 'established')}
+                    />
+                    <IconButton
+                        size={36}
+                        style={styles.button}
+                        onPress={this.muteVideo}
+                        icon={muteVideoButtonIcons}
+                    />
+                    <IconButton
+                        size={36}
+                        style={[styles.button, styles.hangupButton]}
+                        onPress={this.hangupCall}
+                        icon="phone-hangup"
+                    />
                 </View>
+                <DTMFModal
+                    show={this.state.showDtmfModal}
+                    hide={this.hideDtmfModal}
+                    call={this.props.call}
+                />
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
                     call={this.props.call}

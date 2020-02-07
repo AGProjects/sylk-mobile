@@ -20,11 +20,9 @@ const StatusBox = (props) => {
     }
 
     return (
-        <View>
-            <Snackbar visible={true} duraction={2000} onDismiss={() => {}}>
-                { iconName ? (<Icon name={iconName} />) : null }{ props.title }{ props.message }
-            </Snackbar>
-        </View>
+        <Snackbar visible={true} duraction={2000} onDismiss={() => {}}>
+            { iconName ? (<Icon name={iconName} />) : null }{ props.title }{ props.message }
+        </Snackbar>
     );
 };
 

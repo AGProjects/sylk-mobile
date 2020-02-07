@@ -49,26 +49,24 @@ const ConferenceHeader = (props) => {
         );
 
         videoHeader = (
-            <View>
-                <Appbar.Header style={{backgroundColor: 'black'}}>
-                    <Appbar.Content
-                        title={`Conference: ${props.remoteIdentity}`}
-                        subtitle={callDetail}
-                    />
-                    {props.buttons.top.right}
-                </Appbar.Header>
-            </View>
+            <Appbar.Header style={{backgroundColor: 'black'}}>
+                <Appbar.Content
+                    title={`Conference: ${props.remoteIdentity}`}
+                    subtitle={callDetail}
+                />
+                {props.buttons.top.right}
+            </Appbar.Header>
         );
 
         callButtons = (
-            <View className="conference-buttons" style={styles.buttonContainer}>
+            <View style={styles.buttonContainer}>
                 {props.buttons.bottom}
             </View>
         );
     }
 
     return (
-        <View>
+        <View style={styles.container}>
             {videoHeader}
             {callButtons}
         </View>

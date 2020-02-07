@@ -49,7 +49,7 @@ const HistoryCard = (props) => {
         >
             <Card.Content>
                 <Headline noWrap style={color}>{name} ({duration})</Headline>
-                <Subheading className={classes.biggerFont} color="textSecondary">
+                <Subheading color="textSecondary">
                     <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{props.historyItem.startTime}
                 </Subheading>
             </Card.Content>

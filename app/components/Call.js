@@ -107,7 +107,7 @@ class Call extends Component {
     }
 
     render() {
-        let box;
+        let box = null;
         let remoteIdentity;
 
         if (this.props.currentCall !== null) {
@@ -152,11 +152,7 @@ class Call extends Component {
                 }
             }
         }
-        return (
-            <View style={{flex: 1}}>
-                {box}
-            </View>
-        );
+        return box;
     }
 }
 

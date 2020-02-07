@@ -38,6 +38,7 @@ class EscalateConferenceModal extends React.Component {
                         <Paragraph>Please enter the account(s) you wish to add to this call. After pressing Move, all parties will be invited to join a conference.</Paragraph>
                         <View>
                             <TextInput
+                                mode="outlined"
                                 label="Users"
                                 id="inputTarget"
                                 ref={this.invitees}

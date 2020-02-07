@@ -1,12 +1,14 @@
 import React, { Component } from 'react';
-import { Linking } from 'react-native';
+import { Linking, Image, View } from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Appbar, Menu, Divider } from 'react-native-paper';
+import { Appbar, Menu, Divider, Text } from 'react-native-paper';
 
 import config from '../config';
 import AboutModal from './AboutModal';
 import CallMeMaybeModal from './CallMeMaybeModal';
+import styles from '../assets/styles/blink/_NavigationBar.scss';
+const blinkLogo = require('../assets/images/blink-white-big.png');
 
 class NavigationBar extends Component {
     constructor(props) {
@@ -65,6 +67,7 @@ class NavigationBar extends Component {
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
+                <Image source={blinkLogo} style={styles.logo}/>
                 <Appbar.Content
                     title="Sylk"
                     subtitle={`Signed in as: ${this.props.account.id}`}
@@ -72,8 +75,15 @@ class NavigationBar extends Component {
                 <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
                 <Menu
                     visible={this.state.menuVisible}
-                    onDismiss={this._closeMenu}
-                    anchor={<Appbar.Action ref={this.menuRef} color="white" icon="menu" onPress={() => this.setState({menuVisible: !this.state.menuVisible})} />}
+                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    anchor={
+                        <Appbar.Action
+                            ref={this.menuRef}
+                            color="white"
+                            icon="menu"
+                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                        />
+                    }
                 >
                     <Menu.Item icon="account" title={this.props.account.id} />
                     <Divider />

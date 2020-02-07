@@ -51,11 +51,17 @@ class CallMeMaybeModal extends Component {
                         <Text>
                             Share {this.props.callUrl} with others so they can easily call you. You can copy it to the clipboard or send it via email.
                         </Text>
-                        <View>
-                            <View>
-                                <IconButton onPress={this.handleClipboardButton} icon="content-copy"/>
-                                <IconButton className="btn btn-lg btn-primary" onPress={this.handleEmailButton} icon="email" />
-                            </View>
+                        <View style={styles.iconContainer}>
+                            <IconButton
+                                size={36}
+                                onPress={this.handleClipboardButton}
+                                icon="content-copy"
+                            />
+                            <IconButton
+                                size={36}
+                                onPress={this.handleEmailButton}
+                                icon="email"
+                            />
                         </View>
                     </Surface>
                 </Modal>

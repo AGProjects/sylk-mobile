@@ -1,6 +1,5 @@
-import React from 'react';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { View } from 'react-native';
 //import utils from '../utils';
 import { List, IconButton } from 'react-native-paper';
 
@@ -28,12 +27,12 @@ const ConferenceDrawerFiles = (props) => {
     });
 
     return (
-        <View className="drawer-files">
+        <Fragment>
             <List.Section>
                 <List.Subheader>Shared Files</List.Subheader>
                 {entries}
             </List.Section>
-        </View>
+        </Fragment>
     );
 };
 

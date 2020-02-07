@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View, Dimensions } from 'react-native';
@@ -32,7 +32,7 @@ class LocalMedia extends Component {
         };
 
         return (
-            <View style={{flex: 1}}>
+            <Fragment>
                 <CallOverlay
                     show = {true}
                     remoteIdentity = {this.props.remoteIdentity}
@@ -42,10 +42,9 @@ class LocalMedia extends Component {
                     <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={48} />
                 </View>
                 <View style={styles.container}>
-                    <RTCView style={[styles.video, videoStyle]} id="localVideo" ref={this.localVideo} streamURL={this.props.localMedia ? this.props.localMedia.toURL() : null} mirror={true} />
+                    <RTCView objectFit="cover" style={[styles.video, videoStyle]} id="localVideo" ref={this.localVideo} streamURL={this.props.localMedia ? this.props.localMedia.toURL() : null} mirror={true} />
                 </View>
-
-            </View>
+            </Fragment>
         );
     }
 }

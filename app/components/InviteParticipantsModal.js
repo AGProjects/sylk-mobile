@@ -37,8 +37,14 @@ class InviteParticipantsModal extends Component {
                         <Title id="cmodal-title-sm">Invite Online Users</Title>
 
                         <Text className="lead">Enter the users you wish to invite</Text>
-                        <TextInput label="Users" id="inputTarget" ref={this.invitees} className="form-control" placeholder="alice@sip2sip.info,bob,carol" required autoCapitalize="none" />
-                        <Button type="submit" className="btn btn-success" onSubmit={this.invite} icon="email">Invite</Button>
+                        <TextInput
+                            label="Users"
+                            ref={this.invitees}
+                            placeholder="alice@sip2sip.info,bob,carol"
+                            required
+                            autoCapitalize="none"
+                        />
+                        <Button onSubmit={this.invite} icon="email">Invite</Button>
                     </Surface>
                 </Modal>
             </Portal>

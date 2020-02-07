@@ -1,6 +1,5 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { View } from 'react-native';
 import { TextInput } from 'react-native-paper';
 import autoBind from 'auto-bind';
 
@@ -97,20 +96,20 @@ class URIInput extends React.Component {
 
     render() {
         return (
-            <View className="form-group uri-input">
-                <TextInput id="uri-input" name="uri-input" ref={this.uriInput} className="form-control input-lg"
-                    onChangeText={this.onInputChange}
-                    onKeyDown={this.onInputKeyDown}
-                    onBlur={this.onInputBlur}
-                    onPress={this.onInputClick}
-                    value={this.props.defaultValue}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    required
-                    autoFocus={this.props.autoFocus}
-                    placeholder={this.props.placeholder}
-                />
-            </View>
+            <TextInput
+                mode="outlined"
+                ref={this.uriInput}
+                onChangeText={this.onInputChange}
+                onKeyDown={this.onInputKeyDown}
+                onBlur={this.onInputBlur}
+                onPress={this.onInputClick}
+                value={this.props.defaultValue}
+                autoCapitalize="none"
+                autoCorrect={false}
+                required
+                autoFocus={this.props.autoFocus}
+                placeholder={this.props.placeholder}
+            />
         );
 
     }

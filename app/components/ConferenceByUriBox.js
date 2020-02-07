@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
@@ -82,27 +82,25 @@ class ConferenceByUriBox extends React.Component {
             const friendlyName = this.props.targetUri.split('@')[0];
 
             content = (
-                <View>
+                <Fragment>
                     <Title>You're about to join a conference! {friendlyName}</Title>
                     <View >
-                        <TextInput id="inputName"
+                        <TextInput
+                            mode="outlined"
                             label="Name"
-                            className="form-control"
                             placeholder="Enter your name (optional)"
                             value={this.state.displayName}
                             onChange={this.handleDisplayNameChange}
                         />
                     </View>
-                    <Button type="submit" onPress={this.handleSubmit} className={classes} icon="sign-in">Join</Button>
-                </View>
+                    <Button type="submit" onPress={this.handleSubmit} icon="sign-in">Join</Button>
+                </Fragment>
             );
         }
 
         return (
-            <View className="cover-container">
-                <View className="inner cover" >
-                    {content}
-                </View>
+            <View>
+                {content}
             </View>
         );
     }
@@ -121,4 +119,4 @@ ConferenceByUriBox.propTypes = {
 };
 
 
-module.exports = ConferenceByUriBox;
+export default ConferenceByUriBox;

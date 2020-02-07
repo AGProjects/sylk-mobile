@@ -147,42 +147,41 @@ class AudioCallBox extends Component {
                     remoteIdentity={this.props.remoteIdentity}
                     call={this.props.call}
                 />
-                <View className="call-user-icon">
-                    <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
+                <View styles={styles.userIconContainer}>
+                    <UserIcon identity={remoteIdentity} styles={styles.userIcon} large={true} active={this.state.active} />
                 </View>
                 <View style={styles.buttonContainer}>
                     <IconButton
-                        size={24}
+                        size={36}
                         style={styles.button}
                         icon="account-plus"
                         onPress={this.toggleEscalateConferenceModal}
                     />
                     <IconButton
-                        size={24}
+                        size={36}
                         style={styles.button}
                         icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
                         onPress={this.muteAudio}
                     />
                     <IconButton
-                        size={24}
+                        size={36}
                         style={styles.button}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
+                        disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
-                        size={24}
+                        size={36}
                         style={[styles.button, styles.hangupButton]}
                         icon="phone-hangup"
                         onPress={this.hangupCall}
                     />
                 </View>
-                { this.props.call && this.props.call.state === 'established' ?
-                    <DTMFModal
-                        show={this.state.showDtmfModal}
-                        hide={this.hideDtmfModal}
-                        call={this.props.call}
-                    />
-                : null }
+                <DTMFModal
+                    show={this.state.showDtmfModal}
+                    hide={this.hideDtmfModal}
+                    call={this.props.call}
+                />
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
                     call={this.props.call}
@@ -202,4 +201,4 @@ AudioCallBox.propTypes = {
     remoteIdentity          : PropTypes.string
 };
 
-module.exports = AudioCallBox;
+export default AudioCallBox;

@@ -95,6 +95,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
+                                            mode="outlined"
                                             label="Display name"
                                             name="yourName"
                                             type="text"
@@ -110,6 +111,7 @@ class EnrollmentModal extends Component {
                                     <View>
                                         <View>
                                             <TextInput
+                                                mode="outlined"
                                                 label="Username"
                                                 name="username"
                                                 placeholder="alice"
@@ -130,6 +132,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
+                                            mode="outlined"
                                             label="Password"
                                             name="password"
                                             secureTextEntry={true}
@@ -143,6 +146,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
+                                            mode="outlined"
                                             label="Verify password"
                                             secureTextEntry={true}
                                             textContentType="password"
@@ -156,6 +160,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
+                                            mode="outlined"
                                             label="E-Mail"
                                             textContentType="emailAddress"
                                             name="email"
@@ -180,8 +185,9 @@ class EnrollmentModal extends Component {
                                     visible={this.state.errorVisible}
                                     duration={2000}
                                     onDismiss={() => this.setState({ errorVisible: false })}
-
-                                >{this.state.error}</Snackbar>
+                                >
+                                    {this.state.error}
+                                </Snackbar>
                             </ScrollView>
                         </Surface>
                     </KeyboardAvoidingView>

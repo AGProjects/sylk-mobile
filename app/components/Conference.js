@@ -59,7 +59,7 @@ class Conference extends React.Component {
     }
 
     render() {
-        let box;
+        let box = null;
 
         if (this.props.localMedia !== null) {
             if (this.props.currentCall != null && this.props.currentCall.state === 'established') {
@@ -86,11 +86,7 @@ class Conference extends React.Component {
             }
         }
 
-        return (
-            <View style={{flex: 1}}>
-                {box}
-            </View>
-        );
+        return box;
     }
 }
 

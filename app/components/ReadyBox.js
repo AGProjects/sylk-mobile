@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 // import VizSensor     = require('react-visibility-sensor').default;
@@ -26,7 +26,6 @@ class ReadyBox extends Component {
             targetUri: this.props.missedTargetUri,
             showConferenceModal: false,
             sticky: false,
-            height: utils.getWindowHeight() - 120
         };
     }
 
@@ -83,34 +82,49 @@ class ReadyBox extends Component {
         }
     }
 
-    handleResize() {
-        this.setState({height: utils.getWindowHeight() - 50});
-    }
-
     render() {
         // Join URIs from local and server history for input
         let history = this.props.history.concat(
             this.props.serverHistory.map(e => e.remoteParty)
         );
         history = [...new Set(history)];
-
+        console.log('history from server is', this.props.serverHistory);
         return (
-            <View>
-                <View style={{height: this.state.height}}>
+            <Fragment>
+                <View style={styles.wholeContainer}>
                     <View style={styles.container}>
                         <Title style={styles.title}>Enter the address you wish to call</Title>
-                        <URIInput
-                            defaultValue={this.state.targetUri}
-                            data={history}
-                            onChange={this.handleTargetChange}
-                            onSelect={this.handleTargetSelect}
-                            placeholder="Eg. alice@sip2sip.info or 3333"
-                            autoFocus={false}
-                        />
+                        <View style={styles.uriInputBox}>
+                            <URIInput
+                                defaultValue={this.state.targetUri}
+                                data={history}
+                                onChange={this.handleTargetChange}
+                                onSelect={this.handleTargetSelect}
+                                placeholder="Eg. alice@sip2sip.info or 3333"
+                                autoFocus={false}
+                            />
+                        </View>
                         <View style={styles.buttonGroup}>
-                            <IconButton style={styles.button} size={36} disabled={this.state.targetUri.length === 0} onPress={this.handleAudioCall} icon="phone"/>
-                            <IconButton style={styles.button} size={36} disabled={this.state.targetUri.length === 0} onPress={this.handleVideoCall} icon="video"/>
-                            <IconButton style={styles.button} size={36} onPress={this.showConferenceModal} icon="account-group"/>
+                            <IconButton
+                                style={styles.button}
+                                size={36}
+                                disabled={this.state.targetUri.length === 0}
+                                onPress={this.handleAudioCall}
+                                icon="phone"
+                            />
+                            <IconButton
+                                style={styles.button}
+                                size={36}
+                                disabled={this.state.targetUri.length === 0}
+                                onPress={this.handleVideoCall}
+                                icon="video"
+                            />
+                            <IconButton
+                                style={styles.button}
+                                size={36}
+                                onPress={this.showConferenceModal}
+                                icon="account-group"
+                            />
                         </View>
                     </View>
                     <HistoryTileBox>
@@ -133,7 +147,7 @@ class ReadyBox extends Component {
                     targetUri={this.state.targetUri}
                     handleConferenceCall={this.handleConferenceCall}
                 />
-            </View>
+            </Fragment>
         );
     }
 }

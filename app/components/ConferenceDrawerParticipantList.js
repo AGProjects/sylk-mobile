@@ -13,12 +13,10 @@ const ConferenceDrawerParticipantList = (props) => {
     });
 
     return (
-        <View>
-            <List.Section>
-                <List.Subheader>Participants</List.Subheader>
-                {items}
-            </List.Section>
-        </View>
+        <List.Section>
+            <List.Subheader>Participants</List.Subheader>
+            {items}
+        </List.Section>
     );
 };
 

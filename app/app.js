@@ -1023,10 +1023,10 @@ class Blink extends Component {
         }
 
         return (
-            <View>
+            <Fragment>
                 {registerBox}
                 {statusBox}
-            </View>
+            </Fragment>
         );
     }
 
@@ -1049,13 +1049,11 @@ class Blink extends Component {
             this.setState({account: null, registrationState: null, status: null});
             history.push('/login');
         });
-        return <View></View>;
+        return <Fragment />;
     }
 
     main() {
-        return (
-            <View></View>
-        );
+        return null;
     }
 }
 

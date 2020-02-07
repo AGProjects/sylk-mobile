@@ -117,14 +117,12 @@ class ConferenceMatrixParticipant extends Component {
             );
         }
 
-        console.log(this.state.stream);
-
         return (
-            <View style={styles.container}>
+            <View style={[styles.container, this.props.large ? styles.soloContainer : null]}>
                 {activeIcon}
                 {/* {participantInfo} */}
-                <View className="video" style={styles.videoContainer}>
-                    <RTCView style={this.props.large ? styles.videoLarge : styles.video} poster="assets/images/transparent-1px.png" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} />
+                <View style={styles.videoContainer}>
+                    <RTCView objectFit="cover" style={styles.video} poster="assets/images/transparent-1px.png" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} />
                 </View>
             </View>
         );

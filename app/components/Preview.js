@@ -139,7 +139,7 @@ class Preview extends Component {
         if (this.state.camera !== '') {
             header = (
                 <Fragment>
-                    <Appbar.Header>
+                    <Appbar.Header style={{backgroundColor: 'black'}}>
                         <Appbar.Content
                             title="Preview"
                             subtitle={this.state.camera.label}
@@ -166,16 +166,14 @@ class Preview extends Component {
             </View>
         );
 
-        console.log(this.state.streamURL);
-
         return (
-            <View style={{flex: 1}}>
+            <View style={styles.container}>
                 {header}
                 <View style={styles.buttonContainer}>
                     <IconButton style={styles.button} color="white" onPress={this.hangupCall} icon="power" size={48} />
                 </View>
-                <View style={styles.container}>
-                    <RTCView style={styles.video} streamURL={this.state.streamURL ? this.state.streamURL.toURL() : null} mirror={true}/>
+                <View style={styles.videoContainer}>
+                    <RTCView objectFit="cover" style={styles.video} streamURL={this.state.streamURL ? this.state.streamURL.toURL() : null} mirror={true}/>
                 </View>
                 <ConferenceDrawer show={this.state.showDrawer} close={this.toggleDrawer}>
                     {drawercontent}

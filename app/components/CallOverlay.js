@@ -70,7 +70,7 @@ class CallOverlay extends React.Component {
     }
 
     render() {
-        let header;
+        let header = null;
 
         if (this.props.show) {
             let callDetail;
@@ -91,11 +91,7 @@ class CallOverlay extends React.Component {
             );
         }
 
-        return (
-            <View>
-                {header}
-            </View>
-        );
+        return header
     }
 }
 
@@ -106,4 +102,4 @@ CallOverlay.propTypes = {
 };
 
 
-module.exports = CallOverlay;
+export default CallOverlay;

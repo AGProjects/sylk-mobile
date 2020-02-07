@@ -1,8 +1,7 @@
-import React from 'react';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import utils from '../utils';
 import { Title } from 'react-native-paper';
-import { View } from 'react-native';
 
 const ConferenceDrawerLog = (props) => {
     const entries = props.log.map((elem, idx) => {
@@ -31,10 +30,10 @@ const ConferenceDrawerLog = (props) => {
     });
 
     return (
-        <View className="drawer-log">
+        <Fragment>
             <Title>Configuration Events</Title>
             {entries}
-        </View>
+        </Fragment>
     );
 };
 

@@ -6,11 +6,7 @@ import styles from '../assets/styles/blink/_Footer.scss';
 const FooterBox = () => {
     return (
         <View style={styles.container}>
-            <View>
-                <View>
-                    <Text style={styles.text}>Copyright &copy;AG Projects</Text>
-                </View>
-            </View>
+            <Text style={styles.text}>&copy; AG Projects</Text>
         </View>
     );
 };

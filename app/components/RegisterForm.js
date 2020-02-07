@@ -73,6 +73,7 @@ class RegisterForm extends Component {
                 <Title style={styles.title}>Sign in to continue</Title>
                     <View style={styles.row}>
                         <TextInput
+                            mode="outlined"
                             style={styles.input}
                             textContentType="emailAddress"
                             label="Sip Account"
@@ -85,6 +86,7 @@ class RegisterForm extends Component {
                     </View>
                     <View style={styles.row}>
                         <TextInput
+                            mode="outlined"
                             style={styles.input}
                             label="Password"
                             textContentType="password"

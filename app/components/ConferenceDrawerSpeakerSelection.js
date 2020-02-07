@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import { View } from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
@@ -93,7 +93,7 @@ class ConferenceDrawerSpeakerSelection extends Component {
         }
 
         return (
-            <View>
+            <Fragment>
                 <Title>Active Speakers</Title>
                 <View className="form-group">
                    {/* <label htmlFor="speaker1" className="control-label">Speaker 1:</label> */}
@@ -109,7 +109,7 @@ class ConferenceDrawerSpeakerSelection extends Component {
                         {participantsRight}
                     </Menu>
                 </View>
-            </View>
+            </Fragment>
         );
     }
 }

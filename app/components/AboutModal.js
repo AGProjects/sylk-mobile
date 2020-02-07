@@ -12,7 +12,7 @@ const AboutModal = (props) => {
                 <Surface style={styles.container}>
                     <Title>About Sylk</Title>
                     <Text>Sylk is the WebRTC client companion for SylkServer</Text>
-                    <Text>Copyright &copy; AG Projects</Text>
+                    <Text>&copy; AG Projects</Text>
                 </Surface>
             </Modal>
         </Portal>

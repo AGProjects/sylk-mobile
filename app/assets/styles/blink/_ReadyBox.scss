@@ -1,20 +1,23 @@
 @import './variables';
 
+.wholeContainer {
+    flex: 1;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.container {
+    padding: 30px;
+}
+
 .title {
     color: white;
 }
 
 .footer {
-    position: absolute;
-    bottom: 0;
-    font-size: 11px;
-    color: $white-transparent;
-    text-shadow: 0 1px 3px $black-transparent;
-    width: 100%;
-}
-
-.container {
-    padding: 30px;
+    flex: 1;
+    justify-content: flex-end;
+    padding-bottom: 15px;
 }
 
 .button {
@@ -23,8 +26,11 @@
 }
 
 .buttonGroup {
-    flex: 1;
     flex-direction: row;
     margin: 0 auto;
+    padding-top: 10px;
+}
+
+.uriInputBox {
     padding-top: 10px;
 }

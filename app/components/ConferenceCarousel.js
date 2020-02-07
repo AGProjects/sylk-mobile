@@ -19,14 +19,10 @@ class ConferenceCarousel extends Component {
                 data={this.props.children}
                 renderItem={({item}) => {
                     //add in some styles on the View
-                    return (
-                        <View>
-                            { item }
-                        </View>
-                    );
+                    return item;
                 }}
                 sliderWidth={width}
-                itemWidth={100}
+                itemWidth={130}
                 itemHeight={100}
             />
         );

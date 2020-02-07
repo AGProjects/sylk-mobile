@@ -45,6 +45,7 @@ class ConferenceModal extends Component {
                         <Title>Join Video Conference</Title>
                         <Text>Enter the conference room you wish to join</Text>
                         <TextInput
+                            mode="outlined"
                             autoCapitalize="none"
                             label="Conference Room"
                             placeholder="Conference Room"
