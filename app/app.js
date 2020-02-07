@@ -9,8 +9,7 @@ import debug from 'react-native-debug';
 import DigestAuthRequest from 'digest-auth-request';
 import autoBind from 'auto-bind';
 
-debug.enable('*');
-
+console.disableYellowBox = true;
 registerGlobals();
 
 import * as sylkrtc from 'sylkrtc';
@@ -50,6 +49,8 @@ const theme = {
 };
 
 const DEBUG = debug('blinkrtc:App');
+debug.enable('*');
+
 
 // Application modes
 const MODE_NORMAL           = Symbol('mode-normal');

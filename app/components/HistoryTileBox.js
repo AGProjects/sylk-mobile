@@ -4,7 +4,7 @@ import { View } from 'react-native';
 
 const HistoryTileBox = (props) => {
     return (
-        <View className="history-tile-box">
+        <View>
             {props.children}
         </View>
     );
