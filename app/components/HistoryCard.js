@@ -4,7 +4,8 @@ import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
 import { Card, IconButton, Headline, Subheading } from 'react-native-paper';
-import { Icon } from 'react-native-vector-icons';
+import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+
 
 import UserIcon from './UserIcon';
 
@@ -42,6 +43,8 @@ const HistoryCard = (props) => {
 
     const name = identity.displayName || identity.uri;
 
+    console.log('Foo', props.historyItem);
+
     return (
         <Card
             onLongPress={() => {props.setTargetUri(identity.uri)}}
@@ -54,8 +57,8 @@ const HistoryCard = (props) => {
                 </Subheading>
             </Card.Content>
             <Card.Actions>
-                <IconButton icon="phone" className={classes.iconSmall} onPress={startAudioCall} title={`Audio call to ${name}`} />
-                <IconButton icon="video" className={classes.iconSmall} onPress={startVideoCall} title={`Video call to ${name}`} />
+                <IconButton icon="phone" onPress={startAudioCall} title={`Audio call to ${name}`} />
+                <IconButton icon="video" onPress={startVideoCall} title={`Video call to ${name}`} />
             </Card.Actions>
             <View>
                 <UserIcon identity={identity} card/>

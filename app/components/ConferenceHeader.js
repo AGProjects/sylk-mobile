@@ -42,11 +42,12 @@ const ConferenceHeader = (props) => {
 
     if (props.show) {
         const participantCount = props.participants.length + 1;
-        const callDetail = (
-            <View>
-                <Icon name="clock-outline" /><Text>{duration} - </Text><Icon name="account-group" /><Text>{participantCount} participant{participantCount > 1 ? 's' : ''}</Text>
-            </View>
-        );
+        // const callDetail = (
+        //     <View>
+        //         <Icon name="clock-outline" />{duration} - <Icon name="account-group" />{participantCount} participant{participantCount > 1 ? 's' : ''}
+        //     </View>
+        // );
+        const callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
 
         videoHeader = (
             <Appbar.Header style={{backgroundColor: 'black'}}>

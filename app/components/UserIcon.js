@@ -3,8 +3,6 @@ import PropTypes from 'prop-types';
 import utils from '../utils';
 import { Avatar } from 'react-native-paper';
 
-import classNames from 'classnames';
-
 // const styleSheet = {
 //     root: {
 //         transition: 'box-shadow 0.3s'

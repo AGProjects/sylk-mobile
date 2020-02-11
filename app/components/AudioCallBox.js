@@ -147,8 +147,8 @@ class AudioCallBox extends Component {
                     remoteIdentity={this.props.remoteIdentity}
                     call={this.props.call}
                 />
-                <View>
-                    <UserIcon identity={remoteIdentity} active={this.state.active} />
+                <View styles={styles.userIconContainer}>
+                    <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
                 <View style={styles.buttonContainer}>
                     <IconButton

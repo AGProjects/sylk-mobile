@@ -750,9 +750,7 @@ class Blink extends Component {
     //     if (nextPath !== this.prevPath) {
     //         DEBUG(`Transition from ${this.prevPath} to ${nextPath}`);
 
-    //         if (config.useServerCallHistory && nextPath === '/ready' && this.state.registrationState === 'registered' && (this.state.mode !== MODE_GUEST_CALL && this.state.mode !== MODE_GUEST_CONFERENCE)) {
-    //             this.getServerHistory();
-    //         }
+    //
     //         // Press back in ready after a login, prevent initial navigation
     //         // don't deny if there is no registrationState (connection fail)
     //         if (this.prevPath === '/ready' && nextPath === '/login' && this.state.registrationState !== null) {
@@ -851,6 +849,9 @@ class Blink extends Component {
             });
             return false;
         };
+
+        this.getServerHistory();
+
         return (
             <Fragment>
                 <NavigationBar

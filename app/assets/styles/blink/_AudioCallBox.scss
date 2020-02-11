@@ -1,7 +1,9 @@
 .container {
+    flex: 1;
 }
 
-.callStatus {
+.userIconContainer {
+    background-color: red;
 }
 
 .buttonContainer {
@@ -18,11 +20,5 @@
 }
 
 .hangupButton {
-    background-color: rgba(#a94442, .9);
-}
-
-.userIconContainer {
-}
-
-.userIcon {
+    background-color: rgba(#a94442, .8);
 }

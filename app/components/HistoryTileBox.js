@@ -1,12 +1,12 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { View } from 'react-native';
+import { ScrollView } from 'react-native';
 
 const HistoryTileBox = (props) => {
     return (
-        <View>
+        <ScrollView>
             {props.children}
-        </View>
+        </ScrollView>
     );
 }
 

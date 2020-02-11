@@ -127,16 +127,18 @@ class ReadyBox extends Component {
                             />
                         </View>
                     </View>
-                    <HistoryTileBox>
-                        {this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri)).map((historyItem, idx) =>
-                            (<HistoryCard
-                                historyItem    = {historyItem}
-                                setTargetUri   = {this.handleTargetChange}
-                                startVideoCall = {this.handleVideoCall}
-                                startAudioCall = {this.handleAudioCall}
-                            />)
-                        )}
-                    </HistoryTileBox>
+                    {/* <View style={styles.history}>
+                        <HistoryTileBox>
+                            {this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri)).map((historyItem, idx) =>
+                                (<HistoryCard
+                                    historyItem    = {historyItem}
+                                    setTargetUri   = {this.handleTargetChange}
+                                    startVideoCall = {this.handleVideoCall}
+                                    startAudioCall = {this.handleAudioCall}
+                                />)
+                            )}
+                        </HistoryTileBox>
+                    </View> */}
                     <View style={styles.footer}>
                         <FooterBox />
                     </View>
