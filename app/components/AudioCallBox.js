@@ -142,36 +142,36 @@ class AudioCallBox extends Component {
 
         return (
             <View style={styles.container}>
-                <CallOverlay
+                <CallOverlay styles={styles.callStatus}
                     show={true}
                     remoteIdentity={this.props.remoteIdentity}
                     call={this.props.call}
                 />
-                <View styles={styles.userIconContainer}>
-                    <UserIcon identity={remoteIdentity} styles={styles.userIcon} large={true} active={this.state.active} />
+                <View>
+                    <UserIcon identity={remoteIdentity} active={this.state.active} />
                 </View>
                 <View style={styles.buttonContainer}>
                     <IconButton
-                        size={36}
+                        size={34}
                         style={styles.button}
                         icon="account-plus"
                         onPress={this.toggleEscalateConferenceModal}
                     />
                     <IconButton
-                        size={36}
+                        size={34}
                         style={styles.button}
                         icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
                         onPress={this.muteAudio}
                     />
                     <IconButton
-                        size={36}
+                        size={34}
                         style={styles.button}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
                         disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
-                        size={36}
+                        size={34}
                         style={[styles.button, styles.hangupButton]}
                         icon="phone-hangup"
                         onPress={this.hangupCall}

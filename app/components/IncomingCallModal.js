@@ -20,20 +20,22 @@ const IncomingCallModal = (props) => {
         return false;
     }
 
-    let answerButtons = [
-        <IconButton id="decline" style={styles.button} onPress={props.onHangup} icon="phone-hangup" />
-    ];
+    let answerButtons = [];
+
+    answerButtons.push(
+        <IconButton style={styles.button} id="audio"  size={34} onPress={answerAudioOnly} icon="phone" />
+    );
 
     let callType = 'audio';
     if (props.call.mediaTypes.video) {
         callType = 'video';
         answerButtons.push(
-            <IconButton id="accept" style={styles.button} onPress={answer} autoFocus icon="video" />
+            <IconButton id="accept" style={styles.button}  size={34} onPress={answer} autoFocus icon="video" />
         );
     }
 
     answerButtons.push(
-        <IconButton style={styles.button} id="audio" onPress={answerAudioOnly} icon="phone" />
+        <IconButton id="decline" style={styles.rejectButton}  size={34} onPress={props.onHangup} icon="phone-hangup" />
     );
 
     const remoteIdentityLine = props.call.remoteIdentity.displayName || props.call.remoteIdentity.uri;
@@ -42,9 +44,9 @@ const IncomingCallModal = (props) => {
         <Portal>
             <Modal visible={props.show} dismissable={false}>
                 <Surface style={styles.container}>
-                    <UserIcon identity={props.call.remoteIdentity} large={true} />
-                    <Title>{remoteIdentityLine}</Title>
-                    <Headline>is calling with {callType}</Headline>
+                    <UserIcon style={styles.userIcon} identity={props.call.remoteIdentity} />
+                    <Title style={styles.remoteCaller}>{remoteIdentityLine}</Title>
+                    <Headline style={styles.remoteMedia}>is calling with {callType}</Headline>
                     <View style={styles.buttonContainer}>
                         {answerButtons}
                     </View>

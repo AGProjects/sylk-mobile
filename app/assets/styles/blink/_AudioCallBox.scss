@@ -1,26 +1,28 @@
 .container {
+}
 
+.callStatus {
 }
 
 .buttonContainer {
     flex-direction: row;
     margin: 0 auto;
-    padding-top: 10px;
+    padding-top: 20px;
 }
 
 .button {
     background-color: white;
     margin: 10px;
+    padding-top: 5px;
+    padding-left: 0px;
 }
 
 .hangupButton {
-    background-color: rgba(#a94442, .8);
+    background-color: rgba(#a94442, .9);
 }
 
 .userIconContainer {
-
 }
 
 .userIcon {
-    margin: 0 auto;
 }

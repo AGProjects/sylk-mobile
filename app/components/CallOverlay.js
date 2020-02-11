@@ -76,7 +76,7 @@ class CallOverlay extends React.Component {
             let callDetail;
             if (this.duration !== null) {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
-                callDetail = this.duration;
+                callDetail = 'Duration:' + this.duration;
             } else {
                 callDetail = 'Connecting...'
             }

@@ -39,7 +39,7 @@ class LocalMedia extends Component {
                     call = {null}
                 />
                 <View style={styles.buttonContainer}>
-                    <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={48} />
+                    <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={34} />
                 </View>
                 <View style={styles.container}>
                     <RTCView objectFit="cover" style={[styles.video, videoStyle]} id="localVideo" ref={this.localVideo} streamURL={this.props.localMedia ? this.props.localMedia.toURL() : null} mirror={true} />

@@ -8,6 +8,8 @@ import { Button, TextInput, Title } from 'react-native-paper';
 
 import EnrollmentModal from './EnrollmentModal';
 import storage from '../storage';
+import config from '../config';
+
 import styles from '../assets/styles/blink/_RegisterForm.scss';
 
 class RegisterForm extends Component {
@@ -73,10 +75,10 @@ class RegisterForm extends Component {
                 <Title style={styles.title}>Sign in to continue</Title>
                     <View style={styles.row}>
                         <TextInput
-                            mode="outlined"
+                            mode="flat"
                             style={styles.input}
                             textContentType="emailAddress"
-                            label="Sip Account"
+                            label="Account"
                             placeholder="Enter your account"
                             value={this.state.accountId}
                             onChangeText={this.handleAccountIdChange}
@@ -86,7 +88,7 @@ class RegisterForm extends Component {
                     </View>
                     <View style={styles.row}>
                         <TextInput
-                            mode="outlined"
+                            mode="flat"
                             style={styles.input}
                             label="Password"
                             textContentType="password"
@@ -110,6 +112,8 @@ class RegisterForm extends Component {
                         >
                             Sign In
                         </Button>
+
+                        { config.enrollmentUrl ?
                         <Button
                             icon="plus"
                             style={styles.button}
@@ -120,6 +124,7 @@ class RegisterForm extends Component {
                         >
                             Sign Up
                         </Button>
+                        : null }
                     </View>
                 <EnrollmentModal show={this.state.showEnrollmentModal} handleEnrollment={this.handleEnrollment} />
             </View>

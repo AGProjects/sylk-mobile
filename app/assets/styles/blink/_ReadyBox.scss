@@ -8,12 +8,13 @@
 
 .container {
     margin: 0 auto;
-    width: 80%;
-    padding-top: 30px;
+    width: 90%;
+    padding-top: 5%;
 }
 
 .title {
     color: white;
+    font-size: 20px;
 }
 
 .footer {
@@ -23,7 +24,14 @@
 }
 
 .button {
-    background-color: grey;
+    background-color: rgba(#6DAA63, .9);
+    margin: 10px;
+    padding-top: 2px;
+    padding-left: 1px;
+}
+
+.conferenceButton {
+    background-color: rgba(#4572a6, 1);
     margin: 10px;
 }
 

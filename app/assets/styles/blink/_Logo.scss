@@ -1,14 +1,18 @@
 .title {
+    padding: 5px;
     margin: 0 auto;
     color: white;
+    font-size: 36px;
 }
 
 .logoContainer {
-    margin: 0 auto;
+    margin:0 auto;
 }
 
 .logo {
-    width: 200px;
-    height: 200px;
+    width: 120px;
+    height: 120px;
     resize-mode: contain;
+    margin-top: 10px;
+    margin-bottom: 20px;
 }

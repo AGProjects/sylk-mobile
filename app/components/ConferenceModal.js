@@ -42,8 +42,8 @@ class ConferenceModal extends Component {
             <Portal>
                 <Modal visible={this.props.show} onDismiss={this.onHide}>
                     <Surface style={styles.container}>
-                        <Title>Join Video Conference</Title>
-                        <Text>Enter the conference room you wish to join</Text>
+                        <Title style={styles.title}>Join Conference</Title>
+                        <Text style={styles.body}>Enter the room you wish to join</Text>
                         <TextInput
                             mode="outlined"
                             autoCapitalize="none"

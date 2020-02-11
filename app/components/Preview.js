@@ -170,7 +170,7 @@ class Preview extends Component {
             <View style={styles.container}>
                 {header}
                 <View style={styles.buttonContainer}>
-                    <IconButton style={styles.button} color="white" onPress={this.hangupCall} icon="power" size={48} />
+                    <IconButton style={styles.button} color="white" onPress={this.hangupCall} icon="power" size={34} />
                 </View>
                 <View style={styles.videoContainer}>
                     <RTCView objectFit="cover" style={styles.video} streamURL={this.state.streamURL ? this.state.streamURL.toURL() : null} mirror={true}/>

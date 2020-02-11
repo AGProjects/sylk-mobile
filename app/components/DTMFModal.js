@@ -2,7 +2,7 @@ import debug from 'debug';
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import { View } from 'react-native';
-import { Portal, Modal, Surface, Title, Button } from 'react-native-paper';
+import { Portal, Modal, Surface, Title, Button, Text} from 'react-native-paper';
 import dtmf from 'react-native-dtmf';
 
 import styles from '../assets/styles/blink/_DTMFModal.scss';
@@ -27,7 +27,7 @@ class DTMFModal extends Component {
             <Portal>
                 <Modal visible={this.props.show} onDismiss={this.props.hide}>
                     <Surface>
-                        <Title>DTMF</Title>
+                        <Title className="text-center">DTMF</Title>
                         <View style={styles.container}>
                             <View style={styles.row}>
                                 <Button style={styles.button} key="dtmfButton1" onPress={this.sendDtmf.bind(this, '1')}>1</Button>

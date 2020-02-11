@@ -93,35 +93,35 @@ class ReadyBox extends Component {
             <Fragment>
                 <View style={styles.wholeContainer}>
                     <View style={styles.container}>
-                        <Title style={styles.title}>Enter the address you wish to call</Title>
+                        <Title style={styles.title}>Enter address or phone number</Title>
                         <View style={styles.uriInputBox}>
                             <URIInput
                                 defaultValue={this.state.targetUri}
                                 data={history}
                                 onChange={this.handleTargetChange}
                                 onSelect={this.handleTargetSelect}
-                                placeholder="Eg. alice@sip2sip.info or 3333"
+                                placeholder="Eg. alice@sip2sip.info or +1800975707"
                                 autoFocus={false}
                             />
                         </View>
                         <View style={styles.buttonGroup}>
                             <IconButton
                                 style={styles.button}
-                                size={36}
+                                size={34}
                                 disabled={this.state.targetUri.length === 0}
                                 onPress={this.handleAudioCall}
                                 icon="phone"
                             />
                             <IconButton
                                 style={styles.button}
-                                size={36}
+                                size={34}
                                 disabled={this.state.targetUri.length === 0}
                                 onPress={this.handleVideoCall}
                                 icon="video"
                             />
                             <IconButton
-                                style={styles.button}
-                                size={36}
+                                style={styles.conferenceButton}
+                                size={34}
                                 onPress={this.showConferenceModal}
                                 icon="account-group"
                             />

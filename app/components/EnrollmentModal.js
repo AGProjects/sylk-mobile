@@ -95,7 +95,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
-                                            mode="outlined"
+                                            mode="flat"
                                             label="Display name"
                                             name="yourName"
                                             type="text"
@@ -111,7 +111,7 @@ class EnrollmentModal extends Component {
                                     <View>
                                         <View>
                                             <TextInput
-                                                mode="outlined"
+                                                mode="flat"
                                                 label="Username"
                                                 name="username"
                                                 placeholder="alice"
@@ -132,7 +132,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
-                                            mode="outlined"
+                                            mode="flat"
                                             label="Password"
                                             name="password"
                                             secureTextEntry={true}
@@ -146,7 +146,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
-                                            mode="outlined"
+                                            mode="flat"
                                             label="Verify password"
                                             secureTextEntry={true}
                                             textContentType="password"
@@ -160,7 +160,7 @@ class EnrollmentModal extends Component {
                                 <View>
                                     <View>
                                         <TextInput
-                                            mode="outlined"
+                                            mode="flat"
                                             label="E-Mail"
                                             textContentType="emailAddress"
                                             name="email"

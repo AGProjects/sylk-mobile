@@ -6,7 +6,7 @@
     position: absolute;
     left: 0;
     right: 0;
-    top: 0;
+    top: 50;
     bottom: 0;
 }
 
@@ -22,22 +22,28 @@
 }
 
 .localVideo {
-    height: 100px;
+    position: absolute;
+    height: 80px;
     width: 100px;
     object-fit: cover;
     background-color: white;
+    top: 10;
+    left: 10;
+    border-radius: 10px;
 }
 
 .buttonContainer {
     flex-direction: row;
     margin: 0 auto;
+    bottom: 30;
 }
 
 .button {
-    background-color: white;
+    background-color: rgba(#F9F9F9, .7);
     margin: 10px;
+    padding-top: 5px;
 }
 
 .hangupButton {
-    background-color: rgba(#a94442, .8);
+    background-color: rgba(#a94442, .5);
 }

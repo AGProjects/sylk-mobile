@@ -41,7 +41,7 @@ class NavigationBar extends Component {
                 this.props.preview();
                 break;
             case 'settings':
-                Linking.openURL('https://mdns.sipthor.net/sip_settings.phtml');
+                Linking.openURL(config.serverSettingsUrl);
                 break;
             default:
                 break;
@@ -70,7 +70,7 @@ class NavigationBar extends Component {
                 <Image source={blinkLogo} style={styles.logo}/>
                 <Appbar.Content
                     title="Sylk"
-                    subtitle={`Signed in as: ${this.props.account.id}`}
+                    subtitle={`Account: ${this.props.account.id}`}
                 />
                 <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
                 <Menu
@@ -85,12 +85,11 @@ class NavigationBar extends Component {
                         />
                     }
                 >
-                    <Menu.Item icon="account" title={this.props.account.id} />
                     <Divider />
                     <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk" />
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
-                    <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
-                    <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server account settings" />
+                    <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video devices" />
+                    <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings" />
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign Out" />
                 </Menu>
 

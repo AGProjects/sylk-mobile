@@ -1,11 +1,41 @@
 .container {
-
-}
-
-.button {
-
+    justifyContent: center;
+    alignItems: center;
+    background-color: rgba(#ccc, .9);
+    padding-top: 200px;
+    padding-bottom: 200px;
 }
 
 .buttonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    padding-top: 20px;
+}
 
+.button {
+    background-color: rgba(#6DAA63, .9);
+    margin: 10px;
+    padding-top: 4px;
+    padding-left: 1px;
+}
+
+.rejectButton {
+    background-color: rgba(#a94442, .9);
+    margin: 10px;
+    padding-top: 4px;
+    padding-left: 1px;
+}
+
+.userIcon {
+    margin: 0;
+    padding-bottom: 20px;
+}
+
+.remoteCaller {
+    padding-top: 20px;
+    font-size: 34px;
+    margin: 0px;
+}
+
+.remoteMedia {
 }

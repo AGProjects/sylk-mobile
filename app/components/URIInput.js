@@ -97,7 +97,8 @@ class URIInput extends React.Component {
     render() {
         return (
             <TextInput
-                mode="outlined"
+                mode="flat"
+                label="Address"
                 ref={this.uriInput}
                 onChangeText={this.onInputChange}
                 onKeyDown={this.onInputKeyDown}

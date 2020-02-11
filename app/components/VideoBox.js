@@ -10,6 +10,8 @@ import { RTCView } from 'react-native-webrtc';
 import CallOverlay from './CallOverlay';
 import EscalateConferenceModal from './EscalateConferenceModal';
 import DTMFModal from './DTMFModal';
+import config from '../config';
+import dtmf from 'react-native-dtmf';
 
 import styles from '../assets/styles/blink/_VideoBox.scss';
 
@@ -31,7 +33,8 @@ class VideoBox extends Component {
             showEscalateConferenceModal: false,
             localStream: null,
             remoteStream: null,
-            showDtmfModal: false
+            showDtmfModal: false,
+            doorOpened: false
         };
 
         this.overlayTimer = null;
@@ -46,6 +49,21 @@ class VideoBox extends Component {
         }
     }
 
+    openDoor() {
+        const tone = config.intercomDtmfTone;
+        DEBUG('DTMF tone sent to intercom: ' + tone);
+        this.setState({doorOpened: true});
+        this.forceUpdate();
+
+        dtmf.stopTone(); //don't play a tone at the same time as another
+        dtmf.playTone(dtmf['DTMF_' + tone], 1000);
+
+        if (this.props.call !== null && this.props.call.state === 'established') {
+            this.props.call.sendDtmf(tone);
+            /*this.props.notificationCenter.postSystemNotification('Door opened', {timeout: 5});*/
+        }
+    }
+
     componentDidMount() {
 
         console.log('localStreams', this.props.call.getLocalStreams());
@@ -54,6 +72,7 @@ class VideoBox extends Component {
         this.setState({localStream: this.props.call.getLocalStreams()[0], localVideoShow: true, remoteStream: this.props.call.getRemoteStreams()[0], remoteVideoShow: true});
 
         this.props.call.on('stateChanged', this.callStateChanged);
+
 
         // sylkrtc.utils.attachMediaStream(, this.localVideo.current, {disableContextMenu: true});
         // let promise =  this.localVideo.current.play()
@@ -261,8 +280,8 @@ class VideoBox extends Component {
             <View style={styles.container}>
                 {/*onMouseMove={this.showCallOverlay}*/}
                 <CallOverlay
-                    show = {this.state.callOverlayVisible}
-                    remoteIdentity = {this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri}
+                    show = {true}
+                    remoteIdentity = {this.props.call.remoteIdentity}
                     call = {this.props.call}
                 />
                 {/* <TransitionGroup> */}
@@ -278,39 +297,51 @@ class VideoBox extends Component {
                         <RTCView objectFit='cover' style={[styles.video, styles.localVideo]} ref={this.localVideo} streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
                     </View>
                 : null }
-                <View style={styles.buttonContainer}>
+                { config.intercomDtmfTone ?
+                 <View style={styles.buttonContainer}>
                     <IconButton
-                        size={36}
+                        size={50}
                         style={styles.button}
-                        onPress={this.toggleEscalateConferenceModal}
-                        icon="account-plus"
-                    />
-                    <IconButton
-                        size={36}
-                        style={styles.button}
-                        onPress={this.muteAudio}
-                        icon={muteButtonIcons}
-                    />
-                    <IconButton
-                        size={36}
-                        style={styles.button}
-                        icon="dialpad"
-                        onPress={this.showDtmfModal}
+                        icon={this.state.doorOpened ? "door-open": "door" }
+                        onPress={this.openDoor}
                         disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
-                        size={36}
-                        style={styles.button}
-                        onPress={this.muteVideo}
-                        icon={muteVideoButtonIcons}
-                    />
-                    <IconButton
-                        size={36}
+                        size={50}
                         style={[styles.button, styles.hangupButton]}
                         onPress={this.hangupCall}
                         icon="phone-hangup"
                     />
                 </View>
+                :
+                <View style={styles.buttonContainer}>
+                    <IconButton
+                        size={34}
+                        style={styles.button}
+                        onPress={this.toggleEscalateConferenceModal}
+                        icon="account-plus"
+                    />
+                    <IconButton
+                        size={34}
+                        style={styles.button}
+                        onPress={this.muteAudio}
+                        icon={muteButtonIcons}
+                    />
+                    <IconButton
+                        size={34}
+                        style={styles.button}
+                        onPress={this.muteVideo}
+                        icon={muteVideoButtonIcons}
+                    />
+                    <IconButton
+                        size={34}
+                        style={[styles.button, styles.hangupButton]}
+                        onPress={this.hangupCall}
+                        icon="phone-hangup"
+                    />
+                </View>
+
+                }
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}

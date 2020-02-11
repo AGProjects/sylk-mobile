@@ -53,11 +53,11 @@ class ConferenceBox extends Component {
         };
 
         const friendlyName = this.props.remoteIdentity.split('@')[0];
-        if (window.location.origin.startsWith('file://')) {
+        //if (window.location.origin.startsWith('file://')) {
             this.callUrl = `${config.publicUrl}/conference/${friendlyName}`;
-        } else {
-            this.callUrl = `${window.location.origin}/conference/${friendlyName}`;
-        }
+        //} else {
+        //    this.callUrl = `${window.location.origin}/conference/${friendlyName}`;
+        //}
 
         const emailMessage  = `You can join me in the conference using a Web browser at ${this.callUrl} ` +
                              'or by using the freely available Sylk WebRTC client app at http://sylkserver.com';
@@ -447,7 +447,7 @@ class ConferenceBox extends Component {
                         <View className="text-center">
                             <View className="btn-group">
                                 <IconButton
-                                    size={36}
+                                    size={34}
                                     onPress={this.toggleInviteModal}
                                     icon="account-plus"
                                 />
@@ -499,7 +499,7 @@ class ConferenceBox extends Component {
         const bottomButtons = [];
         bottomButtons.push(
             <IconButton
-                size={36}
+                size={34}
                 style={styles.button}
                 title="Share link to this conference"
                 icon="account-plus"
@@ -508,7 +508,7 @@ class ConferenceBox extends Component {
         );
         bottomButtons.push(
             <IconButton
-                size={36}
+                size={34}
                 style={styles.button}
                 title="Mute/unmute video"
                 onPress={this.muteVideo}
@@ -517,7 +517,7 @@ class ConferenceBox extends Component {
         );
         bottomButtons.push(
             <IconButton
-                size={36}
+                size={34}
                 style={styles.button}
                 title="Mute/unmute audio"
                 onPress={this.muteAudio}
@@ -526,12 +526,12 @@ class ConferenceBox extends Component {
         );
         // bottomButtons.push(
         //     <View key="shareFiles">
-        //         <IconButton size={36} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
+        //         <IconButton size={34} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
         //     </View>
         // );
         bottomButtons.push(
             <IconButton
-                size={36}
+                size={34}
                 style={[styles.button, styles.hangupButton]}
                 title="Leave conference"
                 onPress={this.hangup}

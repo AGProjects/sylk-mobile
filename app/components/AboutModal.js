@@ -10,9 +10,9 @@ const AboutModal = (props) => {
         <Portal>
             <Modal visible={props.show} onDismiss={props.close}>
                 <Surface style={styles.container}>
-                    <Title>About Sylk</Title>
-                    <Text>Sylk is the WebRTC client companion for SylkServer</Text>
-                    <Text>&copy; AG Projects</Text>
+                    <Title style={styles.title}>About Sylk</Title>
+                    <Text style={styles.body}>Sylk is the WebRTC client companion for SylkServer</Text>
+                    <Text style={styles.body}>http://sylkserver.com</Text>
                 </Surface>
             </Modal>
         </Portal>
