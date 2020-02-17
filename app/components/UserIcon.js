@@ -40,7 +40,7 @@ const UserIcon = (props) => {
     }
 
     return (
-        <Avatar.Text style={{backgroundColor: color}} label={initials} />
+        <Avatar.Text style={{backgroundColor: color}} label={initials.toUpperCase()} />
     );
 };
 

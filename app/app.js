@@ -188,6 +188,7 @@ class Blink extends Component {
             });
         } else if (newState === 'registered') {
             this.setState({loading: null});
+            this.getServerHistory();
             console.log('pushing ready onto history');
             history.push('/ready');
             console.log('pushed ready onto history');
@@ -464,11 +465,11 @@ class Blink extends Component {
                 }
                 if ('mic' in this.state.devices) {
                     if (device.deviceId === this.state.devices.mic.deviceId || device.label === this.state.devices.mic.Label) {
-                        constraints.audio = {
-                            deviceId: {
-                                exact: device.deviceId
-                            }
-                        };
+                        // constraints.audio = {
+                        //     deviceId: {
+                        //         exact: device.deviceId
+                        //     }
+                        // };
                     }
                 }
             });
@@ -850,8 +851,6 @@ class Blink extends Component {
             return false;
         };
 
-        this.getServerHistory();
-
         return (
             <Fragment>
                 <NavigationBar
@@ -1033,25 +1032,21 @@ class Blink extends Component {
     }
 
     logout() {
-        setTimeout(() => {
-            if (this.state.registrationState !== null && (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE)) {
-                this.state.account.unregister();
-            }
+        if (this.state.registrationState !== null && (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE)) {
+            this.state.account.unregister();
+        }
 
-            if (this.state.account !== null) {
-                this.state.connection.removeAccount(this.state.account,
-                    (error) => {
-                        if (error) {
-                            DEBUG(error);
-                        }
-                    }
-                );
-            }
-            storage.set('account', {accountId: this.state.accountId, password: ''});
-            this.setState({account: null, registrationState: null, status: null});
-            history.push('/login');
-        });
-        return <Fragment />;
+        if (this.state.account !== null) {
+            this.state.connection.removeAccount(this.state.account, (error) => {
+                if (error) {
+                    DEBUG(error);
+                }
+            });
+        }
+        storage.set('account', {accountId: this.state.accountId, password: ''});
+        this.setState({account: null, registrationState: null, status: null});
+        history.push('/login');
+        return null;
     }
 
     main() {

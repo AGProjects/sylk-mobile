@@ -1,10 +1,11 @@
-import React from 'react';
-import { View } from 'react-native';
+import React, { useState }  from 'react';
 import PropTypes from 'prop-types';
 import { Snackbar } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 const StatusBox = (props) => {
+
+    const [visible, setVisible] = useState(true);
 
     let iconName;
     switch (props.level) {
@@ -20,7 +21,7 @@ const StatusBox = (props) => {
     }
 
     return (
-        <Snackbar visible={true} duraction={2000} onDismiss={() => {}}>
+        <Snackbar visible={visible} duration={2000} onDismiss={() => { setVisible(false) }}>
             { iconName ? (<Icon name={iconName} />) : null }{ props.title }{ props.message }
         </Snackbar>
     );

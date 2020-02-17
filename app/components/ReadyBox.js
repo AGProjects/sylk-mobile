@@ -127,7 +127,7 @@ class ReadyBox extends Component {
                             />
                         </View>
                     </View>
-                    {/* <View style={styles.history}>
+                    <View style={styles.history}>
                         <HistoryTileBox>
                             {this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri)).map((historyItem, idx) =>
                                 (<HistoryCard
@@ -138,7 +138,7 @@ class ReadyBox extends Component {
                                 />)
                             )}
                         </HistoryTileBox>
-                    </View> */}
+                    </View>
                     <View style={styles.footer}>
                         <FooterBox />
                     </View>

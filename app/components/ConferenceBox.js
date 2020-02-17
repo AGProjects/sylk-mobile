@@ -437,28 +437,28 @@ class ConferenceBox extends Component {
 
         const remoteIdentity = this.props.remoteIdentity.split('@')[0];
 
-        const shareOverlay = (
-            <Portal>
-                <Modal>
-                    <Surface>
-                        <Paragraph>
-                            Invite other online users of this service, share <strong><a href={this.callUrl} target="_blank" rel="noopener noreferrer">this link</a></strong> with others or email, so they can easily join this conference.
-                        </Paragraph>
-                        <View className="text-center">
-                            <View className="btn-group">
-                                <IconButton
-                                    size={34}
-                                    onPress={this.toggleInviteModal}
-                                    icon="account-plus"
-                                />
-                                <IconButton className="btn btn-primary" onPress={this.handleClipboardButton} icon="copy" />
-                                <IconButton className="btn btn-primary" onPress={this.handleEmailButton} alt="Send email" icon="email" />
-                            </View>
-                        </View>
-                    </Surface>
-                </Modal>
-            </Portal>
-        );
+        // const shareOverlay = (
+        //     <Portal>
+        //         <Modal>
+        //             <Surface>
+        //                 <Paragraph>
+        //                     Invite other online users of this service, share <strong><a href={this.callUrl} target="_blank" rel="noopener noreferrer">this link</a></strong> with others or email, so they can easily join this conference.
+        //                 </Paragraph>
+        //                 <View className="text-center">
+        //                     <View className="btn-group">
+        //                         <IconButton
+        //                             size={34}
+        //                             onPress={this.toggleInviteModal}
+        //                             icon="account-plus"
+        //                         />
+        //                         <IconButton className="btn btn-primary" onPress={this.handleClipboardButton} icon="copy" />
+        //                         <IconButton className="btn btn-primary" onPress={this.handleEmailButton} alt="Send email" icon="email" />
+        //                     </View>
+        //                 </View>
+        //             </Surface>
+        //         </Modal>
+        //     </Portal>
+        // );
 
         const buttons = {};
 
