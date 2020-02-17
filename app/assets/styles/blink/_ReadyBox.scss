@@ -7,9 +7,10 @@
 }
 
 .container {
+    flex: 1;
     margin: 0 auto;
     width: 90%;
-    padding-top: 5%;
+    padding-top: 10px;
 }
 
 .title {
@@ -46,6 +47,8 @@
 }
 
 .history {
+    padding-top: 30px;
+    flex: 2.5;
     width: 90%;
     margin: 0 auto;
 }

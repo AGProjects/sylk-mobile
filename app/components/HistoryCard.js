@@ -47,6 +47,7 @@ const HistoryCard = (props) => {
         <Card
             onLongPress={() => {props.setTargetUri(identity.uri)}}
             onPress={startVideoCall}
+            style={styles.container}
         >
             <Card.Content style={styles.content}>
                 <View style={styles.mainContent}>
