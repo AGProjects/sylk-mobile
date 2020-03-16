@@ -131,8 +131,10 @@ android {
         applicationId "com.agprojects.sylk"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
+        missingDimensionStrategy "RNNotifications.reactNativeVersion", "reactNative60"
         versionCode 3
         versionName "1.2.0"
+        multiDexEnabled true
     }
     splits {
         abi {
@@ -189,7 +191,13 @@ android {
 
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
+    implementation project(':reactnativenotifications')
+
+    implementation 'com.google.firebase:firebase-core:16.0.0'
+    implementation "com.google.firebase:firebase-messaging:17.3.0"
+
     implementation "com.facebook.react:react-native:+"  // From node_modules
+    implementation "androidx.multidex:multidex:2.0.1"
 
     if (enableHermes) {
         def hermesPath = "../../node_modules/hermes-engine/android/";
@@ -206,5 +214,7 @@ task copyDownloadableDepsToLibs(type: Copy) {
     from configurations.compile
     into 'libs'
 }
+
+apply plugin: 'com.google.gms.google-services'  // Google Play services Gradle plugin
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)

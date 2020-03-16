@@ -18,7 +18,7 @@ class DTMFModal extends Component {
         dtmf.playTone(dtmf['DTMF_' + tone], 500);
 
         if (this.props.call !== null && this.props.call.state === 'established') {
-            this.props.call.sendDtmf(tone);
+            this.props.callKeepSendDtmf(tone);
         }
     }
 
@@ -60,7 +60,8 @@ class DTMFModal extends Component {
 DTMFModal.propTypes = {
     show: PropTypes.bool.isRequired,
     hide: PropTypes.func.isRequired,
-    call: PropTypes.object
+    call: PropTypes.object,
+    callKeepSendDtmf: PropTypes.func.isRequired
 };
 
 

@@ -41,7 +41,7 @@ class ReadyBox extends Component {
     handleTargetSelect() {
         // the user pressed enter, start a video call by default
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri);
+            this.props.startConference(this.state.targetUri, {conference: true});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: true});
         }
@@ -50,7 +50,7 @@ class ReadyBox extends Component {
     handleAudioCall(event) {
         event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri);
+            this.props.startConference(this.state.targetUri, {conference: true});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: false});
         }
@@ -59,7 +59,7 @@ class ReadyBox extends Component {
     handleVideoCall(event) {
         event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri);
+            this.props.startConference(this.state.targetUri, {conference: true});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: true});
         }
@@ -78,7 +78,7 @@ class ReadyBox extends Component {
     handleConferenceCall(targetUri) {
         this.setState({showConferenceModal: false});
         if (targetUri) {
-            this.props.startConference(targetUri);
+            this.props.startConference(targetUri, {conference: true});
         }
     }
 
@@ -131,6 +131,7 @@ class ReadyBox extends Component {
                         <HistoryTileBox>
                             {this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri)).map((historyItem, idx) =>
                                 (<HistoryCard
+                                    key={idx}
                                     historyItem    = {historyItem}
                                     setTargetUri   = {this.handleTargetChange}
                                     startVideoCall = {this.handleVideoCall}

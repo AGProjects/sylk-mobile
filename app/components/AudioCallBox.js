@@ -2,10 +2,9 @@ import React, { Component } from 'react';
 import { View } from 'react-native';
 import { IconButton } from 'react-native-paper';
 import PropTypes from 'prop-types';
-import debug from 'react-native-debug';
-// const hark              = require('hark');
 import autoBind from 'auto-bind';
 
+import Logger from "../../Logger";
 import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
 import EscalateConferenceModal from './EscalateConferenceModal';
@@ -13,8 +12,8 @@ import UserIcon from './UserIcon';
 
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
 
-const DEBUG = debug('blinkrtc:AudioCallBox');
-debug.enable('*');
+
+const logger = new Logger("AudioCallBox");
 
 
 class AudioCallBox extends Component {
@@ -104,15 +103,17 @@ class AudioCallBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        const localStream = this.props.call.getLocalStreams()[0];
+        //const localStream = this.props.call.getLocalStreams()[0];
 
         if(this.state.audioMuted) {
-            DEBUG('Unmute microphone');
-            localStream.getAudioTracks()[0].enabled = true;
+            logger.debug('Unmute microphone');
+            this.props.callKeepToggleMute(false);
+            //localStream.getAudioTracks()[0].enabled = true;
             this.setState({audioMuted: false});
         } else {
-            DEBUG('Mute microphone');
-            localStream.getAudioTracks()[0].enabled = false;
+            logger.debug('Mute microphone');
+            //localStream.getAudioTracks()[0].enabled = false;
+            this.props.callKeepToggleMute(true);
             this.setState({audioMuted: true});
         }
 
@@ -181,6 +182,7 @@ class AudioCallBox extends Component {
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
                     call={this.props.call}
+                    callKeepSendDtmf={this.props.callKeepSendDtmf}
                 />
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
@@ -198,7 +200,9 @@ AudioCallBox.propTypes = {
     escalateToConference    : PropTypes.func,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
-    remoteIdentity          : PropTypes.string
+    remoteIdentity          : PropTypes.string,
+    callKeepSendDtmf        : PropTypes.func,
+    callKeepToggleMute      : PropTypes.func
 };
 
 export default AudioCallBox;

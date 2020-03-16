@@ -3,14 +3,23 @@ package com.agprojects.sylk;
 import android.app.Application;
 import android.content.Context;
 import com.facebook.react.PackageList;
+import android.net.Uri;
+import android.os.Bundle;
+import android.util.Log;
 import com.facebook.react.ReactApplication;
+import com.wix.reactnativenotifications.RNNotificationsPackage;
 import com.facebook.react.ReactNativeHost;
 import com.facebook.react.ReactPackage;
 import com.facebook.soloader.SoLoader;
+import com.agprojects.sylk.sylk.SylkNativePackage;
 import java.lang.reflect.InvocationTargetException;
 import java.util.List;
+import androidx.multidex.MultiDexApplication;
+
 
 public class MainApplication extends Application implements ReactApplication {
+
+  private static final String TAG = "Sylk:MainApplication";
 
   private final ReactNativeHost mReactNativeHost =
       new ReactNativeHost(this) {
@@ -25,6 +34,7 @@ public class MainApplication extends Application implements ReactApplication {
           List<ReactPackage> packages = new PackageList(this).getPackages();
           // Packages that cannot be autolinked yet can be added manually here, for example:
           // packages.add(new MyReactNativePackage());
+          packages.add(new RNNotificationsPackage(MainApplication.this));
           return packages;
         }
 

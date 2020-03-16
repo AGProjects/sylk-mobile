@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">sylk</string>
+    <string name="app_name">Sylk</string>
+    <string name="gcm_sender_id">151376522833</string>
 </resources>

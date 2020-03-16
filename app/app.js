@@ -1,18 +1,22 @@
 import React, { Component, Fragment } from 'react';
-import { View, SafeAreaView, ImageBackground } from 'react-native';
+import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState} from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
 import { registerGlobals } from 'react-native-webrtc';
 import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
-import debug from 'react-native-debug';
+import Logger from "../Logger";
 import DigestAuthRequest from 'digest-auth-request';
 import autoBind from 'auto-bind';
+import { firebase } from '@react-native-firebase/messaging';
+import VoipPushNotification from 'react-native-voip-push-notification';
+import uuid from 'react-native-uuid';
 
-console.disableYellowBox = true;
 registerGlobals();
 
 import * as sylkrtc from 'sylkrtc';
+import InCallManager from 'react-native-incall-manager';
+import RNCallKeep from 'react-native-callkeep';
 
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
@@ -29,6 +33,8 @@ import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
 import Preview from './components/Preview';
+import CallManager from "./CallManager";
+
 
 import utils from './utils';
 import config from './config';
@@ -36,6 +42,8 @@ import storage from './storage';
 
 import styles from './assets/styles/blink/root.scss';
 const backgroundImage = require('./assets/images/dark_linen.png');
+
+const logger = new Logger("App");
 
 const theme = {
     ...DefaultTheme,
@@ -48,16 +56,31 @@ const theme = {
     },
 };
 
-const DEBUG = debug('blinkrtc:App');
-debug.enable('*');
+const callkeepOptions = {
+    ios: {
+        appName: 'Sylk',
+        maximumCallGroups: 1,
+        maximumCallsPerCallGroup: 1,
+        supportsVideo: true,
+        imageName: "Image"
+    },
+    android: {
+        alertTitle: 'Permissions required',
+        alertDescription: 'This application needs to access your phone accounts',
+        cancelButton: 'Cancel',
+        okButton: 'ok',
+        imageName: 'phone_account_icon',
+        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO ]
+    }
+};
 
+let callkeepType = Platform.OS === 'ios' ? 'generic' : 'sip';
 
 // Application modes
 const MODE_NORMAL           = Symbol('mode-normal');
 const MODE_PRIVATE          = Symbol('mode-private');
 const MODE_GUEST_CALL       = Symbol('mode-guest-call');
 const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
-
 
 class Blink extends Component {
     constructor() {
@@ -83,7 +106,8 @@ class Blink extends Component {
             generatedVideoTrack: false,
             history: [],
             serverHistory: [],
-            devices: {}
+            devices: {},
+            pushtoken: null
         };
         this.state = Object.assign({}, this._initialSstate);
 
@@ -96,6 +120,8 @@ class Blink extends Component {
         this.muteIncoming = false;
 
         storage.initialize();
+
+        this._callManager = new CallManager(RNCallKeep, this.answerCall, this.rejectCall, this.hangupCall);
 
         // Load camera/mic preferences
         storage.get('devices').then((devices) => {
@@ -117,11 +143,110 @@ class Blink extends Component {
         history.push('/login');
 
         // prime the ref
-        DEBUG('NotificationCenter ref: %o', this._notificationCenter);
+        logger.debug('NotificationCenter ref: %o', this._notificationCenter);
+
+        this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
+
+        if (Platform.OS === 'android') {
+            firebase.messaging().getToken()
+            .then(fcmToken => {
+                if (fcmToken) {
+                    this._onPushkitRegistered(fcmToken);
+                }
+            });
+        }
+
+        if (Platform.OS === 'ios') {
+            VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
+            VoipPushNotification.registerVoipToken();
+        }
+
+        RNCallKeep.setup(callkeepOptions);
+
+        this.boundRnStartAction = this._callkeepStartedCall.bind(this);
+
+        RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
+
+        AppState.addEventListener('change', this._handleAppStateChange);
+
+        if (Platform.OS === 'ios') {
+            this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
+            VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
+        }
+
+        if (Platform.OS === 'android') {
+            firebase
+                .messaging()
+                .requestPermission()
+                .then(() => {
+                    // User has authorised
+                })
+                .catch(error => {
+                    // User has rejected permissions
+                });
+
+            this.messageListener = firebase
+                .messaging()
+                .onMessage((message: RemoteMessage) => {
+                    // Process your message as required
+                    //on any message, register
+
+                });
+        }
+    }
+
+    _callkeepStartedCall(data) {
+        logger.debug('accessing Call Object', this._tmpCallStartInfo);
+
+        if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
+            this.startConference(data.handle);
+        } else {
+            this.startCall(data.handle, this._tmpCallStartInfo.options);
+        }
+    }
+
+    _onPushkitRegistered(token) {
+        logger.debug('pushkit token', token);
+        this.setState({ pushToken: token });
+    }
+
+    componentWillUnmount() {
+        RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
+
+        AppState.removeEventListener('change', this._handleAppStateChange);
+    }
+
+    _onNotificationReceivedBackground(notification) {
+        let notificationContent = notification.getData();
+        //console.log('got a pushkit call', notificationContent);
+
+        // get the uuid from the notification
+        // have we already got a waiting call in call manager? if we do, then its been "answered" and we're waiting for the invite
+        // we may still never get the invite if theres network issues... so still need a timeout
+        // no waiting call, so that means its still "ringing" (it may have been cancelled) so set a timer and if we havent recieved
+        // an invite within 10 seconds then clear it down
+        let callUUID = notificationContent.callUUID;
+
+        if (VoipPushNotification.wakeupByPush) {
+          VoipPushNotification.wakeupByPush = false;
+        }
+    }
+
+    _handleAppStateChange = nextAppState => {
+        //TODO - stop if we havent been backgrounded because of becoming active from a push notification and then going background again
+        if (Platform.OS === "ios") {
+            if (nextAppState.match(/background/)) {
+                logger.debug('app moving to background so we should stop the client sylk client if we dont have an active call');
+            }
+        }
+
+        if (nextAppState == "active") {
+
+        }
     }
 
     connectionStateChanged(oldState, newState) {
-        DEBUG(`Connection state changed! ${oldState} -> ${newState}`);
+        logger.debug(`Connection state changed! ${oldState} -> ${newState}`);
         switch (newState) {
             case 'closed':
                 this.setState({connection: null, loading: null});
@@ -130,8 +255,6 @@ class Blink extends Component {
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
                 break;
             case 'disconnected':
-                // this.refs.audioPlayerOutbound.stop();
-                // this.refs.audioPlayerInbound.stop();
 
                 if (this.state.localMedia) {
                     sylkrtc.utils.closeMediaStream(this.state.localMedia);
@@ -157,6 +280,8 @@ class Blink extends Component {
                     localMedia: null,
                     generatedVideoTrack: false
                 });
+                InCallManager.stop();
+
                 break;
             default:
                 this.setState({loading: 'Connecting...'});
@@ -169,7 +294,7 @@ class Blink extends Component {
     }
 
     registrationStateChanged(oldState, newState, data) {
-        DEBUG('Registration state changed! ' + newState);
+        logger.debug('Registration state changed! ' + newState);
         this.setState({registrationState: newState});
         if (newState === 'failed') {
             let reason = data.reason;
@@ -189,9 +314,8 @@ class Blink extends Component {
         } else if (newState === 'registered') {
             this.setState({loading: null});
             this.getServerHistory();
-            console.log('pushing ready onto history');
+            RNCallKeep.setAvailable(true);
             history.push('/ready');
-            console.log('pushed ready onto history');
             return;
         } else {
             this.setState({status: null });
@@ -199,20 +323,24 @@ class Blink extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        DEBUG(`Call state changed! ${oldState} -> ${newState}`);
+        logger.debug(`Call state changed! ${oldState} -> ${newState}`. data);
 
         switch (newState) {
             case 'progress':
-                //this.refs.audioPlayerOutbound.play(true);
+                if (Platform.OS === 'ios') {
+                    InCallManager.startRingback('_BUNDLE_');
+                } else {
+                    InCallManager.startRingback('_DTMF_');
+                }
                 break;
             case 'accepted':
-                //this.refs.audioPlayerOutbound.stop();
-                //this.refs.audioPlayerInbound.stop();
+                InCallManager.stopRingback();
+                logger.debug('Setting Call as active in callkeep', this.state.currentCall._callkeepUUID);
+                this._callManager.callKeep.setCurrentCallActive(this.state.currentCall._callkeepUUID);
                 break;
             case 'terminated':
-                //this.refs.audioPlayerOutbound.stop();
-                //this.refs.audioPlayerInbound.stop();
-                //this.refs.audioPlayerHangup.play();
+                InCallManager.stop({busytone: '_BUNDLE_'});
+                this._callManager.remove();
 
                 let callSuccesfull = false;
                 let reason = data.reason;
@@ -263,7 +391,7 @@ class Blink extends Component {
     }
 
     inboundCallStateChanged(oldState, newState, data) {
-        DEBUG('Inbound Call state changed! ' + newState);
+        logger.debug('Inbound Call state changed! ' + newState);
         if (newState === 'terminated') {
             this.setState({ inboundCall: null, showIncomingModal: false });
             this.setFocusEvents(false);
@@ -286,7 +414,7 @@ class Blink extends Component {
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
         } else {
-            DEBUG('Connection Present, try to register');
+            logger.debug('Connection Present, try to register');
             this.processRegistration(accountId, '', displayName);
         }
     }
@@ -307,7 +435,7 @@ class Blink extends Component {
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
         } else {
-            DEBUG('Connection Present, try to register');
+            logger.debug('Connection Present, try to register');
             this.processRegistration(accountId, '', displayName);
         }
     }
@@ -324,20 +452,19 @@ class Blink extends Component {
             let connection = sylkrtc.createConnection({server: config.wsServer});
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
-            console.log('HALP');
         } else {
-            DEBUG('Connection Present, try to register');
+            logger.debug('Connection Present, try to register');
             this.processRegistration(accountId, password, '');
         }
     }
 
     processRegistration(accountId, password, displayName) {
         if (this.state.account !== null) {
-            DEBUG('We already have an account, removing it');
+            logger.debug('We already have an account, removing it');
             this.state.connection.removeAccount(this.state.account,
                 (error) => {
                     if (error) {
-                        DEBUG(error);
+                        logger.debug(error);
                     }
                     this.setState({account: null, registrationState: null});
                 }
@@ -377,23 +504,23 @@ class Blink extends Component {
                         break;
                     case MODE_GUEST_CALL:
                         this.setState({account: account, loading: null, registrationState: 'registered'});
-                        DEBUG(`${accountId} (guest) signed in`);
+                        logger.debug(`${accountId} (guest) signed in`);
                         // Start the call immediately, this is call started with "Call by URI"
                         this.startGuestCall(this.state.targetUri, {audio: true, video: true});
                         break;
                     case MODE_GUEST_CONFERENCE:
                         this.setState({account: account, loading: null, registrationState: 'registered'});
-                        DEBUG(`${accountId} (conference guest) signed in`);
+                        logger.debug(`${accountId} (conference guest) signed in`);
                         // Start the call immediately, this is call started with "Conference by URI"
                         this.startGuestConference(this.state.targetUri);
                         break;
                     default:
-                        DEBUG(`Unknown mode: ${this.state.mode}`);
+                        logger.debug(`Unknown mode: ${this.state.mode}`);
                         break;
 
                 }
             } else {
-                DEBUG('Add account error: ' + error);
+                logger.debug('Add account error: ' + error);
                 this.setState({loading: null, status: {msg: error.message, level:'danger'}});
             }
         });
@@ -415,7 +542,7 @@ class Blink extends Component {
     }
 
     getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null) {    // eslint-disable-line space-infix-ops
-        DEBUG('getLocalMedia(), mediaConstraints=%o', mediaConstraints);
+        logger.debug('getLocalMedia(), mediaConstraints=%o', mediaConstraints);
         const constraints = Object.assign({}, mediaConstraints);
 
         if (constraints.video === true) {
@@ -445,7 +572,7 @@ class Blink extends Component {
             }
         }
 
-        DEBUG('getLocalMedia(), (modified) mediaConstraints=%o', constraints);
+        logger.debug('getLocalMedia(), (modified) mediaConstraints=%o', constraints);
 
         this.loadScreenTimer = setTimeout(() => {
             this.setState({loading: 'Please allow access to your media devices'});
@@ -475,21 +602,21 @@ class Blink extends Component {
             });
         })
         .catch((error) => {
-            DEBUG('Device enumeration failed: %o', error);
+            logger.debug('Device enumeration failed: %o', error);
         })
         .then(() => {
             return navigator.mediaDevices.getUserMedia(constraints)
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
-            DEBUG('Got local Media', localStream);
+            logger.debug('Got local Media', localStream);
             this.setState({status: null, loading: null, localMedia: localStream});
             if (nextRoute !== null) {
                 history.push(nextRoute);
             }
         })
         .catch((error) => {
-            DEBUG('Access failed, trying audio only: %o', error);
+            logger.debug('Access failed, trying audio only: %o', error);
             navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: false
@@ -498,7 +625,7 @@ class Blink extends Component {
                 clearTimeout(this.loadScreenTimer);
 
                 if (nextRoute != '/preview') {
-                    DEBUG('Audio only media, but video was requested, creating generated video track');
+                    logger.debug('Audio only media, but video was requested, creating generated video track');
                     const generatedVideoTrack = utils.generateVideoTrack(localStream);
                     localStream.addTrack(generatedVideoTrack);
                 }
@@ -509,7 +636,7 @@ class Blink extends Component {
                 }
             })
             .catch((error) => {
-                DEBUG('Access to local media failed: %o', error);
+                logger.debug('Access to local media failed: %o', error);
                 clearTimeout(this.loadScreenTimer);
                 this._notificationCenter.postSystemNotification("Can't access camera or microphone", {timeout: 10});
                 this.setState({
@@ -519,15 +646,32 @@ class Blink extends Component {
         });
     }
 
+    callKeepStartCall(targetUri, options) {
+        this._tmpCallStartInfo = {
+            uuid: uuid.v4(),
+            options,
+        };
+
+        logger.debug('Set Call Object', this._tmpCallStartInfo);
+
+        this._callManager.callKeep.startCall(this._tmpCallStartInfo.uuid, targetUri, '', callkeepType, false);
+    }
+
     startCall(targetUri, options) {
         this.setState({targetUri: targetUri});
-        this.addCallHistoryEntry(targetUri);
+        this.addCallHistoryEntry(data.handle);
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
     startGuestCall(targetUri, options) {
         this.setState({targetUri: targetUri});
-        this.getLocalMedia(Object.assign({audio: true, video: true}, options));
+        this.getLocalMedia(Object.assign({audio: true, video: true}, this._tmpCallStartInfo.options));
+    }
+
+    callKeepAnswerCall(options) {
+        if (this.state.currentCall) {
+            this._callManager.callKeep.answerIncomingCall(this.state.currentCall._callkeepUUID);
+        }
     }
 
     answerCall(options) {
@@ -537,16 +681,29 @@ class Blink extends Component {
             // terminate current call to switch to incoming one
             this.state.inboundCall.removeListener('stateChanged', this.inboundCallStateChanged);
             this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-            this.state.currentCall.terminate();
+            //this.state.currentCall.terminate();
+            this._callManager.callKeep.endCall(this.state.currentCall._callkeepUUID);
             this.setState({currentCall: this.state.inboundCall, inboundCall: this.state.inboundCall, localMedia: null});
             this.state.inboundCall.on('stateChanged', this.callStateChanged);
         }
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
+    callKeepRejectCall() {
+        if (this.state.currentCall) {
+            this._callManager.callKeep.rejectCall(this.state.currentCall._callkeepUUID);
+        }
+    }
+
     rejectCall() {
         this.setState({showIncomingModal: false});
         this.state.inboundCall.terminate();
+    }
+
+    callKeepHangupCall() {
+        if (this.state.currentCall) {
+            this._callManager.callKeep.endCall(this.state.currentCall._callkeepUUID);
+        }
     }
 
     hangupCall() {
@@ -558,6 +715,18 @@ class Blink extends Component {
                 sylkrtc.utils.closeMediaStream(this.state.localMedia);
             }
             history.push('/ready');
+        }
+    }
+
+    callKeepSendDtmf(digits) {
+        if (this.state.currentCall) {
+            this._callManager.callKeep.sendDTMF(this.state.currentCall._callkeepUUID, digits);
+        }
+    }
+
+    callKeepToggleMute(mute) {
+        if (this.state.currentCall) {
+            this._callManager.callKeep.setMutedCall(this.state.currentCall._callkeepUUID, mute);
         }
     }
 
@@ -586,30 +755,42 @@ class Blink extends Component {
     }
 
     outgoingCall(call) {
+        this._callManager.handleSession(call, this._tmpCallStartInfo.uuid);
+        this._tmpCallStartInfo = {};
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
+        InCallManager.start({media: false ? 'video' : 'audio'});
+        this._callManager.callKeep.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
     }
 
     incomingCall(call, mediaTypes) {
-        DEBUG('New incoming call from %o with %o', call.remoteIdentity, mediaTypes);
+        this._callManager.handleSession(call);
+
+        logger.debug('New incoming call from %o with %o', call.remoteIdentity, mediaTypes);
         if (!mediaTypes.audio && !mediaTypes.video) {
-            call.terminate();
+            // call.terminate();
+            this.callKeepHangupCall();
             return;
         }
         call.mediaTypes = mediaTypes;
         if (this.state.currentCall !== null) {
             // detect if we called ourselves
             if (this.state.currentCall.localIdentity.uri === call.remoteIdentity.uri) {
-                DEBUG('Aborting call to myself');
-                call.terminate();
+                logger.debug('Aborting call to myself');
+                //call.terminate();
+                this.callKeepHangupCall();
                 return;
             }
+            InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
+            RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
             this.setState({ showIncomingModal: true, inboundCall: call });
             this.setFocusEvents(true);
             call.on('stateChanged', this.inboundCallStateChanged);
         } else {
             if (!this.muteIncoming) {
                 //this.refs.audioPlayerInbound.play(true);
+                InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
+                RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
             }
             this.setFocusEvents(true);
             call.on('stateChanged', this.callStateChanged);
@@ -645,13 +826,14 @@ class Blink extends Component {
     // }
 
     missedCall(data) {
-        DEBUG('Missed call from ' + data.originator);
+        logger.debug('Missed call from ' + data.originator);
         this._notificationCenter.postSystemNotification('Missed call', {body: `From ${data.originator.displayName || data.originator.uri}`, timeout: 15, silent: false});
         if (this.state.currentCall !== null || !config.useServerCallHistory) {
             this._notificationCenter.postMissedCall(data.originator, () => {
                 if (this.state.currentCall !== null) {
                     this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-                    this.state.currentCall.terminate();
+                    //this.state.currentCall.terminate();
+                    this.callKeepHangupCall();
                     this.setState({currentCall: null, missedTargetUri: data.originator.uri, showIncomingModal: false, localMedia: null});
                 } else {
                     this.setState({missedTargetUri: data.originator.uri});
@@ -664,7 +846,7 @@ class Blink extends Component {
     }
 
     conferenceInvite(data) {
-        DEBUG('Conference invite from %o to %s', data.originator, data.room);
+        logger.debug('Conference invite from %o to %s', data.originator, data.room);
         this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
         this._notificationCenter.postConferenceInvite(data.originator, data.room, () => {
             if (this.state.currentCall !== null) {
@@ -672,9 +854,7 @@ class Blink extends Component {
                 this.state.currentCall.terminate();
                 this.setState({currentCall: null, showIncomingModal: false, localMedia: null, generatedVideoTrack: false});
             }
-            setTimeout(() => {
-                this.startConference(data.room);
-            });
+            this.startConference(data.room);
         });
     }
 
@@ -709,7 +889,7 @@ class Blink extends Component {
             return;
         }
 
-        DEBUG('Requesting call history from server');
+        logger.debug('Requesting call history from server');
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
             `${config.serverCallHistoryUrl}?action=get_history&realm=${this.state.account.id.split('@')[1]}`,
@@ -720,7 +900,7 @@ class Blink extends Component {
         getServerCallHistory.loggingOn = false;
         getServerCallHistory.request((data) => {
             if (data.success !== undefined && data.success === false) {
-                DEBUG('Error getting call history from server: %o', data.error_message)
+                logger.debug('Error getting call history from server: %o', data.error_message)
                 return;
             }
             let history = []
@@ -743,19 +923,19 @@ class Blink extends Component {
             });
             this.setState({serverHistory: history});
         }, (errorCode) => {
-            DEBUG('Error getting call history from server: %o', errorCode)
+            logger.debug('Error getting call history from server: %o', errorCode)
         });
     }
 
     // checkRoute(nextPath, navigation, match) {
     //     if (nextPath !== this.prevPath) {
-    //         DEBUG(`Transition from ${this.prevPath} to ${nextPath}`);
+    //         logger.debug(`Transition from ${this.prevPath} to ${nextPath}`);
 
     //
     //         // Press back in ready after a login, prevent initial navigation
     //         // don't deny if there is no registrationState (connection fail)
     //         if (this.prevPath === '/ready' && nextPath === '/login' && this.state.registrationState !== null) {
-    //             DEBUG('Transition denied redirecting to /logout');
+    //             logger.debug('Transition denied redirecting to /logout');
     //             history.push('/logout');
     //             return false;
 
@@ -798,8 +978,8 @@ class Blink extends Component {
 
                                 <IncomingCallModal
                                     call={this.state.inboundCall}
-                                    onAnswer={this.answerCall}
-                                    onHangup={this.rejectCall}
+                                    onAnswer={this.callKeepAnswerCall}
+                                    onHangup={this.callKeepRejectCall}
                                     show={this.state.showIncomingModal}
                                 />
 
@@ -845,9 +1025,7 @@ class Blink extends Component {
 
     ready() {
         if (this.state.registrationState !== 'registered') {
-            setTimeout(() => {
-                history.push('/login');
-            });
+            history.push('/login');
             return false;
         };
 
@@ -862,8 +1040,8 @@ class Blink extends Component {
                 />
                 <ReadyBox
                     account   = {this.state.account}
-                    startCall = {this.startCall}
-                    startConference = {this.startConference}
+                    startCall = {this.callKeepStartCall}
+                    startConference = {this.callKeepStartCall}
                     missedTargetUri = {this.state.missedTargetUri}
                     history = {this.state.history}
                     key = {this.state.missedTargetUri}
@@ -875,16 +1053,14 @@ class Blink extends Component {
 
     preview() {
         if (this.state.registrationState !== 'registered') {
-            setTimeout(() => {
-                history.push('/login');
-            });
+            history.push('/login');
             return false;
         };
         return (
             <Fragment>
                 <Preview
                     localMedia = {this.state.localMedia}
-                    hangupCall = {this.hangupCall}
+                    hangupCall = {this.callKeepHangupCall}
                     setDevice = {this.setDevice}
                     selectedDevices = {this.state.devices}
                 />
@@ -894,9 +1070,7 @@ class Blink extends Component {
 
     call() {
         if (this.state.registrationState !== 'registered') {
-            setTimeout(() => {
-                history.push('/login');
-            });
+            history.push('/login');
             return false;
         };
         return (
@@ -906,9 +1080,12 @@ class Blink extends Component {
                 targetUri = {this.state.targetUri}
                 currentCall = {this.state.currentCall}
                 escalateToConference = {this.escalateToConference}
-                hangupCall = {this.hangupCall}
+                hangupCall = {this.callKeepHangupCall}
                 // shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
+                callKeepSendDtmf = {this.callKeepSendDtmf}
+                callKeepToggleMute = {this.callKeepToggleMute}
+                callKeepStartCall = {this.callKeepStartCall}
             />
         )
     }
@@ -934,7 +1111,7 @@ class Blink extends Component {
                 localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 currentCall = {this.state.currentCall}
-                hangupCall = {this.hangupCall}
+                hangupCall = {this.callKeepHangupCall}
                 // shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
             />
@@ -943,9 +1120,7 @@ class Blink extends Component {
 
     conference() {
         if (this.state.registrationState !== 'registered') {
-            setTimeout(() => {
-                history.push('/login');
-            });
+            history.push('/login');
             return false;
         };
         return (
@@ -956,7 +1131,7 @@ class Blink extends Component {
                 targetUri = {this.state.targetUri}
                 currentCall = {this.state.currentCall}
                 participantsToInvite = {this.participantsToInvite}
-                hangupCall = {this.hangupCall}
+                hangupCall = {this.callKeepHangupCall}
                 shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
             />
@@ -993,7 +1168,7 @@ class Blink extends Component {
                 localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 currentCall = {this.state.currentCall}
-                hangupCall = {this.hangupCall}
+                hangupCall = {this.callKeepHangupCall}
                 shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
             />
@@ -1039,7 +1214,7 @@ class Blink extends Component {
         if (this.state.account !== null) {
             this.state.connection.removeAccount(this.state.account, (error) => {
                 if (error) {
-                    DEBUG(error);
+                    logger.debug(error);
                 }
             });
         }

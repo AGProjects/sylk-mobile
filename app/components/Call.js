@@ -5,13 +5,14 @@ import assert from 'assert';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 
+import Logger from "../../Logger";
 import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
 import config from '../config';
 
-const DEBUG = debug('blinkrtc:Call');
-debug.enable('*');
+const logger = new Logger("Call");
+
 
 class Call extends Component {
     constructor(props) {
@@ -19,7 +20,7 @@ class Call extends Component {
         autoBind(this);
 
         if (this.props.localMedia.getVideoTracks().length === 0) {
-            DEBUG('Will send audio only');
+            logger.debug('Will send audio only');
             this.state = {audioOnly: true};
         } else {
             this.state = {audioOnly: false};
@@ -52,7 +53,7 @@ class Call extends Component {
             const remoteIsInactive = currentCall.remoteMediaDirections.video[0] === 'inactive';
 
             if (remoteHasStreams && (remoteHasNoVideoTracks || remoteIsRecvOnly || remoteIsInactive) && !this.state.audioOnly) {
-                DEBUG('Media type changed to audio');
+                logger.debug('Media type changed to audio');
                 // Stop local video
                 if (this.props.localMedia.getVideoTracks().length !== 0) {
                     currentCall.getLocalStreams()[0].getVideoTracks()[0].stop();
@@ -77,10 +78,9 @@ class Call extends Component {
         }
     }
 
-    startCall() {
+    call() {
         assert(this.props.currentCall === null, 'currentCall is not null');
         let options = {pcConfig: {iceServers: config.iceServers}};
-        console.log('passing in a local Media stream', this.props.localMedia)
         options.localStream = this.props.localMedia;
         console.log('starting a call', this.props.targetUri);
         let call = this.props.account.call(this.props.targetUri, options);
@@ -100,7 +100,7 @@ class Call extends Component {
 
     mediaPlaying() {
         if (this.props.currentCall === null) {
-            this.startCall();
+            this.call();
         } else {
             this.answerCall();
         }
@@ -125,6 +125,8 @@ class Call extends Component {
                         call = {this.props.currentCall}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
+                        callKeepSendDtmf = {this.props.callKeepSendDtmf}
+                        callKeepToggleMute = {this.props.callKeepToggleMute}
                     />
                 );
             } else {
@@ -137,6 +139,8 @@ class Call extends Component {
                             hangupCall = {this.hangupCall}
                             escalateToConference = {this.props.escalateToConference}
                             generatedVideoTrack = {this.props.generatedVideoTrack}
+                            callKeepSendDtmf = {this.props.callKeepSendDtmf}
+                            callKeepToggleMute = {this.props.callKeepToggleMute}
                         />
                     );
                 } else {
@@ -164,7 +168,9 @@ Call.propTypes = {
     escalateToConference    : PropTypes.func,
     localMedia              : PropTypes.object,
     targetUri               : PropTypes.string,
-    generatedVideoTrack     : PropTypes.bool
+    generatedVideoTrack     : PropTypes.bool,
+    callKeepSendDtmf        : PropTypes.func,
+    callKeepToggleMute      : PropTypes.func
 };
 
 

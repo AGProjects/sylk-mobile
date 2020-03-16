@@ -45,7 +45,6 @@ const UserIcon = (props) => {
 };
 
 UserIcon.propTypes = {
-    classes: PropTypes.object.isRequired,
     identity: PropTypes.object.isRequired,
     large: PropTypes.bool,
     card: PropTypes.bool,

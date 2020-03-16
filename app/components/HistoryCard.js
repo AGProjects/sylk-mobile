@@ -70,7 +70,6 @@ const HistoryCard = (props) => {
 }
 
 HistoryCard.propTypes = {
-    classes        : PropTypes.object.isRequired,
     historyItem    : PropTypes.object,
     startAudioCall : PropTypes.func.isRequired,
     startVideoCall : PropTypes.func.isRequired,

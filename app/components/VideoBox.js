@@ -136,14 +136,17 @@ class VideoBox extends Component {
         event.preventDefault();
         const localStream = this.state.localStream;
         if (localStream.getAudioTracks().length > 0) {
-            const track = localStream.getAudioTracks()[0];
+            //const track = localStream.getAudioTracks()[0];
             if(this.state.audioMuted) {
                 DEBUG('Unmute microphone');
-                track.enabled = true;
+                //track.enabled = true;
+                this.props.callKeepToggleMute(false);
                 this.setState({audioMuted: false});
             } else {
                 DEBUG('Mute microphone');
-                track.enabled = false;
+                // track.enabled = false;
+                this.props.callKeepToggleMute(true);
+
                 this.setState({audioMuted: true});
             }
         }
@@ -346,6 +349,7 @@ class VideoBox extends Component {
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
                     call={this.props.call}
+                    callKeepSendDtmf={this.props.callKeepSendDtmf}
                 />
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
@@ -364,7 +368,9 @@ VideoBox.propTypes = {
     hangupCall              : PropTypes.func,
     shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,
-    generatedVideoTrack     : PropTypes.bool
+    generatedVideoTrack     : PropTypes.bool,
+    callKeepSendDtmf        : PropTypes.func,
+    callKeepToggleMute      : PropTypes.func
 };
 
 export default VideoBox;
