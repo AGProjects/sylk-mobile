@@ -17,7 +17,7 @@
     "material-bread": "^0.2.5",
     "react": "16.9.0",
     "react-native": "0.61.5",
-    "react-native-callkeep": "nimbleape/react-native-callkeep-1#46a7b037ba8e2245fd619a4ae0c709fcbdd7bea3",
+    "react-native-callkeep": "nimbleape/react-native-callkeep-1#6ee6f02146faa51010a5559c392f3800008210fd",
     "react-native-debug": "^3.0.0",
     "react-native-dtmf": "nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9",
     "react-native-incall-manager": "nimbleape/react-native-incall-manager#start-ringback-method",
