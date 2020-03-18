@@ -45,8 +45,8 @@ const HistoryCard = (props) => {
 
     return (
         <Card
-            onLongPress={() => {props.setTargetUri(identity.uri)}}
-            onPress={startVideoCall}
+            onPress={() => {props.setTargetUri(identity.uri)}}
+            onLongPress={startVideoCall}
             style={styles.container}
         >
             <Card.Content style={styles.content}>
@@ -60,13 +60,17 @@ const HistoryCard = (props) => {
                     <UserIcon identity={identity} card/>
                 </View>
             </Card.Content>
+        </Card>
+    );
+
+/*
             <Card.Actions>
                 <IconButton icon="phone" onPress={startAudioCall} title={`Audio call to ${name}`} />
                 <IconButton icon="video" onPress={startVideoCall} title={`Video call to ${name}`} />
             </Card.Actions>
+*/
 
-        </Card>
-    );
+
 }
 
 HistoryCard.propTypes = {
