@@ -659,7 +659,7 @@ class Blink extends Component {
 
     startCall(targetUri, options) {
         this.setState({targetUri: targetUri});
-        this.addCallHistoryEntry(data.handle);
+        this.addCallHistoryEntry(targetUri);
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
