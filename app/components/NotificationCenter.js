@@ -2,6 +2,7 @@ import React, { Component } from 'react';
 import { ProgressBar, Colors, Snackbar } from 'react-native-paper';
 import moment from 'moment';
 import autoBind from 'auto-bind';
+import styles from '../assets/styles/blink/_StatusBox.scss';
 
 import config from '../config';
 
@@ -22,7 +23,7 @@ class NotificationCenter extends Component {
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
         this.setState({
             visible: true,
-            autoDismiss: 6,
+            autoDismiss: 10,
             title: title,
             message: options.body
         });
@@ -140,9 +141,9 @@ class NotificationCenter extends Component {
     }
 
     render() {
-        console.log('Re-rendering snackbar');
         return (
             <Snackbar
+                style={styles.snackbar}
                 visible={this.state.visible}
                 duration={this.state.autoDismiss * 1000}
                 onDismiss={() => this.setState({ visible: false })}

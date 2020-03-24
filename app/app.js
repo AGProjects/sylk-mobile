@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState} from 'react-native';
+import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking} from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
 import { registerGlobals } from 'react-native-webrtc';
@@ -88,6 +88,7 @@ class Blink extends Component {
     constructor() {
         super();
         autoBind(this)
+        this._loaded = false;
         this._initialSstate = {
             accountId: '',
             password: '',
@@ -141,7 +142,9 @@ class Blink extends Component {
         return this.__notificationCenter;
     }
 
-    componentDidMount() {
+    async componentDidMount() {
+        this._loaded = true;
+
         history.push('/login');
 
         // prime the ref
@@ -150,6 +153,15 @@ class Blink extends Component {
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
 
         if (Platform.OS === 'android') {
+
+            Linking.getInitialURL().then((url) => {
+                if (url) {
+                  console.log('Initial url is: ' + url);
+                }
+              }).catch(err => {
+                logger.error({ err }, 'Error getting initial URL');
+              });
+
             firebase.messaging().getToken()
             .then(fcmToken => {
                 if (fcmToken) {
@@ -196,12 +208,19 @@ class Blink extends Component {
     }
 
     _callkeepStartedCall(data) {
-        logger.debug('accessing Call Object', this._tmpCallStartInfo);
+        logger.debug('accessing Call Object', this._tmpCallStartInfo, data);
 
         if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
             this.startConference(data.handle);
-        } else {
+        } else if (this._tmpCallStartInfo.options) {
             this.startCall(data.handle, this._tmpCallStartInfo.options);
+        } else {
+            // we dont have options in the tmp var, which means this likely came from the native dialer
+            // for now, we only do audio calls from the native dialer.
+            this._tmpCallStartInfo = {
+                uuid: data.callUUID
+            };
+            this.startCall(data.handle, {audio: true, video: false});
         }
     }
 
@@ -398,8 +417,9 @@ class Blink extends Component {
                 this.setFocusEvents(false);
                 this.participantsToInvite = null;
 
-                history.push('/ready');
 
+                history.push('/ready');
+                this.getServerHistory();
                 break;
             default:
                 break;

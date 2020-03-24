@@ -19,7 +19,7 @@ class Call extends Component {
         super(props);
         autoBind(this);
 
-        if (this.props.localMedia.getVideoTracks().length === 0) {
+        if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
             logger.debug('Will send audio only');
             this.state = {audioOnly: true};
         } else {

@@ -2,6 +2,7 @@ import React, { useState }  from 'react';
 import PropTypes from 'prop-types';
 import { Snackbar } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import styles from '../assets/styles/blink/_StatusBox.scss';
 
 const StatusBox = (props) => {
 
@@ -21,8 +22,8 @@ const StatusBox = (props) => {
     }
 
     return (
-        <Snackbar visible={visible} duration={2000} onDismiss={() => { setVisible(false) }}>
-            { iconName ? (<Icon name={iconName} />) : null }{ props.title }{ props.message }
+        <Snackbar style={styles.snackbar} visible={visible} duration={4000} onDismiss={() => { setVisible(false) }} icon={iconName}>
+            { props.title }{ props.message }
         </Snackbar>
     );
 };
