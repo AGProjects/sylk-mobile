@@ -16,7 +16,7 @@ registerGlobals();
 
 import * as sylkrtc from 'sylkrtc';
 import InCallManager from 'react-native-incall-manager';
-import RNCallKeep from 'react-native-callkeep';
+import RNCallKeep, { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
@@ -65,14 +65,16 @@ const callkeepOptions = {
         imageName: "Image"
     },
     android: {
-        alertTitle: 'Permissions required',
-        alertDescription: 'This application needs to access your phone accounts',
+        alertTitle: 'Calling Account Permission Required',
+        alertDescription: 'Please enable "Sylk" from your available Calling Accounts',
         cancelButton: 'Cancel',
         okButton: 'ok',
         imageName: 'phone_account_icon',
         additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO ]
     }
 };
+
+RNCallKeep.setup(callkeepOptions);
 
 let callkeepType = Platform.OS === 'ios' ? 'generic' : 'sip';
 
@@ -160,8 +162,6 @@ class Blink extends Component {
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
         }
-
-        RNCallKeep.setup(callkeepOptions);
 
         this.boundRnStartAction = this._callkeepStartedCall.bind(this);
 
@@ -340,35 +340,51 @@ class Blink extends Component {
                 break;
             case 'terminated':
                 InCallManager.stop({busytone: '_BUNDLE_'});
-                this._callManager.remove();
 
                 let callSuccesfull = false;
                 let reason = data.reason;
+
+                let CALLKEEP_REASON;
+
                 if (!reason || reason.match(/200/)) {
                     reason = 'Hangup';
                     callSuccesfull = true;
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else if (reason.match(/403/)) {
                     reason = 'This domain is not served here';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/404/)) {
                     reason = 'User not found';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/408/)) {
                     reason = 'Timeout';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/480/)) {
                     reason = 'User not online';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/486/) || reason.match(/60[036]/)) {
                     reason = 'Busy';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/487/)) {
                     reason = 'Cancelled';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/488/)) {
                     reason = 'Unacceptable media';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/5\d\d/)) {
                     reason = 'Server failure';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/904/)) {
                     // Sofia SIP: WAT
                     reason = 'Bad account or password';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else {
                     reason = 'Connection failed';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 }
+                this._callManager.callKeep.reportEndCallWithUUID(this.state.currentCall._callkeepUUID, CALLKEEP_REASON);
+                this._callManager.remove();
+
                 this._notificationCenter.postSystemNotification('Call Terminated', {body: reason, timeout: callSuccesfull ? 5 : 10});
 
                 this.setState({
@@ -1060,7 +1076,7 @@ class Blink extends Component {
             <Fragment>
                 <Preview
                     localMedia = {this.state.localMedia}
-                    hangupCall = {this.callKeepHangupCall}
+                    hangupCall = {this.hangupCall}
                     setDevice = {this.setDevice}
                     selectedDevices = {this.state.devices}
                 />

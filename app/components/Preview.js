@@ -46,14 +46,11 @@ class Preview extends Component {
 
     componentDidMount() {
 
-        console.log( this.props.localMedia);
-
         this.setState({streamURL: this.props.localMedia});
 
         navigator.mediaDevices.enumerateDevices()
             .then((devices) => {
                 this.devices = devices;
-                console.log(devices);
 
                 let newState = {};
                 if (this.state.camera.label !== 'No Camera') {

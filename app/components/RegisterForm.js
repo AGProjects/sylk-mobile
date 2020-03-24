@@ -95,6 +95,7 @@ class RegisterForm extends Component {
                             placeholder="Password"
                             value={this.state.password}
                             onChangeText={this.handlePasswordChange}
+                            onSubmitEditing={this.handleSubmit}
                             required
                             secureTextEntry={true}
                         />
