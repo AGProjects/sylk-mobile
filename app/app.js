@@ -124,6 +124,10 @@ class Blink extends Component {
 
         storage.initialize();
 
+        RNCallKeep.addEventListener('checkReachability', () => {
+            RNCallKeep.setReachable();
+        });
+
         this._callManager = new CallManager(RNCallKeep, this.answerCall, this.rejectCall, this.hangupCall);
 
         // Load camera/mic preferences
