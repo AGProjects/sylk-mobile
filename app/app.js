@@ -357,6 +357,7 @@ class Blink extends Component {
                 }
                 break;
             case 'accepted':
+                this._callManager.callKeep.backToForeground();
                 InCallManager.stopRingback();
                 logger.debug('Setting Call as active in callkeep', this.state.currentCall._callkeepUUID);
                 this._callManager.callKeep.setCurrentCallActive(this.state.currentCall._callkeepUUID);
