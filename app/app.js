@@ -424,7 +424,11 @@ class Blink extends Component {
 
 
                 history.push('/ready');
-                this.getServerHistory();
+
+                setTimeout(() => {
+                    this.getServerHistory();
+                }, 1000);
+
                 break;
             default:
                 break;
