@@ -22,8 +22,8 @@ const StatusBox = (props) => {
     }
 
     return (
-        <Snackbar style={styles.snackbar} visible={visible} duration={4000} onDismiss={() => { setVisible(false) }} icon={iconName}>
-            { props.title }{ props.message }
+        <Snackbar style={styles.snackbar} visible={visible} duration={5000} onDismiss={() => { setVisible(false) }}>
+            { iconName ? (<Icon name={iconName} />) : null }{ props.title }{ props.message }
         </Snackbar>
     );
 };
