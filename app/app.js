@@ -409,7 +409,7 @@ class Blink extends Component {
                 this._callManager.callKeep.reportEndCallWithUUID(this.state.currentCall._callkeepUUID, CALLKEEP_REASON);
                 this._callManager.remove();
 
-                this._notificationCenter.postSystemNotification('Call Terminated', {body: reason, timeout: callSuccesfull ? 5 : 10});
+                this._notificationCenter.postSystemNotification('Call ended', {body: reason, timeout: callSuccesfull ? 5 : 10});
 
                 this.setState({
                     currentCall         : null,
