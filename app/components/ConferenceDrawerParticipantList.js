@@ -1,22 +1,16 @@
 
-import React from 'react';
-import { View } from 'react-native';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { List } from 'react-native-paper';
+import { List, Title } from 'react-native-paper';
 
 const ConferenceDrawerParticipantList = (props) => {
-    const items = [];
-    let idx = 0;
-    React.Children.forEach(props.children, (child) => {
-        items.push(<List.Item title={child} key={idx} />);
-        idx++;
-    });
-
     return (
-        <List.Section>
-            <List.Subheader>Participants</List.Subheader>
-            {items}
-        </List.Section>
+        <Fragment>
+            <Title>Participants</Title>
+            <List.Section>
+                {props.children}
+            </List.Section>
+        </Fragment>
     );
 };
 

@@ -1,50 +1,61 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { View } from 'react-native';
+import autoBind from 'auto-bind';
 import { Modal, Portal, Text, Button, Surface, TextInput, Title } from 'react-native-paper';
 
 import config from '../config';
+import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
 
 class InviteParticipantsModal extends Component {
     constructor(props) {
         super(props);
-        this.invitees = React.createRef();
-
-        this.invite = this.invite.bind(this);
+        autoBind(this);
+        this.state = {
+            users: null
+        }
     }
 
     invite(event) {
         event.preventDefault();
         const uris = [];
-        this.invitees.current.value.split(',').forEach((item) => {
-            item = item.trim();
-            if (item.indexOf('@') === -1) {
-                item = `${item}@${config.defaultDomain}`;
-            }
-            uris.push(item);
-        });
+        if (this.state.users) {
+            this.state.users.split(',').forEach((item) => {
+                item = item.trim();
+                if (item.indexOf('@') === -1) {
+                    item = `${item}@${config.defaultDomain}`;
+                }
+                uris.push(item);
+            });
+        }
         if (uris && this.props.call) {
             this.props.call.inviteParticipants(uris);
         }
         this.props.close();
     }
 
+    onInputChange(value) {
+        this.setState({users: value});
+    }
+
     render() {
         return (
             <Portal>
                 <Modal visible={this.props.show} onDismiss={this.props.close}>
-                    <Surface>
+                    <Surface style={styles.container}>
                         <Title id="cmodal-title-sm">Invite Online Users</Title>
 
                         <Text className="lead">Enter the users you wish to invite</Text>
                         <TextInput
+                            mode="flat"
+                            name="users"
                             label="Users"
-                            ref={this.invitees}
+                            onChangeText={this.onInputChange}
+                            value={this.state.users}
                             placeholder="alice@sip2sip.info,bob,carol"
                             required
                             autoCapitalize="none"
                         />
-                        <Button onSubmit={this.invite} icon="email">Invite</Button>
+                        <Button onPress={this.invite} icon="email">Invite</Button>
                     </Surface>
                 </Modal>
             </Portal>

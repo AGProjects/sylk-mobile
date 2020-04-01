@@ -20,6 +20,14 @@ class NotificationCenter extends Component {
         }
     }
 
+    componentDidMount() {
+        console.log('Notification Center mounted');
+    }
+
+    componentWillUnmount() {
+        console.log('Notification Center will unmount');
+    }
+
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
         this.setState({
             visible: true,
@@ -30,9 +38,9 @@ class NotificationCenter extends Component {
     }
 
     postConferenceInvite(originator, room, cb) {
-        if (originator.uri.endsWith(config.defaultGuestDomain)) {
-            return;
-        }
+        // if (originator.uri.endsWith(config.defaultGuestDomain)) {
+        //     return;
+        // }
         const idx = room.indexOf('@');
         if (idx === -1) {
             return;
@@ -44,9 +52,9 @@ class NotificationCenter extends Component {
         };
         this.setState({
             visible: true,
-            message: `${(originator.displayName || originator.uri)} invited you to join conference room ${room.substring(0, idx)}<br />On ${currentDate}`,
+            message: `${(originator.displayName || originator.uri)} invited you to join conference room ${room.substring(0, idx)} on ${currentDate}`,
             title: 'Conference Invite',
-            autoDismiss: 0,
+            autoDismiss: 20,
             action: action,
         });
     }
@@ -141,12 +149,13 @@ class NotificationCenter extends Component {
     }
 
     render() {
+        console.log('showing snackbar');
         return (
             <Snackbar
                 style={styles.snackbar}
                 visible={this.state.visible}
                 duration={this.state.autoDismiss * 1000}
-                onDismiss={() => this.setState({ visible: false })}
+                onDismiss={() => this.setState({ visible: false, message: null, title: null })}
                 action={this.state.action}
             >
                 {this.state.title} - {this.state.message}

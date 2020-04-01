@@ -782,7 +782,7 @@ class Blink extends Component {
         this.setState({currentCall: null, localMedia: null});
         this.participantsToInvite = participants;
         const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
-        this.startConference(uri);
+        this.callKeepStartCall(uri, { conference: true });
     }
 
     startConference(targetUri) {
@@ -899,7 +899,7 @@ class Blink extends Component {
                 this.state.currentCall.terminate();
                 this.setState({currentCall: null, showIncomingModal: false, localMedia: null, generatedVideoTrack: false});
             }
-            this.startConference(data.room);
+            this.callKeepStartCall(data.room, {conference: true});
         });
     }
 
@@ -948,11 +948,17 @@ class Blink extends Component {
                 logger.debug('Error getting call history from server: %o', data.error_message)
                 return;
             }
-            let history = []
-            data.placed.map(elem => {elem.direction = 'placed'; return elem});
-            data.received.map(elem => {elem.direction = 'received'; return elem});
+            let history = [];
+            if (data.placed) {
+                data.placed.map(elem => {elem.direction = 'placed'; return elem});
+            }
+            if (data.received) {
+                data.received.map(elem => {elem.direction = 'received'; return elem});
+            }
             history = data.placed;
-            history = history.concat(data.received);
+            if (data.received) {
+                history = history.concat(data.received);
+            }
             history.sort((a,b) => {
                 return new Date(b.startTime) - new Date(a.startTime);
             });
@@ -1043,7 +1049,9 @@ class Blink extends Component {
                                     <Route exact path="/preview" component={this.preview} />
                                     <Route component={this.notFound} />
                                 </Switch>
+
                                 <NotificationCenter ref="notificationCenter" />
+
                                 {footerBox}
                             </SafeAreaView>
                         </ImageBackground>
@@ -1073,6 +1081,8 @@ class Blink extends Component {
             history.push('/login');
             return false;
         };
+
+        InCallManager.stop();
 
         return (
             <Fragment>

@@ -389,10 +389,7 @@ class ConferenceBox extends Component {
     }
 
     toggleInviteModal() {
-        // this.setState({showInviteModal: !this.state.showInviteModal});
-        // if (this.refs.showOverlay) {
-        //     this.refs.shareOverlay.hide();
-        // }
+        this.setState({showInviteModal: !this.state.showInviteModal});
     }
 
     toggleDrawer() {
@@ -503,7 +500,7 @@ class ConferenceBox extends Component {
                 style={styles.button}
                 title="Share link to this conference"
                 icon="account-plus"
-                onPress={this.shareModal}
+                onPress={this.toggleInviteModal}
             />
         );
         bottomButtons.push(

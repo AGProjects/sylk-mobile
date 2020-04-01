@@ -1,6 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 // const hark              = require('hark');
+import { View } from 'react-native';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { IconButton } from 'react-native-paper';
@@ -34,7 +35,7 @@ class ConferenceParticipant extends React.Component {
     }
 
     componentWillUnmount() {
-        this.videoElement.current.pause();
+        //this.videoElement.current.pause();
         this.props.participant.removeListener('stateChanged', this.onParticipantStateChanged);
         if (this.speechEvents !== null) {
             this.speechEvents.stop();
