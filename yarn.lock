@@ -7375,10 +7375,6 @@ react-mixin@^4.0.0:
     object-assign "^4.0.1"
     smart-mixin "^2.0.0"
 
-react-native-callkeep@nimbleape/react-native-callkeep-1#46a7b037ba8e2245fd619a4ae0c709fcbdd7bea3:
-  version "3.0.10"
-  resolved "https://codeload.github.com/nimbleape/react-native-callkeep-1/tar.gz/46a7b037ba8e2245fd619a4ae0c709fcbdd7bea3"
-
 react-native-callkeep@nimbleape/react-native-callkeep-1#6ee6f02146faa51010a5559c392f3800008210fd:
   version "3.0.10"
   resolved "https://codeload.github.com/nimbleape/react-native-callkeep-1/tar.gz/6ee6f02146faa51010a5559c392f3800008210fd"
