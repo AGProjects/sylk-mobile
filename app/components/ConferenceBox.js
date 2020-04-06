@@ -16,7 +16,7 @@ import utils from '../utils';
 //import AudioPlayer from './AudioPlayer';
 import ConferenceDrawer from './ConferenceDrawer';
 import ConferenceDrawerLog from './ConferenceDrawerLog';
-import ConferenceDrawerFiles from './ConferenceDrawerFiles';
+// import ConferenceDrawerFiles from './ConferenceDrawerFiles';
 import ConferenceDrawerParticipant from './ConferenceDrawerParticipant';
 import ConferenceDrawerParticipantList from './ConferenceDrawerParticipantList';
 import ConferenceDrawerSpeakerSelection from './ConferenceDrawerSpeakerSelection';
@@ -543,7 +543,7 @@ class ConferenceBox extends Component {
             if (this.state.activeSpeakers.findIndex((element) => {return element.id === this.props.call.id}) === -1) {
                 participants.push(
                     <ConferenceParticipantSelf
-                        key="myself"
+                        key="myself2"
                         stream={this.props.call.getLocalStreams()[0]}
                         identity={this.props.call.localIdentity}
                         audioMuted={this.state.audioMuted}
@@ -556,7 +556,7 @@ class ConferenceBox extends Component {
         const drawerParticipants = [];
         drawerParticipants.push(
             <ConferenceDrawerParticipant
-                key="myself"
+                key="myself1"
                 participant={{identity: this.props.call.localIdentity}}
                 isLocal={true}
             />
@@ -622,12 +622,12 @@ class ConferenceBox extends Component {
             }
         }
 
-        let filesDrawerContent = (
-            <ConferenceDrawerFiles
-                sharedFiles={this.state.sharedFiles}
-                downloadFile={this.downloadFile}
-            />
-        );
+        // let filesDrawerContent = (
+        //     <ConferenceDrawerFiles
+        //         sharedFiles={this.state.sharedFiles}
+        //         downloadFile={this.downloadFile}
+        //     />
+        // );
 
         return (
             <View style={styles.container}>
