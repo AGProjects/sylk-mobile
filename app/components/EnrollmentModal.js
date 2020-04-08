@@ -90,89 +90,89 @@ class EnrollmentModal extends Component {
         return (
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.onHide}>
-                        <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>Create account</Dialog.Title>
-                            <TextInput
-                                mode="flat"
-                                label="Display name"
-                                name="yourName"
-                                type="text"
-                                placeholder="Alice"
-                                onChangeText={(text) => {this.handleFormFieldChange(text, 'yourName');}}
-                                required
-                                value={this.state.yourName}
-                                disabled={this.state.enrolling}
-                                returnKeyType="next"
-                                onSubmitEditing={() => this.usernameInput.focus()}
-                            />
-                            <TextInput
-                                mode="flat"
-                                label="Username"
-                                name="username"
-                                autoCapitalize="none"
-                                placeholder="alice"
-                                onChangeText={(text) => {this.handleFormFieldChange(text, 'username');}}
-                                required
+                    <Surface style={styles.container}>
+                        <Dialog.Title style={styles.title}>Create account</Dialog.Title>
+                        <TextInput
+                            mode="flat"
+                            label="Display name"
+                            name="yourName"
+                            type="text"
+                            placeholder="Alice"
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'yourName');}}
+                            required
+                            value={this.state.yourName}
+                            disabled={this.state.enrolling}
+                            returnKeyType="next"
+                            onSubmitEditing={() => this.usernameInput.focus()}
+                        />
+                        <TextInput
+                            mode="flat"
+                            label="Username"
+                            name="username"
+                            autoCapitalize="none"
+                            placeholder="alice"
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'username');}}
+                            required
 
-                                value={this.state.username}
-                                disabled={this.state.enrolling}
-                                returnKeyType="next"
-                                ref={ref => {
-                                    this.usernameInput = ref;
-                                }}
-                                onSubmitEditing={() => this.passwordInput.focus()}
-                            />
-                            <HelperText
-                                type="info"
-                                visible={true}
-                            >
-                                @{config.enrollmentDomain}
-                            </HelperText>
-                            <TextInput
-                                mode="flat"
-                                label="Password"
-                                name="password"
-                                secureTextEntry={true}
-                                textContentType="password"
-                                onChangeText={(text) => {this.handleFormFieldChange(text, 'password');}}
-                                required value={this.state.password}
-                                disabled={this.state.enrolling}
-                                returnKeyType="next"
-                                ref={ref => {
-                                    this.passwordInput = ref;
-                                }}
-                                onSubmitEditing={() => this.password2Input.focus()}
-                            />
-                            <TextInput
-                                mode="flat"
-                                label="Verify password"
-                                secureTextEntry={true}
-                                textContentType="password"
-                                name="password2"
-                                onChangeText={(text) => {this.handleFormFieldChange(text, 'password2');}}
-                                required value={this.state.password2}
-                                disabled={this.state.enrolling}
-                                returnKeyType="next"
-                                ref={ref => {
-                                    this.password2Input = ref;
-                                }}
-                                onSubmitEditing={() => this.emailInput.focus()}
-                            />
-                            <TextInput
-                                mode="flat"
-                                label="E-Mail"
-                                textContentType="emailAddress"
-                                name="email"
-                                autoCapitalize="none"
-                                placeholder="alice@atlanta.example.com"
-                                onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
-                                required value={this.state.email}
-                                disabled={this.state.enrolling}
-                                returnKeyType="go"
-                                ref={ref => {
-                                    this.emailInput = ref;
-                                }}
-                            />
+                            value={this.state.username}
+                            disabled={this.state.enrolling}
+                            returnKeyType="next"
+                            ref={ref => {
+                                this.usernameInput = ref;
+                            }}
+                            onSubmitEditing={() => this.passwordInput.focus()}
+                        />
+                        <HelperText
+                            type="info"
+                            visible={true}
+                        >
+                            @{config.enrollmentDomain}
+                        </HelperText>
+                        <TextInput
+                            mode="flat"
+                            label="Password"
+                            name="password"
+                            secureTextEntry={true}
+                            textContentType="password"
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'password');}}
+                            required value={this.state.password}
+                            disabled={this.state.enrolling}
+                            returnKeyType="next"
+                            ref={ref => {
+                                this.passwordInput = ref;
+                            }}
+                            onSubmitEditing={() => this.password2Input.focus()}
+                        />
+                        <TextInput
+                            mode="flat"
+                            label="Verify password"
+                            secureTextEntry={true}
+                            textContentType="password"
+                            name="password2"
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'password2');}}
+                            required value={this.state.password2}
+                            disabled={this.state.enrolling}
+                            returnKeyType="next"
+                            ref={ref => {
+                                this.password2Input = ref;
+                            }}
+                            onSubmitEditing={() => this.emailInput.focus()}
+                        />
+                        <TextInput
+                            mode="flat"
+                            label="E-Mail"
+                            textContentType="emailAddress"
+                            name="email"
+                            autoCapitalize="none"
+                            placeholder="alice@atlanta.example.com"
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
+                            required value={this.state.email}
+                            disabled={this.state.enrolling}
+                            returnKeyType="go"
+                            ref={ref => {
+                                this.emailInput = ref;
+                            }}
+                        />
                         <Button
                             icon={buttonIcon}
                             loading={this.state.enrolling}

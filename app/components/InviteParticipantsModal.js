@@ -1,7 +1,10 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, Portal, Text, Button, Surface, TextInput, Title } from 'react-native-paper';
+import { Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
+import KeyboardAwareDialog from './KeyBoardAwareDialog';
+
+const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import config from '../config';
 import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
@@ -40,11 +43,11 @@ class InviteParticipantsModal extends Component {
     render() {
         return (
             <Portal>
-                <Modal visible={this.props.show} onDismiss={this.props.close}>
+                <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Title id="cmodal-title-sm">Invite Online Users</Title>
+                        <Dialog.Title>Invite Online Users</Dialog.Title>
 
-                        <Text className="lead">Enter the users you wish to invite</Text>
+                        <Text>Enter the users you wish to invite</Text>
                         <TextInput
                             mode="flat"
                             name="users"
@@ -55,9 +58,9 @@ class InviteParticipantsModal extends Component {
                             required
                             autoCapitalize="none"
                         />
-                        <Button onPress={this.invite} icon="email">Invite</Button>
+                        <Button mode="contained" onPress={this.invite} icon="email">Invite</Button>
                     </Surface>
-                </Modal>
+                </DialogType>
             </Portal>
         );
     }

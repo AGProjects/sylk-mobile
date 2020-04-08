@@ -1,6 +1,9 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { Portal, Modal, Title, Button, Text, TextInput, Surface } from 'react-native-paper';
+import { Portal, Dialog, Button, Text, TextInput, Surface } from 'react-native-paper';
+import KeyboardAwareDialog from './KeyBoardAwareDialog';
+
+const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import config from '../config';
 import styles from '../assets/styles/blink/_ConferenceModal.scss';
@@ -40,12 +43,12 @@ class ConferenceModal extends Component {
 
         return (
             <Portal>
-                <Modal visible={this.props.show} onDismiss={this.onHide}>
+                <DialogType visible={this.props.show} onDismiss={this.onHide}>
                     <Surface style={styles.container}>
-                        <Title style={styles.title}>Join Conference</Title>
+                        <Dialog.Title style={styles.title}>Join Conference</Dialog.Title>
                         <Text style={styles.body}>Enter the room you wish to join</Text>
                         <TextInput
-                            mode="outlined"
+                            mode="flat"
                             autoCapitalize="none"
                             label="Conference Room"
                             placeholder="Conference Room"
@@ -62,7 +65,7 @@ class ConferenceModal extends Component {
                             Join
                         </Button>
                     </Surface>
-                </Modal>
+                </DialogType>
             </Portal>
         );
     }

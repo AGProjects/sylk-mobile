@@ -2,7 +2,10 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { View } from 'react-native';
 import autoBind from 'auto-bind';
-import { Title, Portal, Modal, Paragraph, TextInput, Surface, Button } from 'react-native-paper';
+import { Portal, Dialog, Paragraph, TextInput, Surface, Button } from 'react-native-paper';
+import KeyboardAwareDialog from './KeyBoardAwareDialog';
+
+const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import styles from '../assets/styles/blink/_EscalateConferenceModal.scss';
 
@@ -40,9 +43,9 @@ class EscalateConferenceModal extends React.Component {
     render() {
         return (
             <Portal>
-                <Modal visible={this.props.show} onDismiss={this.props.close}>
+                <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Title>Move to conference</Title>
+                        <Dialog.Title>Move to conference</Dialog.Title>
                         <Paragraph>Please enter the account(s) you wish to add to this call. After pressing Move, all parties will be invited to join a conference.</Paragraph>
                         <View>
                             <TextInput
@@ -57,7 +60,7 @@ class EscalateConferenceModal extends React.Component {
                             <Button style={styles.button} onPress={this.escalate} icon="send">Move</Button>
                         </View>
                     </Surface>
-                </Modal>
+                </DialogType>
             </Portal>
         );
     }

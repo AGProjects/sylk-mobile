@@ -1,9 +1,12 @@
 import React, { Component } from 'react';
 import { View } from 'react-native';
 import PropTypes from 'prop-types';
-import { Modal, Title, Surface, Portal, IconButton, Text } from 'react-native-paper';
+import { Dialog, Title, Surface, Portal, IconButton, Text } from 'react-native-paper';
 import autoBind from 'auto-bind';
 import { openComposer } from 'react-native-email-link';
+import KeyboardAwareDialog from './KeyBoardAwareDialog';
+
+const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import utils from '../utils';
 import styles from '../assets/styles/blink/_CallMeMaybeModal.scss';
@@ -50,9 +53,9 @@ class CallMeMaybeModal extends Component {
 
         return (
             <Portal>
-                <Modal visible={this.props.show} onDismiss={this.props.close}>
+                <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Title style={styles.title}>Call me, maybe?</Title>
+                        <Dialog.Title style={styles.title}>Call me, maybe?</Dialog.Title>
                         <Text style={styles.body}>
                             Share {this.props.callUrl} with others so they can easily call you.
                         </Text>
@@ -69,7 +72,7 @@ class CallMeMaybeModal extends Component {
                             />
                         </View>
                     </Surface>
-                </Modal>
+                </DialogType>
             </Portal>
         );
     }
