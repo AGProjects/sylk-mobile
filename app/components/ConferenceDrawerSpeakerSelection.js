@@ -10,8 +10,8 @@ class ConferenceDrawerSpeakerSelection extends Component {
         autoBind(this)
         this.state = {
             speakers: props.activeSpeakers.map((participant) => {return participant.id}),
-            selectedLeft: null,
-            selectedRight: null
+            selectedLeft: 'None',
+            selectedRight: 'None'
         };
     }
 

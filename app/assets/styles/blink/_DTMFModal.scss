@@ -1,13 +1,30 @@
 .container {
-
+    display: flex;
+	flex-direction: column;
+	justify-content: center;
 }
 
 .row {
+    flex: 0 0 auto;
     flex-direction: row;
+    justify-content: center;
+    align-items: center;
+	user-select: none;
     margin: 0 auto;
     padding-top: 10px;
+    height: 70px;
+
 }
 
 .button {
+    width: 50px;
+    height: 50px;
+    margin-left: 10px;
+    margin-right: 10px;
+    // border-radius: 50px / 2;
+}
 
+.key {
+	font-size: 32px;
+	font-weight: 500;
 }

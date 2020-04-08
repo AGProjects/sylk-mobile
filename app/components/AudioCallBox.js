@@ -143,12 +143,12 @@ class AudioCallBox extends Component {
 
         return (
             <View style={styles.container}>
-                <CallOverlay styles={styles.callStatus}
+                <CallOverlay style={styles.callStatus}
                     show={true}
                     remoteIdentity={this.props.remoteIdentity}
                     call={this.props.call}
                 />
-                <View styles={styles.userIconContainer}>
+                <View style={styles.userIconContainer}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
                 <View style={styles.buttonContainer}>

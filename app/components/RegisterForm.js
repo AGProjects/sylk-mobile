@@ -84,6 +84,8 @@ class RegisterForm extends Component {
                             onChangeText={this.handleAccountIdChange}
                             required
                             autoCapitalize="none"
+                            returnKeyType="next"
+                            onSubmitEditing={() => this.passwordInput.focus()}
                         />
                     </View>
                     <View style={styles.row}>
@@ -98,6 +100,9 @@ class RegisterForm extends Component {
                             onSubmitEditing={this.handleSubmit}
                             required
                             secureTextEntry={true}
+                            ref={ref => {
+                                this.passwordInput = ref;
+                            }}
                         />
                     </View>
 

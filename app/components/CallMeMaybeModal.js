@@ -1,8 +1,9 @@
 import React, { Component } from 'react';
-import { View, Linking } from 'react-native';
+import { View } from 'react-native';
 import PropTypes from 'prop-types';
 import { Modal, Title, Surface, Portal, IconButton, Text } from 'react-native-paper';
 import autoBind from 'auto-bind';
+import { openComposer } from 'react-native-email-link';
 
 import utils from '../utils';
 import styles from '../assets/styles/blink/_CallMeMaybeModal.scss';
@@ -11,13 +12,6 @@ class CallMeMaybeModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-
-        const sipUri = this.props.callUrl.split('/').slice(-1)[0];    // hack!
-        const emailMessage = `You can call me using a Web browser at ${this.props.callUrl} or a SIP client at ${sipUri} ` +
-                             'or by using the freely available Sylk WebRTC client app at http://sylkserver.com';
-        const subject = 'Call me, maybe?';
-
-        this.emailLink = `mailto:?subject=${encodeURI(subject)}&body=${encodeURI(emailMessage)}`;
     }
 
     handleClipboardButton(event) {
@@ -27,16 +21,27 @@ class CallMeMaybeModal extends Component {
     }
 
     handleEmailButton(event) {
-        Linking.canOpenURL(this.emailLink)
-            .then((supported) => {
-                if (!supported) {
-                } else {
-                    return Linking.openURL(url);
-                }
-            })
-            .catch((err) => {
-                this.props.notificationCenter().postSystemNotification('Call me', {body: 'Unable to open email app'});
-            });
+
+        const sipUri = this.props.callUrl.split('/').slice(-1)[0];    // hack!
+        const emailMessage = `You can call me using a Web browser at ${this.props.callUrl} or a SIP client at ${sipUri} ` +
+                             'or by using the freely available Sylk WebRTC client app at http://sylkserver.com';
+        const subject = 'Call me, maybe?';
+
+        openComposer({
+            subject,
+            body: emailMessage
+        })
+
+        // Linking.canOpenURL(this.emailLink)
+        //     .then((supported) => {
+        //         if (!supported) {
+        //         } else {
+        //             return Linking.openURL(url);
+        //         }
+        //     })
+        //     .catch((err) => {
+        //         this.props.notificationCenter().postSystemNotification('Call me', {body: 'Unable to open email app'});
+        //     });
 
         this.props.close();
     }

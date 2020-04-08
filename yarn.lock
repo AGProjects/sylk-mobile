@@ -7390,9 +7390,19 @@ react-native-dtmf@nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7
   version "1.0.2"
   resolved "https://codeload.github.com/nimbleape/react-native-dtmf/tar.gz/de31f8e0bbca4a33da0a887aab735fd0d7749cc9"
 
+react-native-email-link@^1.7.3:
+  version "1.7.3"
+  resolved "https://registry.yarnpkg.com/react-native-email-link/-/react-native-email-link-1.7.3.tgz#594ea39fb5a3d93a5f61f4771cb0c6e221c894b4"
+  integrity sha512-KugyNEAysWoYUh8TiIg3pFMxcktNteImyEheIsCu9+w0X9qwq+78xlqtf/jCaY8CjVb6Tk0Mf2Mn1X26LQKizQ==
+
 react-native-incall-manager@nimbleape/react-native-incall-manager#start-ringback-method:
   version "3.2.3"
   resolved "https://codeload.github.com/nimbleape/react-native-incall-manager/tar.gz/368a4457eb75fe0276194300f1219709a5e9fbd9"
+
+react-native-keyboard-spacer@^0.4.1:
+  version "0.4.1"
+  resolved "https://registry.yarnpkg.com/react-native-keyboard-spacer/-/react-native-keyboard-spacer-0.4.1.tgz#46f18a320432098a25ea9fa89f5143dd254d332d"
+  integrity sha1-RvGKMgQyCYol6p+on1FD3SVNMy0=
 
 react-native-material-drawer@^0.0.5:
   version "0.0.5"

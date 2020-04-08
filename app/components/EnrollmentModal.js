@@ -3,7 +3,10 @@ import { View, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import PropTypes from 'prop-types';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
-import { Modal, Portal, Button, TextInput, Title, Surface, HelperText, Snackbar } from 'react-native-paper';
+import { Dialog, Portal, Button, TextInput, Title, Surface, HelperText, Snackbar } from 'react-native-paper';
+import KeyboardAwareDialog from './KeyBoardAwareDialog';
+
+const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import styles from '../assets/styles/blink/_EnrollmentModal.scss';
 
@@ -28,11 +31,10 @@ class EnrollmentModal extends Component {
         this.state = Object.assign({}, this.initialState);
     }
 
-    handleFormFieldChange(event) {
-        event.preventDefault();
-        let state = {};
-        state[event.target.name] = event.target.value;
-        this.setState(state);
+    handleFormFieldChange(value, name) {
+        this.setState({
+            [name]: value
+        });
     }
 
     enrollmentFormSubmitted(event) {
@@ -87,111 +89,107 @@ class EnrollmentModal extends Component {
 
         return (
             <Portal>
-                <Modal visible={this.props.show} onDismiss={this.onHide}>
-                    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : null} enabled pointerEvents="box-none">
+                <DialogType visible={this.props.show} onDismiss={this.onHide}>
                         <Surface style={styles.container}>
-                            <ScrollView style={styles.inner}>
-                                <Title style={styles.title}>Create account</Title>
-                                <View>
-                                    <View>
-                                        <TextInput
-                                            mode="flat"
-                                            label="Display name"
-                                            name="yourName"
-                                            type="text"
-                                            placeholder="Alice"
-                                            onChange={this.handleFormFieldChange}
-                                            required
-                                            value={this.state.yourName}
-                                            disabled={this.state.enrolling}
-                                        />
-                                    </View>
-                                </View>
-                                <View>
-                                    <View>
-                                        <View>
-                                            <TextInput
-                                                mode="flat"
-                                                label="Username"
-                                                name="username"
-                                                placeholder="alice"
-                                                onChange={this.handleFormFieldChange}
-                                                required
-                                                value={this.state.username}
-                                                disabled={this.state.enrolling}
-                                            />
-                                            <HelperText
-                                                type="info"
-                                                visible={true}
-                                            >
-                                                @{config.enrollmentDomain}
-                                            </HelperText>
-                                        </View>
-                                    </View>
-                                </View>
-                                <View>
-                                    <View>
-                                        <TextInput
-                                            mode="flat"
-                                            label="Password"
-                                            name="password"
-                                            secureTextEntry={true}
-                                            textContentType="password"
-                                            onChangeText={this.handleFormFieldChange}
-                                            required value={this.state.password}
-                                            disabled={this.state.enrolling}
-                                        />
-                                    </View>
-                                </View>
-                                <View>
-                                    <View>
-                                        <TextInput
-                                            mode="flat"
-                                            label="Verify password"
-                                            secureTextEntry={true}
-                                            textContentType="password"
-                                            name="password2"
-                                            onChange={this.handleFormFieldChange}
-                                            required value={this.state.password2}
-                                            disabled={this.state.enrolling}
-                                        />
-                                    </View>
-                                </View>
-                                <View>
-                                    <View>
-                                        <TextInput
-                                            mode="flat"
-                                            label="E-Mail"
-                                            textContentType="emailAddress"
-                                            name="email"
-                                            placeholder="alice@atlanta.example.com"
-                                            onChange={this.handleFormFieldChange}
-                                            required value={this.state.email}
-                                            disabled={this.state.enrolling}
-                                        />
-                                    </View>
-                                </View>
-                                <View>
-                                    <Button
-                                        icon={buttonIcon}
-                                        loading={this.state.enrolling}
-                                        disabled={this.state.enrolling}
-                                        onPress={this.enrollmentFormSubmitted}
-                                    >
-                                        {buttonText}
-                                    </Button>
-                                </View>
-                                <Snackbar
-                                    visible={this.state.errorVisible}
-                                    duration={2000}
-                                    onDismiss={() => this.setState({ errorVisible: false })}
-                                >
-                                    {this.state.error}
-                                </Snackbar>
-                            </ScrollView>
-                        </Surface>
-                    </KeyboardAvoidingView>
-                </Modal>
+                            <Dialog.Title style={styles.title}>Create account</Dialog.Title>
+                            <TextInput
+                                mode="flat"
+                                label="Display name"
+                                name="yourName"
+                                type="text"
+                                placeholder="Alice"
+                                onChangeText={(text) => {this.handleFormFieldChange(text, 'yourName');}}
+                                required
+                                value={this.state.yourName}
+                                disabled={this.state.enrolling}
+                                returnKeyType="next"
+                                onSubmitEditing={() => this.usernameInput.focus()}
+                            />
+                            <TextInput
+                                mode="flat"
+                                label="Username"
+                                name="username"
+                                autoCapitalize="none"
+                                placeholder="alice"
+                                onChangeText={(text) => {this.handleFormFieldChange(text, 'username');}}
+                                required
+
+                                value={this.state.username}
+                                disabled={this.state.enrolling}
+                                returnKeyType="next"
+                                ref={ref => {
+                                    this.usernameInput = ref;
+                                }}
+                                onSubmitEditing={() => this.passwordInput.focus()}
+                            />
+                            <HelperText
+                                type="info"
+                                visible={true}
+                            >
+                                @{config.enrollmentDomain}
+                            </HelperText>
+                            <TextInput
+                                mode="flat"
+                                label="Password"
+                                name="password"
+                                secureTextEntry={true}
+                                textContentType="password"
+                                onChangeText={(text) => {this.handleFormFieldChange(text, 'password');}}
+                                required value={this.state.password}
+                                disabled={this.state.enrolling}
+                                returnKeyType="next"
+                                ref={ref => {
+                                    this.passwordInput = ref;
+                                }}
+                                onSubmitEditing={() => this.password2Input.focus()}
+                            />
+                            <TextInput
+                                mode="flat"
+                                label="Verify password"
+                                secureTextEntry={true}
+                                textContentType="password"
+                                name="password2"
+                                onChangeText={(text) => {this.handleFormFieldChange(text, 'password2');}}
+                                required value={this.state.password2}
+                                disabled={this.state.enrolling}
+                                returnKeyType="next"
+                                ref={ref => {
+                                    this.password2Input = ref;
+                                }}
+                                onSubmitEditing={() => this.emailInput.focus()}
+                            />
+                            <TextInput
+                                mode="flat"
+                                label="E-Mail"
+                                textContentType="emailAddress"
+                                name="email"
+                                autoCapitalize="none"
+                                placeholder="alice@atlanta.example.com"
+                                onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
+                                required value={this.state.email}
+                                disabled={this.state.enrolling}
+                                returnKeyType="go"
+                                ref={ref => {
+                                    this.emailInput = ref;
+                                }}
+                            />
+                        <Button
+                            icon={buttonIcon}
+                            loading={this.state.enrolling}
+                            disabled={this.state.enrolling}
+                            onPress={this.enrollmentFormSubmitted}
+                        >
+                            {buttonText}
+                        </Button>
+                        <Snackbar
+                            visible={this.state.errorVisible}
+                            duration={2000}
+                            onDismiss={() => this.setState({ errorVisible: false })}
+                        >
+                            {this.state.error}
+                        </Snackbar>
+                    </Surface>
+                </DialogType>
             </Portal>
         );
     }
