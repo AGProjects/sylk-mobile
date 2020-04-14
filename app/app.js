@@ -11,6 +11,7 @@ import autoBind from 'auto-bind';
 import { firebase } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
+import { getUniqueId, getBundleId } from 'react-native-device-info';
 
 registerGlobals();
 
@@ -55,6 +56,9 @@ const theme = {
     //   accent: '#f1c40f',
     },
 };
+
+const bundleId = DeviceInfo.getBundleId();
+const deviceId = DeviceInfo.getUniqueId();
 
 const callkeepOptions = {
     ios: {
@@ -230,7 +234,14 @@ class Blink extends Component {
 
     _onPushkitRegistered(token) {
         logger.debug('pushkit token', token);
+        this._sendPushToken();
         this.setState({ pushToken: token });
+    }
+
+    _sendPushToken() {
+        if (this.state.account && this.state.pushtoken) {
+            this.state.account.setDeviceToken(this.state.pushtoken, Platform.OS, deviceId, true, bundleId);
+        }
     }
 
     componentWillUnmount() {
@@ -562,8 +573,8 @@ class Blink extends Component {
                     default:
                         logger.debug(`Unknown mode: ${this.state.mode}`);
                         break;
-
                 }
+                this._sendPushToken();
             } else {
                 logger.debug('Add account error: ' + error);
                 this.setState({loading: null, status: {msg: error.message, level:'danger'}});
@@ -801,10 +812,10 @@ class Blink extends Component {
 
     outgoingCall(call) {
         this._callManager.handleSession(call, this._tmpCallStartInfo.uuid);
+        InCallManager.start({media: this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.video ? 'video' : 'audio'});
         this._tmpCallStartInfo = {};
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
-        InCallManager.start({media: false ? 'video' : 'audio'});
         this._callManager.callKeep.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
     }
 

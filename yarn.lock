@@ -7386,6 +7386,11 @@ react-native-debug@^3.0.0:
   dependencies:
     ms "0.7.1"
 
+react-native-device-info@^5.5.4:
+  version "5.5.4"
+  resolved "https://registry.yarnpkg.com/react-native-device-info/-/react-native-device-info-5.5.4.tgz#470770db4e8a35c55b8269473d81790102074057"
+  integrity sha512-koR7ZvL4V+34GwhjQxb3PNZLElpEzAvDG5AE4KIc70ufKMEHJL9VCpRXBMelihlA0u9PlYzuMgBs7tovNRAzFw==
+
 react-native-dtmf@nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9:
   version "1.0.2"
   resolved "https://codeload.github.com/nimbleape/react-native-dtmf/tar.gz/de31f8e0bbca4a33da0a887aab735fd0d7749cc9"
@@ -8797,6 +8802,21 @@ supports-color@^7.1.0:
 sylkrtc@nimbleape/sylkrtc.js#35dedbf311577ef0645a5c58ea3c10df34ae7e87:
   version "1.2.1"
   resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/35dedbf311577ef0645a5c58ea3c10df34ae7e87"
+  dependencies:
+    async "^3.1.0"
+    attachmediastream "^2.0.0"
+    blueimp-md5 "^2.10.0"
+    bowser "^2.7.0"
+    debug "^2.6.8"
+    dompurify "^2.0.7"
+    sdp-transform "^2.3.0"
+    uuid "^3.1.0"
+    webrtc-adapter "4.1.1"
+    websocket "^1.0.28"
+
+sylkrtc@nimbleape/sylkrtc.js#7ba3f2a7da94236f3d45898483d4de52981db36f:
+  version "1.2.1"
+  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/7ba3f2a7da94236f3d45898483d4de52981db36f"
   dependencies:
     async "^3.1.0"
     attachmediastream "^2.0.0"
