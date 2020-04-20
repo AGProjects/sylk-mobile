@@ -57,8 +57,8 @@ const theme = {
     },
 };
 
-const bundleId = DeviceInfo.getBundleId();
-const deviceId = DeviceInfo.getUniqueId();
+const bundleId = getBundleId();
+const deviceId = getUniqueId();
 
 const callkeepOptions = {
     ios: {
