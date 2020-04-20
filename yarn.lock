@@ -7395,10 +7395,9 @@ react-native-dtmf@nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7
   version "1.0.2"
   resolved "https://codeload.github.com/nimbleape/react-native-dtmf/tar.gz/de31f8e0bbca4a33da0a887aab735fd0d7749cc9"
 
-react-native-email-link@^1.7.3:
+react-native-email-link@muratakkas/react-native-email-link#8ca396d1b80dbd7ec5770d1fcfd9706e926818c8:
   version "1.7.3"
-  resolved "https://registry.yarnpkg.com/react-native-email-link/-/react-native-email-link-1.7.3.tgz#594ea39fb5a3d93a5f61f4771cb0c6e221c894b4"
-  integrity sha512-KugyNEAysWoYUh8TiIg3pFMxcktNteImyEheIsCu9+w0X9qwq+78xlqtf/jCaY8CjVb6Tk0Mf2Mn1X26LQKizQ==
+  resolved "https://codeload.github.com/muratakkas/react-native-email-link/tar.gz/8ca396d1b80dbd7ec5770d1fcfd9706e926818c8"
 
 react-native-incall-manager@nimbleape/react-native-incall-manager#start-ringback-method:
   version "3.2.3"
@@ -8798,21 +8797,6 @@ supports-color@^7.1.0:
   integrity sha512-oRSIpR8pxT1Wr2FquTNnGet79b3BWljqOuoW/h4oBhxJ/HUbX5nX6JSruTkvXDCFMwDPvsaTTbvMLKZWSy0R5g==
   dependencies:
     has-flag "^4.0.0"
-
-sylkrtc@nimbleape/sylkrtc.js#35dedbf311577ef0645a5c58ea3c10df34ae7e87:
-  version "1.2.1"
-  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/35dedbf311577ef0645a5c58ea3c10df34ae7e87"
-  dependencies:
-    async "^3.1.0"
-    attachmediastream "^2.0.0"
-    blueimp-md5 "^2.10.0"
-    bowser "^2.7.0"
-    debug "^2.6.8"
-    dompurify "^2.0.7"
-    sdp-transform "^2.3.0"
-    uuid "^3.1.0"
-    webrtc-adapter "4.1.1"
-    websocket "^1.0.28"
 
 sylkrtc@nimbleape/sylkrtc.js#7ba3f2a7da94236f3d45898483d4de52981db36f:
   version "1.2.1"

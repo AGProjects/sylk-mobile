@@ -235,11 +235,13 @@ class Blink extends Component {
     _onPushkitRegistered(token) {
         logger.debug('pushkit token', token);
         this._sendPushToken();
-        this.setState({ pushToken: token });
+        this.setState({ pushtoken: token });
     }
 
     _sendPushToken() {
+        logger.debug('attempting to send push token', this.state);
         if (this.state.account && this.state.pushtoken) {
+            logger.debug('sending push token');
             this.state.account.setDeviceToken(this.state.pushtoken, Platform.OS, deviceId, true, bundleId);
         }
     }

@@ -21,7 +21,7 @@
     "react-native-debug": "^3.0.0",
     "react-native-device-info": "^5.5.4",
     "react-native-dtmf": "nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9",
-    "react-native-email-link": "^1.7.3",
+    "react-native-email-link": "muratakkas/react-native-email-link#8ca396d1b80dbd7ec5770d1fcfd9706e926818c8",
     "react-native-incall-manager": "nimbleape/react-native-incall-manager#start-ringback-method",
     "react-native-keyboard-spacer": "^0.4.1",
     "react-native-material-drawer": "^0.0.5",
