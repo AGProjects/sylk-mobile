@@ -32,18 +32,6 @@ subprojects { subproject ->
                 buildToolsVersion = "28.0.3"
             }
         }
-
-        //Added to handle react-native-notifications. If RNN adds new flavors, we must ignore those as well (except reactNative59, or which ever is the one we do want)
-        if ((subproject.plugins.hasPlugin('android') || subproject.plugins.hasPlugin('android-library'))) {
-            android {
-                variantFilter { variant ->
-                    def names = variant.flavors*.name
-                    if (names.contains("reactNative59")) {
-                        setIgnore(true)
-                    }
-                }
-            }
-        }
     }
 }
 

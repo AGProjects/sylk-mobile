@@ -191,7 +191,6 @@ android {
 
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
-    implementation project(':reactnativenotifications')
 
     implementation 'com.google.firebase:firebase-core:16.0.0'
     implementation "com.google.firebase:firebase-messaging:17.3.0"

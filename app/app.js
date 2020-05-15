@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking} from 'react-native';
+import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking, Platform} from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
 import { registerGlobals } from 'react-native-webrtc';
@@ -12,6 +12,7 @@ import { firebase } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId } from 'react-native-device-info';
+import RNDrawOverlay from 'react-native-draw-overlay';
 
 registerGlobals();
 
@@ -29,7 +30,7 @@ import ConferenceByUriBox from './components/ConferenceByUriBox';
 // import ErrorPanel from './components/ErrorPanel';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
-import IncomingCallModal from './components/IncomingCallModal';
+// import IncomingCallModal from './components/IncomingCallModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -57,8 +58,12 @@ const theme = {
     },
 };
 
-const bundleId = getBundleId();
+let bundleId = `${getBundleId()}`;
 const deviceId = getUniqueId();
+
+if (Platform.OS == 'ios') {
+    bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
+}
 
 const callkeepOptions = {
     ios: {
@@ -153,6 +158,12 @@ class Blink extends Component {
     async componentDidMount() {
         this._loaded = true;
 
+        try {
+            await RNDrawOverlay.askForDispalayOverOtherAppsPermission();
+        } catch(err) {
+            console.log('error');
+        }
+
         history.push('/login');
 
         // prime the ref
@@ -210,7 +221,7 @@ class Blink extends Component {
                 .onMessage((message: RemoteMessage) => {
                     // Process your message as required
                     //on any message, register
-
+                    logger.debug({message}, 'got a message from firebase');
                 });
         }
     }
@@ -261,23 +272,27 @@ class Blink extends Component {
         // we may still never get the invite if theres network issues... so still need a timeout
         // no waiting call, so that means its still "ringing" (it may have been cancelled) so set a timer and if we havent recieved
         // an invite within 10 seconds then clear it down
-        let callUUID = notificationContent.callUUID;
+        let callUUID = notificationContent['session-id'];
+        this._callManager.waitForInviteTimeout(callUUID, notificationContent);
 
         if (VoipPushNotification.wakeupByPush) {
-          VoipPushNotification.wakeupByPush = false;
+            VoipPushNotification.wakeupByPush = false;
         }
     }
 
     _handleAppStateChange = nextAppState => {
         //TODO - stop if we havent been backgrounded because of becoming active from a push notification and then going background again
-        if (Platform.OS === "ios") {
-            if (nextAppState.match(/background/)) {
-                logger.debug('app moving to background so we should stop the client sylk client if we dont have an active call');
+        if (nextAppState.match(/background/)) {
+            logger.debug('app moving to background so we should stop the client sylk client if we dont have an active call');
+            if (this._callManager.count === 0) {
+                this.state.connection.close();
             }
         }
 
-        if (nextAppState == "active") {
-
+        if (nextAppState === 'active') {
+            if (this._callManager.count === 0 && this.state.connection) {
+                this.state.connection.reconnect();
+            }
         }
     }
 
@@ -840,7 +855,9 @@ class Blink extends Component {
                 return;
             }
             InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
-            RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
+            //if (Platform.OS !== 'ios') {
+                RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
+            //}
             this.setState({ showIncomingModal: true, inboundCall: call });
             this.setFocusEvents(true);
             call.on('stateChanged', this.inboundCallStateChanged);
@@ -848,7 +865,9 @@ class Blink extends Component {
             if (!this.muteIncoming) {
                 //this.refs.audioPlayerInbound.play(true);
                 InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
-                RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
+                //if (Platform.OS !== 'ios') {
+                    RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
+                //}
             }
             this.setFocusEvents(true);
             call.on('stateChanged', this.callStateChanged);
@@ -969,23 +988,25 @@ class Blink extends Component {
                 data.received.map(elem => {elem.direction = 'received'; return elem});
             }
             history = data.placed;
-            if (data.received) {
+            if (data.received && history) {
                 history = history.concat(data.received);
             }
-            history.sort((a,b) => {
-                return new Date(b.startTime) - new Date(a.startTime);
-            });
-            const known = [];
-            history = history.filter((elem) => {
-                if (known.indexOf(elem.remoteParty) <= -1) {
-                    if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
-                        (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
-                            known.push(elem.remoteParty);
-                            return elem;
+            if (history) {
+                history.sort((a,b) => {
+                    return new Date(b.startTime) - new Date(a.startTime);
+                });
+                const known = [];
+                history = history.filter((elem) => {
+                    if (known.indexOf(elem.remoteParty) <= -1) {
+                        if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
+                            (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
+                                known.push(elem.remoteParty);
+                                return elem;
+                        }
                     }
-                }
-            });
-            this.setState({serverHistory: history});
+                });
+                this.setState({serverHistory: history});
+            }
         }, (errorCode) => {
             logger.debug('Error getting call history from server: %o', errorCode)
         });
@@ -1040,12 +1061,12 @@ class Blink extends Component {
 
                                 <LoadingScreen text={this.state.loading} show={this.state.loading !== null}/>
 
-                                <IncomingCallModal
+                                {/* <IncomingCallModal
                                     call={this.state.inboundCall}
                                     onAnswer={this.callKeepAnswerCall}
                                     onHangup={this.callKeepRejectCall}
                                     show={this.state.showIncomingModal}
-                                />
+                                /> */}
 
                                 {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
                                 <Switch>

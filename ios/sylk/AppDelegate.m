@@ -16,7 +16,6 @@
 #import <PushKit/PushKit.h>
 @import Firebase;
 #import "RNCallKeep.h"
-// #import "RNNotifications.h"
 #import "RNVoipPushNotificationManager.h"
 
 @implementation AppDelegate
@@ -79,16 +78,25 @@ continueUserActivity:(NSUserActivity *)userActivity
 
 // Handle incoming pushes
 - (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload forType:(NSString *)type withCompletionHandler:(void (^)(void))completion{
-  // Process the received push
-  [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
   NSLog(@"Got a PUSHKIT NOTIFICATION");
-  // Retrieve information like handle and callerName here
-  NSString *uuid = [payload.dictionaryPayload valueForKey:@"callUUID"];
-  NSString *callerName = [payload.dictionaryPayload valueForKey:@"fromName"];
-  NSString *handle = [payload.dictionaryPayload valueForKey:@"fromNumber"];
 
-  [RNCallKeep reportNewIncomingCall:uuid handle:handle handleType:@"number" hasVideo:false localizedCallerName:callerName fromPushKit: YES];
+  [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
+  // Retrieve information like handle and callerName here
+  NSString *eventType = [payload.dictionaryPayload valueForKey:@"event"];
+  NSLog(@"Value of eventType = %@", eventType);
+
+  // if ([eventType isEqualToString:@"incoming_session"])
+  // {
+  NSString *calluuid = [payload.dictionaryPayload valueForKey:@"session-id"];
+  NSString *mediaType = [payload.dictionaryPayload valueForKey:@"media-type"];
+  NSString *callerName = [payload.dictionaryPayload valueForKey:@"from_display_name"];
+  NSString *handle = [payload.dictionaryPayload valueForKey:@"from_uri"];
+
+  [RNCallKeep reportNewIncomingCall:calluuid handle:handle handleType:@"generic" hasVideo:[mediaType isEqualToString:@"video"] localizedCallerName:callerName fromPushKit: YES payload:payload.dictionaryPayload withCompletionHandler:nil];
+  // }
+  // else {
   completion();
+  // }
 }
 
 @end

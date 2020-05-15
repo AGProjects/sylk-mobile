@@ -7375,9 +7375,9 @@ react-mixin@^4.0.0:
     object-assign "^4.0.1"
     smart-mixin "^2.0.0"
 
-react-native-callkeep@nimbleape/react-native-callkeep-1#6ee6f02146faa51010a5559c392f3800008210fd:
-  version "3.0.10"
-  resolved "https://codeload.github.com/nimbleape/react-native-callkeep-1/tar.gz/6ee6f02146faa51010a5559c392f3800008210fd"
+react-native-callkeep@react-native-webrtc/react-native-callkeep#master:
+  version "3.0.12"
+  resolved "https://codeload.github.com/react-native-webrtc/react-native-callkeep/tar.gz/5b37f2d1572b749cb0ad1a106d556a6e3163877b"
 
 react-native-debug@^3.0.0:
   version "3.0.0"
@@ -7391,13 +7391,19 @@ react-native-device-info@^5.5.4:
   resolved "https://registry.yarnpkg.com/react-native-device-info/-/react-native-device-info-5.5.4.tgz#470770db4e8a35c55b8269473d81790102074057"
   integrity sha512-koR7ZvL4V+34GwhjQxb3PNZLElpEzAvDG5AE4KIc70ufKMEHJL9VCpRXBMelihlA0u9PlYzuMgBs7tovNRAzFw==
 
+react-native-draw-overlay@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/react-native-draw-overlay/-/react-native-draw-overlay-1.0.1.tgz#718d716c820f36726841a05410c2ea5df96ba2e0"
+  integrity sha512-6hMIhl43+Rh2Tjxqy7BptmGcTshnqSnQSUwkdIEheEgIV+VHtDWGzRinZrPziknzJSsbOcQgRaQ5BUTH0tQlEQ==
+
 react-native-dtmf@nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9:
   version "1.0.2"
   resolved "https://codeload.github.com/nimbleape/react-native-dtmf/tar.gz/de31f8e0bbca4a33da0a887aab735fd0d7749cc9"
 
-react-native-email-link@muratakkas/react-native-email-link#8ca396d1b80dbd7ec5770d1fcfd9706e926818c8:
-  version "1.7.3"
-  resolved "https://codeload.github.com/muratakkas/react-native-email-link/tar.gz/8ca396d1b80dbd7ec5770d1fcfd9706e926818c8"
+react-native-email-link@1.7.5:
+  version "1.7.5"
+  resolved "https://registry.yarnpkg.com/react-native-email-link/-/react-native-email-link-1.7.5.tgz#cb0d6f3bc0e87c1bb4896ae1133ca08705c07ea0"
+  integrity sha512-9Nsj1GaJKl0aNi7WJuqlxAnD2uNsqYIb50JoXj4VBJJAPMFjozK9OXGrHllalpZLdBq6Q2gN9nKBk3JJaL+DVw==
 
 react-native-incall-manager@nimbleape/react-native-incall-manager#start-ringback-method:
   version "3.2.3"
@@ -7414,13 +7420,6 @@ react-native-material-drawer@^0.0.5:
   integrity sha512-JqYSivMnY5V0O5I5EMXqnxgsZhBzosQZfyytFRrORZAI8ZUUX0juE+IlJm7WcveRFc6+KuH3R1mRetC0ZObD5A==
   dependencies:
     "@babel/runtime" "^7.5.5"
-
-react-native-notifications@telzio/react-native-notifications#feature-android-headless-data-messages:
-  version "2.1.3"
-  resolved "https://codeload.github.com/telzio/react-native-notifications/tar.gz/9007896ea69124138c14c7af32dede894e86bdf2"
-  dependencies:
-    core-js "^1.0.0"
-    uuid "^2.0.3"
 
 react-native-paper@^3.4.0:
   version "3.6.0"
@@ -7484,10 +7483,10 @@ react-native-vector-icons@^6.2.0, react-native-vector-icons@^6.6.0:
     prop-types "^15.6.2"
     yargs "^13.2.2"
 
-react-native-voip-push-notification@^2.0.0:
-  version "2.0.0"
-  resolved "https://registry.yarnpkg.com/react-native-voip-push-notification/-/react-native-voip-push-notification-2.0.0.tgz#2d2bf6d55503ac9eaedc30610945931ce5b68201"
-  integrity sha512-CwRvZWjcTULXLIRrd7wlx7czIPQ3GoPbryoyr6ZGFxSRXtTy0YSogTkyVzpiULFe8jdlP46UKmeZI+Gj2V1ugA==
+react-native-voip-push-notification@2.1.0:
+  version "2.1.0"
+  resolved "https://registry.yarnpkg.com/react-native-voip-push-notification/-/react-native-voip-push-notification-2.1.0.tgz#3a580be2da72cf1a4834d2a491c1789a8f72c541"
+  integrity sha512-ihR/E5iRD+4NM6DL5wcVLC8wn+Oo6TErTwQdIuO1ZeWpIOLp6X4baNJ+fwxiuT9oIHqfMOJWUGQ9TRESOcTOoQ==
 
 react-native-webrtc@nimbleape/react-native-webrtc#493cb3ecd55b9d477728802dbb730a51bd20ffe8:
   version "1.75.3"
@@ -8798,9 +8797,9 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-sylkrtc@nimbleape/sylkrtc.js#7ba3f2a7da94236f3d45898483d4de52981db36f:
+sylkrtc@nimbleape/sylkrtc.js#ba191ca3c5b432523acc984738b7224244f70c6a:
   version "1.2.1"
-  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/7ba3f2a7da94236f3d45898483d4de52981db36f"
+  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/ba191ca3c5b432523acc984738b7224244f70c6a"
   dependencies:
     async "^3.1.0"
     attachmediastream "^2.0.0"
@@ -9265,11 +9264,6 @@ utils-merge@1.0.1:
   version "1.0.1"
   resolved "https://registry.yarnpkg.com/utils-merge/-/utils-merge-1.0.1.tgz#9f95710f50a267947b2ccc124741c1028427e713"
   integrity sha1-n5VxD1CiZ5R7LMwSR0HBAoQn5xM=
-
-uuid@^2.0.3:
-  version "2.0.3"
-  resolved "https://registry.yarnpkg.com/uuid/-/uuid-2.0.3.tgz#67e2e863797215530dff318e5bf9dcebfd47b21a"
-  integrity sha1-Z+LoY3lyFVMN/zGOW/nc6/1Hsho=
 
 uuid@^3.1.0, uuid@^3.3.2:
   version "3.4.0"
