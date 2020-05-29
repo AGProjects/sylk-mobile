@@ -982,6 +982,13 @@
     eslint-plugin-react-native "3.6.0"
     prettier "1.16.4"
 
+"@react-native-community/push-notification-ios@^1.2.0":
+  version "1.2.0"
+  resolved "https://registry.yarnpkg.com/@react-native-community/push-notification-ios/-/push-notification-ios-1.2.0.tgz#3353598450a39c42d079603aad2d1c0f9c2c1729"
+  integrity sha512-B5qPb9P/6vvxGGQDePlK/q6NxoZPWSVFtKCQ9jlboP7gNZmf3AAyBhTzrb++s2NSXXogjkGi6vt9df1ipZiawQ==
+  dependencies:
+    invariant "^2.2.4"
+
 "@react-native-firebase/app-types@6.3.4":
   version "6.3.4"
   resolved "https://registry.yarnpkg.com/@react-native-firebase/app-types/-/app-types-6.3.4.tgz#e54a3de33455417db63a7b1de2b7795af1c25cae"
@@ -7375,9 +7382,10 @@ react-mixin@^4.0.0:
     object-assign "^4.0.1"
     smart-mixin "^2.0.0"
 
-react-native-callkeep@react-native-webrtc/react-native-callkeep#master:
-  version "3.0.12"
-  resolved "https://codeload.github.com/react-native-webrtc/react-native-callkeep/tar.gz/5b37f2d1572b749cb0ad1a106d556a6e3163877b"
+react-native-callkeep@3.0.13:
+  version "3.0.13"
+  resolved "https://registry.yarnpkg.com/react-native-callkeep/-/react-native-callkeep-3.0.13.tgz#30200e0da7d5385cd630758f8e21daf5d4f02ca5"
+  integrity sha512-md07EklJQkrh5ImMxFk17nc8qQxj675c5OKmdyi2yEf4GmPB0xUOOPWyf8/WWutRRUCw/wvv355d8ScecQ4PvA==
 
 react-native-debug@^3.0.0:
   version "3.0.0"

@@ -306,6 +306,8 @@ PODS:
     - React
   - RNCAsyncStorage (1.8.0):
     - React
+  - RNCPushNotificationIOS (1.2.0):
+    - React
   - RNDeviceInfo (5.5.4):
     - React
   - RNDtmf (1.0.0):
@@ -358,6 +360,7 @@ DEPENDENCIES:
   - ReactNativeIncallManager (from `../node_modules/react-native-incall-manager`)
   - RNCallKeep (from `../node_modules/react-native-callkeep`)
   - "RNCAsyncStorage (from `../node_modules/@react-native-community/async-storage`)"
+  - "RNCPushNotificationIOS (from `../node_modules/@react-native-community/push-notification-ios`)"
   - RNDeviceInfo (from `../node_modules/react-native-device-info`)
   - RNDtmf (from `../node_modules/react-native-dtmf/ios`)
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
@@ -445,6 +448,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-callkeep"
   RNCAsyncStorage:
     :path: "../node_modules/@react-native-community/async-storage"
+  RNCPushNotificationIOS:
+    :path: "../node_modules/@react-native-community/push-notification-ios"
   RNDeviceInfo:
     :path: "../node_modules/react-native-device-info"
   RNDtmf:
@@ -508,6 +513,7 @@ SPEC CHECKSUMS:
   ReactNativeIncallManager: 155aa4612c0daa6e8f0af761b7b660aa6b13e20f
   RNCallKeep: 99a56dc650bba1af3eaad0ab9bbc83ce0bc58e32
   RNCAsyncStorage: 5d83b49070d41fd72906a116c5e7bdac4ea3a814
+  RNCPushNotificationIOS: 4d9ffd08f00ef6c1029ebbf4d72fc711eca3ff01
   RNDeviceInfo: 6a3d16fce033f6979c4a6a41e62244d183e8c765
   RNDtmf: 3d027df415fd00b707061864e2ce270f04d22f3d
   RNFBApp: 7d4006751de8bb5cafa2e8d2e7d94ee250df81db

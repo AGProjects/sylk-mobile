@@ -19,6 +19,8 @@
 		2DCD954D1E0B4F2C00145EB5 /* sylkTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 00E356F21AD99517003FC87E /* sylkTests.m */; };
 		6167D4A601229A7369CC95C2 /* libPods-sylk-tvOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 97E31D80CC3854DFCF4BE29A /* libPods-sylk-tvOS.a */; };
 		642006FA24364F8D00F214A5 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 642006F924364F8D00F214A5 /* GoogleService-Info.plist */; };
+		64893BB324815ED900F1ACB1 /* incallmanager_ringback.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */; };
+		64893BB52481601600F1ACB1 /* incallmanager_busytone.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */; };
 		836AC13CB62B671217B01187 /* libPods-sylk-tvOSTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = ECAE7D40ED513B47A64B1E5C /* libPods-sylk-tvOSTests.a */; };
 		F94FA55B6581AED0640B0A11 /* libPods-sylkTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = DB529F1F69462E254A0E3D32 /* libPods-sylkTests.a */; };
 /* End PBXBuildFile section */
@@ -66,6 +68,8 @@
 		545EA2F7DD5FB702AA32A25A /* Pods-sylk-tvOS.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-sylk-tvOS.debug.xcconfig"; path = "Target Support Files/Pods-sylk-tvOS/Pods-sylk-tvOS.debug.xcconfig"; sourceTree = "<group>"; };
 		5A3CF81527785048E1FCBA8E /* Pods-sylk-tvOSTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-sylk-tvOSTests.debug.xcconfig"; path = "Target Support Files/Pods-sylk-tvOSTests/Pods-sylk-tvOSTests.debug.xcconfig"; sourceTree = "<group>"; };
 		642006F924364F8D00F214A5 /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; name = incallmanager_ringback.mp3; path = ../app/assets/sounds/incallmanager_ringback.mp3; sourceTree = "<group>"; };
+		64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; name = incallmanager_busytone.mp3; path = ../app/assets/sounds/incallmanager_busytone.mp3; sourceTree = "<group>"; };
 		64E96AF423C4CAEC004F2E23 /* sylk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = sylk.entitlements; path = sylk/sylk.entitlements; sourceTree = "<group>"; };
 		671D4DAF69E7476BA7978555 /* AntDesign.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = AntDesign.ttf; path = "../node_modules/react-native-vector-icons/Fonts/AntDesign.ttf"; sourceTree = "<group>"; };
 		71521CAD4ABB4743BEBB2695 /* FontAwesome5_Brands.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = FontAwesome5_Brands.ttf; path = "../node_modules/react-native-vector-icons/Fonts/FontAwesome5_Brands.ttf"; sourceTree = "<group>"; };
@@ -144,6 +148,8 @@
 		13B07FAE1A68108700A75B9A /* sylk */ = {
 			isa = PBXGroup;
 			children = (
+				64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */,
+				64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
 				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
 				642006F924364F8D00F214A5 /* GoogleService-Info.plist */,
@@ -390,7 +396,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
+				64893BB52481601600F1ACB1 /* incallmanager_busytone.mp3 in Resources */,
 				642006FA24364F8D00F214A5 /* GoogleService-Info.plist in Resources */,
+				64893BB324815ED900F1ACB1 /* incallmanager_ringback.mp3 in Resources */,
 				13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

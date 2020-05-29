@@ -42,7 +42,7 @@ platform :android do
     next_version_code = increment_version_code(
       app_project_dir: '**/app'
     )
-	  UI.message(next_version_code)
+    UI.message(next_version_code)
     set_value_in_build(
       key: 'versionCode',
       value: next_version_code

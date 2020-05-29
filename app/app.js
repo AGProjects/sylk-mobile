@@ -13,6 +13,7 @@ import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId } from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
 
 registerGlobals();
 
@@ -47,6 +48,10 @@ const backgroundImage = require('./assets/images/dark_linen.png');
 
 const logger = new Logger("App");
 
+function checkIosPermissions() {
+    return new Promise(resolve => PushNotificationIOS.checkPermissions(resolve));
+  }
+
 const theme = {
     ...DefaultTheme,
     dark: true,
@@ -63,6 +68,7 @@ const deviceId = getUniqueId();
 
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
+    // bundleId = `${bundleId}.dev`;
 }
 
 const callkeepOptions = {
@@ -71,7 +77,7 @@ const callkeepOptions = {
         maximumCallGroups: 1,
         maximumCallsPerCallGroup: 1,
         supportsVideo: true,
-        imageName: "Image"
+        imageName: "Image-1"
     },
     android: {
         alertTitle: 'Calling Account Permission Required',
@@ -119,7 +125,8 @@ class Blink extends Component {
             history: [],
             serverHistory: [],
             devices: {},
-            pushtoken: null
+            pushtoken: null,
+            pushkittoken: null
         };
         this.state = Object.assign({}, this._initialSstate);
 
@@ -170,6 +177,8 @@ class Blink extends Component {
         logger.debug('NotificationCenter ref: %o', this._notificationCenter);
 
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
+        this._boundOnPushRegistered = this._onPushRegistered.bind(this);
+
 
         if (Platform.OS === 'android') {
 
@@ -184,14 +193,19 @@ class Blink extends Component {
             firebase.messaging().getToken()
             .then(fcmToken => {
                 if (fcmToken) {
-                    this._onPushkitRegistered(fcmToken);
+                    this._onPushRegistered(fcmToken);
                 }
             });
-        }
-
-        if (Platform.OS === 'ios') {
+        } else if (Platform.OS === 'ios') {
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
+
+            PushNotificationIOS.addEventListener('register', this._boundOnPushRegistered);
+
+            //let permissions = await checkIosPermissions();
+            //if (!permissions.alert) {
+                PushNotificationIOS.requestPermissions();
+            //}
         }
 
         this.boundRnStartAction = this._callkeepStartedCall.bind(this);
@@ -203,9 +217,7 @@ class Blink extends Component {
         if (Platform.OS === 'ios') {
             this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
-        }
-
-        if (Platform.OS === 'android') {
+        } else if (Platform.OS === 'android') {
             firebase
                 .messaging()
                 .requestPermission()
@@ -229,6 +241,11 @@ class Blink extends Component {
     _callkeepStartedCall(data) {
         logger.debug('accessing Call Object', this._tmpCallStartInfo, data);
 
+        if (!this._tmpCallStartInfo && this.state.currentCall) {
+            //this is likely when sopmeone presses video in callkit on an audio call :(
+            return;
+        }
+
         if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
             this.startConference(data.handle);
         } else if (this._tmpCallStartInfo.options) {
@@ -245,7 +262,11 @@ class Blink extends Component {
 
     _onPushkitRegistered(token) {
         logger.debug('pushkit token', token);
-        this._sendPushToken();
+        this.setState({ pushkittoken: token });
+    }
+
+    _onPushRegistered(token) {
+        logger.debug('push token', token);
         this.setState({ pushtoken: token });
     }
 
@@ -253,7 +274,15 @@ class Blink extends Component {
         logger.debug('attempting to send push token', this.state);
         if (this.state.account && this.state.pushtoken) {
             logger.debug('sending push token');
-            this.state.account.setDeviceToken(this.state.pushtoken, Platform.OS, deviceId, true, bundleId);
+
+            let token = null;
+
+            if (Platform.OS === 'ios') {
+                token = `${this.state.pushkittoken}#${this.state.pushtoken}`;
+            } else if (Platform.OS === 'android') {
+                token = this.state.pushtoken;
+            }
+            this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
         }
     }
 
@@ -265,7 +294,7 @@ class Blink extends Component {
 
     _onNotificationReceivedBackground(notification) {
         let notificationContent = notification.getData();
-        //console.log('got a pushkit call', notificationContent);
+        logger.debug('Got a voip background push', notification.getData());
 
         // get the uuid from the notification
         // have we already got a waiting call in call manager? if we do, then its been "answered" and we're waiting for the invite
@@ -278,6 +307,8 @@ class Blink extends Component {
         if (VoipPushNotification.wakeupByPush) {
             VoipPushNotification.wakeupByPush = false;
         }
+
+        VoipPushNotification.onVoipNotificationCompleted(callUUID);
     }
 
     _handleAppStateChange = nextAppState => {
@@ -345,7 +376,7 @@ class Blink extends Component {
     }
 
     registrationStateChanged(oldState, newState, data) {
-        logger.debug('Registration state changed! ' + newState);
+        logger.debug('Registration state changed! ', oldState, newState, data);
         this.setState({registrationState: newState});
         if (newState === 'failed') {
             let reason = data.reason;
@@ -378,17 +409,15 @@ class Blink extends Component {
 
         switch (newState) {
             case 'progress':
-                if (Platform.OS === 'ios') {
-                    InCallManager.startRingback('_BUNDLE_');
-                } else {
-                    InCallManager.startRingback('_DTMF_');
-                }
+                InCallManager.startRingback('_BUNDLE_');
                 break;
             case 'accepted':
                 this._callManager.callKeep.backToForeground();
                 InCallManager.stopRingback();
                 logger.debug('Setting Call as active in callkeep', this.state.currentCall._callkeepUUID);
-                this._callManager.callKeep.setCurrentCallActive(this.state.currentCall._callkeepUUID);
+                if (this.state.currentCall) {
+                    this._callManager.callKeep.setCurrentCallActive(this.state.currentCall._callkeepUUID);
+                }
                 break;
             case 'terminated':
                 InCallManager.stop({busytone: '_BUNDLE_'});
@@ -434,7 +463,9 @@ class Blink extends Component {
                     reason = 'Connection failed';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 }
-                this._callManager.callKeep.reportEndCallWithUUID(this.state.currentCall._callkeepUUID, CALLKEEP_REASON);
+                if (this.state.currentCall) {
+                    this._callManager.callKeep.reportEndCallWithUUID(this.state.currentCall._callkeepUUID, CALLKEEP_REASON);
+                }
                 this._callManager.remove();
 
                 this._notificationCenter.postSystemNotification('Call ended', {body: reason, timeout: callSuccesfull ? 5 : 10});
@@ -561,7 +592,9 @@ class Blink extends Component {
                         account.on('missedCall', this.missedCall);
                         account.on('conferenceInvite', this.conferenceInvite);
                         this.setState({account: account});
+                        this._sendPushToken();
                         this.state.account.register();
+                        logger.debug(this.state.mode);
                         if (this.state.mode !== MODE_PRIVATE) {
                             storage.set('account', {
                                 accountId: this.state.accountId,
@@ -591,7 +624,6 @@ class Blink extends Component {
                         logger.debug(`Unknown mode: ${this.state.mode}`);
                         break;
                 }
-                this._sendPushToken();
             } else {
                 logger.debug('Add account error: ' + error);
                 this.setState({loading: null, status: {msg: error.message, level:'danger'}});
@@ -1126,6 +1158,8 @@ class Blink extends Component {
                     logout = {this.logout}
                     preview = {this.startPreview}
                     toggleMute = {this.toggleMute}
+                    connection = {this.state.connection}
+                    registration = {this.state.registrationState}
                 />
                 <ReadyBox
                     account   = {this.state.account}

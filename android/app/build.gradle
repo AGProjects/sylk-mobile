@@ -153,12 +153,16 @@ android {
         }
 
         release {
-            if (project.hasProperty('SYLK_UPLOAD_STORE_FILE')) {
-                storeFile file(SYLK_UPLOAD_STORE_FILE)
-                storePassword SYLK_UPLOAD_STORE_PASSWORD
-                keyAlias SYLK_UPLOAD_KEY_ALIAS
-                keyPassword SYLK_UPLOAD_KEY_PASSWORD
-            }
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+            // if (project.hasProperty('SYLK_UPLOAD_STORE_FILE')) {
+            //     storeFile file(SYLK_UPLOAD_STORE_FILE)
+            //     storePassword SYLK_UPLOAD_STORE_PASSWORD
+            //     keyAlias SYLK_UPLOAD_KEY_ALIAS
+            //     keyPassword SYLK_UPLOAD_KEY_PASSWORD
+            // }
         }
     }
     buildTypes {

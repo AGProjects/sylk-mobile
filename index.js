@@ -10,6 +10,8 @@ import bgCalling from './bgCalling';
 
 import { firebase } from '@react-native-firebase/messaging';
 
+console.disableYellowBox = true;
+
 // New background task registration
 firebase.messaging().setBackgroundMessageHandler(bgMessaging);
 

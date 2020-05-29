@@ -17,6 +17,8 @@
 @import Firebase;
 #import "RNCallKeep.h"
 #import "RNVoipPushNotificationManager.h"
+#import <UserNotifications/UserNotifications.h>
+#import <RNCPushNotificationIOS.h>
 
 @implementation AppDelegate
 
@@ -28,6 +30,10 @@
   if ([FIRApp defaultApp] == nil) {
     [FIRApp configure];
   }
+
+  // Define UNUserNotificationCenter
+  UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+  center.delegate = self;
 
   RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
   RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
@@ -42,6 +48,12 @@
   self.window.rootViewController = rootViewController;
   [self.window makeKeyAndVisible];
   return YES;
+}
+
+//Called when a notification is delivered to a foreground app.
+-(void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
+{
+  completionHandler(UNAuthorizationOptionSound | UNAuthorizationOptionAlert | UNAuthorizationOptionBadge);
 }
 
 - (BOOL)application:(UIApplication *)application
@@ -70,10 +82,73 @@ continueUserActivity:(NSUserActivity *)userActivity
 #endif
 }
 
+// Required to register for notifications
+- (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
+{
+ [RNCPushNotificationIOS didRegisterUserNotificationSettings:notificationSettings];
+}
+// Required for the register event.
+- (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
+{
+ [RNCPushNotificationIOS didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
+}
+// Required for the notification event. You must call the completion handler after handling the remote notification.
+- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
+fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
+{
+  NSLog(@"Got a PUSH NOTIFICATION");
+
+  NSString *eventType = userInfo[@"event"];
+  NSLog(@"Value of eventType = %@", eventType);
+
+  if ([eventType isEqualToString:@"cancel"])
+  {
+    NSString *calluuid = userInfo[@"session-id"];
+    BOOL active = [RNCallKeep isCallActive:calluuid];
+
+    if (active) {
+      [RNCallKeep endCallWithUUID:calluuid reason:2];
+
+    }
+    return completionHandler(.noData);
+  }
+
+  [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
+}
+// Required for the registrationError event.
+- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
+{
+ [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
+}
+// IOS 10+ Required for localNotification event
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler
+{
+  [RNCPushNotificationIOS didReceiveNotificationResponse:response];
+  completionHandler();
+}
+// IOS 4-10 Required for the localNotification event.
+- (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
+{
+ [RNCPushNotificationIOS didReceiveLocalNotification:notification];
+}
+
+
 // Handle updated push credentials
 - (void)pushRegistry:(PKPushRegistry *)registry didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(NSString *)type {
   // Register VoIP push token (a property of PKPushCredentials) with server
   [RNVoipPushNotificationManager didUpdatePushCredentials:credentials forType:(NSString *)type];
+}
+
+- (void)pushRegistry:(PKPushRegistry *)registry didInvalidatePushTokenForType:(PKPushType)type
+{
+  // --- The system calls this method when a previously provided push token is no longer valid for use. No action is necessary on your part to reregister the push type. Instead, use this method to notify your server not to send push notifications using the matching push token.
+}
+
+// --- Handle incoming pushes (for ios <= 10)
+- (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload forType:(PKPushType)type {
+  [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
 }
 
 // Handle incoming pushes
@@ -92,10 +167,12 @@ continueUserActivity:(NSUserActivity *)userActivity
   NSString *callerName = [payload.dictionaryPayload valueForKey:@"from_display_name"];
   NSString *handle = [payload.dictionaryPayload valueForKey:@"from_uri"];
 
+  [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
+
   [RNCallKeep reportNewIncomingCall:calluuid handle:handle handleType:@"generic" hasVideo:[mediaType isEqualToString:@"video"] localizedCallerName:callerName fromPushKit: YES payload:payload.dictionaryPayload withCompletionHandler:nil];
   // }
   // else {
-  completion();
+  //completion();
   // }
 }
 
