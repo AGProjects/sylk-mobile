@@ -110,7 +110,7 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
       [RNCallKeep endCallWithUUID:calluuid reason:2];
 
     }
-    return completionHandler(.noData);
+    return completionHandler(UIBackgroundFetchResultNoData);
   }
 
   [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
