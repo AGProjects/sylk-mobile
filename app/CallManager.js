@@ -146,6 +146,9 @@ export default class CallManager extends events.EventEmitter {
 
     handleSession(session, sessionUUID) {
 
+        logger.debug('Handling session, id is ', session.id);
+        logger.debug('Handling Session, call map is', this._callIDMap);
+
         let incomingCallUUID = this._callIDMap.has(session.id) && this._callIDMap.get(session.id)
 
         session._callkeepUUID = sessionUUID || incomingCallUUID || uuid.v4();

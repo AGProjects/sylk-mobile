@@ -156,6 +156,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
   NSLog(@"Got a PUSHKIT NOTIFICATION");
 
   [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
+
+
+
+
   // Retrieve information like handle and callerName here
   NSString *eventType = [payload.dictionaryPayload valueForKey:@"event"];
   NSLog(@"Value of eventType = %@", eventType);
@@ -169,7 +173,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
   [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
 
-  [RNCallKeep reportNewIncomingCall:calluuid handle:handle handleType:@"generic" hasVideo:[mediaType isEqualToString:@"video"] localizedCallerName:callerName fromPushKit: YES payload:payload.dictionaryPayload withCompletionHandler:nil];
+
+  if ([[UIApplication sharedApplication] applicationState] != UIApplicationStateActive) {
+    [RNCallKeep reportNewIncomingCall:calluuid handle:handle handleType:@"generic" hasVideo:[mediaType isEqualToString:@"video"] localizedCallerName:callerName fromPushKit: YES payload:payload.dictionaryPayload withCompletionHandler:nil];
+  }
   // }
   // else {
   //completion();
