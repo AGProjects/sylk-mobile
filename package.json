@@ -78,7 +78,7 @@
     "react-visibility-sensor": "^5.1.1",
     "sass-lint": "^1.13.1",
     "superagent": "^3.8.3",
-    "sylkrtc": "nimbleape/sylkrtc.js#ba191ca3c5b432523acc984738b7224244f70c6a",
+    "sylkrtc": "nimbleape/sylkrtc.js#7fdfd6534390ee4a31fe5f58b84b92194117ab48",
     "through2": "^3.0.1",
     "underscore": "^1.9.1",
     "uuid": "^7.0.2",
