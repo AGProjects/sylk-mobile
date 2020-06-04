@@ -1596,11 +1596,6 @@ atob@^2.1.2:
   resolved "https://registry.yarnpkg.com/atob/-/atob-2.1.2.tgz#6d9517eb9e030d2436666651e86bd9f6f13533c9"
   integrity sha512-Wm6ukoaOGJi/73p/cl2GvLjTI5JM1k/O14isD73YML8StrH/7/lRFgmg8nICZgD3bZZvjwCGxtMOD3wWNAu8cg==
 
-attachmediastream@^2.0.0:
-  version "2.1.0"
-  resolved "https://registry.yarnpkg.com/attachmediastream/-/attachmediastream-2.1.0.tgz#534271f4789f63b577d499dda35ed1822101286f"
-  integrity sha512-8zx/3Bwo/PxqwpNrEm2Zf9ZBCjfkLmLhS7lqzfP1eWH69iD/WyKWFpysben+gYxMSHcO9S94qvseGk4FVxba0g==
-
 audio-context@^1.0.3:
   version "1.0.3"
   resolved "https://registry.yarnpkg.com/audio-context/-/audio-context-1.0.3.tgz#aae5636691a8cdc15fc91059704cbc7c2fb7abf9"
@@ -1799,11 +1794,6 @@ block-stream@*:
   integrity sha1-E+v+d4oDIFz+A3UUgeu0szAMEmo=
   dependencies:
     inherits "~2.0.0"
-
-blueimp-md5@^2.10.0:
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/blueimp-md5/-/blueimp-md5-2.12.0.tgz#be7367938a889dec3ffbb71138617c117e9c130a"
-  integrity sha512-zo+HIdIhzojv6F1siQPqPFROyVy7C50KzHv/k/Iz+BtvtVzSHXiMXOpq2wCfNkeBqdCv+V8XOV96tsEt2W/3rQ==
 
 blueimp-md5@^2.13.0:
   version "2.16.0"
@@ -2781,7 +2771,7 @@ dayjs@^1.8.15:
   resolved "https://registry.yarnpkg.com/dayjs/-/dayjs-1.8.20.tgz#724a5cb6ad1f6fc066b0bd9a800dedcc7886f19e"
   integrity sha512-mH0MCDxw6UCGJYxVN78h8ugWycZAO8thkj3bW6vApL5tS0hQplIDdAQcmbvl7n35H0AKdCJQaArTrIQw2xt4Qg==
 
-debug@2.6.9, debug@^2.1.1, debug@^2.2.0, debug@^2.3.3, debug@^2.6.8:
+debug@2.6.9, debug@^2.1.1, debug@^2.2.0, debug@^2.3.3:
   version "2.6.9"
   resolved "https://registry.yarnpkg.com/debug/-/debug-2.6.9.tgz#5d128515df134ff327e90a4c93f4e077a536341f"
   integrity sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==
@@ -3018,11 +3008,6 @@ dompurify@^2.0.10:
   version "2.0.11"
   resolved "https://registry.yarnpkg.com/dompurify/-/dompurify-2.0.11.tgz#cd47935774230c5e478b183a572e726300b3891d"
   integrity sha512-qVoGPjIW9IqxRij7klDQQ2j6nSe4UNWANBhZNLnsS7ScTtLb+3YdxkRY8brNTpkUiTtcXsCJO+jS0UCDfenLuA==
-
-dompurify@^2.0.7:
-  version "2.0.8"
-  resolved "https://registry.yarnpkg.com/dompurify/-/dompurify-2.0.8.tgz#6ef89d2d227d041af139c7b01d9f67ed59c2eb3c"
-  integrity sha512-vIOSyOXkMx81ghEalh4MLBtDHMx1bhKlaqHDMqM2yeitJ996SLOk5mGdDpI9ifJAgokred8Rmu219fX4OltqXw==
 
 domutils@^1.7.0:
   version "1.7.0"
@@ -8198,7 +8183,7 @@ sdp-transform@^2.3.0:
   resolved "https://registry.yarnpkg.com/sdp-transform/-/sdp-transform-2.14.0.tgz#222452e79e335f000fb9a9a2850021265d1da12d"
   integrity sha512-8ZYOau/o9PzRhY0aMuRzvmiM6/YVQR8yjnBScvZHSdBnywK5oZzAJK+412ZKkDq29naBmR3bRw8MFu0C01Gehg==
 
-sdp@^2.1.0, sdp@^2.6.0, sdp@^2.9.0:
+sdp@^2.6.0, sdp@^2.9.0:
   version "2.12.0"
   resolved "https://registry.yarnpkg.com/sdp/-/sdp-2.12.0.tgz#338a106af7560c86e4523f858349680350d53b22"
   integrity sha512-jhXqQAQVM+8Xj5EjJGVweuEzgtGWb3tmEEpl3CLP3cStInSbVHSg0QWOGQzNq8pSID4JkpeV2mPqlMDLrm0/Vw==
@@ -8826,6 +8811,21 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
+sylkrtc@nimbleape/sylkrtc.js#3fd71c11017f7cbcdf35e526112f8fb4883bd2a2:
+  version "1.4.1"
+  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/3fd71c11017f7cbcdf35e526112f8fb4883bd2a2"
+  dependencies:
+    "@rifflearning/attachmediastream" "^3.0.0"
+    async "^3.1.0"
+    blueimp-md5 "^2.13.0"
+    bowser "^2.7.0"
+    debug "^4.1.1"
+    dompurify "^2.0.10"
+    sdp-transform "^2.3.0"
+    uuid "^7.0.3"
+    webrtc-adapter "^6.4.8"
+    websocket "^1.0.28"
+
 sylkrtc@nimbleape/sylkrtc.js#7fdfd6534390ee4a31fe5f58b84b92194117ab48:
   version "1.4.1"
   resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/7fdfd6534390ee4a31fe5f58b84b92194117ab48"
@@ -8839,21 +8839,6 @@ sylkrtc@nimbleape/sylkrtc.js#7fdfd6534390ee4a31fe5f58b84b92194117ab48:
     sdp-transform "^2.3.0"
     uuid "^7.0.3"
     webrtc-adapter "^6.4.8"
-    websocket "^1.0.28"
-
-sylkrtc@nimbleape/sylkrtc.js#ba191ca3c5b432523acc984738b7224244f70c6a:
-  version "1.2.1"
-  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/ba191ca3c5b432523acc984738b7224244f70c6a"
-  dependencies:
-    async "^3.1.0"
-    attachmediastream "^2.0.0"
-    blueimp-md5 "^2.10.0"
-    bowser "^2.7.0"
-    debug "^2.6.8"
-    dompurify "^2.0.7"
-    sdp-transform "^2.3.0"
-    uuid "^3.1.0"
-    webrtc-adapter "4.1.1"
     websocket "^1.0.28"
 
 symbol-observable@1.0.1:
@@ -9309,7 +9294,7 @@ utils-merge@1.0.1:
   resolved "https://registry.yarnpkg.com/utils-merge/-/utils-merge-1.0.1.tgz#9f95710f50a267947b2ccc124741c1028427e713"
   integrity sha1-n5VxD1CiZ5R7LMwSR0HBAoQn5xM=
 
-uuid@^3.1.0, uuid@^3.3.2:
+uuid@^3.3.2:
   version "3.4.0"
   resolved "https://registry.yarnpkg.com/uuid/-/uuid-3.4.0.tgz#b23e4358afa8a202fe7a100af1f5f883f02007ee"
   integrity sha512-HjSDRw6gZE5JMggctHBcjVak08+KEVhSIiDzFnT9S9aegmp85S/bReBVTb4QTFaRNptJ9kuYaNhnbNEOkbKb/A==
@@ -9439,13 +9424,6 @@ webidl-conversions@^4.0.2:
   version "4.0.2"
   resolved "https://registry.yarnpkg.com/webidl-conversions/-/webidl-conversions-4.0.2.tgz#a855980b1f0b6b359ba1d5d9fb39ae941faa63ad"
   integrity sha512-YQ+BmxuTgd6UXZW3+ICGfyqRyHXVlD5GtQr5+qjiNW7bF0cqrzX500HVXPBOvgXb5YnzDd+h0zqyv61KUD7+Sg==
-
-webrtc-adapter@4.1.1:
-  version "4.1.1"
-  resolved "https://registry.yarnpkg.com/webrtc-adapter/-/webrtc-adapter-4.1.1.tgz#bb815b6430b9c36dac9c3756d0c9ce438b34e336"
-  integrity sha1-u4FbZDC5w22snDdW0MnOQ4s04zY=
-  dependencies:
-    sdp "^2.1.0"
 
 webrtc-adapter@^6.4.8:
   version "6.4.8"
