@@ -593,7 +593,7 @@ class Blink extends Component {
                         account.on('conferenceInvite', this.conferenceInvite);
                         this.setState({account: account});
                         this._sendPushToken();
-                        this.state.account.register();
+                        account.register();
                         logger.debug(this.state.mode);
                         if (this.state.mode !== MODE_PRIVATE) {
                             storage.set('account', {
