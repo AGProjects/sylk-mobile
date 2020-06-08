@@ -51,7 +51,9 @@ Currently we have issues running a build of ios from the cli using `yarn react-n
 open ios/sylk.xcworkspace/
 ```
 
-### Running on the Android Simulator
+### Running on the Android Simulator or device
+
+If you don't have any simulators running, and don't have an android device plugged in (or available to adb) React Native will start up a simulator for you. If you have a device available (doesn't matter if its real or a simulator) this command will output to the device.
 
 ```bash
 yarn react-native run-android
@@ -61,7 +63,7 @@ yarn react-native run-android
 
 Currently we have issues running a build of ios from the cli using `yarn react-native run-ios --device` so instead, open up xcode and run it there
 
-### Running on the Android Device
+### Running on a specific Android Device
 
 ```bash
 yarn react-native run-android --deviceId "DeviceId"
