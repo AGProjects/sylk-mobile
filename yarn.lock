@@ -8823,9 +8823,9 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-sylkrtc@nimbleape/sylkrtc.js#eba9c2cbab85df8ddd45597c3cf76051c56c8f4b:
+sylkrtc@nimbleape/sylkrtc.js#6fe4cba81d16c9f1f0cf96ff12c4842fbe9b418c:
   version "1.4.1"
-  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/eba9c2cbab85df8ddd45597c3cf76051c56c8f4b"
+  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/6fe4cba81d16c9f1f0cf96ff12c4842fbe9b418c"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"
@@ -8834,8 +8834,8 @@ sylkrtc@nimbleape/sylkrtc.js#eba9c2cbab85df8ddd45597c3cf76051c56c8f4b:
     debug "^4.1.1"
     dompurify "^2.0.10"
     react-native-get-random-values "^1.4.0"
+    react-native-uuid "^1.4.9"
     sdp-transform "^2.3.0"
-    uuid "^7.0.3"
     webrtc-adapter "^6.4.8"
     websocket "^1.0.28"
 
@@ -9301,11 +9301,6 @@ uuid@^7.0.2:
   version "7.0.2"
   resolved "https://registry.yarnpkg.com/uuid/-/uuid-7.0.2.tgz#7ff5c203467e91f5e0d85cfcbaaf7d2ebbca9be6"
   integrity sha512-vy9V/+pKG+5ZTYKf+VcphF5Oc6EFiu3W8Nv3P3zIh0EqVI80ZxOzuPfe9EHjkFNvf8+xuTHVeei4Drydlx4zjw==
-
-uuid@^7.0.3:
-  version "7.0.3"
-  resolved "https://registry.yarnpkg.com/uuid/-/uuid-7.0.3.tgz#c5c9f2c8cf25dc0a372c4df1441c41f5bd0c680b"
-  integrity sha512-DPSke0pXhTZgoF/d+WSt2QaKMCFSfx7QegxEWT+JOuHF5aWrKEn0G+ztjuJg/gG8/ItK+rbPCD/yNv8yyih6Cg==
 
 v8-compile-cache@^2.0.3:
   version "2.1.0"
