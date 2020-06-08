@@ -21,6 +21,20 @@ This repo is based off of Sylk-WebRTC - a repo housing a web app and the Electro
 
 Follow the [Getting Started guide](https://facebook.github.io/react-native/docs/getting-started) as much as you can but not everything will be explained. No install docs will be listed here for each tool as they'll change, go and check them out yourself.
 
+### Updating the app
+
+Yarn can be a bit of a pain, especially when a git dependency changes
+
+To be sure you're running the lastest code run:
+
+```bash
+rm -rf node_modules
+rm -rf ios/Pods
+yarn cache clean
+yarn
+cd ios; pod install; cd ..
+```
+
 ### Decrypting the git repo
 
 Run `git-crypt unlock` to check that you can decrypt the files in the repo. If you can't you'll need to generate a GPG key and pass it to someone with access to the repo. A good guide is located at https://medium.com/@sumitkum/securing-your-secret-keys-with-git-crypt-b2fa6ffed1a6
@@ -31,8 +45,10 @@ Use `react-native run-ios --help` and `react-native run-android --help` to give 
 
 ### Running on the iOS Simulator
 
+Currently we have issues running a build of ios from the cli using `yarn react-native run-ios` so instead, open up xcode and run it there
+
 ```bash
-yarn react-native run-ios
+open ios/sylk.xcworkspace/
 ```
 
 ### Running on the Android Simulator
@@ -43,16 +59,7 @@ yarn react-native run-android
 
 ### Running on the iOS Device
 
-```bash
-yarn react-native run-ios --device
-```
-
-if you have multiple devices connected you'll need to tell it which device
-
-```bash
-yarn react-native run-ios --device "Device Name"
-```
-
+Currently we have issues running a build of ios from the cli using `yarn react-native run-ios --device` so instead, open up xcode and run it there
 
 ### Running on the Android Device
 
