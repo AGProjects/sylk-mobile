@@ -313,12 +313,13 @@ class Blink extends Component {
 
     _handleAppStateChange = nextAppState => {
         //TODO - stop if we havent been backgrounded because of becoming active from a push notification and then going background again
-        if (nextAppState.match(/background/)) {
-            logger.debug('app moving to background so we should stop the client sylk client if we dont have an active call');
-            if (this._callManager.count === 0) {
-                this.state.connection.close();
-            }
-        }
+        // if (nextAppState.match(/background/)) {
+        //     logger.debug('app moving to background so we should stop the client sylk client if we dont have an active call');
+        //     if (this._callManager.count === 0) {
+        //         logger.debug('callmanager count is 0 so closing connection');
+        //         this.state.connection.close();
+        //     }
+        // }
 
         if (nextAppState === 'active') {
             if (this._callManager.count === 0 && this.state.connection) {
