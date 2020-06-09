@@ -310,6 +310,12 @@ class VideoBox extends Component {
                         disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
+                        size={34}
+                        style={[styles.button]}
+                        icon={this.props.speakerPhoneEnabled ? 'volume-off' : 'volume-high'}
+                        onPress={this.props.toggleSpeakerPhone}
+                    />
+                    <IconButton
                         size={50}
                         style={[styles.button, styles.hangupButton]}
                         onPress={this.hangupCall}
@@ -335,6 +341,12 @@ class VideoBox extends Component {
                         style={styles.button}
                         onPress={this.muteVideo}
                         icon={muteVideoButtonIcons}
+                    />
+                    <IconButton
+                        size={34}
+                        style={[styles.button]}
+                        icon={this.props.speakerPhoneEnabled ? 'volume-off' : 'volume-high'}
+                        onPress={this.props.toggleSpeakerPhone}
                     />
                     <IconButton
                         size={34}
@@ -370,7 +382,9 @@ VideoBox.propTypes = {
     escalateToConference    : PropTypes.func,
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
-    callKeepToggleMute      : PropTypes.func
+    callKeepToggleMute      : PropTypes.func,
+    toggleSpeakerPhone      : PropTypes.func,
+    speakerPhoneEnabled     : PropTypes.bool
 };
 
 export default VideoBox;

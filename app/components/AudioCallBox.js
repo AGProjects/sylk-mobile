@@ -119,6 +119,10 @@ class AudioCallBox extends Component {
 
     }
 
+    toggleSpeakerPhone() {
+        this.setState({audioMuted: true});
+    }
+
     showDtmfModal() {
         this.setState({showDtmfModal: true});
     }
@@ -166,6 +170,12 @@ class AudioCallBox extends Component {
                     />
                     <IconButton
                         size={34}
+                        style={[styles.button]}
+                        icon={this.props.speakerPhoneEnabled ? 'volume-off' : 'volume-high'}
+                        onPress={this.props.toggleSpeakerPhone}
+                    />
+                    <IconButton
+                        size={34}
                         style={styles.button}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
@@ -202,7 +212,9 @@ AudioCallBox.propTypes = {
     mediaPlaying            : PropTypes.func,
     remoteIdentity          : PropTypes.string,
     callKeepSendDtmf        : PropTypes.func,
-    callKeepToggleMute      : PropTypes.func
+    callKeepToggleMute      : PropTypes.func,
+    toggleSpeakerPhone      : PropTypes.func,
+    speakerPhoneEnabled     : PropTypes.bool
 };
 
 export default AudioCallBox;

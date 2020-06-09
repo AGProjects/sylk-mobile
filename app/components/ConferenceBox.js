@@ -521,6 +521,14 @@ class ConferenceBox extends Component {
                 icon={muteButtonIcons}
             />
         );
+        bottomButtons.push(
+            <IconButton
+                size={34}
+                style={styles.button}
+                icon={this.props.speakerPhoneEnabled ? 'volume-off' : 'volume-high'}
+                onPress={this.props.toggleSpeakerPhone}
+            />
+        )
         // bottomButtons.push(
         //     <View key="shareFiles">
         //         <IconButton size={34} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
@@ -678,7 +686,9 @@ ConferenceBox.propTypes = {
     call                : PropTypes.object,
     hangup              : PropTypes.func,
     remoteIdentity      : PropTypes.string,
-    generatedVideoTrack : PropTypes.bool
+    generatedVideoTrack : PropTypes.bool,
+    toggleSpeakerPhone      : PropTypes.func,
+    speakerPhoneEnabled     : PropTypes.bool
 };
 
 export default ConferenceBox;

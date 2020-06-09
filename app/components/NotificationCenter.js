@@ -33,7 +33,8 @@ class NotificationCenter extends Component {
             visible: true,
             autoDismiss: 10,
             title: title,
-            message: options.body
+            message: options.body,
+            action: null
         });
     }
 
@@ -111,6 +112,7 @@ class NotificationCenter extends Component {
             message: `${filename}`,
             title: 'Upload Successful',
             autoDismiss: 3,
+            action: null
         });
     }
 
@@ -130,6 +132,7 @@ class NotificationCenter extends Component {
             message: `Uploading of ${filename} failed`,
             title: 'File sharing failed',
             autoDismiss: 10,
+            action: null
         });
     }
 

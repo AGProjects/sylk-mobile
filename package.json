@@ -28,6 +28,7 @@
     "react-native-keyboard-spacer": "^0.4.1",
     "react-native-material-drawer": "^0.0.5",
     "react-native-paper": "^3.4.0",
+    "react-native-share": "^3.3.3",
     "react-native-snap-carousel": "^3.8.4",
     "react-native-splash-screen": "^3.2.0",
     "react-native-svg": "^10.0.0",

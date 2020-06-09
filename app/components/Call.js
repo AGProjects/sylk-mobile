@@ -127,6 +127,8 @@ class Call extends Component {
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
                         callKeepToggleMute = {this.props.callKeepToggleMute}
+                        speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
+                        toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                     />
                 );
             } else {
@@ -141,6 +143,8 @@ class Call extends Component {
                             generatedVideoTrack = {this.props.generatedVideoTrack}
                             callKeepSendDtmf = {this.props.callKeepSendDtmf}
                             callKeepToggleMute = {this.props.callKeepToggleMute}
+                            speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
+                            toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         />
                     );
                 } else {

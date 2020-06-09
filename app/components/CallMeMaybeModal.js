@@ -5,6 +5,7 @@ import { Dialog, Title, Surface, Portal, IconButton, Text } from 'react-native-p
 import autoBind from 'auto-bind';
 import { openComposer } from 'react-native-email-link';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import Share from 'react-native-share';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -49,6 +50,24 @@ class CallMeMaybeModal extends Component {
         this.props.close();
     }
 
+    handleShareButton(event) {
+
+        const sipUri = this.props.callUrl.split('/').slice(-1)[0];    // hack!
+
+        let options= {
+            subject: 'Call me, maybe?',
+            message: `You can call me using a Web browser at ${this.props.callUrl} or a SIP client at ${sipUri} or by using the freely available Sylk WebRTC client app at http://sylkserver.com`
+        }
+
+        Share.open(options)
+            .then((res) => {
+                this.props.close();
+            })
+            .catch((err) => {
+                this.props.close();
+            });
+    }
+
     render() {
 
         return (
@@ -69,6 +88,11 @@ class CallMeMaybeModal extends Component {
                                 size={34}
                                 onPress={this.handleEmailButton}
                                 icon="email"
+                            />
+                            <IconButton
+                                size={34}
+                                onPress={this.handleShareButton}
+                                icon="share-variant"
                             />
                         </View>
                     </Surface>

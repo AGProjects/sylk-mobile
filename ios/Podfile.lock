@@ -319,6 +319,8 @@ PODS:
     - Firebase/Messaging (~> 6.13.0)
     - React
     - RNFBApp
+  - RNShare (3.3.3):
+    - React
   - RNSVG (10.1.0):
     - React
   - RNVectorIcons (6.6.0):
@@ -365,6 +367,7 @@ DEPENDENCIES:
   - RNDtmf (from `../node_modules/react-native-dtmf/ios`)
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
+  - RNShare (from `../node_modules/react-native-share`)
   - RNSVG (from `../node_modules/react-native-svg`)
   - RNVectorIcons (from `../node_modules/react-native-vector-icons`)
   - RNVoipPushNotification (from `../node_modules/react-native-voip-push-notification`)
@@ -458,6 +461,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@react-native-firebase/app"
   RNFBMessaging:
     :path: "../node_modules/@react-native-firebase/messaging"
+  RNShare:
+    :path: "../node_modules/react-native-share"
   RNSVG:
     :path: "../node_modules/react-native-svg"
   RNVectorIcons:
@@ -518,6 +523,7 @@ SPEC CHECKSUMS:
   RNDtmf: 3d027df415fd00b707061864e2ce270f04d22f3d
   RNFBApp: 7d4006751de8bb5cafa2e8d2e7d94ee250df81db
   RNFBMessaging: 51cc7f6beaf4c4feac6f18ea941bba5854e3d9c6
+  RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
   RNSVG: 069864be08c9fe065a2cf7e63656a34c78653c99
   RNVectorIcons: 0bb4def82230be1333ddaeee9fcba45f0b288ed4
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36

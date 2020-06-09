@@ -3,14 +3,16 @@
 }
 
 .userIconContainer {
-    padding-top: 10px;
+    padding-top: 30px;
     margin: 0 auto;
 }
 
 .buttonContainer {
+    justify-self: flex-end;
     flex-direction: row;
     margin: 0 auto;
-    padding-top: 20px;
+    margin-top:auto;
+    bottom: 30;
 }
 
 .button {

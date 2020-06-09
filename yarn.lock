@@ -7465,6 +7465,11 @@ react-native-sass-transformer@^1.4.0:
     css-to-react-native-transform "^1.8.1"
     semver "^5.6.0"
 
+react-native-share@^3.3.3:
+  version "3.3.3"
+  resolved "https://registry.yarnpkg.com/react-native-share/-/react-native-share-3.3.3.tgz#9f0f7c28c123e5f1d287b7923d505a05fd8bd3e9"
+  integrity sha512-KFyGe7hnD7ZDJCz1kWTI5iv2MfY5weIz+aTzqyomyxxFb73rHlCRHa+NRNYvnpTntOjnqyB0/GFf1W2J9y6vJQ==
+
 react-native-snap-carousel@^3.8.4:
   version "3.8.4"
   resolved "https://registry.yarnpkg.com/react-native-snap-carousel/-/react-native-snap-carousel-3.8.4.tgz#4c749c6a714d46ed82de527233850cb5da41bc62"

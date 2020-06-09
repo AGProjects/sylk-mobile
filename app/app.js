@@ -126,7 +126,8 @@ class Blink extends Component {
             serverHistory: [],
             devices: {},
             pushtoken: null,
-            pushkittoken: null
+            pushkittoken: null,
+            speakerPhoneEnabled: null
         };
         this.state = Object.assign({}, this._initialSstate);
 
@@ -258,6 +259,7 @@ class Blink extends Component {
             };
             this.startCall(data.handle, {audio: true, video: false});
         }
+        this._notificationCenter.removeNotification();
     }
 
     _onPushkitRegistered(token) {
@@ -836,6 +838,17 @@ class Blink extends Component {
         }
     }
 
+    toggleSpeakerPhone() {
+        let mode = null;
+        if (this.state.speakerPhoneEnabled === null) {
+            mode = true;
+        }
+        InCallManager.setForceSpeakerphoneOn(mode);
+        this.setState({
+            speakerPhoneEnabled: mode
+        });
+    }
+
     escalateToConference(participants) {
         this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
         this.state.currentCall.terminate();
@@ -888,9 +901,11 @@ class Blink extends Component {
                 return;
             }
             InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
-            //if (Platform.OS !== 'ios') {
+            if (Platform.OS === 'ios') {
+                RNCallKeep.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
+            } else {
                 RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
-            //}
+            }
             this.setState({ showIncomingModal: true, inboundCall: call });
             this.setFocusEvents(true);
             call.on('stateChanged', this.inboundCallStateChanged);
@@ -898,9 +913,11 @@ class Blink extends Component {
             if (!this.muteIncoming) {
                 //this.refs.audioPlayerInbound.play(true);
                 InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
-                //if (Platform.OS !== 'ios') {
+                if (Platform.OS === 'ios') {
+                    RNCallKeep.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
+                } else {
                     RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
-                //}
+                }
             }
             this.setFocusEvents(true);
             call.on('stateChanged', this.callStateChanged);
@@ -1210,6 +1227,8 @@ class Blink extends Component {
                 callKeepSendDtmf = {this.callKeepSendDtmf}
                 callKeepToggleMute = {this.callKeepToggleMute}
                 callKeepStartCall = {this.callKeepStartCall}
+                toggleSpeakerPhone = {this.toggleSpeakerPhone}
+                speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
             />
         )
     }
@@ -1258,6 +1277,8 @@ class Blink extends Component {
                 hangupCall = {this.callKeepHangupCall}
                 shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
+                toggleSpeakerPhone = {this.toggleSpeakerPhone}
+                speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
             />
         )
     }

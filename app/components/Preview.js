@@ -116,20 +116,20 @@ class Preview extends Component {
     }
 
     render() {
-        let cameras = [];
-        let mics = [];
+        // let cameras = [];
+        // let mics = [];
 
-        this.devices.forEach((device) => {
-            if (device.kind === 'videoinput') {
-                cameras.push(
-                    <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.camera.label} title={device.label} />
-                );
-            } else if (device.kind === 'audioinput') {
-                mics.push(
-                    <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.mic.label} title={device.label} />
-                );
-            }
-        });
+        // this.devices.forEach((device) => {
+        //     if (device.kind === 'videoinput') {
+        //         cameras.push(
+        //             <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.camera.label} title={device.label} />
+        //         );
+        //     } else if (device.kind === 'audioinput') {
+        //         mics.push(
+        //             <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.mic.label} title={device.label} />
+        //         );
+        //     }
+        // });
 
 
         let header = null;
@@ -150,18 +150,18 @@ class Preview extends Component {
             );
         }
 
-        let drawercontent = (
-            <View>
-                <List.Section>
-                    <List.Subheader>Video Camera</List.Subheader>
-                    {cameras}
-                </List.Section>
-                <List.Section>
-                    <List.Subheader>Audio Input</List.Subheader>
-                    {mics}
-                </List.Section>
-            </View>
-        );
+        // let drawercontent = (
+        //     <View>
+        //         <List.Section>
+        //             <List.Subheader>Video Camera</List.Subheader>
+        //             {cameras}
+        //         </List.Section>
+        //         <List.Section>
+        //             <List.Subheader>Audio Input</List.Subheader>
+        //             {mics}
+        //         </List.Section>
+        //     </View>
+        // );
 
         return (
             <View style={styles.container}>
@@ -172,9 +172,9 @@ class Preview extends Component {
                 <View style={styles.videoContainer}>
                     <RTCView objectFit="cover" style={styles.video} streamURL={this.state.streamURL ? this.state.streamURL.toURL() : null} mirror={true}/>
                 </View>
-                <ConferenceDrawer show={this.state.showDrawer} close={this.toggleDrawer}>
+                {/* <ConferenceDrawer show={this.state.showDrawer} close={this.toggleDrawer}>
                     {drawercontent}
-                </ConferenceDrawer>
+                </ConferenceDrawer> */}
             </View>
         );
     }

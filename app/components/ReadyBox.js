@@ -16,7 +16,6 @@ import utils from '../utils';
 
 import styles from '../assets/styles/blink/_ReadyBox.scss';
 
-
 class ReadyBox extends Component {
     constructor(props) {
         super(props);
@@ -88,7 +87,7 @@ class ReadyBox extends Component {
             this.props.serverHistory.map(e => e.remoteParty)
         );
         history = [...new Set(history)];
-        console.log('history from server is', this.props.serverHistory);
+        //console.log('history from server is', this.props.serverHistory);
         return (
             <Fragment>
                 <View style={styles.wholeContainer}>
