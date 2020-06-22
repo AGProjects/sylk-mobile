@@ -22,16 +22,11 @@ class NavigationBar extends Component {
             menuVisible: false
         }
 
-        if (props.account) {
-            this.callUrl = `${config.publicUrl}/call/${props.account.id}`;
-        } else {
-            this.callUrl = '';
-        }
-
         this.menuRef = React.createRef();
     }
 
     handleMenu(event) {
+        this.callUrl = `${config.publicUrl}/call/${this.props.account.id}`;
         switch (event) {
             case 'about':
                 this.toggleAboutModal();
@@ -71,6 +66,7 @@ class NavigationBar extends Component {
         const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
         let statusIcon = null;
+        let account_id = '';
 
         statusIcon = 'check-circle';
         if (!this.props.connection || this.props.connection.state !== 'ready') {
@@ -79,12 +75,16 @@ class NavigationBar extends Component {
             statusIcon = 'priority-high';
         }
 //             <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
+        if (this.props.account) {
+            account_id = this.props.account.id;
+        }
+
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Image source={blinkLogo} style={styles.logo}/>
                 <Appbar.Content
                     title="Sylk"
-                    subtitle={`Account: ${this.props.account.id}`}
+                    subtitle={`Account: ${account_id}`}
                 />
                 {statusIcon ?
                     <Icon name={statusIcon} size={20} color="white" />
