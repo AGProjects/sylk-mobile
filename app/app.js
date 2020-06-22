@@ -423,7 +423,7 @@ class Blink extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        logger.debug(`Call state changed! ${oldState} -> ${newState}`. data);
+        logger.debug('Call state changed: ' + oldState + ' -> ' + newState);
 
         switch (newState) {
             case 'progress':
@@ -432,23 +432,30 @@ class Blink extends Component {
             case 'accepted':
                 this._callManager.callKeep.backToForeground();
                 InCallManager.stopRingback();
-                logger.debug('Setting Call as active in callkeep', this.state.currentCall._callkeepUUID);
+                logger.debug('Setting call as active in callkeep', this.state.currentCall._callkeepUUID);
                 if (this.state.currentCall) {
                     this._callManager.callKeep.setCurrentCallActive(this.state.currentCall._callkeepUUID);
                 }
                 break;
             case 'terminated':
-                InCallManager.stop({busytone: '_BUNDLE_'});
 
                 let callSuccesfull = false;
                 let reason = data.reason;
+                let play_busy_tone = true;
 
                 let CALLKEEP_REASON;
+                logger.debug('Call terminated reason: ' + reason);
 
                 if (!reason || reason.match(/200/)) {
-                    reason = 'Hangup';
-                    callSuccesfull = true;
-                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
+                    if (oldState == 'progress') {
+                        reason = 'Cancelled';
+                        play_busy_tone = false;
+                        CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
+                    } else {
+                        reason = 'Hangup';
+                        callSuccesfull = true;
+                        CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
+                    }
                 } else if (reason.match(/403/)) {
                     reason = 'This domain is not served here';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
@@ -466,6 +473,7 @@ class Blink extends Component {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/487/)) {
                     reason = 'Cancelled';
+                    play_busy_tone = false;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/488/)) {
                     reason = 'Unacceptable media';
@@ -481,12 +489,25 @@ class Blink extends Component {
                     reason = 'Connection failed';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 }
+
+                logger.debug('Call terminated normalized reason: ' + reason);
+                logger.debug('PLAY busy tone: ' + play_busy_tone);
+
+                if (play_busy_tone) {
+                    InCallManager.stop({busytone: '_BUNDLE_'});
+                } else {
+                    InCallManager.stop();
+                }
+
                 if (this.state.currentCall) {
+                    logger.debug('Call keep terminated for call ' + this.state.currentCall._callkeepUUID);
                     this._callManager.callKeep.reportEndCallWithUUID(this.state.currentCall._callkeepUUID, CALLKEEP_REASON);
                 }
                 this._callManager.remove();
 
-                this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
+                if (play_busy_tone) {
+                    this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
+                }
 
                 this.setState({
                     currentCall         : null,
@@ -890,7 +911,7 @@ class Blink extends Component {
     incomingCall(call, mediaTypes) {
         this._callManager.handleSession(call);
 
-        logger.debug('New incoming call from %o with %o', call.remoteIdentity, mediaTypes);
+        logger.debug('New incoming call from %s with %s', call.remoteIdentity, mediaTypes);
         if (!mediaTypes.audio && !mediaTypes.video) {
             // call.terminate();
             this.callKeepHangupCall();
