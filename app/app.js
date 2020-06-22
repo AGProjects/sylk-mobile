@@ -696,12 +696,6 @@ class Blink extends Component {
 
         logger.debug('getLocalMedia(), (modified) mediaConstraints=%o', constraints);
 
-        this.loadScreenTimer = setTimeout(() => {
-            this.setState({loading: 'Please allow access to your media devices'});
-        }, 150);
-
-
-
         navigator.mediaDevices.enumerateDevices()
         .then((devices) => {
             devices.forEach((device) => {
