@@ -111,9 +111,9 @@ class Blink extends Component {
             account: null,
             registrationState: null,
             registrationKeepalive: false,
+            inboundCall: null,
             currentCall: null,
             connection: null,
-            inboundCall: null,
             showIncomingModal: false,
             showScreenSharingModal: false,
             status: null,
@@ -347,29 +347,22 @@ class Blink extends Component {
                     sylkrtc.utils.closeMediaStream(this.state.localMedia);
                 }
 
-                if (this.state.currentCall) {
-                    this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-                    this.state.currentCall.terminate();
-                }
-
-                if (this.state.inboundCall && this.state.inboundCall !== this.state.currentCall) {
-                    this.state.inboundCall.removeListener('stateChanged', this.inboundCallStateChanged);
-                    this.state.inboundCall.terminate();
+                if (this.state.currentCall || this.state.inboundCall) {
+                    InCallManager.stop({busytone: '_BUNDLE_'});
+                    this.callKeepHangupCall();
+                    history.push('/ready');
                 }
 
                 this.setState({
                     registrationState: 'failed',
-                    showIncomingModal: false,
                     currentCall: null,
                     inboundCall: null,
                     localMedia: null,
-                    generatedVideoTrack: false
-                });
+                    generatedVideoTrack: false,
+                    showIncomingModal: false
+                    });
 
-                this._notificationCenter.postSystemNotification('Connecting to server...', {body: '', timeout: 5000});
-
-
-                InCallManager.stop({busytone: '_BUNDLE_'});
+//                this._notificationCenter.postSystemNotification('Connecting to server...', {body: '', timeout: 5000});
 
                 break;
             default:
@@ -510,7 +503,7 @@ class Blink extends Component {
 
                 setTimeout(() => {
                     this.getServerHistory();
-                }, 1000);
+                }, 3000);
 
                 break;
             default:
@@ -518,13 +511,13 @@ class Blink extends Component {
         }
     }
 
-    inboundCallStateChanged(oldState, newState, data) {
-        logger.debug('Inbound Call state changed! ' + newState);
-        if (newState === 'terminated') {
-            this.setState({ inboundCall: null, showIncomingModal: false });
-            this.setFocusEvents(false);
-        }
-    }
+//    inboundCallStateChanged(oldState, newState, data) {
+//        logger.debug('Inbound call state changed! ' + newState);
+//        if (newState === 'terminated') {
+//            this.setState({ inboundCall: null, showIncomingModal: false });
+//            this.setFocusEvents(false);
+//        }
+//    }
 
     handleCallByUri(displayName, targetUri) {
         const accountId = `${utils.generateUniqueId()}@${config.defaultGuestDomain}`;
@@ -797,7 +790,7 @@ class Blink extends Component {
         this.setFocusEvents(false);
         if (this.state.inboundCall !== this.state.currentCall) {
             // terminate current call to switch to incoming one
-            this.state.inboundCall.removeListener('stateChanged', this.inboundCallStateChanged);
+            // this.state.inboundCall.removeListener('stateChanged', this.inboundCallStateChanged);
             this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
             //this.state.currentCall.terminate();
             this._callManager.callKeep.endCall(this.state.currentCall._callkeepUUID);
@@ -819,7 +812,9 @@ class Blink extends Component {
     }
 
     callKeepHangupCall() {
+        logger.debug('Call keep hangup call');
         if (this.state.currentCall) {
+            logger.debug('Current call will be hang up');
             this._callManager.callKeep.endCall(this.state.currentCall._callkeepUUID);
         }
     }
@@ -918,7 +913,8 @@ class Blink extends Component {
             }
             this.setState({ showIncomingModal: true, inboundCall: call });
             this.setFocusEvents(true);
-            call.on('stateChanged', this.inboundCallStateChanged);
+            call.on('stateChanged', this.callStateChanged);
+            //call.on('stateChanged', this.inboundCallStateChanged);
         } else {
             if (!this.muteIncoming) {
                 //this.refs.audioPlayerInbound.play(true);

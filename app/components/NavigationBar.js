@@ -87,7 +87,7 @@ class NavigationBar extends Component {
                     subtitle={`Account: ${this.props.account.id}`}
                 />
                 {statusIcon ?
-                    <Icon name={statusIcon} size={24} color="white" />
+                    <Icon name={statusIcon} size={20} color="white" />
                 : null }
                 <Menu
                     visible={this.state.menuVisible}

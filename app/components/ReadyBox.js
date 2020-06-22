@@ -38,6 +38,10 @@ class ReadyBox extends Component {
     }
 
     handleTargetSelect() {
+        if (this.props.connection === null) {
+            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
+            return;
+        }
         // the user pressed enter, start a video call by default
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {conference: true});
@@ -47,6 +51,10 @@ class ReadyBox extends Component {
     }
 
     handleAudioCall(event) {
+        if (this.props.connection === null) {
+            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
+            return;
+        }
         event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {conference: true});
@@ -56,6 +64,10 @@ class ReadyBox extends Component {
     }
 
     handleVideoCall(event) {
+        if (this.props.connection === null) {
+            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
+            return;
+        }
         event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {conference: true});
@@ -75,6 +87,10 @@ class ReadyBox extends Component {
     }
 
     handleConferenceCall(targetUri) {
+        if (this.props.connection === null) {
+            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
+            return;
+        }
         this.setState({showConferenceModal: false});
         if (targetUri) {
             this.props.startConference(targetUri, {conference: true});
