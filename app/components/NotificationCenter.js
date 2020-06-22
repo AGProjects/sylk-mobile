@@ -161,7 +161,7 @@ class NotificationCenter extends Component {
                 onDismiss={() => this.setState({ visible: false, message: null, title: null })}
                 action={this.state.action}
             >
-                {this.state.title} - {this.state.message}
+                {this.state.title} {this.state.message}
             </Snackbar>
         );
     }

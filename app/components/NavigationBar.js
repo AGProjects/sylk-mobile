@@ -22,7 +22,11 @@ class NavigationBar extends Component {
             menuVisible: false
         }
 
-        this.callUrl = `${config.publicUrl}/call/${props.account.id}`;
+        if (props.account) {
+            this.callUrl = `${config.publicUrl}/call/${props.account.id}`;
+        } else {
+            this.callUrl = '';
+        }
 
         this.menuRef = React.createRef();
     }
@@ -68,13 +72,13 @@ class NavigationBar extends Component {
 
         let statusIcon = null;
 
+        statusIcon = 'check-circle';
         if (!this.props.connection || this.props.connection.state !== 'ready') {
-            statusIcon = 'sync-problem';
-            if (!this.props.registrationState || this.props.registrationState !== 'registered') {
-                statusIcon = 'priority-high';
-            }
+            statusIcon = 'error-outline';
+        } else if (this.props.registrationState && this.props.registrationState !== 'registered') {
+            statusIcon = 'priority-high';
         }
-
+//             <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Image source={blinkLogo} style={styles.logo}/>
@@ -83,9 +87,8 @@ class NavigationBar extends Component {
                     subtitle={`Account: ${this.props.account.id}`}
                 />
                 {statusIcon ?
-                    <Icon name={statusIcon} size={28} color="white" />
+                    <Icon name={statusIcon} size={24} color="white" />
                 : null }
-                <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}

@@ -110,6 +110,7 @@ class Blink extends Component {
             displayName: '',
             account: null,
             registrationState: null,
+            registrationKeepalive: false,
             currentCall: null,
             connection: null,
             inboundCall: null,
@@ -335,12 +336,13 @@ class Blink extends Component {
         switch (newState) {
             case 'closed':
                 this.setState({connection: null, loading: null});
+                this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 5000});
                 break;
             case 'ready':
+                this._notificationCenter.postSystemNotification('Connected to server', {body: '', timeout: 3});
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
                 break;
             case 'disconnected':
-
                 if (this.state.localMedia) {
                     sylkrtc.utils.closeMediaStream(this.state.localMedia);
                 }
@@ -356,20 +358,24 @@ class Blink extends Component {
                 }
 
                 this.setState({
-                    account:null,
-                    registrationState: null,
-                    loading: 'Disconnected, reconnecting...',
+                    registrationState: 'failed',
                     showIncomingModal: false,
                     currentCall: null,
                     inboundCall: null,
                     localMedia: null,
                     generatedVideoTrack: false
                 });
+
+                this._notificationCenter.postSystemNotification('Connecting to server...', {body: '', timeout: 5000});
+
+
                 InCallManager.stop();
 
                 break;
             default:
-                this.setState({loading: 'Connecting...'});
+                if (this.state.registrationKeepalive !== true) {
+                    this.setState({loading: 'Connecting...'});
+                }
                 break;
         }
     }
@@ -396,11 +402,25 @@ class Blink extends Component {
                     level : 'danger'
                 }
             });
+
+            if (this.state.registrationKeepalive === true) {
+                if (this.state.connection !== null) {
+                    logger.debug('Retry to register...');
+                    //this.setState({loading: 'Register...'});
+                    this._notificationCenter.postSystemNotification('Registering', {body: 'now', timeout: 10000});
+                    this.state.account.register();
+                } else {
+                    // add a timer to retry register after awhile
+                    logger.debug('Retry to register after a delay...');
+                    setTimeout(this.state.account.register(), 5000);
+                }
+            }
         } else if (newState === 'registered') {
-            this.setState({loading: null});
             this.getServerHistory();
             RNCallKeep.setAvailable(true);
+            this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
             history.push('/ready');
+            this._notificationCenter.postSystemNotification('Ready to receive calls', {body: '', timeout: 1});
             return;
         } else {
             this.setState({status: null });
@@ -471,7 +491,7 @@ class Blink extends Component {
                 }
                 this._callManager.remove();
 
-                this._notificationCenter.postSystemNotification('Call ended', {body: reason, timeout: callSuccesfull ? 5 : 10});
+                this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
 
                 this.setState({
                     currentCall         : null,
@@ -483,7 +503,6 @@ class Blink extends Component {
                 });
                 this.setFocusEvents(false);
                 this.participantsToInvite = null;
-
 
                 history.push('/ready');
 
@@ -520,9 +539,6 @@ class Blink extends Component {
             let connection = sylkrtc.createConnection({server: config.wsServer});
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
-        } else {
-            logger.debug('Connection Present, try to register');
-            this.processRegistration(accountId, '', displayName);
         }
     }
 
@@ -541,9 +557,6 @@ class Blink extends Component {
             let connection = sylkrtc.createConnection({server: config.wsServer});
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
-        } else {
-            logger.debug('Connection Present, try to register');
-            this.processRegistration(accountId, '', displayName);
         }
     }
 
@@ -573,7 +586,7 @@ class Blink extends Component {
                     if (error) {
                         logger.debug(error);
                     }
-                    this.setState({account: null, registrationState: null});
+                    this.setState({registrationState: null, registrationKeepalive: false});
                 }
             );
         }
@@ -583,6 +596,7 @@ class Blink extends Component {
             password: password,
             displayName: displayName
         };
+
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
                 account.on('outgoingCall', this.outgoingCall);
@@ -664,7 +678,7 @@ class Blink extends Component {
                     }
                 };
 
-            // TODO: remove this, workaround so at least safari works wehn joining a video conference
+            // TODO: remove this, workaround so at least safari works when joining a video conference
             } else if ((nextRoute === '/conference' ||  this.state.mode === MODE_GUEST_CONFERENCE) && isSafari) {
                 constraints.video = false;
             } else {
@@ -1016,6 +1030,10 @@ class Blink extends Component {
             return;
         }
 
+        if (!this.state.account) {
+            return;
+        }
+
         logger.debug('Requesting call history from server');
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
@@ -1100,7 +1118,7 @@ class Blink extends Component {
         let extraStyles = {};
 
         if (this.state.localMedia || this.state.registrationState === 'registered') {
-            footerBox = null;
+           footerBox = null;
         }
         return (
             <BreadProvider>
@@ -1136,7 +1154,6 @@ class Blink extends Component {
 
                                 <NotificationCenter ref="notificationCenter" />
 
-                                {footerBox}
                             </SafeAreaView>
                         </ImageBackground>
                     </Router>
@@ -1161,13 +1178,6 @@ class Blink extends Component {
     }
 
     ready() {
-        if (this.state.registrationState !== 'registered') {
-            history.push('/login');
-            return false;
-        };
-
-        InCallManager.stop();
-
         return (
             <Fragment>
                 <NavigationBar
@@ -1193,10 +1203,6 @@ class Blink extends Component {
     }
 
     preview() {
-        if (this.state.registrationState !== 'registered') {
-            history.push('/login');
-            return false;
-        };
         return (
             <Fragment>
                 <Preview
@@ -1210,10 +1216,6 @@ class Blink extends Component {
     }
 
     call() {
-        if (this.state.registrationState !== 'registered') {
-            history.push('/login');
-            return false;
-        };
         return (
             <Call
                 localMedia = {this.state.localMedia}
@@ -1262,10 +1264,6 @@ class Blink extends Component {
     }
 
     conference() {
-        if (this.state.registrationState !== 'registered') {
-            history.push('/login');
-            return false;
-        };
         return (
             <Conference
                 notificationCenter = {this.notificationCenter}
