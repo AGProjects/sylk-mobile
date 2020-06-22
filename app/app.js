@@ -74,18 +74,18 @@ if (Platform.OS == 'ios') {
 const callkeepOptions = {
     ios: {
         appName: 'Sylk',
-        maximumCallGroups: 1,
-        maximumCallsPerCallGroup: 1,
+        maximumCallGroups: 2,
+        maximumCallsPerCallGroup: 10,
         supportsVideo: true,
         imageName: "Image-1"
     },
     android: {
-        alertTitle: 'Calling Account Permission Required',
-        alertDescription: 'Please enable "Sylk" from your available Calling Accounts',
-        cancelButton: 'Cancel',
-        okButton: 'ok',
+        alertTitle: 'Calling account permission',
+        alertDescription: 'Please allow Sylk inside All calling accounts',
+        cancelButton: 'Deny',
+        okButton: 'Allow',
         imageName: 'phone_account_icon',
-        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO ]
+        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO]
     }
 };
 
@@ -369,7 +369,7 @@ class Blink extends Component {
                 this._notificationCenter.postSystemNotification('Connecting to server...', {body: '', timeout: 5000});
 
 
-                InCallManager.stop();
+                InCallManager.stop({busytone: '_BUNDLE_'});
 
                 break;
             default:
