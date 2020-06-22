@@ -91,7 +91,7 @@ const callkeepOptions = {
 
 RNCallKeep.setup(callkeepOptions);
 
-let callkeepType = Platform.OS === 'ios' ? 'generic' : 'sip';
+let callkeepType = Platform.OS === 'ios' ? 'generic' : 'email';
 
 // Application modes
 const MODE_NORMAL           = Symbol('mode-normal');
@@ -388,6 +388,7 @@ class Blink extends Component {
         logger.debug('Registration state changed! ', oldState, newState, data);
         this.setState({registrationState: newState});
         if (newState === 'failed') {
+            RNCallKeep.setAvailable(false);
             let reason = data.reason;
             if (reason.match(/904/)) {
                 // Sofia SIP: WAT
@@ -424,6 +425,7 @@ class Blink extends Component {
             return;
         } else {
             this.setState({status: null });
+            RNCallKeep.setAvailable(false);
         }
     }
 
