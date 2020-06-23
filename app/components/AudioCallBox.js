@@ -119,10 +119,6 @@ class AudioCallBox extends Component {
 
     }
 
-    toggleSpeakerPhone() {
-        this.setState({audioMuted: true});
-    }
-
     showDtmfModal() {
         this.setState({showDtmfModal: true});
     }
@@ -171,7 +167,7 @@ class AudioCallBox extends Component {
                     <IconButton
                         size={34}
                         style={[styles.button]}
-                        icon={this.props.speakerPhoneEnabled ? 'volume-off' : 'volume-high'}
+                        icon={'volume-high'}
                         onPress={this.props.toggleSpeakerPhone}
                     />
                     <IconButton
