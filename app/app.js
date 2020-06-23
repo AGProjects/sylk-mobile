@@ -1001,8 +1001,6 @@ class Blink extends Component {
                 }
                 history.push('/ready');
             });
-        } else {
-            this.getServerHistory();
         }
     }
 
