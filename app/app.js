@@ -436,6 +436,7 @@ class Blink extends Component {
                 if (this.state.currentCall) {
                     this._callManager.callKeep.setCurrentCallActive(this.state.currentCall._callkeepUUID);
                 }
+                this.setState({speakerPhoneEnabled: this.state.generatedVideoTrack});
                 break;
             case 'terminated':
 
@@ -859,6 +860,7 @@ class Blink extends Component {
     }
 
     callKeepToggleMute(mute) {
+        logger.debug('Toggle mute %s', mute);
         if (this.state.currentCall) {
             this._callManager.callKeep.setMutedCall(this.state.currentCall._callkeepUUID, mute);
         }
@@ -866,10 +868,15 @@ class Blink extends Component {
 
     toggleSpeakerPhone() {
         let mode = null;
-        if (this.state.speakerPhoneEnabled === null) {
+        if (this.state.speakerPhoneEnabled === null || this.state.speakerPhoneEnabled === false) {
             mode = true;
+        } else {
+            mode = false;
         }
+
+        logger.debug('Toggle Speakerphone %s', mode);
         InCallManager.setForceSpeakerphoneOn(mode);
+
         this.setState({
             speakerPhoneEnabled: mode
         });
