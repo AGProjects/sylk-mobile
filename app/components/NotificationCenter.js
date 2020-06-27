@@ -152,7 +152,7 @@ class NotificationCenter extends Component {
     }
 
     render() {
-        console.log('showing snackbar');
+        //console.log('showing snackbar');
         return (
             <Snackbar
                 style={styles.snackbar}

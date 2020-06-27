@@ -53,7 +53,7 @@ class Call extends Component {
             const remoteIsInactive = currentCall.remoteMediaDirections.video[0] === 'inactive';
 
             if (remoteHasStreams && (remoteHasNoVideoTracks || remoteIsRecvOnly || remoteIsInactive) && !this.state.audioOnly) {
-                logger.debug('Media type changed to audio');
+                console.log('Media type changed to audio');
                 // Stop local video
                 if (this.props.localMedia.getVideoTracks().length !== 0) {
                     currentCall.getLocalStreams()[0].getVideoTracks()[0].stop();
@@ -72,7 +72,7 @@ class Call extends Component {
             // the call object switched and we are transitioning to an
             // incoming call.
             if (this.state.audioOnly && this.props.localMedia.getVideoTracks().length !== 0) {
-                DEBUG('Media type changed to video on accepted');
+                console.log('Media type changed to video on accepted');
                 this.setState({audioOnly: false});
             }
         }

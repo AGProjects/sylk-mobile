@@ -1,9 +1,8 @@
 import debug from 'react-native-debug';
-import util from 'util';
 
-debug.enable('*');
+//debug.enable('*');
 
-const APP_NAME = 'blinkrtc';
+const APP_NAME = 'sylk';
 
 export default class Logger {
 	constructor(prefix) {
