@@ -31,7 +31,7 @@ import ConferenceByUriBox from './components/ConferenceByUriBox';
 // import ErrorPanel from './components/ErrorPanel';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
-// import IncomingCallModal from './components/IncomingCallModal';
+import IncomingCallModal from './components/IncomingCallModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -66,6 +66,7 @@ const theme = {
 let bundleId = `${getBundleId()}`;
 const deviceId = getUniqueId();
 
+
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
     // bundleId = `${bundleId}.dev`;
@@ -90,8 +91,6 @@ const callkeepOptions = {
 };
 
 RNCallKeep.setup(callkeepOptions);
-
-let callkeepType = Platform.OS === 'ios' ? 'generic' : 'email';
 
 // Application modes
 const MODE_NORMAL           = Symbol('mode-normal');
@@ -206,6 +205,7 @@ class Blink extends Component {
 
             PushNotificationIOS.addEventListener('register', this._boundOnPushRegistered);
 
+
             //let permissions = await checkIosPermissions();
             //if (!permissions.alert) {
                 PushNotificationIOS.requestPermissions();
@@ -213,14 +213,18 @@ class Blink extends Component {
         }
 
         this.boundRnStartAction = this._callkeepStartedCall.bind(this);
+        this.boundRnDisplayIncomingCall = this._callkeepDisplayIncomingCall.bind(this);
 
         RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
+        RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
 
         AppState.addEventListener('change', this._handleAppStateChange);
 
         if (Platform.OS === 'ios') {
             this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
+            this._boundOnLocalNotificationReceivedBackground = this._onLocalNotificationReceivedBackground.bind(this);
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
+            VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
         } else if (Platform.OS === 'android') {
             firebase
                 .messaging()
@@ -242,6 +246,10 @@ class Blink extends Component {
                     //logger.debug({message}, 'got a message from firebase');
                 });
         }
+    }
+
+    _callkeepDisplayIncomingCall(data) {
+        console.log('Incoming alert panel displayed');
     }
 
     _callkeepStartedCall(data) {
@@ -295,27 +303,6 @@ class Blink extends Component {
         RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
 
         AppState.removeEventListener('change', this._handleAppStateChange);
-    }
-
-    _onNotificationReceivedBackground(notification) {
-        let notificationContent = notification.getData();
-        console.log('======================================');
-        console.log('Handle notify for ', Platform.OS, ' mobile push notification: ', notificationContent);
-
-        // get the uuid from the notification
-        // have we already got a waiting call in call manager? if we do, then its been "answered" and we're waiting for the invite
-        // we may still never get the invite if theres network issues... so still need a timeout
-        // no waiting call, so that means its still "ringing" (it may have been cancelled) so set a timer and if we havent recieved
-        // an invite within 10 seconds then clear it down
-
-        let callUUID = notificationContent['session-id'];
-        this._callKeepManager.waitForInviteTimeout(callUUID, notificationContent);
-
-        if (VoipPushNotification.wakeupByPush) {
-            VoipPushNotification.wakeupByPush = false;
-        }
-
-        VoipPushNotification.onVoipNotificationCompleted(callUUID);
     }
 
     _handleAppStateChange = nextAppState => {
@@ -431,8 +418,8 @@ class Blink extends Component {
             return;
         }
 
-        call_uuid = this.state.currentCall._callkeepUUID;
-        console.log('Call UUID ' + call_uuid + ' state changed: ' + oldState + ' -> ' + newState);
+        callUUID = this.state.currentCall._callkeepUUID;
+        console.log('Call UUID ' + callUUID + ' state changed: ' + oldState + ' -> ' + newState);
 
         switch (newState) {
             case 'progress':
@@ -443,7 +430,7 @@ class Blink extends Component {
                 InCallManager.stopRingback();
                 this.setState({speakerPhoneEnabled: false});
 
-                this._callKeepManager.setCurrentCallActive(call_uuid);
+                this._callKeepManager.setCurrentCallActive(callUUID);
 
                 if (this.state.isConference) {
                     console.log('Conference call started');
@@ -467,7 +454,7 @@ class Blink extends Component {
                 let play_busy_tone = true;
 
                 let CALLKEEP_REASON;
-                console.log('Call UUID ' + call_uuid + ' terminated reason: ' + reason);
+                console.log('Call UUID ' + callUUID + ' terminated reason: ' + reason);
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState == 'progress') {
@@ -513,17 +500,24 @@ class Blink extends Component {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 }
 
-                console.log('Call UUID ' + call_uuid + ' terminated because ' + reason);
-
                 if (play_busy_tone) {
                     InCallManager.stop({busytone: '_BUNDLE_'});
                 } else {
                     InCallManager.stop();
                 }
 
-                if (this.state.currentCall) {
-                    this._callKeepManager.reportEndCallWithUUID(this.state.currentCall._callkeepUUID, CALLKEEP_REASON)
+                this._callKeepManager.reportEndCallWithUUID(callUUID, CALLKEEP_REASON);
+                console.log('Call UUID ' + callUUID + ' terminated because ' + reason);
+
+                let sessionId = this._callKeepManager._UUIDtosessionIDMap.has(callUUID) && this._callKeepManager._UUIDtosessionIDMap.get(callUUID);
+                if (sessionId) {
+                    console.log('Call session-id ' + sessionId + ' terminated because ' + reason);
+                    this._callKeepManager.reportEndCallWithUUID(sessionId, CALLKEEP_REASON);
+                    this._callKeepManager._sessionIDtoUUIDMap.delete(sessionId);
+                    this._callKeepManager._sessionIDtocallIdMap.delete(sessionId);
+                    this._callKeepManager._UUIDtosessionIDMap.delete(callUUID);
                 }
+
                 this._callKeepManager.remove();
 
                 if (play_busy_tone) {
@@ -831,11 +825,12 @@ class Blink extends Component {
         if (this.state.currentCall) {
             this._callKeepManager.answerIncomingCall(this.state.currentCall._callkeepUUID);
         }
+        this.answerCall(options);
     }
 
     answerCall(options) {
         console.log('Answer call');
-        this.setState({ showIncomingModal: false });
+        this.setState({showIncomingModal: false });
         this.setFocusEvents(false);
 
         if (this.state.inboundCall !== this.state.currentCall) {
@@ -848,24 +843,28 @@ class Blink extends Component {
             this.state.inboundCall.on('stateChanged', this.callStateChanged);
         }
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
+        this.forceUpdate();
     }
 
     callKeepRejectCall() {
         if (this.state.currentCall) {
             this._callKeepManager.rejectCall(this.state.currentCall._callkeepUUID);
         }
-    }
-
-    callKeepHangupCall() {
-        if (this.state.currentCall) {
-            this._callKeepManager.endCall(this.state.currentCall._callkeepUUID);
-        }
+        this.rejectCall();
     }
 
     rejectCall() {
         console.log('Reject call');
         this.setState({showIncomingModal: false});
         this.state.inboundCall.terminate();
+        this.forceUpdate();
+    }
+
+    callKeepHangupCall() {
+        if (this.state.currentCall) {
+            this._callKeepManager.endCall(this.state.currentCall._callkeepUUID);
+        }
+        this.hangupCall();
     }
 
     hangupCall() {
@@ -881,6 +880,7 @@ class Blink extends Component {
             }
             history.push('/ready');
         }
+        this.forceUpdate();
     }
 
     callKeepSendDtmf(digits) {
@@ -948,49 +948,98 @@ class Blink extends Component {
         //this._callKeepManager.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
     }
 
+    _onLocalNotificationReceivedBackground(notification) {
+        let notificationContent = notification.getData();
+        console.log('======================================');
+        console.log('Handle local notify for', Platform.OS, 'mobile push notification: ', notificationContent);
+    }
+
+    _onNotificationReceivedBackground(notification) {
+        let notificationContent = notification.getData();
+
+        console.log('======================================');
+        console.log('Handle notify for', Platform.OS, 'mobile push notification: ', notificationContent);
+
+        // get the uuid from the notification
+        // have we already got a waiting call in call manager? if we do, then its been "answered" and we're waiting for the invite
+        // we may still never get the invite if theres network issues... so still need a timeout
+        // no waiting call, so that means its still "ringing" (it may have been cancelled) so set a timer and if we havent recieved
+        // an invite within 10 seconds then clear it down
+
+        let callUUID = null;
+        let callId = notificationContent['call-id'];
+        let sessionId = notificationContent['session-id'];
+
+        this._callKeepManager._sessionIDtoUUIDMap.set(sessionId, callId);
+        this._callKeepManager._callIdtosessionIDMap.set(callId, sessionId);
+
+        let incomingCallUUID = this._callKeepManager._callIdtoUUIDMap.has(callId) && this._callKeepManager._callIdtoUUIDMap.get(callId);
+        if (incomingCallUUID) {
+            // websocket invite arrived first
+            console.log('Push arrived after web socket received call-id', callId, 'with UUID', incomingCallUUID);
+            callUUID = incomingCallUUID;
+            this._callKeepManager._UUIDtosessionIDMap.set(incomingCallUUID, sessionId);
+            this._callKeepManager._sessionIDtoUUIDMap.set(sessionId, incomingCallUUID);
+        } else {
+            callUUID = sessionId;
+            console.log('Push arrived before the invite over web socket, using UUID from session-id', callUUID);
+            this._callKeepManager.handleSessionLater(callUUID, notificationContent);
+        }
+
+        if (VoipPushNotification.wakeupByPush) {
+            console.log('We wake up by push');
+            VoipPushNotification.wakeupByPush = false;
+        }
+
+        /*
+        if (notificationContent['event'] === 'incoming_session') {
+            VoipPushNotification.presentLocalNotification({
+                alertBody:'Incoming ' + notificationContent['media-type'] + ' call from ' + notificationContent['from_display_name']
+            });
+        } else if (notificationContent['event'] === 'cancel') {
+            VoipPushNotification.presentLocalNotification({
+                alertBody:'Call cancelled'
+            });
+        }
+        */
+
+        VoipPushNotification.onVoipNotificationCompleted(callUUID);
+    }
+
     incomingCall(call, mediaTypes) {
-        console.log('New incoming %s call from %s', mediaTypes, call.remoteIdentity);
-
-        this._callKeepManager.handleSession(call);
-
         if (!mediaTypes.audio && !mediaTypes.video) {
-            // call.terminate();
+            console.log('Call rejected because unsupported media', mediaTypes);
             this.callKeepHangupCall();
             return;
         }
+
+        let media_type = mediaTypes.video ? 'video' : 'audio';
+
+        console.log('New', media_type, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
+
+        this._callKeepManager.handleSession(call);
+
         call.mediaTypes = mediaTypes;
+
         if (this.state.currentCall !== null) {
-            // detect if we called ourselves
-            if (this.state.currentCall.localIdentity.uri === call.remoteIdentity.uri) {
-                logger.debug('Reject call to myself');
-                //call.terminate();
-                this.callKeepHangupCall();
-                return;
-            }
-            InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
-            if (Platform.OS === 'ios') {
-                RNCallKeep.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
-            } else {
-                RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
-            }
-            this.setState({ showIncomingModal: true, inboundCall: call });
-            this.setFocusEvents(true);
-            call.on('stateChanged', this.callStateChanged);
-            //call.on('stateChanged', this.inboundCallStateChanged);
-        } else {
-            if (!this.muteIncoming) {
-                //this.refs.audioPlayerInbound.play(true);
-                InCallManager.start({media: mediaTypes.video ? 'video' : 'audio'});
-                if (Platform.OS === 'ios') {
-                    RNCallKeep.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
-                } else {
-                    RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, callkeepType, mediaTypes.video);
-                }
-            }
-            this.setFocusEvents(true);
-            call.on('stateChanged', this.callStateChanged);
-            this.setState({currentCall: call, inboundCall: call, showIncomingModal: true});
+            console.log('We have a call in progress');
+            // TODO - handle this
         }
+
+        InCallManager.start({media: media_type});
+
+        console.log('Show alert panel');
+        if (Platform.OS === 'ios') {
+            RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', mediaTypes.video);
+        } else if (Platform.OS === 'android') {
+            RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
+        }
+        this.setFocusEvents(true);
+        call.on('stateChanged', this.callStateChanged);
+
+        // showIncomingModal must be true if not using CallKeep
+        this.setState({currentCall: call, inboundCall: call, showIncomingModal: false});
+
         // if (!this.shouldUseHashRouting) {
         //     this._notificationCenter.postSystemNotification('Incoming call', {body: `From ${call.remoteIdentity.displayName || call.remoteIdentity.uri}`, timeout: 15, silent: false});
         // }
@@ -1023,7 +1072,7 @@ class Blink extends Component {
     missedCall(data) {
         console.log('Missed call from ' + data.originator);
 
-        this._notificationCenter.postSystemNotification('Missed call', {body: `from ${data.originator}`, timeout: 180, silent: false});
+        this._notificationCenter.postSystemNotification('Missed call', {body: `from ${data.originator.display_name}`, timeout: 180, silent: false});
         if (this.state.currentCall !== null || !config.useServerCallHistory) {
             this._notificationCenter.postMissedCall(data.originator, () => {
                 if (this.state.currentCall !== null) {
@@ -1183,12 +1232,12 @@ class Blink extends Component {
 
                                 <LoadingScreen text={this.state.loading} show={this.state.loading !== null}/>
 
-                                {/* <IncomingCallModal
+                                {<IncomingCallModal
                                     call={this.state.inboundCall}
                                     onAnswer={this.callKeepAnswerCall}
                                     onHangup={this.callKeepRejectCall}
                                     show={this.state.showIncomingModal}
-                                /> */}
+                                />}
 
                                 {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
                                 <Switch>
