@@ -4,7 +4,7 @@ import classNames from 'classnames';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton } from 'react-native-paper';
-import { View, Dimensions, TouchableOpacity  } from 'react-native';
+import { View, Dimensions, TouchableOpacity, Platform  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 
 import CallOverlay from './CallOverlay';
@@ -286,7 +286,7 @@ class VideoBox extends Component {
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
-
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         return (
             <View style={styles.container}>
@@ -316,14 +316,14 @@ class VideoBox extends Component {
                  <View style={styles.buttonContainer}>
                     <IconButton
                         size={50}
-                        style={styles.button}
+                        style={buttonClass}
                         icon={this.state.doorOpened ? "door-open": "door" }
                         onPress={this.openDoor}
                         disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
                         size={34}
-                        style={[styles.button]}
+                        style={[buttonClass]}
                         icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                         onPress={this.props.toggleSpeakerPhone}
                     />
@@ -338,31 +338,31 @@ class VideoBox extends Component {
                 <View style={styles.buttonContainer}>
                     <IconButton
                         size={34}
-                        style={styles.button}
+                        style={buttonClass}
                         onPress={this.toggleEscalateConferenceModal}
                         icon="account-plus"
                     />
                     <IconButton
                         size={34}
-                        style={styles.button}
+                        style={buttonClass}
                         onPress={this.muteAudio}
                         icon={muteButtonIcons}
                     />
                     <IconButton
                         size={34}
-                        style={styles.button}
+                        style={buttonClass}
                         onPress={this.muteVideo}
                         icon={muteVideoButtonIcons}
                     />
                     <IconButton
                         size={34}
-                        style={[styles.button]}
+                        style={[buttonClass]}
                         icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                         onPress={this.props.toggleSpeakerPhone}
                     />
                     <IconButton
                         size={34}
-                        style={[styles.button, styles.hangupButton]}
+                        style={[buttonClass, styles.hangupButton]}
                         onPress={this.hangupCall}
                         icon="phone-hangup"
                     />

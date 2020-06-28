@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {Component, Fragment} from 'react';
-import { View } from 'react-native';
+import { View, Platform } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'sylkrtc';
 import classNames from 'classnames';
@@ -500,12 +500,13 @@ class ConferenceBox extends Component {
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         const bottomButtons = [];
         bottomButtons.push(
             <IconButton
                 size={30}
-                style={styles.button}
+                style={buttonClass}
                 title="Share link to this conference"
                 icon="account-plus"
                 onPress={this.toggleInviteModal}
@@ -514,7 +515,7 @@ class ConferenceBox extends Component {
         bottomButtons.push(
             <IconButton
                 size={30}
-                style={styles.button}
+                style={buttonClass}
                 title="Mute/unmute video"
                 onPress={this.muteVideo}
                 icon={muteVideoButtonIcons}
@@ -523,7 +524,7 @@ class ConferenceBox extends Component {
         bottomButtons.push(
             <IconButton
                 size={30}
-                style={styles.button}
+                style={buttonClass}
                 title="Mute/unmute audio"
                 onPress={this.muteAudio}
                 icon={muteButtonIcons}
@@ -532,7 +533,7 @@ class ConferenceBox extends Component {
         bottomButtons.push(
             <IconButton
                 size={30}
-                style={styles.button}
+                style={buttonClass}
                 title="Toggle camera"
                 onPress={this.toggleCamera}
                 icon='video-switch'
@@ -541,21 +542,21 @@ class ConferenceBox extends Component {
         bottomButtons.push(
             <IconButton
                 size={30}
-                style={styles.button}
+                style={buttonClass}
                 icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                 onPress={this.props.toggleSpeakerPhone}
             />
         )
         // bottomButtons.push(
         //     <View key="shareFiles">
-        //         <IconButton size={30} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
+        //         <IconButton size={30} style={buttonClass} title="Share files" component="span" disableRipple={true} icon="upload"/>
         //     </View>
         // );
 
         bottomButtons.push(
             <IconButton
                 size={30}
-                style={[styles.button, styles.hangupButton]}
+                style={[buttonClass, styles.hangupButton]}
                 title="Leave conference"
                 onPress={this.hangup}
                 icon="phone-hangup"
