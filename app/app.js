@@ -168,6 +168,15 @@ class Sylk extends Component {
 
         this._callKeepManager = new CallManager(RNCallKeep, this.answerCall, this.rejectCall, this.hangupCall);
 
+        if (InCallManager.recordPermission !== 'granted') {
+            InCallManager.requestRecordPermission()
+            .then((requestedRecordPermissionResult) => {
+                console.log("InCallManager.requestRecordPermission() requestedRecordPermissionResult: ", requestedRecordPermissionResult);
+            })
+            .catch((err) => {
+                console.log("InCallManager.requestRecordPermission() catch: ", err);
+            });
+        }
         // Load camera/mic preferences
         storage.get('devices').then((devices) => {
             if (devices) {
