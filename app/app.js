@@ -1,5 +1,6 @@
 import React, { Component, Fragment } from 'react';
 import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking, Platform, StyleSheet} from 'react-native';
+import { DeviceEventEmitter } from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
 import { registerGlobals } from 'react-native-webrtc';
@@ -247,9 +248,11 @@ class Sylk extends Component {
 
         this.boundRnStartAction = this._callkeepStartedCall.bind(this);
         this.boundRnDisplayIncomingCall = this._callkeepDisplayIncomingCall.bind(this);
+        this.boundProximityDetect = this._proximityDetect.bind(this);
 
         RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
         RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+        DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
 
         AppState.addEventListener('change', this._handleAppStateChange);
 
@@ -283,6 +286,9 @@ class Sylk extends Component {
         this._detectOrientation();
     }
 
+    _proximityDetect(data) {
+        console.log('Proximity changed', data);
+    }
     _callkeepDisplayIncomingCall(data) {
         console.log('Incoming alert panel displayed');
     }
