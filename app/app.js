@@ -569,6 +569,7 @@ class Sylk extends Component {
                 }
 
                 this._callKeepManager.remove();
+                InCallManager.setForceSpeakerphoneOn(false);
 
                 if (play_busy_tone) {
                     this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
@@ -949,18 +950,19 @@ class Sylk extends Component {
 
     toggleSpeakerPhone() {
         let mode = null;
-        if (this.state.speakerPhoneEnabled === null || this.state.speakerPhoneEnabled === true) {
+        if (this.state.speakerPhoneEnabled === true) {
             mode = false;
         } else {
             mode = true;
         }
 
-        logger.debug('Toggle speakerphone %s', mode);
-        InCallManager.setForceSpeakerphoneOn(mode);
-
         this.setState({
             speakerPhoneEnabled: mode
         });
+
+        console.log('Speakerphone is ', mode ? 'on' : 'off');
+        InCallManager.setForceSpeakerphoneOn(mode);
+
     }
 
     escalateToConference(participants) {

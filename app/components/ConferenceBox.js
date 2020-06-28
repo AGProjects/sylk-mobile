@@ -525,7 +525,7 @@ class ConferenceBox extends Component {
             <IconButton
                 size={34}
                 style={styles.button}
-                icon={'volume-high'}
+                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                 onPress={this.props.toggleSpeakerPhone}
             />
         )
