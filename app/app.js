@@ -486,6 +486,7 @@ class Sylk extends Component {
                     console.log('Conference call started');
                     this._callKeepManager.backToForeground();
                     this.setState({speakerPhoneEnabled: true});
+                    InCallManager.setForceSpeakerphoneOn(true);
 
                 } else if (this.state.currentCall.remoteMediaDirections) {
                     const videoTracks = this.state.currentCall.remoteMediaDirections.video;
@@ -493,6 +494,7 @@ class Sylk extends Component {
                         console.log('Video call started')
                         this._callKeepManager.backToForeground();
                         this.setState({speakerPhoneEnabled: true});
+                        InCallManager.setForceSpeakerphoneOn(true);
                     }
                 }
                 console.log('Speakerphone', this.state.speakerPhoneEnabled);
