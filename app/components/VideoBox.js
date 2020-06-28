@@ -4,7 +4,7 @@ import classNames from 'classnames';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton } from 'react-native-paper';
-import { View, Dimensions } from 'react-native';
+import { View, Dimensions, TouchableOpacity  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 
 import CallOverlay from './CallOverlay';
@@ -169,6 +169,15 @@ class VideoBox extends Component {
         }
     }
 
+    toggleCamera(event) {
+        event.preventDefault();
+        const localStream = this.state.localStream;
+        if (localStream.getVideoTracks().length > 0) {
+            const track = localStream.getVideoTracks()[0];
+            track._switchCamera();
+        }
+    }
+
     hangupCall(event) {
         event.preventDefault();
         this.props.hangupCall();
@@ -296,9 +305,12 @@ class VideoBox extends Component {
                     </View>
                 : null }
                 { this.state.localVideoShow ?
+                <TouchableOpacity style={[styles.container, styles.localVideoContainer]} onPress={this.toggleCamera}>
                     <View style={[styles.container, styles.localVideoContainer]}>
-                        <RTCView objectFit='cover' style={[styles.video, styles.localVideo]} ref={this.localVideo} streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
+                        <RTCView objectFit='cover' style={[styles.video, styles.localVideo]} ref={this.localVideo}
+                        streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
                     </View>
+                </TouchableOpacity>
                 : null }
                 { config.intercomDtmfTone ?
                  <View style={styles.buttonContainer}>
