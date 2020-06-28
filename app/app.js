@@ -97,14 +97,8 @@ const mainStyle = StyleSheet.create({
    flex: 1,
    justifyContent: 'center',
    alignItems: 'center',
-   margin: 10
- },
-
- TextStyle :{
-  fontSize : 20,
-  color : '#000'
+   margin: 0
  }
-
 });
 
 RNCallKeep.setup(callkeepOptions);
