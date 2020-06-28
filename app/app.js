@@ -114,7 +114,7 @@ const MODE_PRIVATE          = Symbol('mode-private');
 const MODE_GUEST_CALL       = Symbol('mode-guest-call');
 const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
 
-class Blink extends Component {
+class Sylk extends Component {
     constructor() {
         super();
         autoBind(this)
@@ -1515,4 +1515,4 @@ class Blink extends Component {
     }
 }
 
-export default Blink;
+export default Sylk;
