@@ -347,6 +347,15 @@ class ConferenceBox extends Component {
         }
     }
 
+    toggleCamera(event) {
+        event.preventDefault();
+        const localStream = this.props.call.getLocalStreams()[0];
+        if (localStream.getVideoTracks().length > 0) {
+            const track = localStream.getVideoTracks()[0];
+            track._switchCamera();
+        }
+    }
+
     muteVideo(event) {
         event.preventDefault();
         const localStream = this.props.call.getLocalStreams()[0];
@@ -444,7 +453,7 @@ class ConferenceBox extends Component {
         //                 <View className="text-center">
         //                     <View className="btn-group">
         //                         <IconButton
-        //                             size={34}
+        //                             size={30}
         //                             onPress={this.toggleInviteModal}
         //                             icon="account-plus"
         //                         />
@@ -490,13 +499,12 @@ class ConferenceBox extends Component {
         buttons.top = {right: topButtons};
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
-
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
 
         const bottomButtons = [];
         bottomButtons.push(
             <IconButton
-                size={34}
+                size={30}
                 style={styles.button}
                 title="Share link to this conference"
                 icon="account-plus"
@@ -505,7 +513,7 @@ class ConferenceBox extends Component {
         );
         bottomButtons.push(
             <IconButton
-                size={34}
+                size={30}
                 style={styles.button}
                 title="Mute/unmute video"
                 onPress={this.muteVideo}
@@ -514,7 +522,7 @@ class ConferenceBox extends Component {
         );
         bottomButtons.push(
             <IconButton
-                size={34}
+                size={30}
                 style={styles.button}
                 title="Mute/unmute audio"
                 onPress={this.muteAudio}
@@ -523,7 +531,16 @@ class ConferenceBox extends Component {
         );
         bottomButtons.push(
             <IconButton
-                size={34}
+                size={30}
+                style={styles.button}
+                title="Toggle camera"
+                onPress={this.toggleCamera}
+                icon='video-switch'
+            />
+        );
+        bottomButtons.push(
+            <IconButton
+                size={30}
                 style={styles.button}
                 icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                 onPress={this.props.toggleSpeakerPhone}
@@ -531,12 +548,13 @@ class ConferenceBox extends Component {
         )
         // bottomButtons.push(
         //     <View key="shareFiles">
-        //         <IconButton size={34} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
+        //         <IconButton size={30} style={styles.button} title="Share files" component="span" disableRipple={true} icon="upload"/>
         //     </View>
         // );
+
         bottomButtons.push(
             <IconButton
-                size={34}
+                size={30}
                 style={[styles.button, styles.hangupButton]}
                 title="Leave conference"
                 onPress={this.hangup}
