@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking, Platform} from 'react-native';
+import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking, Platform, StyleSheet} from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
 import { registerGlobals } from 'react-native-webrtc';
@@ -90,6 +90,22 @@ const callkeepOptions = {
     }
 };
 
+const mainStyle = StyleSheet.create({
+
+ MainContainer: {
+   flex: 1,
+   justifyContent: 'center',
+   alignItems: 'center',
+   margin: 10
+ },
+
+ TextStyle :{
+  fontSize : 20,
+  color : '#000'
+ }
+
+});
+
 RNCallKeep.setup(callkeepOptions);
 
 // Application modes
@@ -128,7 +144,10 @@ class Blink extends Component {
             devices: {},
             pushtoken: null,
             pushkittoken: null,
-            speakerPhoneEnabled: null
+            speakerPhoneEnabled: null,
+            OrientationStatus : '',
+            Height_Layout : '',
+            Width_Layout : '',
         };
         this.state = Object.assign({}, this._initialSstate);
 
@@ -163,6 +182,20 @@ class Blink extends Component {
         }
         return this.__notificationCenter;
     }
+
+    _detectOrientation() {
+        if(this.state.Width_Layout > this.state.Height_Layout) {
+            console.log("Orientation is landcape")
+            this.setState({
+            OrientationStatus : 'Landscape Mode'
+            });
+        } else {
+            console.log("Orientation is portrait")
+            this.setState({
+            OrientationStatus : 'Portrait Mode'
+            });
+        }
+      }
 
     async componentDidMount() {
         this._loaded = true;
@@ -246,6 +279,8 @@ class Blink extends Component {
                     //logger.debug({message}, 'got a message from firebase');
                 });
         }
+
+        this._detectOrientation();
     }
 
     _callkeepDisplayIncomingCall(data) {
@@ -1228,6 +1263,10 @@ class Blink extends Component {
                 <PaperProvider theme={theme}>
                     <Router history={history} ref="router">
                         <ImageBackground source={backgroundImage} style={{width: '100%', height: '100%'}}>
+                            <View style={mainStyle.MainContainer} onLayout={(event) => this.setState({
+                                                                            Width_Layout : event.nativeEvent.layout.width,
+                                                                            Height_Layout : event.nativeEvent.layout.height
+                                                                           }, ()=> this._detectOrientation())}>
                             <SafeAreaView style={[styles.root, extraStyles]}>
 
                                 <LoadingScreen text={this.state.loading} show={this.state.loading !== null}/>
@@ -1258,6 +1297,7 @@ class Blink extends Component {
                                 <NotificationCenter ref="notificationCenter" />
 
                             </SafeAreaView>
+                            </View>
                         </ImageBackground>
                     </Router>
                 </PaperProvider>
