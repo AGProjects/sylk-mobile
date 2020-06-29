@@ -34,7 +34,16 @@ class ReadyBox extends Component {
     }
 
     handleTargetChange(value) {
-        this.setState({targetUri: value});
+        if (this.state.targetUri) {
+            let currentUri = this.getTargetUri();
+            if (currentUri.trim() === value.trim()) {
+                this.setState({targetUri: ''});
+            } else {
+                this.setState({targetUri: value});
+            }
+        } else {
+            this.setState({targetUri: value});
+        }
     }
 
     handleTargetSelect() {
