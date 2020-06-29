@@ -57,6 +57,7 @@
 
 .landscapeUriButtonGroup {
     flex-direction: row;
+    justify-content: space-between;
 }
 
 .portraitUriButtonGroup {
@@ -78,7 +79,7 @@
 .landscapeUriInputBox {
     align: left;
     padding-top: 10px;
-    width: 70%;
+    width: 350px;
 }
 
 .portraitUriInputBox {
@@ -88,7 +89,7 @@
 }
 
 .history {
-    flex: 9;
     width: 100%;
+    flex: 9;
 }
 

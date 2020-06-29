@@ -44,6 +44,7 @@ class ReadyBox extends Component {
         } else {
             this.setState({targetUri: value});
         }
+        this.forceUpdate();
     }
 
     handleTargetSelect() {
@@ -108,49 +109,55 @@ class ReadyBox extends Component {
 
     render() {
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        const uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
+        const uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
+        const titleClass = this.props.orientation === 'landscape' ? styles.landscapeTitle : styles.portraitTitle;
 
         // Join URIs from local and server history for input
         let history = this.props.history.concat(
             this.props.serverHistory.map(e => e.remoteParty)
         );
+
         history = [...new Set(history)];
         //console.log('history from server is', this.props.serverHistory);
         return (
             <Fragment>
                 <View style={styles.wholeContainer}>
                     <View style={styles.container}>
-                        <Title style={styles.title}>Enter address or phone number</Title>
-                        <View style={styles.uriInputBox}>
-                            <URIInput
-                                defaultValue={this.state.targetUri}
-                                data={history}
-                                onChange={this.handleTargetChange}
-                                onSelect={this.handleTargetSelect}
-                                placeholder="Eg. alice@sip2sip.info or +1800975707"
-                                autoFocus={false}
-                            />
-                        </View>
-                        <View style={styles.buttonGroup}>
-                            <IconButton
-                                style={buttonClass}
-                                size={34}
-                                disabled={this.state.targetUri.length === 0}
-                                onPress={this.handleAudioCall}
-                                icon="phone"
-                            />
-                            <IconButton
-                                style={buttonClass}
-                                size={34}
-                                disabled={this.state.targetUri.length === 0}
-                                onPress={this.handleVideoCall}
-                                icon="video"
-                            />
-                            <IconButton
-                                style={styles.conferenceButton}
-                                size={34}
-                                onPress={this.showConferenceModal}
-                                icon="account-group"
-                            />
+                        <Title style={titleClass}>Enter address or telephone number</Title>
+                        <View style={uriGroupClass}>
+                            <View style={uriClass}>
+                                <URIInput
+                                    defaultValue={this.state.targetUri}
+                                    data={history}
+                                    onChange={this.handleTargetChange}
+                                    onSelect={this.handleTargetSelect}
+                                    placeholder="Eg. alice@sip2sip.info or +1800975707"
+                                    autoFocus={false}
+                                />
+                            </View>
+                            <View style={styles.buttonGroup}>
+                                <IconButton
+                                    style={buttonClass}
+                                    size={34}
+                                    disabled={this.state.targetUri.length === 0}
+                                    onPress={this.handleAudioCall}
+                                    icon="phone"
+                                />
+                                <IconButton
+                                    style={buttonClass}
+                                    size={34}
+                                    disabled={this.state.targetUri.length === 0}
+                                    onPress={this.handleVideoCall}
+                                    icon="video"
+                                />
+                                <IconButton
+                                    style={styles.conferenceButton}
+                                    size={34}
+                                    onPress={this.showConferenceModal}
+                                    icon="account-group"
+                                />
+                            </View>
                         </View>
                     </View>
                     <View style={styles.history}>
@@ -186,7 +193,8 @@ ReadyBox.propTypes = {
     startConference : PropTypes.func.isRequired,
     missedTargetUri : PropTypes.string,
     history         : PropTypes.array,
-    serverHistory   : PropTypes.array
+    serverHistory   : PropTypes.array,
+    orientation     : PropTypes.string
 };
 
 
