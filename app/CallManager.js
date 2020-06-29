@@ -223,7 +223,7 @@ export default class CallManager extends events.EventEmitter {
 
     handleSession(session, sessionUUID) {
         // sessionUUID is present only for outgoing calls
-        console.log('Callkeep: handle session');
+        console.log('Callkeep: handle session with UUID', sessionUUID);
 
         let incomingCallUUID = this._callIdtoUUIDMap.has(session.callId) && this._callIdtoUUIDMap.get(session.callId)
         if (sessionUUID) {

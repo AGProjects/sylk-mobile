@@ -298,26 +298,44 @@ class Sylk extends Component {
     }
 
     _callkeepStartedCall(data) {
-        logger.debug('accessing Call Object', this._tmpCallStartInfo, data);
-
-        if (!this._tmpCallStartInfo && this.state.currentCall) {
-            //this is likely when sopmeone presses video in callkit on an audio call :(
-            return;
-        }
-
-        if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
-            this.startConference(data.handle);
-        } else if (this._tmpCallStartInfo.options) {
-            this.startCall(data.handle, this._tmpCallStartInfo.options);
-        } else {
+        if (!this._tmpCallStartInfo || ! this._tmpCallStartInfo.options) {
+            console.log("CallKeep started call from native dialer to", data.handle);
             // we dont have options in the tmp var, which means this likely came from the native dialer
             // for now, we only do audio calls from the native dialer.
             this._tmpCallStartInfo = {
-                uuid: data.callUUID
+                uuid: uuid.v4()
             };
-            this.startCall(data.handle, {audio: true, video: false});
+            //this._notificationCenter.postSystemNotification('Waiting for server connection', {body: '', timeout: 2});
+            this.setState({targetUri: data.handle});
+            this.startCallWhenConnected(data.handle, {audio: true, video: true});
+        } else {
+            console.log("CallKeep started call from within the app to", data.handle, this._tmpCallStartInfo);
+            if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
+                this.startConference(data.handle);
+            } else if (this._tmpCallStartInfo.options) {
+                this.startCall(data.handle, this._tmpCallStartInfo.options);
+            }
         }
         this._notificationCenter.removeNotification();
+    }
+
+    async startCallWhenConnected(targetUri, options) {
+        var n = 0;
+        while (n < 7) {
+            if (this.state.connection === null) {
+                console.log('Waiting for connection');
+                await this._sleep(1000);
+            } else {
+                this.startCall(targetUri, options);
+                return;
+            }
+            n++;
+        }
+        this._notificationCenter.postSystemNotification('No internet connection', {body: '', timeout: 3});
+    }
+
+    _sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     _onPushkitRegistered(token) {
@@ -375,7 +393,7 @@ class Sylk extends Component {
                 this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 5000});
                 break;
             case 'ready':
-                this._notificationCenter.postSystemNotification('Connected to server', {body: '', timeout: 3});
+                //this._notificationCenter.postSystemNotification('Connected to server', {body: '', timeout: 3});
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
                 break;
             case 'disconnected':
@@ -988,7 +1006,7 @@ class Sylk extends Component {
     }
 
     outgoingCall(call) {
-        console.log('New outgoing call to', call.remoteIdentity.uri);
+        console.log('New outgoing call to', call.remoteIdentity.uri, 'with options', this._tmpCallStartInfo);
         this._callKeepManager.handleSession(call, this._tmpCallStartInfo.uuid);
         InCallManager.start({media: this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.video ? 'video' : 'audio'});
         this._tmpCallStartInfo = {};
@@ -1045,12 +1063,13 @@ class Sylk extends Component {
             VoipPushNotification.presentLocalNotification({
                 alertBody:'Incoming ' + notificationContent['media-type'] + ' call from ' + notificationContent['from_display_name']
             });
-        } else if (notificationContent['event'] === 'cancel') {
+        }
+        */
+        if (notificationContent['event'] === 'cancel') {
             VoipPushNotification.presentLocalNotification({
                 alertBody:'Call cancelled'
             });
         }
-        */
 
         VoipPushNotification.onVoipNotificationCompleted(callUUID);
     }
