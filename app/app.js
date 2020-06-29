@@ -462,7 +462,7 @@ class Sylk extends Component {
             return;
         }
 
-        callUUID = this.state.currentCall._callkeepUUID;
+        let callUUID = this.state.currentCall._callkeepUUID;
         console.log('Call UUID ' + callUUID + ' state changed: ' + oldState + ' -> ' + newState);
 
         switch (newState) {
