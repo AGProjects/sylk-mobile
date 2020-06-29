@@ -9,10 +9,16 @@
 .container {
     margin: 0 auto;
     width: 90%;
-    padding-top: 10px;
+    padding-top: 20px;
 }
 
-.title {
+.landscapeTitle {
+    color: white;
+    font-size: 20px;
+    height: 0%;
+}
+
+.portraitTitle {
     color: white;
     font-size: 20px;
 }
@@ -49,17 +55,40 @@
     margin: 10px;
 }
 
+.landscapeUriButtonGroup {
+    flex-direction: row;
+}
+
+.portraitUriButtonGroup {
+    flex-direction: column;
+}
+
 .buttonGroup {
     flex-direction: row;
-    margin: 0 auto;
     padding-top: 10px;
+    justify-content: center;
 }
 
 .uriInputBox {
+    align: left;
     padding-top: 10px;
+    width: 100%;
+}
+
+.landscapeUriInputBox {
+    align: left;
+    padding-top: 10px;
+    width: 70%;
+}
+
+.portraitUriInputBox {
+    align: left;
+    padding-top: 10px;
+    width: 100%;
 }
 
 .history {
     flex: 9;
     width: 100%;
 }
+

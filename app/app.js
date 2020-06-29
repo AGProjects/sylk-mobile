@@ -140,7 +140,7 @@ class Sylk extends Component {
             pushtoken: null,
             pushkittoken: null,
             speakerPhoneEnabled: null,
-            OrientationStatus : '',
+            orientation : '',
             Height_Layout : '',
             Width_Layout : '',
         };
@@ -191,15 +191,16 @@ class Sylk extends Component {
         if(this.state.Width_Layout > this.state.Height_Layout) {
             console.log("Orientation is landcape")
             this.setState({
-            OrientationStatus : 'Landscape Mode'
+            orientation : 'landscape'
             });
         } else {
             console.log("Orientation is portrait")
             this.setState({
-            OrientationStatus : 'Portrait Mode'
+            orientation : 'portrait'
             });
         }
-      }
+        this.forceUpdate();
+     }
 
     async componentDidMount() {
         this._loaded = true;
@@ -1353,6 +1354,7 @@ class Sylk extends Component {
                     history = {this.state.history}
                     key = {this.state.missedTargetUri}
                     serverHistory = {this.state.serverHistory}
+                    orientation = {this.state.orientation}
                 />
             </Fragment>
         );
