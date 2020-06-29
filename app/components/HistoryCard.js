@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
-import { Card, IconButton, Caption, Subheading } from 'react-native-paper';
+import { Card, IconButton, Caption, Title, Subheading } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
 import styles from '../assets/styles/blink/_HistoryCard.scss';
@@ -39,9 +39,26 @@ const HistoryCard = (props) => {
     if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
         color.color = '#a94442';
         duration = 'missed';
+    } else if (props.historyItem.direction === 'placed' && props.historyItem.duration === 0) {
+        color.color = 'orange';
+        duration = 'cancelled';
     }
 
     const name = identity.displayName || identity.uri;
+
+    let title = identity.displayName || identity.uri;
+    let subtitle = identity.uri + ' (' + duration + ')';
+
+    if (!identity.displayName) {
+        title = identity.uri;
+        if (duration === 'missed') {
+            subtitle = 'Last call missed';
+        } else if (duration === 'cancelled') {
+            subtitle = 'Last call cancelled';
+        } else {
+            subtitle = 'Last call duration ' + duration ;
+        }
+    }
 
     return (
         <Card
@@ -51,7 +68,8 @@ const HistoryCard = (props) => {
         >
             <Card.Content style={styles.content}>
                 <View style={styles.mainContent}>
-                    <Subheading noWrap style={color}>{name} ({duration})</Subheading>
+                    <Title noWrap style={color}>{title}</Title>
+                    <Subheading noWrap style={color}>{subtitle}</Subheading>
                     <Caption color="textSecondary">
                         <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{props.historyItem.startTime}
                     </Caption>
