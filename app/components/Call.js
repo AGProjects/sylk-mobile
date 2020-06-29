@@ -71,7 +71,7 @@ class Call extends Component {
             // Switch if we have audioOnly and local videotracks. This means
             // the call object switched and we are transitioning to an
             // incoming call.
-            if (this.state.audioOnly && this.props.localMedia.getVideoTracks().length !== 0) {
+            if (this.state.audioOnly &&  this.props.localMedia && this.props.localMedia.getVideoTracks().length !== 0) {
                 console.log('Media type changed to video on accepted');
                 this.setState({audioOnly: false});
             }
