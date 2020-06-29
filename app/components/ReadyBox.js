@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import classNames from 'classnames';
 // import VizSensor     = require('react-visibility-sensor').default;
 import autoBind from 'auto-bind';
-import { View } from 'react-native';
+import { View, Platform} from 'react-native';
 import { IconButton, Title } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
@@ -107,6 +107,8 @@ class ReadyBox extends Component {
     }
 
     render() {
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+
         // Join URIs from local and server history for input
         let history = this.props.history.concat(
             this.props.serverHistory.map(e => e.remoteParty)
@@ -130,14 +132,14 @@ class ReadyBox extends Component {
                         </View>
                         <View style={styles.buttonGroup}>
                             <IconButton
-                                style={styles.button}
+                                style={buttonClass}
                                 size={34}
                                 disabled={this.state.targetUri.length === 0}
                                 onPress={this.handleAudioCall}
                                 icon="phone"
                             />
                             <IconButton
-                                style={styles.button}
+                                style={buttonClass}
                                 size={34}
                                 disabled={this.state.targetUri.length === 0}
                                 onPress={this.handleVideoCall}
