@@ -1182,7 +1182,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (!this.state.account) {
+        if (!this.state.account|| !this.state.account.id) {
             return;
         }
 
