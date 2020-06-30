@@ -11,7 +11,7 @@ const LoadingScreen = (props) => {
         <Portal>
             <Modal dismissable={false} visible={props.show}>
                 <View style={styles.container}>
-                    <Icon style={styles.icon} color="white" name="settings" size={48}/>
+                    <Icon style={styles.icon} color="white" name="network" size={48}/>
                     {props.text ?
                         <Title style={styles.title}>{props.text}</Title>
                     : null }
