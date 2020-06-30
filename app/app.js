@@ -1517,6 +1517,7 @@ class Sylk extends Component {
                     registrationInProgress = {this.state.registrationState !== null && this.state.registrationState !== 'failed'}
                     handleRegistration = {this.handleRegistration}
                     autoLogin={true}
+                    orientation = {this.state.orientation}
                 />
             );
         }
