@@ -19,7 +19,7 @@ class EnrollmentModal extends Component {
 
         // save the initial state so we can restore it later
         this.initialState = {
-            yourName: '',
+            displayName: '',
             username: '',
             password: '',
             password2: '',
@@ -49,7 +49,7 @@ class EnrollmentModal extends Component {
                   .send(superagent.serialize['application/x-www-form-urlencoded']({username: this.state.username,
                                                                                    password: this.state.password,
                                                                                    email: this.state.email,
-                                                                                   display_name: this.state.yourName}))   //eslint-disable-line camelcase
+                                                                                   display_name: this.state.displayName}))   //eslint-disable-line camelcase
                   .end((error, res) => {
                       this.setState({enrolling: false});
                       if (error) {
@@ -87,25 +87,31 @@ class EnrollmentModal extends Component {
             buttonIcon = "cog";
         }
 
+        let valid_input = this.state.password !== '' &&
+                          this.state.password2 !== '' &&
+                          this.state.username !== '' &&
+                          this.state.email !== '' &&
+                          this.state.displayName !== '';
+
         return (
             <Portal>
-                <DialogType visible={this.props.show} onDismiss={this.onHide}>
+                <DialogType visible={this.props.show} onDismiss={this.onHide} style={styles.container}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Create account</Dialog.Title>
-                        <TextInput
+                        <TextInput style={styles.row}
                             mode="flat"
                             label="Display name"
-                            name="yourName"
+                            name="displayName"
                             type="text"
                             placeholder="Alice"
-                            onChangeText={(text) => {this.handleFormFieldChange(text, 'yourName');}}
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'displayName');}}
                             required
-                            value={this.state.yourName}
+                            value={this.state.displayName}
                             disabled={this.state.enrolling}
                             returnKeyType="next"
                             onSubmitEditing={() => this.usernameInput.focus()}
                         />
-                        <TextInput
+                        <TextInput style={styles.row}
                             mode="flat"
                             label="Username"
                             name="username"
@@ -113,7 +119,6 @@ class EnrollmentModal extends Component {
                             placeholder="alice"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'username');}}
                             required
-
                             value={this.state.username}
                             disabled={this.state.enrolling}
                             returnKeyType="next"
@@ -122,13 +127,7 @@ class EnrollmentModal extends Component {
                             }}
                             onSubmitEditing={() => this.passwordInput.focus()}
                         />
-                        <HelperText
-                            type="info"
-                            visible={true}
-                        >
-                            @{config.enrollmentDomain}
-                        </HelperText>
-                        <TextInput
+                        <TextInput style={styles.row}
                             mode="flat"
                             label="Password"
                             name="password"
@@ -143,7 +142,7 @@ class EnrollmentModal extends Component {
                             }}
                             onSubmitEditing={() => this.password2Input.focus()}
                         />
-                        <TextInput
+                        <TextInput style={styles.row}
                             mode="flat"
                             label="Verify password"
                             secureTextEntry={true}
@@ -158,13 +157,13 @@ class EnrollmentModal extends Component {
                             }}
                             onSubmitEditing={() => this.emailInput.focus()}
                         />
-                        <TextInput
+                        <TextInput style={styles.row}
                             mode="flat"
                             label="E-Mail"
                             textContentType="emailAddress"
                             name="email"
                             autoCapitalize="none"
-                            placeholder="alice@atlanta.example.com"
+                            placeholder="alice@abc.com, used to recover password"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
                             required value={this.state.email}
                             disabled={this.state.enrolling}
@@ -176,7 +175,7 @@ class EnrollmentModal extends Component {
                         <Button
                             icon={buttonIcon}
                             loading={this.state.enrolling}
-                            disabled={this.state.enrolling}
+                            disabled={this.state.enrolling || !valid_input}
                             onPress={this.enrollmentFormSubmitted}
                         >
                             {buttonText}

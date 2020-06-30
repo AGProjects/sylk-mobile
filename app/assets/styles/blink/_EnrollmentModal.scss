@@ -1,11 +1,20 @@
 .title {
+    padding-top: 20px;
     color: black;
     margin: 0 auto;
+    font-size: 24;
+}
+
+.row {
+    color: black;
+    font-size: 18;
+    height: 50px;
 }
 
 .container {
-    padding: 10px;
-    //flex: 1;
+    margin: 0 auto;
+    width: 80%;
+    flex: 1;
     justify-content: flex-start;
 }
 
