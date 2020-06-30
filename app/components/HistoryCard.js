@@ -40,7 +40,7 @@ const HistoryCard = (props) => {
         color.color = '#a94442';
         duration = 'missed';
     } else if (props.historyItem.direction === 'placed' && props.historyItem.duration === 0) {
-        color.color = 'orange';
+//        color.color = 'blue';
         duration = 'cancelled';
     }
 
