@@ -439,7 +439,7 @@ class Sylk extends Component {
             let reason = data.reason;
             if (reason.match(/904/)) {
                 // Sofia SIP: WAT
-                reason = 'Bad account or password';
+                reason = 'Wrong account or password';
             } else {
                 reason = 'Connection failed';
             }
@@ -558,7 +558,7 @@ class Sylk extends Component {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/904/)) {
                     // Sofia SIP: WAT
-                    reason = 'Bad account or password';
+                    reason = 'Wrong account or password';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else {
                     reason = 'Connection failed';
