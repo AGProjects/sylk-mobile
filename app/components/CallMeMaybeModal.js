@@ -20,7 +20,7 @@ class CallMeMaybeModal extends Component {
 
     handleClipboardButton(event) {
         utils.copyToClipboard(this.props.callUrl);
-        this.props.notificationCenter().postSystemNotification('Call me', {body: 'Web address copied to the clipboard'});
+        this.props.notificationCenter().postSystemNotification('Call me', {body: 'Web address copied to the clipboard', timeout: 2});
         this.props.close();
     }
 
@@ -28,7 +28,7 @@ class CallMeMaybeModal extends Component {
 
         const sipUri = this.props.callUrl.split('/').slice(-1)[0];    // hack!
         const emailMessage = `You can call me using a Web browser at ${this.props.callUrl} or a SIP client at ${sipUri} ` +
-                             'or by using the freely available Sylk WebRTC client app at http://sylkserver.com';
+                             'or by using the freely available Sylk client app from http://sylkserver.com';
         const subject = 'Call me, maybe?';
 
         openComposer({
@@ -76,7 +76,7 @@ class CallMeMaybeModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Call me, maybe?</Dialog.Title>
                         <Text style={styles.body}>
-                            Share {this.props.callUrl} with others so they can easily call you.
+                            Share {this.props.callUrl} with others so they can call you
                         </Text>
                         <View style={styles.iconContainer}>
                             <IconButton
