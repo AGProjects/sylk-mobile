@@ -87,36 +87,56 @@ class EnrollmentModal extends Component {
             buttonIcon = "cog";
         }
 
-        let valid_input = this.state.password !== '' &&
+        let valid_input = !this.state.enrolling &&
+                          this.state.password !== '' &&
                           this.state.password2 !== '' &&
+                          this.state.password === this.state.password2 &&
+                          this.state.password.length > 4 &&
                           this.state.username !== '' &&
+                          this.state.username.length > 3 &&
                           this.state.email !== '' &&
                           this.state.displayName !== '';
 
         return (
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.onHide} style={styles.container}>
-                    <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>Create account</Dialog.Title>
+                    <Surface>
+                        <Dialog.Title style={styles.title}>Create SIP account</Dialog.Title>
                         <TextInput style={styles.row}
                             mode="flat"
-                            label="Display name"
+                            label="Name"
                             name="displayName"
                             type="text"
-                            placeholder="Alice"
+                            placeholder="Displayed on remote devices"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'displayName');}}
                             required
                             value={this.state.displayName}
                             disabled={this.state.enrolling}
                             returnKeyType="next"
+                            onSubmitEditing={() => this.emailInput.focus()}
+                        />
+                        <TextInput style={styles.row}
+                            mode="flat"
+                            label="E-Mail"
+                            textContentType="emailAddress"
+                            name="email"
+                            autoCapitalize="none"
+                            placeholder="Used to recover the password"
+                            onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
+                            required value={this.state.email}
+                            disabled={this.state.enrolling}
+                            returnKeyType="go"
+                            ref={ref => {
+                                this.emailInput = ref;
+                            }}
                             onSubmitEditing={() => this.usernameInput.focus()}
                         />
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Username"
                             name="username"
+                            placeholder="Enter at least 4 characters"
                             autoCapitalize="none"
-                            placeholder="alice"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'username');}}
                             required
                             value={this.state.username}
@@ -132,6 +152,7 @@ class EnrollmentModal extends Component {
                             label="Password"
                             name="password"
                             secureTextEntry={true}
+                            placeholder="Enter at least 5 characters"
                             textContentType="password"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'password');}}
                             required value={this.state.password}
@@ -155,27 +176,11 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.password2Input = ref;
                             }}
-                            onSubmitEditing={() => this.emailInput.focus()}
-                        />
-                        <TextInput style={styles.row}
-                            mode="flat"
-                            label="E-Mail"
-                            textContentType="emailAddress"
-                            name="email"
-                            autoCapitalize="none"
-                            placeholder="alice@abc.com, used to recover password"
-                            onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
-                            required value={this.state.email}
-                            disabled={this.state.enrolling}
-                            returnKeyType="go"
-                            ref={ref => {
-                                this.emailInput = ref;
-                            }}
                         />
                         <Button
                             icon={buttonIcon}
                             loading={this.state.enrolling}
-                            disabled={this.state.enrolling || !valid_input}
+                            disabled={!valid_input}
                             onPress={this.enrollmentFormSubmitted}
                         >
                             {buttonText}
