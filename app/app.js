@@ -1543,7 +1543,7 @@ class Sylk extends Component {
             });
         }
         storage.set('account', {accountId: this.state.accountId, password: ''});
-        this.setState({account: null, registrationState: null, status: null});
+        this.setState({account: null, registrationState: null, status: null, serverHistory: []});
         history.push('/login');
         return null;
     }
