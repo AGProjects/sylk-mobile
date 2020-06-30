@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 import ipaddr from 'ipaddr.js';
 import autoBind from 'auto-bind';
 
-import { Button, TextInput, Title } from 'react-native-paper';
+import { Button, TextInput, Title, Subheading } from 'react-native-paper';
 
 import EnrollmentModal from './EnrollmentModal';
 import storage from '../storage';
@@ -48,8 +48,14 @@ class RegisterForm extends Component {
         if (event) {
             event.preventDefault();
         }
+
+        let account = this.state.accountId;
+        if (this.state.accountId.indexOf('@') === -1 ) {
+            account = this.state.accountId + '@' + config.defaultDomain;
+        }
+
         Keyboard.dismiss();
-        this.props.handleRegistration(this.state.accountId, this.state.password, true);
+        this.props.handleRegistration(account, this.state.password, true);
     }
 
     handleEnrollment(account) {
@@ -66,13 +72,15 @@ class RegisterForm extends Component {
     }
 
     render() {
-        const domain = this.state.accountId.substring(this.state.accountId.indexOf('@') + 1);
-        const validDomain = !ipaddr.IPv4.isValidFourPartDecimal(domain) && !ipaddr.IPv6.isValid(domain);
-        const validInput =  validDomain && this.state.accountId.indexOf('@') !== -1 && this.state.password !== 0;
+        const domain = this.state.accountId.indexOf('@') !== -1 ? this.state.accountId.substring(this.state.accountId.indexOf('@') + 1): '';
+        const validDomain = domain === '' || (!ipaddr.IPv4.isValidFourPartDecimal(domain) && !ipaddr.IPv6.isValid(domain) && domain.length > 3 && domain.indexOf('.') !== - 1 && (domain.length - 2 - domain.indexOf('.')) > 0);
+        const validInput =  validDomain && this.state.password !== '';
+        const containerClass = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
 
         return (
-            <View style={styles.container}>
-                <Title style={styles.title}>Sign in to continue</Title>
+            <View style={containerClass}>
+                <Title style={styles.title}>Sylk</Title>
+                <Subheading style={styles.subtitle}>Sign in to continue</Subheading>
                     <View style={styles.row}>
                         <TextInput
                             mode="flat"
@@ -106,7 +114,7 @@ class RegisterForm extends Component {
                         />
                     </View>
 
-                    <View style={styles.row}>
+                    <View style={styles.buttonRow}>
                         <Button
                             style={styles.button}
                             icon="login"
@@ -142,7 +150,8 @@ RegisterForm.propTypes = {
     classes                : PropTypes.object,
     handleRegistration     : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool.isRequired,
-    autoLogin              : PropTypes.bool
+    autoLogin              : PropTypes.bool,
+    orientation            : PropTypes.string
 };
 
 

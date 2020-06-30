@@ -1,9 +1,13 @@
-.registerBox {
+.landscapeRegisterBox {
     flex: 1;
-    padding: 50px;
-    width: 100%;
+    flex-direction: row;
+    justify-content: space-evenly;
+    align-items: center;
 }
 
-.title {
-    color: white;
+.portraitRegisterBox {
+    flex: 1;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
 }

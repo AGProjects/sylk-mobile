@@ -7,12 +7,9 @@ const blinkLogo = require('../assets/images/blink-white-big.png');
 
 const Logo = () => {
     return (
-        <Fragment>
             <View style={styles.logoContainer}>
                 <Image source={blinkLogo} style={styles.logo}/>
             </View>
-            <Title style={styles.title}>Sylk</Title>
-        </Fragment>
     );
 }
 
