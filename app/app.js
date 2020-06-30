@@ -1237,6 +1237,9 @@ class Sylk extends Component {
                 const known = [];
                 history = history.filter((elem) => {
                     if (known.indexOf(elem.remoteParty) <= -1) {
+                        if (!this.state.account || !this.state.account.id) {
+                            return;
+                        }
                         if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
                             (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
                                 known.push(elem.remoteParty);
