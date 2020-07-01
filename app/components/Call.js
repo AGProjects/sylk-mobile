@@ -150,7 +150,9 @@ class Call extends Component {
                         />
                     );
                 } else {
-                    if (this.props.currentCall.state !== 'terminated') {
+                    if (this.props.currentCall && this.props.currentCall.state && this.props.currentCall.state === 'terminated') {
+                        // do not render
+                    } else {
                         box = (
                             <LocalMedia
                                 remoteIdentity = {remoteIdentity}
