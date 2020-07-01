@@ -14,25 +14,6 @@ export default class CallManager extends events.EventEmitter {
         // Set of current SIP sessions
         this._sessions = new Map();
 
-        this._callIdtoUUIDMap = new Map();      // maps web socket call-id to callkeep UUID
-        this._callIdtosessionIDMap = new Map(); // maps push notification call-id to session-id
-
-        this._sessionIDtoUUIDMap = new Map();   // maps push notification session-id to internal UUID
-        this._sessionIDtocallIdMap = new Map(); // maps push notification session-id to call-id
-
-        this._UUIDtosessionIDMap = new Map();   // maps callkeep to push notification session-id
-        this._UUIDtocallIdMap = new Map();      // maps callkeep to push notification call-id
-
-        // Why the above messy mappings? -adi
-        // Alert panel uses the push notification payload session-id key
-        // unclear why, seems to be hardwired outside our code
-        // When CallKeep starts a call, it must be given a UUIDv4 format
-        // When CallKeep ends a call, it must be give the same UUID as on start
-        // But if call is cancelled, the UUID taken from session-id key must be used instead
-        // In order to find the right ID to vanish the Alert panel, we must circle through
-        // call-id, UUID and session-id depending on the situation the lead to the call cancel
-        // TODO: _waitingCalls was suppose to mitigate the above problem but probably is useless now
-
         this._waitingCalls = new Map();
         this._timeouts = new Map();
         this._RNCallKeep = RNCallKeep;
@@ -137,12 +118,6 @@ export default class CallManager extends events.EventEmitter {
     reportEndCallWithUUID(callUUID, reason) {
         console.log('Callkeep: report end call', callUUID, 'with reason', reason);
         this.callKeep.reportEndCallWithUUID(callUUID, reason);
-        let callId = this._UUIDtocallIdMap.has(callUUID) && this._UUIDtocallIdMap.get(callUUID);
-        if (callId) {
-            this._callIdtoUUIDMap.delete(callId);
-        }
-
-        this._UUIDtocallIdMap.delete(callUUID);
     }
 
     _rnActiveAudioSession() {
@@ -202,7 +177,6 @@ export default class CallManager extends events.EventEmitter {
     }
 
     handleSessionLater(callUUID, notificationContent) {
-        console.log('Callkeep: handle later incoming call-id', notificationContent['call-id']);
         console.log('Callkeep: handle later incoming call UUID', callUUID);
 
         let reason;
@@ -211,8 +185,6 @@ export default class CallManager extends events.EventEmitter {
         } else {
             reason = 2;
         }
-
-        this._callIdtoUUIDMap.set(notificationContent['call-id'], callUUID);
 
         this._timeouts.set(callUUID, setTimeout(() => {
             this.reportEndCallWithUUID(callUUID, reason);
@@ -223,23 +195,16 @@ export default class CallManager extends events.EventEmitter {
 
     handleSession(session, sessionUUID) {
         // sessionUUID is present only for outgoing calls
-        console.log('Callkeep: handle session with UUID', sessionUUID);
+        console.log('handleSession start');
 
-        let incomingCallUUID = this._callIdtoUUIDMap.has(session.callId) && this._callIdtoUUIDMap.get(session.callId)
         if (sessionUUID) {
             session._callkeepUUID = sessionUUID;
-            console.log('Callkeep: handle outgoing session', sessionUUID);
-        } else if (incomingCallUUID) {
-            session._callkeepUUID = incomingCallUUID;
-            console.log('Callkeep: push notification found for call id', session.callId);
-            console.log('Callkeep: handle incoming call-id', session.callId);
+            console.log('Callkeep: handle outgoing call UUID', session._callkeepUUID);
+        } else if (session.id) {
+            session._callkeepUUID = session.id;
             console.log('Callkeep: handle incoming call UUID', session._callkeepUUID);
         } else {
-            console.log('Callkeep: push notification did not yet arrive');
-            session._callkeepUUID = uuid.v4();
-            console.log('Callkeep: handle incoming call-id', session.callId);
-            console.log('Callkeep: handle incoming call UUID', session._callkeepUUID, '(generated)');
-            this._callIdtoUUIDMap.set(session.callId, session._callkeepUUID);
+            console.log('Callkeep: no incoming or outgoing call detected');
         }
 
         if (this._timeouts.has(session._callkeepUUID)) {
@@ -260,8 +225,6 @@ export default class CallManager extends events.EventEmitter {
             this[action]();
             this._waitingCalls.delete(session._callkeepUUID);
         }
-
-        //this._callIdtoUUIDMap.delete(session._callkeepUUID);
 
         // Add to the set.
         this._sessions.set(session._callkeepUUID, session);

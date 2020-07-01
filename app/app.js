@@ -584,15 +584,6 @@ class Sylk extends Component {
                 this._callKeepManager.reportEndCallWithUUID(callUUID, CALLKEEP_REASON);
                 console.log('Call UUID ' + callUUID + ' terminated because ' + reason);
 
-                let sessionId = this._callKeepManager._UUIDtosessionIDMap.has(callUUID) && this._callKeepManager._UUIDtosessionIDMap.get(callUUID);
-                if (sessionId) {
-                    console.log('Call session-id ' + sessionId + ' terminated because ' + reason);
-                    this._callKeepManager.reportEndCallWithUUID(sessionId, CALLKEEP_REASON);
-                    this._callKeepManager._sessionIDtoUUIDMap.delete(sessionId);
-                    this._callKeepManager._sessionIDtocallIdMap.delete(sessionId);
-                    this._callKeepManager._UUIDtosessionIDMap.delete(callUUID);
-                }
-
                 this._callKeepManager.remove();
 
                 this.speakerphoneOff();
@@ -1030,15 +1021,11 @@ class Sylk extends Component {
 
     _onLocalNotificationReceivedBackground(notification) {
         let notificationContent = notification.getData();
-        console.log('======================================');
-        console.log('Handle local notify for', Platform.OS, 'mobile push notification: ', notificationContent);
+        console.log('Handle local', Platform.OS, 'push notification: ', notificationContent);
     }
 
     _onNotificationReceivedBackground(notification) {
         let notificationContent = notification.getData();
-
-        console.log('======================================');
-        console.log('Handle notify for', Platform.OS, 'mobile push notification: ', notificationContent);
 
         // get the uuid from the notification
         // have we already got a waiting call in call manager? if we do, then its been "answered" and we're waiting for the invite
@@ -1046,29 +1033,20 @@ class Sylk extends Component {
         // no waiting call, so that means its still "ringing" (it may have been cancelled) so set a timer and if we havent recieved
         // an invite within 10 seconds then clear it down
 
-        let callUUID = null;
-        let callId = notificationContent['call-id'];
-        let sessionId = notificationContent['session-id'];
+        let event = notificationContent['event'];
+        console.log('Handle', Platform.OS, event, 'push notification');
 
-        this._callKeepManager._sessionIDtoUUIDMap.set(sessionId, callId);
-        this._callKeepManager._callIdtosessionIDMap.set(callId, sessionId);
+        if (notificationContent['event'] === 'incoming_session') {
+            let callUUID = notificationContent['session-id'];
+            console.log('Incoming call for push mobile notification for call UUID', callUUID);
 
-        let incomingCallUUID = this._callKeepManager._callIdtoUUIDMap.has(callId) && this._callKeepManager._callIdtoUUIDMap.get(callId);
-        if (incomingCallUUID) {
-            // websocket invite arrived first
-            console.log('Push arrived after web socket received call-id', callId, 'with UUID', incomingCallUUID);
-            callUUID = incomingCallUUID;
-            this._callKeepManager._UUIDtosessionIDMap.set(incomingCallUUID, sessionId);
-            this._callKeepManager._sessionIDtoUUIDMap.set(sessionId, incomingCallUUID);
-        } else {
-            callUUID = sessionId;
-            console.log('Push arrived before the invite over web socket, using UUID from session-id', callUUID);
             this._callKeepManager.handleSessionLater(callUUID, notificationContent);
-        }
 
-        if (VoipPushNotification.wakeupByPush) {
-            console.log('We wake up by push');
-            VoipPushNotification.wakeupByPush = false;
+            if (VoipPushNotification.wakeupByPush) {
+                console.log('We wake up by push');
+                VoipPushNotification.wakeupByPush = false;
+            }
+            VoipPushNotification.onVoipNotificationCompleted(callUUID);
         }
 
         /*
@@ -1083,8 +1061,6 @@ class Sylk extends Component {
                 alertBody:'Call cancelled'
             });
         }
-
-        VoipPushNotification.onVoipNotificationCompleted(callUUID);
     }
 
     incomingCall(call, mediaTypes) {
