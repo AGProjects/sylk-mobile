@@ -32,7 +32,7 @@ import ConferenceByUriBox from './components/ConferenceByUriBox';
 // import ErrorPanel from './components/ErrorPanel';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
-import IncomingCallModal from './components/IncomingCallModal';
+//import IncomingCallModal from './components/IncomingCallModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -1321,13 +1321,6 @@ class Sylk extends Component {
                             <SafeAreaView style={[styles.root, extraStyles]}>
 
                                 <LoadingScreen text={this.state.loading} show={this.state.loading !== null}/>
-
-                                {<IncomingCallModal
-                                    call={this.state.inboundCall}
-                                    onAnswer={this.callKeepAnswerCall}
-                                    onHangup={this.callKeepRejectCall}
-                                    show={this.state.showIncomingModal}
-                                />}
 
                                 {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
                                 <Switch>
