@@ -75,9 +75,12 @@ class NavigationBar extends Component {
             statusIcon = 'priority-high';
         }
 //             <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
+        let callUrl = '';
         if (this.props.account) {
             account_id = this.props.account.id;
+            callUrl = config.publicUrl + "/call/" + account_id;
         }
+
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -115,7 +118,7 @@ class NavigationBar extends Component {
                 <CallMeMaybeModal
                     show={this.state.showCallMeMaybeModal}
                     close={this.toggleCallMeMaybeModal}
-                    callUrl={this.callUrl}
+                    callUrl={callUrl}
                     notificationCenter={this.props.notificationCenter}
                 />
             </Appbar.Header>
