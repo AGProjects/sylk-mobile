@@ -291,8 +291,14 @@ class Sylk extends Component {
     }
 
     _proximityDetect(data) {
-        console.log('Proximity changed', data);
+        //console.log('Proximity changed', data);
+        if (data.isNear) {
+           this.speakerphoneOff();
+        } else {
+           this.speakerphoneOn();
+        }
     }
+
     _callkeepDisplayIncomingCall(data) {
         console.log('Incoming alert panel displayed');
     }
@@ -500,26 +506,23 @@ class Sylk extends Component {
             case 'established':
             case 'accepted':
                 InCallManager.stopRingback();
-                this.setState({speakerPhoneEnabled: false});
 
                 this._callKeepManager.setCurrentCallActive(callUUID);
 
                 if (this.state.isConference) {
                     console.log('Conference call started');
                     this._callKeepManager.backToForeground();
-                    this.setState({speakerPhoneEnabled: true});
-                    InCallManager.setForceSpeakerphoneOn(true);
-
+                    this.speakerphoneOn();
                 } else if (this.state.currentCall.remoteMediaDirections) {
                     const videoTracks = this.state.currentCall.remoteMediaDirections.video;
                     if (videoTracks && videoTracks.length > 0) {
                         console.log('Video call started')
                         this._callKeepManager.backToForeground();
-                        this.setState({speakerPhoneEnabled: true});
-                        InCallManager.setForceSpeakerphoneOn(true);
+                        this.speakerphoneOn();
                     }
+                } else {
+                    this.speakerphoneOff();
                 }
-                console.log('Speakerphone', this.state.speakerPhoneEnabled);
 
                 break;
             case 'terminated':
@@ -593,7 +596,8 @@ class Sylk extends Component {
                 }
 
                 this._callKeepManager.remove();
-                InCallManager.setForceSpeakerphoneOn(false);
+
+                this.speakerphoneOff();
 
                 if (play_busy_tone) {
                     this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
@@ -973,20 +977,22 @@ class Sylk extends Component {
     }
 
     toggleSpeakerPhone() {
-        let mode = null;
         if (this.state.speakerPhoneEnabled === true) {
-            mode = false;
+            this.speakerphoneOff();
         } else {
-            mode = true;
+            this.speakerphoneOn();
         }
+    }
+    speakerphoneOn() {
+        console.log('Speakerphone On');
+        this.setState({speakerPhoneEnabled: true});
+        InCallManager.setForceSpeakerphoneOn(true);
+    }
 
-        this.setState({
-            speakerPhoneEnabled: mode
-        });
-
-        console.log('Speakerphone is ', mode ? 'on' : 'off');
-        InCallManager.setForceSpeakerphoneOn(mode);
-
+    speakerphoneOff() {
+        console.log('Speakerphone Off');
+        this.setState({speakerPhoneEnabled: false});
+        InCallManager.setForceSpeakerphoneOn(false);
     }
 
     escalateToConference(participants) {
