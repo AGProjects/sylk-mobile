@@ -59,6 +59,7 @@ class Call extends Component {
                     currentCall.getLocalStreams()[0].getVideoTracks()[0].stop();
                 }
                 this.setState({audioOnly: true});
+                this.props.speakerphoneOff();
             } else {
                 this.forceUpdate();
             }
@@ -74,6 +75,7 @@ class Call extends Component {
             if (this.state.audioOnly &&  this.props.localMedia && this.props.localMedia.getVideoTracks().length !== 0) {
                 console.log('Media type changed to video on accepted');
                 this.setState({audioOnly: false});
+                this.props.speakerphoneOn();
             }
         }
     }
@@ -174,7 +176,9 @@ Call.propTypes = {
     targetUri               : PropTypes.string,
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
-    callKeepToggleMute      : PropTypes.func
+    callKeepToggleMute      : PropTypes.func,
+    speakerphoneOn          : PropTypes.func,
+    speakerphoneOff         : PropTypes.func
 };
 
 

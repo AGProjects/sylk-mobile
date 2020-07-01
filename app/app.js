@@ -1426,6 +1426,8 @@ class Sylk extends Component {
                 callKeepStartCall = {this.callKeepStartCall}
                 toggleSpeakerPhone = {this.toggleSpeakerPhone}
                 speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
+                speakerphoneOn = {this.speakerphoneOn}
+                speakerphoneOff = {this.speakerphoneOff}
             />
         )
     }
