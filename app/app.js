@@ -299,15 +299,20 @@ class Sylk extends Component {
 
     _callkeepStartedCall(data) {
         if (!this._tmpCallStartInfo || ! this._tmpCallStartInfo.options) {
-            console.log("CallKeep started call from native dialer to", data.handle);
             // we dont have options in the tmp var, which means this likely came from the native dialer
             // for now, we only do audio calls from the native dialer.
             this._tmpCallStartInfo = {
-                uuid: uuid.v4()
+                uuid: data.callUUID
             };
+            let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
             //this._notificationCenter.postSystemNotification('Waiting for server connection', {body: '', timeout: 2});
             this.setState({targetUri: data.handle});
-            this.startCallWhenConnected(data.handle, {audio: true, video: true});
+            if (is_conf) {
+                console.log("CallKeep started conference call from native dialer to", data.handle, 'with UUID', data.callUUID);
+            } else {
+                console.log("CallKeep started call from native dialer to", data.handle, 'with uuid', data.callUUID);
+            }
+            this.startCallWhenConnected(data.handle, {audio: true, video: true, conference: is_conf});
         } else {
             console.log("CallKeep started call from within the app to", data.handle, this._tmpCallStartInfo);
             if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
@@ -326,7 +331,11 @@ class Sylk extends Component {
                 console.log('Waiting for connection');
                 await this._sleep(1000);
             } else {
-                this.startCall(targetUri, options);
+                if (options.conference) {
+                    this.startConference(targetUri);
+                } else {
+                    this.startCall(targetUri, options);
+                }
                 return;
             }
             n++;
