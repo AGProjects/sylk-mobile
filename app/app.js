@@ -279,11 +279,9 @@ class Sylk extends Component {
             this.messageListener = firebase
                 .messaging()
                 .onMessage((message: RemoteMessage) => {
-                    // Process your message as required
-                    //on any message, register
-                    console.log('======================================');
-                    console.log('Handle Firebase push notification', message.data.event);
-                    //logger.debug({message}, 'got a message from firebase');
+                    // this will just wake up the app to receive
+                    // the web-socket invite handled by this.incomingCall()
+                    console.log('Received Firebase mobile push notification for', message.data);
                 });
         }
 
