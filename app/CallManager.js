@@ -105,7 +105,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     startCall(callUUID, targetUri, targetName) {
-        console.log('Callkeep: start call ', callUUID);
+        console.log('Callkeep: start call', callUUID);
         this.callKeep.startCall(callUUID, targetUri, targetName);
     }
 
