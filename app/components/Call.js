@@ -150,15 +150,17 @@ class Call extends Component {
                         />
                     );
                 } else {
-                    box = (
-                        <LocalMedia
-                            remoteIdentity = {remoteIdentity}
-                            localMedia = {this.props.localMedia}
-                            mediaPlaying = {this.mediaPlaying}
-                            hangupCall = {this.hangupCall}
-                            generatedVideoTrack = {this.props.generatedVideoTrack}
-                        />
-                    );
+                    if (this.props.currentCall.state !== 'terminated') {
+                        box = (
+                            <LocalMedia
+                                remoteIdentity = {remoteIdentity}
+                                localMedia = {this.props.localMedia}
+                                mediaPlaying = {this.mediaPlaying}
+                                hangupCall = {this.hangupCall}
+                                generatedVideoTrack = {this.props.generatedVideoTrack}
+                            />
+                        );
+                    }
                 }
             }
         }
