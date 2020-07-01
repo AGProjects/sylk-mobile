@@ -59,6 +59,13 @@ If you don't have any simulators running, and don't have an android device plugg
 yarn react-native run-android
 ```
 
+### Debugging
+
+Install https://reactnative.dev/docs/debugging#react-developer-tools
+
+Shake the device and touch Debug.
+
+
 ### Running on the iOS Device
 
 Currently we have issues running a build of ios from the cli using `yarn react-native run-ios --device` so instead, open up xcode and run it there
