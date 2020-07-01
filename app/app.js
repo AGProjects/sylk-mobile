@@ -1158,8 +1158,9 @@ class Sylk extends Component {
 
     missedCall(data) {
         console.log('Missed call from ' + data.originator);
+        let from = data.originator.display_name || data.originator.uri;
 
-        this._notificationCenter.postSystemNotification('Missed call', {body: `from ${data.originator.display_name}`, timeout: 180, silent: false});
+        this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`, timeout: 180, silent: false});
         if (this.state.currentCall !== null || !config.useServerCallHistory) {
             this._notificationCenter.postMissedCall(data.originator, () => {
                 if (this.state.currentCall !== null) {
