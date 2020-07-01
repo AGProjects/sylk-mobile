@@ -6,6 +6,17 @@
     justify-content: center;
 }
 
+.loadingText {
+    color: white;
+}
+
+.loadingContainer {
+    padding-top: 55px;
+    margin: 0 auto;
+    justify-content: center;
+    align-items: center;
+}
+
 .portaitContainer {
     flex: 1;
     flex-direction: column;
