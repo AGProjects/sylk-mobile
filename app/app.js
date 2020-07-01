@@ -877,7 +877,7 @@ class Sylk extends Component {
             options,
         };
 
-        logger.debug('Callkeep start call to %s with options %s', targetUri, this._tmpCallStartInfo);
+        console.log('CallKeep will start call to %s', targetUri);
 
         if (Platform.OS === 'ios') {
             this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri, 'email', options.video ? true : false);
