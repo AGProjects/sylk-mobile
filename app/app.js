@@ -597,7 +597,7 @@ class Sylk extends Component {
 
                 this.speakerphoneOff();
 
-                if (play_busy_tone) {
+                if (play_busy_tone && oldState !== 'established') {
                     this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
                 }
 
