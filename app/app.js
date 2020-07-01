@@ -1088,10 +1088,11 @@ class Sylk extends Component {
     }
 
     incomingCall(call, mediaTypes) {
-        if (call._callkeepUUID && call._callkeepUUID === call.id) {
-            console.log('Incoming call', call.id, 'already in progress, skipping duplicate');
-            return;
-        }
+        // it seems the duplicate calls show up only when we reload the app in the debugger
+        // if (call._callkeepUUID && call._callkeepUUID === call.id) {
+        //    console.log('Incoming call', call.id, 'already in progress, skipping duplicate');
+        //    return;
+        //}
 
         if (!mediaTypes.audio && !mediaTypes.video) {
             console.log('Call rejected because unsupported media', mediaTypes);
