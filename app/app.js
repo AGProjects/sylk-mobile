@@ -1370,6 +1370,11 @@ class Sylk extends Component {
     }
 
     ready() {
+        if (!this.state.account) {
+            return null;
+        }
+
+
         return (
             <Fragment>
                 <NavigationBar
