@@ -3,16 +3,18 @@ import Logger from '../Logger';
 import uuid from 'react-native-uuid';
 
 const logger = new Logger('CallManager');
+import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 
-
+// https://github.com/react-native-webrtc/react-native-callkeep
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, answerFunc, rejectFunc, hangupFunc) {
+    constructor(RNCallKeep, answerFunc, rejectFunc, hangupFunc, startConferenceFunc) {
         logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
 
         // Set of current SIP sessions
         this._sessions = new Map();
+        this._conferences = new Map();
 
         this._waitingCalls = new Map();
         this._timeouts = new Map();
@@ -21,6 +23,7 @@ export default class CallManager extends events.EventEmitter {
         this._sylkAnswerCall = answerFunc;
         this._sylkRejectCall = rejectFunc;
         this._sylkHangupCall = hangupFunc;
+        this.startConference = startConferenceFunc;
 
         this._boundRnAnswer = this._rnAnswer.bind(this);
         this._boundRnEnd = this._rnEnd.bind(this);
@@ -111,12 +114,14 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID) {
+        // When user actively chooses to end the call from your app's UI.)
         console.log('Callkeep: end call', callUUID);
         this.callKeep.endCall(callUUID);
     }
 
     reportEndCallWithUUID(callUUID, reason) {
-        console.log('Callkeep: report end call', callUUID, 'with reason', reason);
+        // Report that the call ended without the user initiating
+        console.log('Callkeep: end call', callUUID, 'with reason', reason);
         this.callKeep.reportEndCallWithUUID(callUUID, reason);
     }
 
@@ -129,24 +134,40 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnAnswer(data) {
-        console.log('Callkeep: answer call for UUID',  data.callUUID);
-        //get the uuid, find the session with that uuid and answer it
-        if (this._sessions.has(data.callUUID.toLowerCase())) {
+        let callUUID = data.callUUID.toLowerCase();
+        console.log('Callkeep: answer call for UUID', callUUID);
+        if (this._conferences.has(callUUID)) {
+            console.log('Accept conference invite', callUUID);
+            let room = this._conferences.get(callUUID);
+            console.log('Callkeep: hangup for incoming conference UUID', callUUID);
+            this.callKeep.endCall(callUUID);
+            this._conferences.delete(callUUID);
+            console.log('Will start conference to', room);
+            this.startConference(room);
+            // start an outgoing conference call
+        } else if (this._sessions.has(callUUID)) {
             this._sylkAnswerCall();
         } else {
-            this._waitingCalls.set(data.callUUID.toLowerCase(), '_sylkAnswerCall');
+            this._waitingCalls.set(callUUID, '_sylkAnswerCall');
         }
     }
 
     _rnEnd(data) {
         //get the uuid, find the session with that uuid and answer it
-        if (this._sessions.has(data.callUUID.toLowerCase())) {
-            console.log('Callkeep: hangup for call UUID', data.callUUID);
-            //let session = this._sessions.get(data.callUUID.toLowerCase());
+        let callUUID = data.callUUID.toLowerCase();
+        if (this._conferences.has(callUUID)) {
+            console.log('Reject conference invite', callUUID);
+            let room = this._conferences.get(callUUID);
+            console.log('Callkeep: hangup for incoming conference UUID', callUUID);
+            this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.FAILED);
+            this._conferences.delete(callUUID);
+
+        } else if (this._sessions.has(callUUID)) {
+            console.log('Callkeep: hangup for call UUID', callUUID);
             this._sylkHangupCall();
         } else {
-            console.log('Callkeep: hangup later call UUID', data.callUUID);
-            this._waitingCalls.set(data.callUUID.toLowerCase(), '_sylkHangupCall');
+            console.log('Callkeep: this. UUID', callUUID);
+            this._waitingCalls.set(callUUID, '_sylkHangupCall');
         }
     }
 
@@ -193,10 +214,14 @@ export default class CallManager extends events.EventEmitter {
 
     }
 
+    handleConference(callUUID, room) {
+        console.log('CallKeep: handle conference', callUUID, 'to room', room);
+        this._conferences.set(callUUID, room);
+        this._emitSessionsChange(true);
+    }
+
     handleSession(session, sessionUUID) {
         // sessionUUID is present only for outgoing calls
-        console.log('handleSession start');
-
         if (sessionUUID) {
             session._callkeepUUID = sessionUUID;
             console.log('Callkeep: handle outgoing call UUID', session._callkeepUUID);

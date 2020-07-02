@@ -160,7 +160,7 @@ class Sylk extends Component {
             RNCallKeep.setReachable();
         });
 
-        this._callKeepManager = new CallManager(RNCallKeep, this.answerCall, this.rejectCall, this.hangupCall);
+        this._callKeepManager = new CallManager(RNCallKeep, this.answerCall, this.rejectCall, this.hangupCall, this.callKeepStartConference);
 
         if (InCallManager.recordPermission !== 'granted') {
             InCallManager.requestRecordPermission()
@@ -222,7 +222,6 @@ class Sylk extends Component {
 
 
         if (Platform.OS === 'android') {
-
             Linking.getInitialURL().then((url) => {
                 if (url) {
                   console.log('Initial url is: ' + url);
@@ -281,7 +280,11 @@ class Sylk extends Component {
                 .onMessage((message: RemoteMessage) => {
                     // this will just wake up the app to receive
                     // the web-socket invite handled by this.incomingCall()
-                    console.log('Received Firebase mobile push notification for', message.data);
+                    let event = message.data.event;
+                    console.log('Handle Firebase', event, 'push notification');
+                    if (event === 'incoming_conference_request') {
+                        this.incomingConferenceFromPush(message.data['session-id'], message.data['to_uri'], message.data['from_uri']);
+                    }
                 });
         }
 
@@ -352,17 +355,16 @@ class Sylk extends Component {
     }
 
     _onPushkitRegistered(token) {
-        console.log('set push token', token);
+        console.log('Set VoIP pushkit token', token);
         this.setState({ pushkittoken: token });
     }
 
     _onPushRegistered(token) {
-        console.log('set push token', token);
+        console.log('Set background push token', token);
         this.setState({ pushtoken: token });
     }
 
     _sendPushToken() {
-        console.log('send push token');
         if (this.state.account && this.state.pushtoken) {
             let token = null;
 
@@ -371,6 +373,7 @@ class Sylk extends Component {
             } else if (Platform.OS === 'android') {
                 token = this.state.pushtoken;
             }
+            console.log('Push token', token, 'sent to server');
             this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
         }
     }
@@ -679,6 +682,7 @@ class Sylk extends Component {
     }
 
     processRegistration(accountId, password, displayName) {
+        /*
         if (this.state.account !== null) {
             logger.debug('We already have an account, removing it');
             this.state.connection.removeAccount(this.state.account,
@@ -690,6 +694,7 @@ class Sylk extends Component {
                 }
             );
         }
+        */
 
         const options = {
             account: accountId,
@@ -863,12 +868,13 @@ class Sylk extends Component {
     }
 
     callKeepStartCall(targetUri, options) {
+        // this is how we start an outgoing call
         this._tmpCallStartInfo = {
             uuid: uuid.v4(),
             options,
         };
 
-        console.log('CallKeep will start call to %s', targetUri);
+        console.log('CallKeep start call to %s', targetUri);
 
         if (Platform.OS === 'ios') {
             this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri, 'email', options.video ? true : false);
@@ -984,22 +990,6 @@ class Sylk extends Component {
         InCallManager.setForceSpeakerphoneOn(false);
     }
 
-    escalateToConference(participants) {
-        this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-        this.state.currentCall.terminate();
-        history.push('/ready');
-        this.setState({currentCall: null, localMedia: null});
-        this.participantsToInvite = participants;
-        const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
-        this.callKeepStartCall(uri, { conference: true });
-    }
-
-    startConference(targetUri) {
-        console.log('New outgoing conference to room', targetUri);
-        this.setState({targetUri: targetUri, isConference: true});
-        this.getLocalMedia({audio: true, video: true}, '/conference');
-    }
-
     startGuestConference(targetUri) {
         this.setState({targetUri: targetUri});
         this.getLocalMedia({audio: true, video: true});
@@ -1021,7 +1011,7 @@ class Sylk extends Component {
 
     _onLocalNotificationReceivedBackground(notification) {
         let notificationContent = notification.getData();
-        console.log('Handle local', Platform.OS, 'push notification: ', notificationContent);
+        console.log('Handle local iOS push notification: ', notificationContent);
     }
 
     _onNotificationReceivedBackground(notification) {
@@ -1034,7 +1024,7 @@ class Sylk extends Component {
         // an invite within 10 seconds then clear it down
 
         let event = notificationContent['event'];
-        console.log('Handle', Platform.OS, event, 'push notification');
+        console.log('Handle iOS', event, 'push notification');
 
         if (notificationContent['event'] === 'incoming_session') {
             let callUUID = notificationContent['session-id'];
@@ -1043,9 +1033,15 @@ class Sylk extends Component {
             this._callKeepManager.handleSessionLater(callUUID, notificationContent);
 
             if (VoipPushNotification.wakeupByPush) {
-                console.log('We wake up by push');
+                console.log('We wake up by a push notification');
                 VoipPushNotification.wakeupByPush = false;
             }
+            VoipPushNotification.onVoipNotificationCompleted(callUUID);
+        } else if (notificationContent['event'] === 'incoming_conference_request') {
+            let callUUID = notificationContent['session-id'];
+            console.log('Incoming conference for push mobile notification for call UUID', callUUID);
+            this.incomingConferenceFromPush(callUUID, notificationContent['to_uri'], notificationContent['from_uri']);
+
             VoipPushNotification.onVoipNotificationCompleted(callUUID);
         }
 
@@ -1056,11 +1052,77 @@ class Sylk extends Component {
             });
         }
         */
+
         if (notificationContent['event'] === 'cancel') {
             VoipPushNotification.presentLocalNotification({
                 alertBody:'Call cancelled'
             });
         }
+
+        if (VoipPushNotification.wakeupByPush) {
+            console.log('We wake up by push notification');
+            VoipPushNotification.wakeupByPush = false;
+        }
+    }
+
+    incomingConferenceFromPush(callUUID, to_uri, from_uri) {
+        this._callKeepManager.handleConference(callUUID, to_uri);
+
+        console.log('Show alert panel for conference invite');
+
+        let room = to_uri.split('@')[0];
+        let title = from_uri + ': Join conference ' + room + '?';
+
+        if (Platform.OS === 'ios') {
+            RNCallKeep.displayIncomingCall(callUUID, room, title, 'email', 'true');
+        } else if (Platform.OS === 'android') {
+            RNCallKeep.displayIncomingCall(callUUID, room, title);
+        }
+
+        this.setFocusEvents(true);
+    }
+
+    callKeepStartConference(room) {
+        console.log('CallKeep start conference to', room);
+        this._tmpCallStartInfo = {
+                uuid: uuid.v4()
+            };
+
+        this.startCallWhenConnected(room, {audio: true, video: true, conference: true});
+    }
+
+    escalateToConference(participants) {
+        this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
+        this.state.currentCall.terminate();
+        history.push('/ready');
+        this.setState({currentCall: null, localMedia: null});
+        this.participantsToInvite = participants;
+        const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
+        this.callKeepStartCall(uri, { conference: true });
+    }
+
+    startConference(targetUri) {
+        console.log('New outgoing conference to room', targetUri);
+        this.setState({targetUri: targetUri, isConference: true});
+        this.getLocalMedia({audio: true, video: true}, '/conference');
+    }
+
+    conferenceInvite(data) {
+        // comes from web socket
+        console.log('Conference invite from %o to %s', data.originator, data.room);
+        //this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
+
+        /*
+        this._notificationCenter.postConferenceInvite(data.originator, data.room, () => {
+            if (this.state.currentCall !== null) {
+                this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
+                this.state.currentCall.terminate();
+                this.setState({currentCall: null, showIncomingModal: false, localMedia: null, generatedVideoTrack: false});
+            }
+            this.callKeepStartCall(data.room, {conference: true});
+        });
+        */
+
     }
 
     incomingCall(call, mediaTypes) {
@@ -1151,19 +1213,6 @@ class Sylk extends Component {
                 history.push('/ready');
             });
         }
-    }
-
-    conferenceInvite(data) {
-        console.log('Conference invite from %o to %s', data.originator, data.room);
-        this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
-        this._notificationCenter.postConferenceInvite(data.originator, data.room, () => {
-            if (this.state.currentCall !== null) {
-                this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-                this.state.currentCall.terminate();
-                this.setState({currentCall: null, showIncomingModal: false, localMedia: null, generatedVideoTrack: false});
-            }
-            this.callKeepStartCall(data.room, {conference: true});
-        });
     }
 
     startPreview() {

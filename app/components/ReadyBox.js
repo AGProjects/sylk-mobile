@@ -124,7 +124,7 @@ class ReadyBox extends Component {
             <Fragment>
                 <View style={styles.wholeContainer}>
                     <View style={styles.container}>
-                        <Title style={titleClass}>Enter address or telephone number</Title>
+                        <Title style={titleClass}>Enter address or phone number</Title>
                         <View style={uriGroupClass}>
                             <View style={uriClass}>
                                 <URIInput
