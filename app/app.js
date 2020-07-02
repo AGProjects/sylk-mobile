@@ -337,12 +337,20 @@ class Sylk extends Component {
     }
 
     async startCallWhenConnected(targetUri, options) {
+        console.log('Start call when connected to', targetUri);
         var n = 0;
         while (n < 7) {
-            if (this.state.connection === null) {
-                console.log('Waiting for connection');
+            if (this.state.connection) {
+                console.log('Connection state is', this.state.connection.state);
+            } else {
+                console.log('Connection is down');
+            }
+            if (!this.state.connection || this.state.connection.state !== 'ready') {
+                console.log('Waiting for connection...');
+                this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 1});
                 await this._sleep(1000);
             } else {
+                console.log('Connection is ready');
                 if (options.conference) {
                     this.startConference(targetUri);
                 } else {
