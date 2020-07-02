@@ -7,13 +7,13 @@ import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 
 // https://github.com/react-native-webrtc/react-native-callkeep
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, answerFunc, rejectFunc, hangupFunc, startConferenceFunc) {
+    constructor(RNCallKeep, answerFunc, rejectFunc, hangupFunc, _sylkConferenceCallFunc) {
         logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
 
         // Set of current SIP sessions
-        this._sessions = new Map();
+        this._calls = new Map();
         this._conferences = new Map();
 
         this._waitingCalls = new Map();
@@ -23,13 +23,13 @@ export default class CallManager extends events.EventEmitter {
         this._sylkAnswerCall = answerFunc;
         this._sylkRejectCall = rejectFunc;
         this._sylkHangupCall = hangupFunc;
-        this.startConference = startConferenceFunc;
+        this._sylkConferenceCall = _sylkConferenceCallFunc;
 
         this._boundRnAnswer = this._rnAnswer.bind(this);
         this._boundRnEnd = this._rnEnd.bind(this);
         this._boundRnMute = this._rnMute.bind(this);
-        this._boundRnActiveAudioSession = this._rnActiveAudioSession.bind(this);
-        this._boundRnDeactiveAudioSession = this._rnDeactiveAudioSession.bind(this);
+        this._boundRnActiveAudioCall = this._rnActiveAudioSession.bind(this);
+        this._boundRnDeactiveAudioCall = this._rnDeactiveAudioSession.bind(this);
         this._boundRnDTMF = this._rnDTMF.bind(this);
         this._boundRnProviderReset = this._rnProviderReset.bind(this);
 
@@ -37,8 +37,8 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
         this._RNCallKeep.addEventListener('didPerformSetMutedCallAction', this._boundRnMute);
 
-        this._RNCallKeep.addEventListener('didActivateAudioSession', this._boundRnActiveAudioSession);
-        this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioSession.bind(this));
+        this._RNCallKeep.addEventListener('didActivateAudioSession', this._boundRnActiveAudioCall);
+        this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall.bind(this));
         this._RNCallKeep.addEventListener('didPerformDTMFAction', this._boundRnDTMF);
         this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
     }
@@ -48,29 +48,29 @@ export default class CallManager extends events.EventEmitter {
     }
 
     get count() {
-        return this._sessions.size;
+        return this._calls.size;
     }
 
     get waitingCount() {
         return this._timeouts.size;
     }
 
-    get sessions() {
-        return [...this._sessions.values()];
+    get calls() {
+        return [...this._calls.values()];
     }
 
-    get activeSession() {
-        for (let session of this.sessions) {
-            if (session.active) {
-                return session;
+    get activeCall() {
+        for (let call of this.calls) {
+            if (call.active) {
+                return call;
             }
         }
     }
 
     // there can only be one active one.... so just empty it for now
     remove() {
-        //console.log('Callkeep: remove session');
-        this._sessions.clear();
+        //console.log('Callkeep: remove call');
+        this._calls.clear();
     }
 
     backToForeground() {
@@ -126,11 +126,11 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnActiveAudioSession() {
-        console.log('Callkeep: activated audio session call');
+        console.log('Callkeep: activated audio call');
     }
 
     _rnDeactiveAudioSession() {
-        console.log('Callkeep: deactivated audio session call');
+        console.log('Callkeep: deactivated audio call');
     }
 
     _rnAnswer(data) {
@@ -143,9 +143,9 @@ export default class CallManager extends events.EventEmitter {
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
             console.log('Will start conference to', room);
-            this.startConference(room);
+            this._sylkConferenceCall(room);
             // start an outgoing conference call
-        } else if (this._sessions.has(callUUID)) {
+        } else if (this._calls.has(callUUID)) {
             this._sylkAnswerCall();
         } else {
             this._waitingCalls.set(callUUID, '_sylkAnswerCall');
@@ -153,7 +153,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnEnd(data) {
-        //get the uuid, find the session with that uuid and answer it
+        //get the uuid, find the call with that uuid and answer it
         let callUUID = data.callUUID.toLowerCase();
         if (this._conferences.has(callUUID)) {
             console.log('Reject conference invite', callUUID);
@@ -162,7 +162,7 @@ export default class CallManager extends events.EventEmitter {
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
 
-        } else if (this._sessions.has(callUUID)) {
+        } else if (this._calls.has(callUUID)) {
             console.log('Callkeep: hangup for call UUID', callUUID);
             this._sylkHangupCall();
         } else {
@@ -173,31 +173,31 @@ export default class CallManager extends events.EventEmitter {
 
     _rnMute(data) {
         console.log('Callkeep: mute ' + data.muted + ' for call UUID', data.callUUID);
-        //get the uuid, find the session with that uuid and mute/unmute it
-        if (this._sessions.has(data.callUUID.toLowerCase())) {
-            let session = this._sessions.get(data.callUUID.toLowerCase());
-            const localStream = session.getLocalStreams()[0];
+        //get the uuid, find the call with that uuid and mute/unmute it
+        if (this._calls.has(data.callUUID.toLowerCase())) {
+            let call = this._calls.get(data.callUUID.toLowerCase());
+            const localStream = call.getLocalStreams()[0];
             localStream.getAudioTracks()[0].enabled = !data.muted;
         }
     }
 
     _rnDTMF(data) {
         console.log('Callkeep: got dtmf for call UUID', data.callUUID);
-        if (this._sessions.has(data.callUUID.toLowerCase())) {
-            let session = this._sessions.get(data.callUUID.toLowerCase());
+        if (this._calls.has(data.callUUID.toLowerCase())) {
+            let call = this._calls.get(data.callUUID.toLowerCase());
             console.log('sending webrtc dtmf', data.digits)
-            session.sendDtmf(data.digits);
+            call.sendDtmf(data.digits);
         }
     }
 
     _rnProviderReset() {
-        console.log('Callkeep: got a provider reset, clearing down all sessions');
-        this._sessions.forEach((session) => {
-            session.terminate();
+        console.log('Callkeep: got a provider reset, clearing down all calls');
+        this._calls.forEach((call) => {
+            call.terminate();
         })
     }
 
-    handleSessionLater(callUUID, notificationContent) {
+    handleCallLater(callUUID, notificationContent) {
         console.log('Callkeep: handle later incoming call UUID', callUUID);
 
         let reason;
@@ -223,39 +223,39 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    handleSession(session, sessionUUID) {
-        // sessionUUID is present only for outgoing calls
-        if (sessionUUID) {
-            session._callkeepUUID = sessionUUID;
-            console.log('Callkeep: handle outgoing call UUID', session._callkeepUUID);
-        } else if (session.id) {
-            session._callkeepUUID = session.id;
-            console.log('Callkeep: handle incoming call UUID', session._callkeepUUID);
+    handleCall(call, callUUID) {
+        // callUUID is present only for outgoing calls
+        if (callUUID) {
+            call._callkeepUUID = callUUID;
+            console.log('Callkeep: handle outgoing call UUID', call._callkeepUUID);
+        } else if (call.id) {
+            call._callkeepUUID = call.id;
+            console.log('Callkeep: handle incoming call UUID', call._callkeepUUID);
         } else {
             console.log('Callkeep: no incoming or outgoing call detected');
         }
 
-        if (this._timeouts.has(session._callkeepUUID)) {
+        if (this._timeouts.has(call._callkeepUUID)) {
             // push notification arrived first
-            clearTimeout(this._timeouts.get(session._callkeepUUID));
-            this._timeouts.delete(session._callkeepUUID);
+            clearTimeout(this._timeouts.get(call._callkeepUUID));
+            this._timeouts.delete(call._callkeepUUID);
         }
 
-        session.on('close', () => {
+        call.on('close', () => {
             // Remove from the set.
-            this._sessions.delete(session._callkeepUUID);
+            this._calls.delete(call._callkeepUUID);
 
         });
 
         //if the call is in waiting then answer it (or decline it)
-        if (this._waitingCalls.get(session._callkeepUUID)) {
-            let action = this._waitingCalls.get(session._callkeepUUID);
+        if (this._waitingCalls.get(call._callkeepUUID)) {
+            let action = this._waitingCalls.get(call._callkeepUUID);
             this[action]();
-            this._waitingCalls.delete(session._callkeepUUID);
+            this._waitingCalls.delete(call._callkeepUUID);
         }
 
         // Add to the set.
-        this._sessions.set(session._callkeepUUID, session);
+        this._calls.set(call._callkeepUUID, call);
 
         // Emit event.
         this._emitSessionsChange(true);
@@ -269,8 +269,8 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.removeEventListener('answerCall', this._boundRnAnswer);
         this._RNCallKeep.removeEventListener('endCall', this._boundRnEnd);
         this._RNCallKeep.removeEventListener('didPerformSetMutedCallAction', this._boundRnMute);
-        this._RNCallKeep.removeEventListener('didActivateAudioSession',  this._boundRnActiveAudioSession);
-        this._RNCallKeep.removeEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioSession);
+        this._RNCallKeep.removeEventListener('didActivateAudioSession',  this._boundRnActiveAudioCall);
+        this._RNCallKeep.removeEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
         this._RNCallKeep.removeEventListener('didPerformDTMFAction', this._boundRnDTMF);
         this._RNCallKeep.removeEventListener('didResetProvider', this._boundRnProviderReset);
     }

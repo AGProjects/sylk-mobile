@@ -1014,7 +1014,7 @@ class Sylk extends Component {
 
     outgoingCall(call) {
         console.log('New outgoing call to', call.remoteIdentity.uri, 'with options', this._tmpCallStartInfo);
-        this._callKeepManager.handleSession(call, this._tmpCallStartInfo.uuid);
+        this._callKeepManager.handleCall(call, this._tmpCallStartInfo.uuid);
         InCallManager.start({media: this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.video ? 'video' : 'audio'});
         this._tmpCallStartInfo = {};
         call.on('stateChanged', this.callStateChanged);
@@ -1043,7 +1043,7 @@ class Sylk extends Component {
             let callUUID = notificationContent['session-id'];
             console.log('Incoming call for push mobile notification for call UUID', callUUID);
 
-            this._callKeepManager.handleSessionLater(callUUID, notificationContent);
+            this._callKeepManager.handleCallLater(callUUID, notificationContent);
 
             if (VoipPushNotification.wakeupByPush) {
                 console.log('We wake up by a push notification');
@@ -1179,7 +1179,7 @@ class Sylk extends Component {
 
         console.log('New', media_type, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
 
-        this._callKeepManager.handleSession(call);
+        this._callKeepManager.handleCall(call);
 
         call.mediaTypes = mediaTypes;
 
