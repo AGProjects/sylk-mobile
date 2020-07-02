@@ -153,6 +153,7 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.muteIncoming = false;
+        this.conferencePushes = new Map();
 
         storage.initialize();
 
@@ -305,22 +306,26 @@ class Sylk extends Component {
     }
 
     _callkeepStartedCall(data) {
+        console.log("_callkeepStartedCall", data);
         if (!this._tmpCallStartInfo || ! this._tmpCallStartInfo.options) {
             // we dont have options in the tmp var, which means this likely came from the native dialer
             // for now, we only do audio calls from the native dialer.
+            let callUUID = data.callUUID || uuid.v4();
+
             this._tmpCallStartInfo = {
-                uuid: data.callUUID
+                uuid: callUUID
             };
             let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
             //this._notificationCenter.postSystemNotification('Waiting for server connection', {body: '', timeout: 2});
             this.setState({targetUri: data.handle});
             if (is_conf) {
-                console.log("CallKeep started conference call from native dialer to", data.handle, 'with UUID', data.callUUID);
+                console.log("CallKeep started conference call from native dialer to", data.handle, 'with UUID', callUUID);
             } else {
-                console.log("CallKeep started call from native dialer to", data.handle, 'with uuid', data.callUUID);
+                console.log("CallKeep started call from native dialer to", data.handle, 'with uuid', callUUID);
             }
             this.startCallWhenConnected(data.handle, {audio: true, video: true, conference: is_conf});
         } else {
+
             console.log("CallKeep started call from within the app to", data.handle, this._tmpCallStartInfo);
             if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
                 this.startConference(data.handle);
@@ -1066,20 +1071,44 @@ class Sylk extends Component {
     }
 
     incomingConferenceFromPush(callUUID, to_uri, from_uri) {
+        // this works for iOS when app is in the background
+        // this works for Android when is in the foreground
+
+        // this does not work for Android when is in the background
+        // this does not work for iOS when app is in the foreground
+
+        // TODO: for iOS we need to start from websocket invite but we need session-id
+        // TODO: for Android we need to handle background notifications
+
+        if (this.state.isConference && this.state.targetUri === to_uri) {
+            return;
+        }
+
+        if (this.conferencePushes.has(callUUID)) {
+            return;
+        }
+
+        // somehow we can get pushes later again
+        this.conferencePushes.set(callUUID, to_uri);
+
         this._callKeepManager.handleConference(callUUID, to_uri);
 
         console.log('Show alert panel for conference invite');
 
         let room = to_uri.split('@')[0];
-        let title = from_uri + ': Join conference ' + room + '?';
+        let title = 'Join conference ' + room + '?';
 
         if (Platform.OS === 'ios') {
-            RNCallKeep.displayIncomingCall(callUUID, room, title, 'email', 'true');
+            console.log('Show iOS alert panel for conference invite, uri=', to_uri, "title=", title);
+            RNCallKeep.displayIncomingCall(callUUID, to_uri, '', 'email', 'true');
         } else if (Platform.OS === 'android') {
-            RNCallKeep.displayIncomingCall(callUUID, room, title);
+            console.log('Show Android alert panel for conference invite, uri=', to_uri, "title=", title);
+            RNCallKeep.displayIncomingCall(callUUID, to_uri, '');
         }
 
         this.setFocusEvents(true);
+
+        // if call is accepted this.callKeepStartConference is called
     }
 
     callKeepStartConference(room) {

@@ -159,7 +159,7 @@ export default class CallManager extends events.EventEmitter {
             console.log('Reject conference invite', callUUID);
             let room = this._conferences.get(callUUID);
             console.log('Callkeep: hangup for incoming conference UUID', callUUID);
-            this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.FAILED);
+            this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
 
         } else if (this._sessions.has(callUUID)) {
@@ -215,6 +215,9 @@ export default class CallManager extends events.EventEmitter {
     }
 
     handleConference(callUUID, room) {
+        if (this._conferences.has(callUUID)) {
+            return;
+        }
         console.log('CallKeep: handle conference', callUUID, 'to room', room);
         this._conferences.set(callUUID, room);
         this._emitSessionsChange(true);
