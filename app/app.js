@@ -293,7 +293,9 @@ class Sylk extends Component {
     }
 
     _proximityDetect(data) {
-        //console.log('Proximity changed', data);
+        console.log('Proximity changed', data);
+        return;
+
         if (data.isNear) {
            this.speakerphoneOff();
         } else {
@@ -898,7 +900,7 @@ class Sylk extends Component {
 
     startCall(targetUri, options) {
         this.setState({targetUri: targetUri});
-        this.addCallHistoryEntry(targetUri);
+        //this.addCallHistoryEntry(targetUri);
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
@@ -1140,6 +1142,7 @@ class Sylk extends Component {
 
     startConference(targetUri) {
         console.log('New outgoing conference to room', targetUri);
+        this.addCallHistoryEntry(targetUri);
         this.setState({targetUri: targetUri, isConference: true});
         this.getLocalMedia({audio: true, video: true}, '/conference');
     }
@@ -1257,11 +1260,9 @@ class Sylk extends Component {
     }
 
     addCallHistoryEntry(uri) {
-        if (this.state.mode === MODE_NORMAL) {
-            // history.add(uri).then((entries) => {
-            //     this.setState({history: entries});
-            // });
-        } else {
+        console.log('Add history entry for', uri, 'mode', this.state.mode)
+        if (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE) {
+            console.log('Add history entry for', uri)
             let entries = this.state.history.slice();
             if (entries.length !== 0) {
                 const idx = entries.indexOf(uri);
@@ -1275,6 +1276,11 @@ class Sylk extends Component {
                 entries = [uri];
             }
             this.setState({history: entries});
+            console.log(this.state.history);
+        } else {
+            // history.add(uri).then((entries) => {
+            //     this.setState({history: entries});
+            // });
         }
     }
 
