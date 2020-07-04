@@ -19,9 +19,9 @@ const AboutModal = (props) => {
             <DialogType visible={props.show} onDismiss={props.close}>
                 <Surface style={styles.container}>
                     <Dialog.Title style={styles.title}>About Sylk</Dialog.Title>
-                    <Text style={styles.body}>Sylk is the client part of Sylk Suite, a set of
-                    applications for real-time communications using SIP and WebRTC protocols.</Text>
-                    <Text onPress={() => handleLink()} style={styles.body}>https://sylkserver.com</Text>
+                    <Text style={styles.body}>Sylk mobile client is part of Sylk Suite, a set of
+                    applications for real-time communications using SIP and WebRTC specifications</Text>
+                    <Text onPress={() => handleLink()} style={styles.body}>Copyright &copy; AG Projects</Text>
                 </Surface>
             </DialogType>
         </Portal>
