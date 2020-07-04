@@ -46,11 +46,12 @@ class ConferenceModal extends Component {
                 <DialogType visible={this.props.show} onDismiss={this.onHide}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Join Conference</Dialog.Title>
-                        <Text style={styles.body}>Enter the room you wish to join</Text>
+
                         <TextInput
+                            style={styles.body}
                             mode="flat"
                             autoCapitalize="none"
-                            label="Conference Room"
+                            label="Enter the room you wish to join"
                             placeholder="Conference Room"
                             onChangeText={this.handleConferenceTargetChange}
                             required
@@ -58,12 +59,11 @@ class ConferenceModal extends Component {
                         />
                         <Button
                             mode="contained"
+                            style={styles.button}
                             onPress={this.join}
                             disabled={!validUri}
                             icon="video"
-                        >
-                            Join
-                        </Button>
+                        >Join</Button>
                     </Surface>
                 </DialogType>
             </Portal>

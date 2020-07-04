@@ -1,16 +1,25 @@
 .container {
-    padding: 30px;
-    margin: 30px;
+    padding: 5px;
+    margin: 10px;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
 }
 
 .title {
     padding: 5px;
-    font-size: 20px;
+    font-size: 24px;
     text-align: center;
 }
 
 .body {
     padding: 10px;
-    font-size: 16px;
-    text-align: center;
+    font-size: 18px;
+    width: 100%;
+}
+
+.button {
+    margin-top: 20px;
+    margin-bottom: 15px;
+    width: 200;
 }
