@@ -3,14 +3,21 @@ import PropTypes from 'prop-types';
 import utils from '../utils';
 import { Avatar } from 'react-native-paper';
 
+
 const UserIcon = (props) => {
     const name = props.identity.displayName || props.identity.uri;
     let initials = name.split(' ', 2).map(x => x[0]).join('');
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
 
-    if (props.identity.uri === 'anonymous@anonymous.invalid') {
+    if (props.identity.uri.search('anonymous') !== -1) {
         return (
             <Avatar.Icon style={{backgroundColor: color}} icon="user" />
+        )
+    }
+
+    if (props.identity.uri.search('videoconference') !== -1) {
+        return (
+            <Avatar.Icon style={{backgroundColor: color}} icon="account-group" />
         )
     }
 
