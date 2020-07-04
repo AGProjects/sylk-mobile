@@ -69,6 +69,7 @@ class CallMeMaybeModal extends Component {
     }
 
     render() {
+        const sipUri = this.props.callUrl.split('/').slice(-1)[0];
 
         return (
             <Portal>
@@ -76,7 +77,16 @@ class CallMeMaybeModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Call me, maybe?</Dialog.Title>
                         <Text style={styles.body}>
-                            Share {this.props.callUrl} with others so they can call you
+                            Others can call you using a SIP client at {sipUri}
+                        </Text>
+                        <Text style={styles.body}>
+                            Or by using a Web browser at
+                        </Text>
+                        <Text style={styles.body}>
+                            {this.props.callUrl}
+                        </Text>
+                        <Text style={styles.body}>
+                             Share these addresses with others
                         </Text>
                         <View style={styles.iconContainer}>
                             <IconButton
