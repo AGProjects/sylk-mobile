@@ -38,11 +38,11 @@ class Conference extends React.Component {
                 },
                 initialParticipants: this.props.participantsToInvite
             };
-            DEBUG('Creating conference call', this.props.targetUri.toLowerCase(), options);
+            console.log('Creating conference call', this.props.targetUri.toLowerCase(), options);
             const confCall = this.props.account.joinConference(this.props.targetUri.toLowerCase(), options);
             confCall.on('stateChanged', this.confStateChanged);
         } else {
-            DEBUG('CALL ALREADY STARTED');
+            console.log('Cannot start conference, there is already a call in progress');
         }
     }
 

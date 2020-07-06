@@ -84,7 +84,7 @@ class Call extends Component {
 
     call() {
         assert(this.props.currentCall === null, 'currentCall is not null');
-        console.log('Call: starting call', this.props.callUUID, 'to', this.props.targetUri);
+        //console.log('Call: starting call', this.props.callUUID, 'to', this.props.targetUri);
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
         options.localStream = this.props.localMedia;
         let call = this.props.account.call(this.props.targetUri, options);
@@ -100,11 +100,12 @@ class Call extends Component {
     }
 
     hangupCall() {
-        this.props.hangupCall();
+        console.log('Call: hangup call');
+        let callUUID = this.props.currentCall._callkeepUUID;
+        this.props.hangupCall(callUUID);
     }
 
     mediaPlaying() {
-        console.log('Call: mediaPlaying');
         if (this.props.currentCall === null) {
             this.call();
         } else {

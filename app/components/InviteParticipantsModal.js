@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
+import { View } from 'react-native';
 import { Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
@@ -45,9 +46,8 @@ class InviteParticipantsModal extends Component {
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title>Invite Online Users</Dialog.Title>
-
-                        <Text>Enter the users you wish to invite</Text>
+                        <Dialog.Title>Invite Participants</Dialog.Title>
+                        <Text>Enter users to invite</Text>
                         <TextInput
                             mode="flat"
                             name="users"
@@ -58,7 +58,14 @@ class InviteParticipantsModal extends Component {
                             required
                             autoCapitalize="none"
                         />
-                        <Button mode="contained" onPress={this.invite} icon="email">Invite</Button>
+                        <View style={styles.buttonRow}>
+                        <Button
+                            mode="contained"
+                            style={styles.button}
+                            onPress={this.invite}
+                            icon="email">Invite
+                        </Button>
+                        </View>
                     </Surface>
                 </DialogType>
             </Portal>

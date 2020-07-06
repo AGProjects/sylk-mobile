@@ -134,7 +134,7 @@ class ReadyBox extends Component {
                                     data={history}
                                     onChange={this.handleTargetChange}
                                     onSelect={this.handleTargetSelect}
-                                    placeholder="Eg. alice@sip2sip.info or +1800975707"
+                                    placeholder="Enter a SIP address like alice@sip2sip.info"
                                     autoFocus={false}
                                 />
                             </View>

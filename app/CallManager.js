@@ -74,12 +74,6 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
-    // there can only be one active one.... so just empty it for now
-    remove(callUUID) {
-        console.log('Callkeep: remove call', callUUID);
-        this._calls.delete(callUUID);
-    }
-
     backToForeground() {
        console.log('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
@@ -127,12 +121,13 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
+        console.log('Callkeep: end call', callUUID);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
         } else {
             this.callKeep.endCall(callUUID);
         }
-        this.remove(callUUID);
+        this._calls.delete(callUUID);
     }
 
     _rnActiveAudioSession(data) {
@@ -145,11 +140,11 @@ export default class CallManager extends events.EventEmitter {
 
     _rnAccept(data) {
         let callUUID = data.callUUID.toLowerCase();
-        console.log('Callkeep: accept call for UUID', callUUID);
+        console.log('Callkeep: accept call callback', callUUID);
         if (this._conferences.has(callUUID)) {
             console.log('Accept conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            console.log('Callkeep: hangup for incoming conference UUID', callUUID);
+            console.log('Callkeep: hangup for incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
             console.log('Will start conference to', room);
@@ -166,31 +161,31 @@ export default class CallManager extends events.EventEmitter {
     _rnEnd(data) {
         //get the uuid, find the call with that uuid and ccept it
         let callUUID = data.callUUID.toLowerCase();
-        console.log('Callkeep: end call for UUID', callUUID);
+        console.log('Callkeep: end call callback', callUUID);
         if (this._conferences.has(callUUID)) {
-            console.log('Reject conference invite', callUUID);
+            console.log('Callkeep:    Reject conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            console.log('Callkeep: hangup for incoming conference UUID', callUUID);
+            console.log('Callkeep: hangup for incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {
-            console.log('Callkeep: hangup for call UUID', callUUID);
+            console.log('Callkeep:     hangup call', callUUID);
             let call = this._calls.get(callUUID);
-            console.log('Call', callUUID, 'state is', call.state);
+            console.log('Callkeep:     call', callUUID, 'state is', call.state);
             if (call.state === 'incoming') {
                 this._sylkRejectCall(callUUID);
             } else {
                 this._sylkHangupCall(callUUID);
             }
         } else {
-            console.log('Callkeep: add to waitings list call UUID', callUUID);
+            console.log('Callkeep:    add to waitings list call', callUUID);
             this._waitingCalls.set(callUUID, '_sylkHangupCall');
         }
     }
 
     _rnMute(data) {
-        console.log('Callkeep: mute ' + data.muted + ' for call UUID', data.callUUID);
+        console.log('Callkeep: mute ' + data.muted + ' for call', data.callUUID);
         //get the uuid, find the call with that uuid and mute/unmute it
         if (this._calls.has(data.callUUID.toLowerCase())) {
             let call = this._calls.get(data.callUUID.toLowerCase());
@@ -200,7 +195,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnDTMF(data) {
-        console.log('Callkeep: got dtmf for call UUID', data.callUUID);
+        console.log('Callkeep: got dtmf for call', data.callUUID);
         if (this._calls.has(data.callUUID.toLowerCase())) {
             let call = this._calls.get(data.callUUID.toLowerCase());
             console.log('sending webrtc dtmf', data.digits)
@@ -216,7 +211,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     handleCallLater(callUUID, notificationContent) {
-        console.log('Callkeep: handle later incoming call UUID', callUUID);
+        console.log('Callkeep: handle later incoming call', callUUID);
 
         let reason;
         if (this._waitingCalls.has(callUUID)) {
@@ -226,9 +221,9 @@ export default class CallManager extends events.EventEmitter {
         }
 
         this._timeouts.set(callUUID, setTimeout(() => {
-            this.reportEndCallWithUUID(callUUID, reason);
+            this.callKeep.reportEndCallWithUUID(callUUID, reason);
             this._timeouts.delete(callUUID);
-        }, 10000));
+        }, 60000));
 
     }
 
@@ -245,35 +240,27 @@ export default class CallManager extends events.EventEmitter {
         // callUUID is present only for outgoing calls
         if (callUUID) {
             call._callkeepUUID = callUUID;
-            console.log('Callkeep: handle outgoing call UUID', call._callkeepUUID);
+
+            this._calls.set(call._callkeepUUID, call);
+            console.log('Callkeep: start outgoing call', call._callkeepUUID);
+            this._calls.set(call._callkeepUUID, call);
         } else if (call.id) {
             call._callkeepUUID = call.id;
-            console.log('Callkeep: handle incoming call UUID', call._callkeepUUID);
-        } else {
-            console.log('Callkeep: no incoming or outgoing call detected');
+
+            this._calls.set(call._callkeepUUID, call);
+            console.log('Callkeep: start incoming call', call._callkeepUUID);
+            if (this._timeouts.has(call.id)) {
+                clearTimeout(this._timeouts.get(call.id));
+                this._timeouts.delete(call.id);
+            }
+
+            //if the call is in waiting then accept it (or decline it)
+            if (this._waitingCalls.get(call._callkeepUUID)) {
+                let action = this._waitingCalls.get(call._callkeepUUID);
+                this[action]();
+                this._waitingCalls.delete(call._callkeepUUID);
+            }
         }
-
-        if (this._timeouts.has(call._callkeepUUID)) {
-            // push notification arrived first
-            clearTimeout(this._timeouts.get(call._callkeepUUID));
-            this._timeouts.delete(call._callkeepUUID);
-        }
-
-        call.on('close', () => {
-            // Remove from the set.
-            this._calls.delete(call._callkeepUUID);
-
-        });
-
-        //if the call is in waiting then accept it (or decline it)
-        if (this._waitingCalls.get(call._callkeepUUID)) {
-            let action = this._waitingCalls.get(call._callkeepUUID);
-            this[action]();
-            this._waitingCalls.delete(call._callkeepUUID);
-        }
-
-        // Add to the set.
-        this._calls.set(call._callkeepUUID, call);
 
         // Emit event.
         this._emitSessionsChange(true);
