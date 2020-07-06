@@ -83,9 +83,9 @@ class Call extends Component {
     }
 
     call() {
-        console.log('Call: starting call to', this.props.targetUri);
         assert(this.props.currentCall === null, 'currentCall is not null');
-        let options = {pcConfig: {iceServers: config.iceServers}};
+        console.log('Call: starting call', this.props.callUUID, 'to', this.props.targetUri);
+        let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
         options.localStream = this.props.localMedia;
         let call = this.props.account.call(this.props.targetUri, options);
         call.on('stateChanged', this.callStateChanged);
@@ -187,7 +187,8 @@ Call.propTypes = {
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
     speakerphoneOn          : PropTypes.func,
-    speakerphoneOff         : PropTypes.func
+    speakerphoneOff         : PropTypes.func,
+    callUUID                : PropTypes.string
 };
 
 

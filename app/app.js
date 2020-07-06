@@ -143,6 +143,7 @@ class Sylk extends Component {
             orientation : '',
             Height_Layout : '',
             Width_Layout : '',
+            outgoingCallUUID: null
         };
         this.state = Object.assign({}, this._initialSstate);
 
@@ -999,6 +1000,7 @@ class Sylk extends Component {
             options,
         };
 
+        this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
         this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri, options.video ? true : false);
     }
 
@@ -1023,7 +1025,6 @@ class Sylk extends Component {
 
         if (this.state.currentCall) {
             this.callKeepHangupCall(this.state.currentCall._callkeepUUID);
-            console.log('Set current call to null');
             this.setState({currentCall: null});
 
             /*
@@ -1269,6 +1270,7 @@ class Sylk extends Component {
                 uuid: uuid.v4()
             };
 
+        this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
         this.startCallWhenConnected(room, {audio: options.audio, video: options.video, conference: true});
     }
 
@@ -1623,6 +1625,7 @@ class Sylk extends Component {
                 speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
                 speakerphoneOn = {this.speakerphoneOn}
                 speakerphoneOff = {this.speakerphoneOff}
+                callUUID = {this.state.outgoingCallUUID}
             />
         )
     }
