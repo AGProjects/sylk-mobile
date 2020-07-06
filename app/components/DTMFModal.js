@@ -27,7 +27,7 @@ class DTMFModal extends Component {
             <Portal>
                 <Dialog visible={this.props.show} onDismiss={this.props.hide}>
                     <Surface>
-                        <Dialog.Title className="text-center">DTMF</Dialog.Title>
+                        <Dialog.Title className="text-center">DTMF dialpad</Dialog.Title>
                         <View style={styles.container}>
                             <View style={styles.row}>
                                 <Button mode="outlined" labelStyle={styles.key} style={styles.button} onPress={this.sendDtmf.bind(this, '1')}>1</Button>
