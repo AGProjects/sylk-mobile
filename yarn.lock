@@ -8828,9 +8828,9 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-sylkrtc@nimbleape/sylkrtc.js#6fe4cba81d16c9f1f0cf96ff12c4842fbe9b418c:
-  version "1.4.1"
-  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/6fe4cba81d16c9f1f0cf96ff12c4842fbe9b418c"
+sylkrtc@nimbleape/sylkrtc.js#52603fc5265a9d6ee6bd956030694b2a90a88fef:
+  version "1.4.3"
+  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/52603fc5265a9d6ee6bd956030694b2a90a88fef"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"

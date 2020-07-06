@@ -76,8 +76,8 @@ if (Platform.OS == 'ios') {
 const callkeepOptions = {
     ios: {
         appName: 'Sylk',
-        maximumCallGroups: 2,
-        maximumCallsPerCallGroup: 10,
+        maximumCallGroups: 1,
+        maximumCallsPerCallGroup: 2,
         supportsVideo: true,
         imageName: "Image-1"
     },
@@ -207,11 +207,13 @@ class Sylk extends Component {
     async componentDidMount() {
         this._loaded = true;
 
-        try {
-            await RNDrawOverlay.askForDispalayOverOtherAppsPermission();
-            await RNCallKeep.hasPhoneAccount();
-        } catch(err) {
-            console.log('error');
+        if (Platform.OS === 'android') {
+            try {
+                await RNDrawOverlay.askForDispalayOverOtherAppsPermission();
+                await RNCallKeep.hasPhoneAccount();
+            } catch(err) {
+                console.log('error');
+            }
         }
 
         history.push('/login');
@@ -239,6 +241,8 @@ class Sylk extends Component {
                 }
             });
         } else if (Platform.OS === 'ios') {
+            logger.debug('attempting to get ios push & pushkit tokens');
+            VoipPushNotification.requestPermissions();
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
 
@@ -247,7 +251,7 @@ class Sylk extends Component {
 
             //let permissions = await checkIosPermissions();
             //if (!permissions.alert) {
-                PushNotificationIOS.requestPermissions();
+                //PushNotificationIOS.requestPermissions();
             //}
         }
 
@@ -381,7 +385,10 @@ class Sylk extends Component {
     }
 
     _sendPushToken() {
+        logger.debug('attempting to send push token token', this.state);
         if (this.state.account && this.state.pushtoken) {
+            logger.debug('sending push token');
+
             let token = null;
 
             if (Platform.OS === 'ios') {
