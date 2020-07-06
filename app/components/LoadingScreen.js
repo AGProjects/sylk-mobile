@@ -6,11 +6,12 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import styles from '../assets/styles/blink/_LoadingScreen.scss';
 
 const LoadingScreen = (props) => {
+    const containerClass = props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
 
     return (
         <Portal>
             <Modal dismissable={false} visible={props.show}>
-                <View style={styles.container}>
+                <View style={containerClass}>
                     <Icon style={styles.icon} color="white" name="network" size={48}/>
                     {props.text ?
                         <Title style={styles.title}>{props.text}</Title>
@@ -23,7 +24,8 @@ const LoadingScreen = (props) => {
 
 LoadingScreen.propTypes = {
     text: PropTypes.string,
-    show: PropTypes.bool
+    show: PropTypes.bool,
+    orientation: PropTypes.string
 };
 
 export default LoadingScreen;

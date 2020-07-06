@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { Portal, Dialog, Button, Text, TextInput, Surface } from 'react-native-paper';
+import { Portal, Dialog, Button, Text, TextInput, Surface, Chip, View } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;

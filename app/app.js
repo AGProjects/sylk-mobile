@@ -161,7 +161,7 @@ class Sylk extends Component {
             RNCallKeep.setReachable();
         });
 
-        this._callKeepManager = new CallManager(RNCallKeep, this.answerCall, this.rejectCall, this.hangupCall, this.callKeepStartConference);
+        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.callKeepStartConference);
 
         if (InCallManager.recordPermission !== 'granted') {
             InCallManager.requestRecordPermission()
@@ -507,12 +507,98 @@ class Sylk extends Component {
         }
     }
 
+    showCalls(prefix) {
+        console.log('Current calls', prefix, 'currentCall:', this.state.currentCall ? (this.state.currentCall._callkeepUUID + ' ' + this.state.currentCall.direction): 'None');
+        console.log('Current calls', prefix, 'inboundCall:', this.state.inboundCall ? (this.state.inboundCall._callkeepUUID + ' ' + this.state.inboundCall.direction): 'None');
+    }
+
     callStateChanged(oldState, newState, data) {
-        if (!this.state.currentCall) {
+        // outgoing accepted: null -> progress -> accepted -> established -> terminated
+        // incoming accepted: null -> incoming -> accepted -> established -> terminated
+        // 2nd incoming call is automatically rejected by sylkrtc library
+
+        console.log("callStateChanged", oldState, '->', newState);
+        this.showCalls('Begin callStateChanged');
+
+        let call; // we must figure out which call has changed as we have no internal id
+        let newCurrentCall;
+        let newInboundCall;
+
+        if (this.state.inboundCall && this.state.currentCall) {
+            console.log('We have two calls');
+            if (newState === 'terminated') {
+                if (this.state.inboundCall == this.state.currentCall) {
+                    call = this.state.currentCall;
+                    newCurrentCall = null;
+                    newInboundCall = null;
+                } else {
+                    if (oldState === 'incoming') {
+                        call = this.state.inboundCall;
+                        console.log("We have two calls, new call must be cancelled");
+                        // new call must be cancelled
+                        newInboundCall = null;
+                        newCurrentCall = this.state.currentCall;
+                    } else if (oldState === 'established') {
+                        call = this.state.newCurrentCall;
+                        console.log("Old call must be closed");
+                        // old call must be closed
+                        newCurrentCall = null;
+                        newInboundCall = null;
+                    } else {
+                        console.log('Error: unclear call state')
+                    }
+                }
+            } else if (newState === 'accepted') {
+                if (this.state.inboundCall == this.state.currentCall) {
+                    call = this.state.currentCall;
+                    newCurrentCall = this.state.inboundCall;
+                    newInboundCall = this.state.inboundCall;
+                } else {
+                    console.log('Error: we have two different calls and unhandled state transition');
+                }
+            } else if (newState === 'established') {
+                if (this.state.inboundCall == this.state.currentCall) {
+                    call = this.state.currentCall;
+                    newCurrentCall = this.state.inboundCall;
+                    newInboundCall = this.state.inboundCall;
+                } else {
+                    console.log('Error: we have two different calls and unhandled state transition');
+                }
+            } else {
+                console.log('We have two calls and unhandled state', newState)
+            }
+        } else if (this.state.inboundCall) {
+            console.log('We have one inbound call');
+            if (oldState === 'incoming' && newState === 'terminated') {
+                call = this.state.inboundCall;
+                console.log("New call must be cancelled");
+                newInboundCall = null;
+                newCurrentCall = this.state.currentCall;
+            } else if (oldState === 'incoming' && newState === 'accepted') {
+                call = this.state.inboundCall;
+                console.log("New call is accepted");
+                newCurrentCall = this.state.inboundCall;
+                newInboundCall = this.state.inboundCall;
+            } else if (oldState === 'established' && newState === 'terminated') {
+                // old call was hangup to accept a new incoming calls
+                newCurrentCall = null;
+                newInboundCall = this.state.inboundCall;
+            } else {
+                console.log('We have one inbound call and unhandled state', newState)
+            }
+        } else {
+            console.log('We have one outgoing call');
+            call = this.state.currentCall;
+            newCurrentCall = newState === 'terminated' ? null : this.state.currentCall;
+            newInboundCall = null;
+        }
+
+        if (!call) {
+            console.log("No calls in progress");
             return;
         }
 
-        let callUUID = this.state.currentCall._callkeepUUID;
+        let callUUID = call._callkeepUUID;
         console.log('Call UUID ' + callUUID + ' state changed: ' + oldState + ' -> ' + newState);
 
         switch (newState) {
@@ -520,16 +606,20 @@ class Sylk extends Component {
                 InCallManager.startRingback('_BUNDLE_');
                 break;
             case 'established':
-            case 'accepted':
-                InCallManager.stopRingback();
-
                 this._callKeepManager.setCurrentCallActive(callUUID);
+            case 'accepted':
+                if (this.state.isConference) {
+                    // allow ringtone to play once as connection is too fast
+                    setTimeout(() => {InCallManager.stopRingback();}, 3000);
+                } else {
+                    InCallManager.stopRingback();
+                }
 
                 if (this.state.isConference) {
                     console.log('Conference call started');
                     this._callKeepManager.backToForeground();
                     this.speakerphoneOn();
-                } else if (this.state.currentCall.remoteMediaDirections) {
+                } else if (this.state.currentCall && this.state.currentCall.remoteMediaDirections) {
                     const videoTracks = this.state.currentCall.remoteMediaDirections.video;
                     if (videoTracks && videoTracks.length > 0) {
                         console.log('Video call started')
@@ -539,7 +629,6 @@ class Sylk extends Component {
                 } else {
                     this.speakerphoneOff();
                 }
-
                 break;
             case 'terminated':
                 let callSuccesfull = false;
@@ -599,39 +688,49 @@ class Sylk extends Component {
                     InCallManager.stop();
                 }
 
-                this._callKeepManager.reportEndCallWithUUID(callUUID, CALLKEEP_REASON);
-                console.log('Call UUID ' + callUUID + ' terminated because ' + reason);
+                console.log('Call', callUUID, 'ended:', reason);
+                this._callKeepManager.endCall(callUUID, CALLKEEP_REASON);
 
-                this._callKeepManager.remove();
-
-                this.speakerphoneOff();
+                if (this.state.currentCall === null) {
+                    console.log('Turn off speakerphone');
+                    this.speakerphoneOff();
+                }
 
                 if (play_busy_tone && oldState !== 'established') {
                     this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
                 }
 
                 this.setState({
-                    currentCall         : null,
+                    currentCall         : newCurrentCall,
+                    inboundCall         : newInboundCall,
                     targetUri           : callSuccesfull || config.useServerCallHistory ? '' : this.state.targetUri,
                     showIncomingModal   : false,
-                    inboundCall         : null,
                     isConference        : false,
                     localMedia          : null,
                     generatedVideoTrack : false
                 });
+
                 this.setFocusEvents(false);
-                this.participantsToInvite = null;
 
-                history.push('/ready');
-
-                setTimeout(() => {
-                    this.getServerHistory();
-                }, 3000);
+                if (!newCurrentCall && !newInboundCall) {
+                    this.participantsToInvite = null;
+                    history.push('/ready');
+                    setTimeout(() => {
+                        this.getServerHistory();
+                    }, 3000);
+                }
 
                 break;
             default:
                 break;
         }
+
+        this.setState({
+                    currentCall         : newCurrentCall,
+                    inboundCall         : newInboundCall
+                });
+
+        this.showCalls('End callStateChanged');
     }
 
 //    inboundCallStateChanged(oldState, newState, data) {
@@ -717,55 +816,62 @@ class Sylk extends Component {
             displayName: displayName
         };
 
-        const account = this.state.connection.addAccount(options, (error, account) => {
-            if (!error) {
-                account.on('outgoingCall', this.outgoingCall);
-                account.on('conferenceCall', this.outgoingCall);
-                switch (this.state.mode) {
-                    case MODE_PRIVATE:
-                    case MODE_NORMAL:
-                        account.on('registrationStateChanged', this.registrationStateChanged);
-                        account.on('incomingCall', this.incomingCall);
-                        account.on('missedCall', this.missedCall);
-                        account.on('conferenceInvite', this.conferenceInvite);
-                        this.setState({account: account});
-                        this._sendPushToken();
-                        account.register();
-                        logger.debug(this.state.mode);
-                        if (this.state.mode !== MODE_PRIVATE) {
-                            storage.set('account', {
-                                accountId: this.state.accountId,
-                                password: this.state.password
-                            });
-                        } else {
-                            // Wipe storage if private login
-                            //storage.remove('account'); // lets try this out
-                            // history.clear().then(() => {
-                            //     this.setState({history: []});
-                            // });
-                        }
-                        break;
-                    case MODE_GUEST_CALL:
-                        this.setState({account: account, loading: null, registrationState: 'registered'});
-                        logger.debug(`${accountId} (guest) signed in`);
-                        // Start the call immediately, this is call started with "Call by URI"
-                        this.startGuestCall(this.state.targetUri, {audio: true, video: true});
-                        break;
-                    case MODE_GUEST_CONFERENCE:
-                        this.setState({account: account, loading: null, registrationState: 'registered'});
-                        logger.debug(`${accountId} (conference guest) signed in`);
-                        // Start the call immediately, this is call started with "Conference by URI"
-                        this.startGuestConference(this.state.targetUri);
-                        break;
-                    default:
-                        logger.debug(`Unknown mode: ${this.state.mode}`);
-                        break;
+        try {
+            const account = this.state.connection.addAccount(options, (error, account) => {
+                if (!error) {
+                    account.on('outgoingCall', this.outgoingCall);
+                    account.on('conferenceCall', this.outgoingCall);
+                    switch (this.state.mode) {
+                        case MODE_PRIVATE:
+                        case MODE_NORMAL:
+                            account.on('registrationStateChanged', this.registrationStateChanged);
+                            account.on('incomingCall', this.incomingCall);
+                            account.on('missedCall', this.missedCall);
+                            account.on('conferenceInvite', this.conferenceInvite);
+                            this.setState({account: account});
+                            this._sendPushToken();
+                            account.register();
+                            logger.debug(this.state.mode);
+                            if (this.state.mode !== MODE_PRIVATE) {
+                                storage.set('account', {
+                                    accountId: this.state.accountId,
+                                    password: this.state.password
+                                });
+                            } else {
+                                // Wipe storage if private login
+                                //storage.remove('account'); // lets try this out
+                                // history.clear().then(() => {
+                                //     this.setState({history: []});
+                                // });
+                            }
+                            break;
+                        case MODE_GUEST_CALL:
+                            this.setState({account: account, loading: null, registrationState: 'registered'});
+                            logger.debug(`${accountId} (guest) signed in`);
+                            // Start the call immediately, this is call started with "Call by URI"
+                            this.startGuestCall(this.state.targetUri, {audio: true, video: true});
+                            break;
+                        case MODE_GUEST_CONFERENCE:
+                            this.setState({account: account, loading: null, registrationState: 'registered'});
+                            logger.debug(`${accountId} (conference guest) signed in`);
+                            // Start the call immediately, this is call started with "Conference by URI"
+                            this.startGuestConference(this.state.targetUri);
+                            break;
+                        default:
+                            logger.debug(`Unknown mode: ${this.state.mode}`);
+                            break;
+                    }
+                } else {
+                    logger.debug('Add account error: ' + error);
+                    this.setState({loading: null, status: {msg: error.message, level:'danger'}});
                 }
-            } else {
-                logger.debug('Add account error: ' + error);
-                this.setState({loading: null, status: {msg: error.message, level:'danger'}});
-            }
-        });
+            });
+
+        } catch(error) {
+            console.log('Add account error: ', error);
+            this.setState({loading: null, status: {msg: error.message, level:'danger'}});
+        }
+
     }
 
     setDevice(device) {
@@ -784,17 +890,17 @@ class Sylk extends Component {
     }
 
     getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null) {    // eslint-disable-line space-infix-ops
-        logger.debug('getLocalMedia(), mediaConstraints=%o', mediaConstraints);
+        console.log('Get local media', mediaConstraints, 'next route', nextRoute);
         const constraints = Object.assign({}, mediaConstraints);
 
         if (constraints.video === true) {
             if ((nextRoute === '/conference' ||  this.state.mode === MODE_GUEST_CONFERENCE)) {
                 constraints.video = {
                     'width': {
-                        'ideal': 640
+                        'ideal': 1280
                     },
                     'height': {
-                        'ideal': 480
+                        'ideal': 720
                     }
                 };
 
@@ -838,21 +944,21 @@ class Sylk extends Component {
             });
         })
         .catch((error) => {
-            logger.debug('Device enumeration failed: %o', error);
+            console.log('Error: device enumeration failed:', error);
         })
         .then(() => {
             return navigator.mediaDevices.getUserMedia(constraints)
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
-            logger.debug('Got local Media', localStream);
+            console.log('Got local media', localStream, 'next route is', nextRoute);
             this.setState({status: null, loading: null, localMedia: localStream});
             if (nextRoute !== null) {
                 history.push(nextRoute);
             }
         })
         .catch((error) => {
-            logger.debug('Access failed, trying audio only: %o', error);
+            console.log('Access to local media failed, trying audio only', error);
             navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: false
@@ -860,24 +966,28 @@ class Sylk extends Component {
             .then((localStream) => {
                 clearTimeout(this.loadScreenTimer);
 
-                if (nextRoute != '/preview') {
-                    logger.debug('Audio only media, but video was requested, creating generated video track');
-                    const generatedVideoTrack = utils.generateVideoTrack(localStream);
-                    localStream.addTrack(generatedVideoTrack);
-                }
+                /*
+                logger.debug('Audio only media, but video was requested, creating generated video track');
+                const generatedVideoTrack = utils.generateVideoTrack(localStream);
+                localStream.addTrack(generatedVideoTrack);
+                console.log('Next route', nextRoute);
 
                 this.setState({status: null, loading: null, localMedia: localStream, generatedVideoTrack: true});
+                */
+
                 if (nextRoute !== null) {
                     history.push(nextRoute);
                 }
             })
             .catch((error) => {
-                logger.debug('Access to local media failed: %o', error);
+                console.log('Access to local media failed:', error);
                 clearTimeout(this.loadScreenTimer);
                 this._notificationCenter.postSystemNotification("Can't access camera or microphone", {timeout: 10});
                 this.setState({
                     loading: null
                 });
+                console.log('Go to ready screen');
+                history.push('/ready');
             });
         });
     }
@@ -889,13 +999,7 @@ class Sylk extends Component {
             options,
         };
 
-        console.log('CallKeep start call to %s', targetUri);
-
-        if (Platform.OS === 'ios') {
-            this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri, 'email', options.video ? true : false);
-        } else if (Platform.OS === 'android') {
-            this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri);
-        }
+        this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri, options.video ? true : false);
     }
 
     startCall(targetUri, options) {
@@ -909,66 +1013,100 @@ class Sylk extends Component {
         this.getLocalMedia(Object.assign({audio: true, video: true}, this._tmpCallStartInfo.options));
     }
 
-    callKeepAnswerCall(options) {
-        console.log('CallKeep answer call');
-        if (this.state.currentCall) {
-            this._callKeepManager.answerIncomingCall(this.state.currentCall._callkeepUUID);
-        }
-        this.answerCall(options);
-    }
+    acceptCall() {
+        console.log('Alert panel answer call');
 
-    answerCall(options) {
-        console.log('Answer call');
+        this.showCalls('acceptCall')
+
         this.setState({showIncomingModal: false });
         this.setFocusEvents(false);
 
-        if (this.state.inboundCall !== this.state.currentCall) {
-            // terminate current call to switch to incoming one
-            // this.state.inboundCall.removeListener('stateChanged', this.inboundCallStateChanged);
-            this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-            //this.state.currentCall.terminate();
-            this._callKeepManager.endCall(this.state.currentCall._callkeepUUID);
-            this.setState({currentCall: this.state.inboundCall, inboundCall: this.state.inboundCall, localMedia: null});
-            this.state.inboundCall.on('stateChanged', this.callStateChanged);
-        }
-        this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
-        this.forceUpdate();
-    }
-
-    callKeepRejectCall() {
         if (this.state.currentCall) {
-            this._callKeepManager.rejectCall(this.state.currentCall._callkeepUUID);
-        }
-        this.rejectCall();
-    }
+            this.callKeepHangupCall(this.state.currentCall._callkeepUUID);
+            console.log('Set current call to null');
+            this.setState({currentCall: null});
 
-    rejectCall() {
-        console.log('Reject call');
-        this.setState({showIncomingModal: false});
-        this.state.inboundCall.terminate();
-        this.forceUpdate();
-    }
-
-    callKeepHangupCall() {
-        if (this.state.currentCall) {
-            this._callKeepManager.endCall(this.state.currentCall._callkeepUUID);
-        }
-        this.hangupCall();
-    }
-
-    hangupCall() {
-        console.log('Hangup call');
-        if (this.state.currentCall != null) {
-            this.state.currentCall.terminate();
-            console.log('Sylkrtc terminate call');
-        } else {
-            // We have no call but we still want to cancel
+            /*
             if (this.state.localMedia != null) {
                 sylkrtc.utils.closeMediaStream(this.state.localMedia);
-                console.log('Sylkrtc close media');
+                console.log('Sylkrtc close local media');
             }
-            history.push('/ready');
+            */
+
         }
+
+        this.setState({localMedia: null});
+        this.state.inboundCall.on('stateChanged', this.callStateChanged);
+
+        let hasVideo = this.state.inboundCall.mediaTypes.video ? true : false;
+        this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
+        this.forceUpdate();
+    }
+
+    callKeepAcceptCall(callUUID) {
+        console.log('CallKeep answer call', callUUID);
+        this._callKeepManager.answerIncomingCall(callUUID);
+        this.acceptCall();
+    }
+
+    callKeepRejectCall(callUUID) {
+        console.log('CallKeep must reject call', callUUID);
+        this._callKeepManager.rejectCall(callUUID);
+        this.rejectCall(callUUID);
+    }
+
+    rejectCall(callUUID) {
+        console.log('Alert panel reject call', callUUID);
+        this.setState({showIncomingModal: false});
+        if (this.state.inboundCall && this.state.inboundCall._callkeepUUID === callUUID) {
+            this.state.inboundCall.terminate();
+            console.log('Sylkrtc reject call', callUUID);
+            this.forceUpdate();
+        }
+    }
+
+    callKeepHangupCall(callUUID) {
+        console.log('Call Keep hangup call', callUUID);
+        if (!callUUID) {
+            if (this.state.currentCall) {
+                this._callKeepManager.endCall(this.state.currentCall._callkeepUUID);
+                this.hangupCall(this.state.currentCall._callkeepUUID);
+            }
+
+            if (this.state.inboundCall) {
+                this._callKeepManager.endCall(this.state.inboundCall._callkeepUUID);
+                this.hangupCall(this.state.inboundCall._callkeepUUID);
+            }
+
+        } else {
+            this._callKeepManager.endCall(callUUID);
+            this.hangupCall(callUUID);
+        }
+    }
+
+    hangupCall(callUUID) {
+        console.log('User hangup call', callUUID);
+
+        this.showCalls('hangupCall');
+
+        if (this.state.currentCall && this.state.currentCall._callkeepUUID === callUUID) {
+            console.log('Hangup current call');
+            this.state.currentCall.terminate();
+        }
+
+        if (this.state.inboundCall && this.state.inboundCall._callkeepUUID === callUUID) {
+            console.log('Hangup inbound call');
+            this.state.inboundCall.terminate();
+        }
+
+        /*
+        if (this.state.localMedia != null) {
+            sylkrtc.utils.closeMediaStream(this.state.localMedia);
+            console.log('Sylkrtc close media');
+        }
+        */
+
+        history.push('/ready');
         this.forceUpdate();
     }
 
@@ -1166,11 +1304,9 @@ class Sylk extends Component {
     }
 
     incomingCall(call, mediaTypes) {
-        // it seems the duplicate calls show up only when we reload the app in the debugger
-        // if (call._callkeepUUID && call._callkeepUUID === call.id) {
-        //    console.log('Incoming call', call.id, 'already in progress, skipping duplicate');
-        //    return;
-        //}
+        // because of limitation in Sofia stack, we cannot have more then two calls at a time
+        // we can have one outgoing call and one incoming call but not two incoming calls
+        // we cannot have two incoming calls, second one is automatically rejected by sylkrtc.js
 
         if (!mediaTypes.audio && !mediaTypes.video) {
             console.log('Call rejected because unsupported media', mediaTypes);
@@ -1182,28 +1318,24 @@ class Sylk extends Component {
 
         console.log('New', media_type, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
 
-        this._callKeepManager.handleCall(call);
-
         call.mediaTypes = mediaTypes;
-
-        if (this.state.currentCall !== null) {
-            console.log('We have a call in progress');
-            // TODO - handle this
-        }
 
         InCallManager.start({media: media_type});
 
+        this._callKeepManager.handleCall(call);
+
         console.log('Show alert panel');
+
         if (Platform.OS === 'ios') {
             RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', mediaTypes.video);
         } else if (Platform.OS === 'android') {
             RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
         }
-        this.setFocusEvents(true);
-        call.on('stateChanged', this.callStateChanged);
 
-        // showIncomingModal must be true if not using CallKeep
-        this.setState({currentCall: call, inboundCall: call, showIncomingModal: false});
+        this.setFocusEvents(true);
+
+        call.on('stateChanged', this.callStateChanged);
+        this.setState({inboundCall: call, showIncomingModal: false});
 
         // if (!this.shouldUseHashRouting) {
         //     this._notificationCenter.postSystemNotification('Incoming call', {body: `From ${call.remoteIdentity.displayName || call.remoteIdentity.uri}`, timeout: 15, silent: false});
@@ -1236,22 +1368,10 @@ class Sylk extends Component {
 
     missedCall(data) {
         console.log('Missed call from ' + data.originator);
-        let from = data.originator.display_name || data.originator.uri;
-
-        this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`, timeout: 180, silent: false});
-        if (this.state.currentCall !== null || !config.useServerCallHistory) {
-            this._notificationCenter.postMissedCall(data.originator, () => {
-                if (this.state.currentCall !== null) {
-                    logger.debug('Hangup call');
-                    this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
-                    this.state.currentCall.terminate();
-                    this.callKeepHangupCall();
-                    this.setState({currentCall: null, missedTargetUri: data.originator.uri, showIncomingModal: false, localMedia: null});
-                } else {
-                    this.setState({missedTargetUri: data.originator.uri});
-                }
-                history.push('/ready');
-            });
+        if (!this.state.currentCall) {
+            console.log('Update snackbar');
+            let from = data.originator.display_name || data.originator.uri;
+            this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`, timeout: 180, silent: false});
         }
     }
 
@@ -1271,7 +1391,7 @@ class Sylk extends Component {
                 }
                 entries.unshift(uri);
                 // keep just the last 50
-                entries = entries.slice(0, 50);
+                entries = entries.slice(0, 100);
             } else {
                 entries = [uri];
             }
@@ -1393,7 +1513,7 @@ class Sylk extends Component {
                                                                            }, ()=> this._detectOrientation())}>
                             <SafeAreaView style={[styles.root, extraStyles]}>
 
-                                <LoadingScreen text={this.state.loading} show={this.state.loading !== null}/>
+                                <LoadingScreen text={this.state.loading} show={this.state.loading !== null} orientation={this.state.orientation}/>
 
                                 {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
                                 <Switch>
@@ -1487,7 +1607,7 @@ class Sylk extends Component {
                 localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
-                currentCall = {this.state.currentCall}
+                currentCall = {this.state.currentCall || this.state.inboundCall}
                 escalateToConference = {this.escalateToConference}
                 hangupCall = {this.callKeepHangupCall}
                 // shareScreen = {this.switchScreensharing}
@@ -1619,6 +1739,8 @@ class Sylk extends Component {
     }
 
     logout() {
+        RNCallKeep.setAvailable(false);
+
         if (this.state.registrationState !== null && (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE)) {
             this.state.account.unregister();
         }

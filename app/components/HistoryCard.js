@@ -75,7 +75,7 @@ const HistoryCard = (props) => {
                     </Caption>
                 </View>
                 <View style={styles.userAvatarContent}>
-                    <UserIcon identity={identity} card/>
+                    <UserIcon style={styles.userIcon} identity={identity} card/>
                 </View>
             </Card.Content>
         </Card>

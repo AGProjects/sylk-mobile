@@ -44,6 +44,7 @@ class Call extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
+        // console.log('Call: callStateChanged', newState, '->', newState);
         if (newState === 'established') {
             // Check the media type again, remote can choose to not accept all offered media types
             const currentCall = this.props.currentCall;
@@ -78,18 +79,20 @@ class Call extends Component {
                 this.props.speakerphoneOn();
             }
         }
+        this.forceUpdate();
     }
 
     call() {
+        console.log('Call: starting call to', this.props.targetUri);
         assert(this.props.currentCall === null, 'currentCall is not null');
         let options = {pcConfig: {iceServers: config.iceServers}};
         options.localStream = this.props.localMedia;
-        console.log('starting a call', this.props.targetUri);
         let call = this.props.account.call(this.props.targetUri, options);
         call.on('stateChanged', this.callStateChanged);
     }
 
     answerCall() {
+        console.log('Call: answer call');
         assert(this.props.currentCall !== null, 'currentCall is null');
         let options = {pcConfig: {iceServers: config.iceServers}};
         options.localStream = this.props.localMedia;
@@ -101,6 +104,7 @@ class Call extends Component {
     }
 
     mediaPlaying() {
+        console.log('Call: mediaPlaying');
         if (this.props.currentCall === null) {
             this.call();
         } else {
@@ -109,6 +113,7 @@ class Call extends Component {
     }
 
     render() {
+        //console.log('Call: render');
         let box = null;
         let remoteIdentity;
 
