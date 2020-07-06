@@ -2,6 +2,8 @@
     display: flex;
 	flex-direction: column;
 	justify-content: center;
+    padding-top: 10px;
+    padding-bottom: 30px;
 }
 
 .row {
@@ -11,7 +13,7 @@
     align-items: center;
 	user-select: none;
     margin: 0 auto;
-    padding-top: 10px;
+    padding-top: 5px;
     height: 70px;
 
 }
@@ -21,10 +23,14 @@
     height: 50px;
     margin-left: 10px;
     margin-right: 10px;
-    // border-radius: 50px / 2;
+    margin-bottom: 10px;
+    border-radius: 10px;
+    border: 1px;
+    padding-top: 0px;
+    padding-bottom: 0px;
 }
 
 .key {
-	font-size: 32px;
+	font-size: 28px;
 	font-weight: 500;
 }
