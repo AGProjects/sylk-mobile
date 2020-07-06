@@ -512,15 +512,17 @@ class ConferenceBox extends Component {
                 onPress={this.toggleInviteModal}
             />
         );
-        bottomButtons.push(
-            <IconButton
-                size={30}
-                style={buttonClass}
-                title="Mute/unmute video"
-                onPress={this.muteVideo}
-                icon={muteVideoButtonIcons}
-            />
-        );
+        if (this.haveVideo) {
+            bottomButtons.push(
+                <IconButton
+                    size={30}
+                    style={buttonClass}
+                    title="Mute/unmute video"
+                    onPress={this.muteVideo}
+                    icon={muteVideoButtonIcons}
+                />
+            );
+        }
         bottomButtons.push(
             <IconButton
                 size={30}
@@ -530,15 +532,17 @@ class ConferenceBox extends Component {
                 icon={muteButtonIcons}
             />
         );
-        bottomButtons.push(
-            <IconButton
-                size={30}
-                style={buttonClass}
-                title="Toggle camera"
-                onPress={this.toggleCamera}
-                icon='video-switch'
-            />
-        );
+        if (this.haveVideo) {
+            bottomButtons.push(
+                <IconButton
+                    size={30}
+                    style={buttonClass}
+                    title="Toggle camera"
+                    onPress={this.toggleCamera}
+                    icon='video-switch'
+                />
+            );
+        }
         bottomButtons.push(
             <IconButton
                 size={30}

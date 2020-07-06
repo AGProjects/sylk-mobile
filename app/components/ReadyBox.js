@@ -54,33 +54,7 @@ class ReadyBox extends Component {
         }
         // the user pressed enter, start a video call by default
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri, {conference: true});
-        } else {
-            this.props.startCall(this.getTargetUri(), {audio: true, video: true});
-        }
-    }
-
-    handleAudioCall(event) {
-        if (this.props.connection === null) {
-            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
-            return;
-        }
-        event.preventDefault();
-        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri, {conference: true});
-        } else {
-            this.props.startCall(this.getTargetUri(), {audio: true, video: false});
-        }
-    }
-
-    handleVideoCall(event) {
-        if (this.props.connection === null) {
-            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
-            return;
-        }
-        event.preventDefault();
-        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri, {conference: true});
+            this.props.startConference(this.state.targetUri, {audio: true, video: true});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: true});
         }
@@ -96,15 +70,43 @@ class ReadyBox extends Component {
         }
     }
 
-    handleConferenceCall(targetUri) {
+    handleAudioCall(event) {
         if (this.props.connection === null) {
             this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
             return;
         }
-        this.setState({showConferenceModal: false});
-        if (targetUri) {
-            this.props.startConference(targetUri, {conference: true});
+        event.preventDefault();
+        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
+            this.props.startConference(this.state.targetUri, {audio: true, video: false});
+        } else {
+            this.props.startCall(this.getTargetUri(), {audio: true, video: false});
         }
+    }
+
+    handleVideoCall(event) {
+        if (this.props.connection === null) {
+            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
+            return;
+        }
+        event.preventDefault();
+        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
+            this.props.startConference(this.state.targetUri, {audio: true, video: false});
+        } else {
+            this.props.startCall(this.getTargetUri(), {audio: true, video: true});
+        }
+    }
+
+    handleConferenceCall(targetUri, options={audio: true, video: true}) {
+        if (targetUri) {
+            if (!options.video) {
+                console.log('Handle audio only conference call to',targetUri);
+            } else {
+                console.log('Handle video conference call to',targetUri);
+            }
+            this.props.startConference(targetUri, options);
+        }
+
+        this.setState({showConferenceModal: false});
     }
 
     render() {

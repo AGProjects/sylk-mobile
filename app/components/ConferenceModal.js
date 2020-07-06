@@ -1,6 +1,8 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { Portal, Dialog, Button, Text, TextInput, Surface, Chip, View } from 'react-native-paper';
+import { View } from 'react-native';
+
+import { Portal, Dialog, Button, Text, TextInput, Surface, Chip } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
@@ -17,7 +19,8 @@ class ConferenceModal extends Component {
         };
         this.handleConferenceTargetChange = this.handleConferenceTargetChange.bind(this);
         this.onHide = this.onHide.bind(this);
-        this.join = this.join.bind(this);
+        this.joinAudio = this.joinAudio.bind(this);
+        this.joinVideo = this.joinVideo.bind(this);
     }
 
     componentWillReceiveProps(nextProps) {
@@ -28,10 +31,16 @@ class ConferenceModal extends Component {
         this.setState({conferenceTargetUri: value});
     }
 
-    join(event) {
+    joinAudio(event) {
         event.preventDefault();
         const uri = `${this.state.conferenceTargetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
-        this.props.handleConferenceCall(uri.toLowerCase(), this.state.managed);
+        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: false});
+    }
+
+    joinVideo(event) {
+        event.preventDefault();
+        const uri = `${this.state.conferenceTargetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
+        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: true});
     }
 
     onHide() {
@@ -57,13 +66,22 @@ class ConferenceModal extends Component {
                             required
                             value={this.state.conferenceTargetUri}
                         />
+                        <View style={styles.buttonRow}>
                         <Button
                             mode="contained"
                             style={styles.button}
-                            onPress={this.join}
+                            onPress={this.joinAudio}
+                            disabled={!validUri}
+                            icon="speaker"
+                        >Audio Only</Button>
+                        <Button
+                            mode="contained"
+                            style={styles.button}
+                            onPress={this.joinVideo}
                             disabled={!validUri}
                             icon="video"
-                        >Join</Button>
+                        >Video</Button>
+                        </View>
                     </Surface>
                 </DialogType>
             </Portal>

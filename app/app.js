@@ -339,7 +339,7 @@ class Sylk extends Component {
     }
 
     async startCallWhenConnected(targetUri, options) {
-        console.log('Start call when connected to', targetUri);
+        console.log('Start call when connected to', targetUri, 'options', options);
         var n = 0;
         while (n < 7) {
             if (this.state.connection) {
@@ -354,7 +354,7 @@ class Sylk extends Component {
             } else {
                 console.log('Connection is ready');
                 if (options.conference) {
-                    this.startConference(targetUri);
+                    this.startConference(targetUri, options);
                 } else {
                     this.startCall(targetUri, options);
                 }
@@ -610,7 +610,7 @@ class Sylk extends Component {
             case 'accepted':
                 if (this.state.isConference) {
                     // allow ringtone to play once as connection is too fast
-                    setTimeout(() => {InCallManager.stopRingback();}, 3000);
+                    setTimeout(() => {InCallManager.stopRingback();}, 2000);
                 } else {
                     InCallManager.stopRingback();
                 }
@@ -1259,13 +1259,24 @@ class Sylk extends Component {
         // if call is accepted this.callKeepStartConference is called
     }
 
-    callKeepStartConference(room) {
-        console.log('CallKeep start conference to', room);
+    callKeepStartConference(room, options={audio: true, video: true}) {
+        if (!room) {
+            return;
+        }
+
+        console.log('CallKeep start conference to', room, 'options', options);
         this._tmpCallStartInfo = {
                 uuid: uuid.v4()
             };
 
-        this.startCallWhenConnected(room, {audio: true, video: true, conference: true});
+        this.startCallWhenConnected(room, {audio: options.audio, video: options.video, conference: true});
+    }
+
+    startConference(targetUri, options={audio: true, video: true}) {
+        console.log('New outgoing conference to room', targetUri, 'options', options);
+        this.addCallHistoryEntry(targetUri);
+        this.setState({targetUri: targetUri, isConference: true});
+        this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
     }
 
     escalateToConference(participants) {
@@ -1276,13 +1287,6 @@ class Sylk extends Component {
         this.participantsToInvite = participants;
         const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
         this.callKeepStartCall(uri, { conference: true });
-    }
-
-    startConference(targetUri) {
-        console.log('New outgoing conference to room', targetUri);
-        this.addCallHistoryEntry(targetUri);
-        this.setState({targetUri: targetUri, isConference: true});
-        this.getLocalMedia({audio: true, video: true}, '/conference');
     }
 
     conferenceInvite(data) {
@@ -1577,7 +1581,7 @@ class Sylk extends Component {
                 <ReadyBox
                     account   = {this.state.account}
                     startCall = {this.callKeepStartCall}
-                    startConference = {this.callKeepStartCall}
+                    startConference = {this.callKeepStartConference}
                     missedTargetUri = {this.state.missedTargetUri}
                     history = {this.state.history}
                     key = {this.state.missedTargetUri}
