@@ -1,13 +1,42 @@
-import React from'react';
+import React, { useEffect, useState } from'react';
 import PropTypes from 'prop-types';
 import utils from '../utils';
 import { Avatar } from 'react-native-paper';
 
-
 const UserIcon = (props) => {
+    const [photo, setPhoto] = useState('');
+
+    useEffect(() => {
+        // You need to restrict it at some point
+        // This is just dummy code and should be replaced by actual
+        if (!photo && props.identity.uri) {
+            getPhoto();
+        }
+    }, []);
+
+    const getPhoto = async () => {
+        try {
+            let contacts = await utils.findContact(props.identity.uri);
+            console.log('contacts', contacts)
+            contacts.some((contact) => {
+                if (contact.hasThumbnail) {
+                    setPhoto(contact.thumbnailPath);
+                    return true;
+                }
+            });
+        } catch (err) {
+            console.log('error getting contacts', err);
+        }
+    }
+
     const name = props.identity.displayName || props.identity.uri;
     let initials = name.split(' ', 2).map(x => x[0]).join('');
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
+
+    if (photo) {
+        console.log('got an image', photo)
+        return  <Avatar.Image source={{uri: photo}} />
+    }
 
     if (props.identity.uri.search('anonymous') !== -1) {
         return (

@@ -2,6 +2,7 @@ import uuidv4 from 'uuid/v4';
 import SillyNames from './SillyNames';
 import MaterialColors from './MaterialColors';
 import { Clipboard, Dimensions } from 'react-native';
+import Contacts from 'react-native-contacts';
 
 function generateUniqueId() {
     const uniqueId = uuidv4().replace(/-/g, '').slice(0, 16);
@@ -28,6 +29,47 @@ function copyToClipboard(text) {
     Clipboard.setString(text);
 
     return true;
+}
+
+function findContact(uri) {
+    return new Promise((resolve, reject) => {
+        console.log('findContact')
+        Contacts.checkPermission((err, permission) => {
+            if (err) {
+                //log the error
+                console.log(err);
+                return reject(err);
+            }
+
+            if (permission === 'authorized') {
+                console.log('HELLO', uri);
+                Contacts.getContactsByEmailAddress(uri, (err, contacts) => {
+                    if (err) {
+                        console.log('error getting contacts by email')
+                        return reject(err);
+                    }
+
+                    if (contacts) {
+                        return resolve(contacts)
+                    }
+
+                    Contacts.getContactsMatchingString(uri, (err2, contacts2) => {
+                        if (err2) {
+                            console.log('error matching string')
+                            return reject(err2);
+                        }
+                        console.log(contacts);
+                        resolve(contacts2)
+                    });
+
+                })
+
+            } else {
+                console.log('not authortised')
+                reject(new Error('Not Authorised'))
+            }
+        })
+    })
 }
 
 function generateSillyName() {
@@ -105,3 +147,4 @@ exports.generateUniqueId = generateUniqueId;
 exports.generateMaterialColor = generateMaterialColor;
 exports.generateVideoTrack = generateVideoTrack;
 exports.getWindowHeight = getWindowHeight;
+exports.findContact = findContact;

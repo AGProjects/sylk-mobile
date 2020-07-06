@@ -15,6 +15,7 @@ import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId } from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import Contacts from 'react-native-contacts';
 
 registerGlobals();
 
@@ -87,7 +88,7 @@ const callkeepOptions = {
         cancelButton: 'Deny',
         okButton: 'Allow',
         imageName: 'phone_account_icon',
-        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO]
+        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, PermissionsAndroid.PERMISSIONS.READ_CONTACTS]
     }
 };
 
@@ -173,6 +174,17 @@ class Sylk extends Component {
                 console.log("InCallManager.requestRecordPermission() catch: ", err);
             });
         }
+
+        Contacts.checkPermission((err, permission) => {
+            if (permission === Contacts.PERMISSION_UNDEFINED) {
+              Contacts.requestPermission((err, requestedContactsPermissionResult) => {
+                if (err) {
+                    console.log("Contacts.requestPermission()catch: ", err);
+                }
+                console.log("Contacts.requestPermission() requestPermission: ", requestedContactsPermissionResult);
+              })
+            }
+          })
         // Load camera/mic preferences
         storage.get('devices').then((devices) => {
             if (devices) {
