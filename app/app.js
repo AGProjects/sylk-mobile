@@ -33,7 +33,7 @@ import ConferenceByUriBox from './components/ConferenceByUriBox';
 // import ErrorPanel from './components/ErrorPanel';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
-//import IncomingCallModal from './components/IncomingCallModal';
+import IncomingCallModal from './components/IncomingCallModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -155,7 +155,6 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.muteIncoming = false;
-        this.conferencePushes = new Map();
 
         storage.initialize();
 
@@ -219,13 +218,11 @@ class Sylk extends Component {
     async componentDidMount() {
         this._loaded = true;
 
-        if (Platform.OS === 'android') {
-            try {
-                await RNDrawOverlay.askForDispalayOverOtherAppsPermission();
-                await RNCallKeep.hasPhoneAccount();
-            } catch(err) {
-                console.log('error');
-            }
+        try {
+            await RNDrawOverlay.askForDispalayOverOtherAppsPermission();
+            await RNCallKeep.hasPhoneAccount();
+        } catch(err) {
+            console.log('error');
         }
 
         history.push('/login');
@@ -253,8 +250,6 @@ class Sylk extends Component {
                 }
             });
         } else if (Platform.OS === 'ios') {
-            logger.debug('attempting to get ios push & pushkit tokens');
-            VoipPushNotification.requestPermissions();
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
 
@@ -263,7 +258,7 @@ class Sylk extends Component {
 
             //let permissions = await checkIosPermissions();
             //if (!permissions.alert) {
-                //PushNotificationIOS.requestPermissions();
+                PushNotificationIOS.requestPermissions();
             //}
         }
 
@@ -397,10 +392,7 @@ class Sylk extends Component {
     }
 
     _sendPushToken() {
-        logger.debug('attempting to send push token token', this.state);
         if (this.state.account && this.state.pushtoken) {
-            logger.debug('sending push token');
-
             let token = null;
 
             if (Platform.OS === 'ios') {
@@ -527,8 +519,16 @@ class Sylk extends Component {
     }
 
     showCalls(prefix) {
-        console.log('Current calls', prefix, 'currentCall:', this.state.currentCall ? (this.state.currentCall._callkeepUUID + ' ' + this.state.currentCall.direction): 'None');
-        console.log('Current calls', prefix, 'inboundCall:', this.state.inboundCall ? (this.state.inboundCall._callkeepUUID + ' ' + this.state.inboundCall.direction): 'None');
+        if (this.state.currentCall) {
+            console.log('Current calls', prefix, 'currentCall:', this.state.currentCall ? (this.state.currentCall._callkeepUUID + ' ' + this.state.currentCall.direction): 'None');
+        }
+        if (this.state.inboundCall) {
+            console.log('Current calls', prefix, 'inboundCall:', this.state.inboundCall ? (this.state.inboundCall._callkeepUUID + ' ' + this.state.inboundCall.direction): 'None');
+        }
+
+        if (this._callKeepManager.callUUIDS.length > 0) {
+            console.log('Current calls', prefix, 'callkeep sessions:', this._callKeepManager.callUUIDS);
+        }
     }
 
     callStateChanged(oldState, newState, data) {
@@ -996,6 +996,8 @@ class Sylk extends Component {
     }
 
     callKeepStartCall(targetUri, options) {
+        this.showCalls('callKeepStartCall');
+
         // this is how we start an outgoing call
         this._tmpCallStartInfo = {
             uuid: uuid.v4(),
@@ -1063,11 +1065,15 @@ class Sylk extends Component {
     rejectCall(callUUID) {
         console.log('Alert panel reject call', callUUID);
         this.setState({showIncomingModal: false});
+        if (!this.state.currentCall) {
+            history.push('/ready');
+        }
+
         if (this.state.inboundCall && this.state.inboundCall._callkeepUUID === callUUID) {
             this.state.inboundCall.terminate();
             console.log('Sylkrtc reject call', callUUID);
-            this.forceUpdate();
         }
+        this.forceUpdate();
     }
 
     hangupCall(callUUID) {
@@ -1213,31 +1219,10 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.conferencePushes.has(callUUID)) {
-            return;
-        }
-
-        // somehow we can get pushes later again
-        this.conferencePushes.set(callUUID, to_uri);
-
         this._callKeepManager.handleConference(callUUID, to_uri);
-
-        console.log('Show alert panel for conference invite');
-
-        let room = to_uri.split('@')[0];
-        let title = 'Join conference ' + room + '?';
-
-        if (Platform.OS === 'ios') {
-            console.log('Show iOS alert panel for conference invite, uri=', to_uri, "title=", title);
-            RNCallKeep.displayIncomingCall(callUUID, to_uri, '', 'email', 'true');
-        } else if (Platform.OS === 'android') {
-            console.log('Show Android alert panel for conference invite, uri=', to_uri, "title=", title);
-            RNCallKeep.displayIncomingCall(callUUID, to_uri, '');
-        }
-
         this.setFocusEvents(true);
 
-        // if call is accepted this.callKeepStartConference is called
+        // when call is accepted this.callKeepStartConference is called
     }
 
     callKeepStartConference(room, options={audio: true, video: true}) {
@@ -1294,29 +1279,13 @@ class Sylk extends Component {
         // we can have one outgoing call and one incoming call but not two incoming calls
         // we cannot have two incoming calls, second one is automatically rejected by sylkrtc.js
 
-        if (!mediaTypes.audio && !mediaTypes.video) {
-            console.log('Call rejected because unsupported media', mediaTypes);
-            this.hangupCall();
-            return;
-        }
-
         let media_type = mediaTypes.video ? 'video' : 'audio';
+        call.mediaTypes = mediaTypes;
 
         console.log('New', media_type, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
 
-        call.mediaTypes = mediaTypes;
-
         InCallManager.start({media: media_type});
-
         this._callKeepManager.handleCall(call);
-
-        console.log('Show alert panel');
-
-        if (Platform.OS === 'ios') {
-            RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', mediaTypes.video);
-        } else if (Platform.OS === 'android') {
-            RNCallKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
-        }
 
         this.setFocusEvents(true);
 
@@ -1359,6 +1328,7 @@ class Sylk extends Component {
             let from = data.originator.display_name || data.originator.uri;
             this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`, timeout: 180, silent: false});
         }
+        this.forceUpdate();
     }
 
     startPreview() {

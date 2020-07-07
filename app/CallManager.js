@@ -23,7 +23,7 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep = RNCallKeep;
         console.log(RNCallKeep);
 
-        this._sylkAnswerCall = acceptFunc;
+        this._sylkAcceptCall = acceptFunc;
         this._sylkRejectCall = rejectFunc;
         this._sylkHangupCall = hangupFunc;
         this._sylkConferenceCall = _sylkConferenceCallFunc;
@@ -152,9 +152,9 @@ export default class CallManager extends events.EventEmitter {
             // start an outgoing conference call
         } else if (this._calls.has(callUUID)) {
             // if we have audio only we must skip video from get local media
-            this._sylkAnswerCall();
+            this._sylkAcceptCall();
         } else {
-            this._waitingCalls.set(callUUID, '_sylkAnswerCall');
+            this._waitingCalls.set(callUUID, '_sylkAcceptCall');
         }
     }
 
@@ -170,16 +170,16 @@ export default class CallManager extends events.EventEmitter {
             this._conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {
-            console.log('Callkeep:     hangup call', callUUID);
+            console.log('Callkeep: hangup call', callUUID);
             let call = this._calls.get(callUUID);
-            console.log('Callkeep:     call', callUUID, 'state is', call.state);
+            console.log('Callkeep: call', callUUID, 'state is', call.state);
             if (call.state === 'incoming') {
                 this._sylkRejectCall(callUUID);
             } else {
                 this._sylkHangupCall(callUUID);
             }
         } else {
-            console.log('Callkeep:    add to waitings list call', callUUID);
+            console.log('Callkeep: add to waitings list call', callUUID);
             this._waitingCalls.set(callUUID, '_sylkHangupCall');
         }
     }
@@ -221,9 +221,10 @@ export default class CallManager extends events.EventEmitter {
         }
 
         this._timeouts.set(callUUID, setTimeout(() => {
+            console.log('Callkeep: end call later', callUUID);
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             this._timeouts.delete(callUUID);
-        }, 60000));
+        }, 45000));
 
     }
 
@@ -231,9 +232,37 @@ export default class CallManager extends events.EventEmitter {
         if (this._conferences.has(callUUID)) {
             return;
         }
+
         console.log('CallKeep: handle conference', callUUID, 'to room', room);
         this._conferences.set(callUUID, room);
+        this.showConferenceAlertPanel(callUUID, room);
+
         this._emitSessionsChange(true);
+    }
+
+    showConferenceAlertPanel(callUUID, room) {
+        console.log('Callkeep: show alert panel');
+
+        let roomUsername = room.split('@')[0];
+        let title = 'Join conference ' + roomUsername + '?';
+
+        // strange behavior when showing the above, the iOS history seem to be messed up
+
+        if (Platform.OS === 'ios') {
+            this.callKeep.displayIncomingCall(callUUID, room, room, 'email', true);
+        } else if (Platform.OS === 'android') {
+            this.callKeep.displayIncomingCall(callUUID, room, room);
+        }
+    }
+
+    showAlertPanel(call) {
+        console.log('Callkeep: show alert panel');
+
+        if (Platform.OS === 'ios') {
+            this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', call.mediaTypes.video);
+        } else if (Platform.OS === 'android') {
+            this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
+        }
     }
 
     handleCall(call, callUUID) {
@@ -249,6 +278,7 @@ export default class CallManager extends events.EventEmitter {
 
             this._calls.set(call._callkeepUUID, call);
             console.log('Callkeep: start incoming call', call._callkeepUUID);
+
             if (this._timeouts.has(call.id)) {
                 clearTimeout(this._timeouts.get(call.id));
                 this._timeouts.delete(call.id);
@@ -259,6 +289,8 @@ export default class CallManager extends events.EventEmitter {
                 let action = this._waitingCalls.get(call._callkeepUUID);
                 this[action]();
                 this._waitingCalls.delete(call._callkeepUUID);
+            } else {
+                this.showAlertPanel(call);
             }
         }
 
