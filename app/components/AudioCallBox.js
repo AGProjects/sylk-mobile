@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
-import { View } from 'react-native';
-import { IconButton } from 'react-native-paper';
+import { View, Platform } from 'react-native';
+import { IconButton, Dialog } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
@@ -134,6 +134,7 @@ class AudioCallBox extends Component {
     }
     render() {
         let remoteIdentity;
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         if (this.props.call !== null) {
             remoteIdentity = this.props.call.remoteIdentity;
@@ -151,35 +152,36 @@ class AudioCallBox extends Component {
                 <View style={styles.userIconContainer}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
+                <Dialog.Title style={styles.address}>{this.props.remoteIdentity}</Dialog.Title>
                 <View style={styles.buttonContainer}>
                     <IconButton
                         size={34}
-                        style={styles.button}
+                        style={buttonClass}
                         icon="account-plus"
                         onPress={this.toggleEscalateConferenceModal}
                     />
                     <IconButton
                         size={34}
-                        style={styles.button}
+                        style={buttonClass}
                         icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
                         onPress={this.muteAudio}
                     />
                     <IconButton
                         size={34}
-                        style={[styles.button]}
+                        style={buttonClass}
                         icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                         onPress={this.props.toggleSpeakerPhone}
                     />
                     <IconButton
                         size={34}
-                        style={styles.button}
+                        style={buttonClass}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
                         disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
                         size={34}
-                        style={[styles.button, styles.hangupButton]}
+                        style={[buttonClass, styles.hangupButton]}
                         icon="phone-hangup"
                         onPress={this.hangupCall}
                     />
