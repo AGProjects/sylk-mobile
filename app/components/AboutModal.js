@@ -9,7 +9,7 @@ const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 import styles from '../assets/styles/blink/_AboutModal.scss';
 
 function handleLink(event) {
-    Linking.openURL('https://sylkserver.com');
+    Linking.openURL('https://ag-projects.com');
 }
 
 
@@ -21,7 +21,7 @@ const AboutModal = (props) => {
                     <Dialog.Title style={styles.title}>About Sylk</Dialog.Title>
                     <Text style={styles.body}>Sylk mobile client is part of Sylk Suite, a set of
                     applications for real-time communications using SIP and WebRTC specifications</Text>
-                    <Text onPress={() => handleLink()} style={styles.body}>Copyright &copy; AG Projects</Text>
+                    <Text onPress={() => handleLink()} style={styles.link}>Copyright &copy; AG Projects</Text>
                 </Surface>
             </DialogType>
         </Portal>
