@@ -4,6 +4,25 @@ import MaterialColors from './MaterialColors';
 import { Clipboard, Dimensions } from 'react-native';
 import Contacts from 'react-native-contacts';
 
+
+function appendLeadingZeroes(n){
+    if (n <= 9) {
+        return "0" + n;
+     }
+    return n;
+}
+
+function timestampedLog() {
+    let current_datetime = new Date();
+    let formatted_date = current_datetime.getFullYear() + "-" + appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + appendLeadingZeroes(current_datetime.getDate()) + " " + appendLeadingZeroes(current_datetime.getHours()) + ":" + appendLeadingZeroes(current_datetime.getMinutes()) + ":" + appendLeadingZeroes(current_datetime.getSeconds());
+    let message = formatted_date;
+
+    for (var i = 0; i < arguments.length; i++) {
+        message = message + ' ' + arguments[i];
+    }
+    console.log(message);
+}
+
 function generateUniqueId() {
     const uniqueId = uuidv4().replace(/-/g, '').slice(0, 16);
     return uniqueId;
@@ -143,6 +162,7 @@ function getWindowHeight() {
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
 exports.generateSillyName = generateSillyName;
+exports.timestampedLog = timestampedLog;
 exports.generateUniqueId = generateUniqueId;
 exports.generateMaterialColor = generateMaterialColor;
 exports.generateVideoTrack = generateVideoTrack;

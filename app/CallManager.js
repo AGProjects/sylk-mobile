@@ -2,7 +2,7 @@ import events from 'events';
 import Logger from '../Logger';
 import uuid from 'react-native-uuid';
 import { Platform } from 'react-native';
-
+import utils from './utils';
 
 const logger = new Logger('CallManager');
 import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
@@ -16,12 +16,13 @@ export default class CallManager extends events.EventEmitter {
 
         // Set of current SIP sessions
         this._calls = new Map();
+        this._callHistory = new Map();
         this._conferences = new Map();
 
         this._waitingCalls = new Map();
         this._timeouts = new Map();
         this._RNCallKeep = RNCallKeep;
-        console.log(RNCallKeep);
+        utils.timestampedLog(RNCallKeep);
 
         this._sylkAcceptCall = acceptFunc;
         this._sylkRejectCall = rejectFunc;
@@ -75,53 +76,52 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       console.log('Callkeep: bring app to the foreground');
+       utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
     }
 
     acceptIncomingCall(callUUID) {
-        console.log('Callkeep: accept incoming call', callUUID);
+        utils.timestampedLog('Callkeep: accept incoming call', callUUID);
         this.callKeep.acceptIncomingCall(callUUID);
     }
 
     setMutedCall(callUUID, mute) {
-        console.log('Callkeep: set muted: ', mute);
+        utils.timestampedLog('Callkeep: set muted: ', mute);
         this.callKeep.setMutedCall(callUUID, mute);
     }
 
     startCall(callUUID, targetUri, targetName, hasVideo) {
-        console.log('Callkeep: start call', callUUID);
+        utils.timestampedLog('Callkeep: start outgoing call', callUUID);
         if (Platform.OS === 'ios') {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
             this.callKeep.startCall(callUUID, targetUri, targetUri);
+            this._callHistory.set(callUUID, )
         }
-
-        this.callKeep.startCall(callUUID, targetUri, targetName);
     }
 
     updateDisplay(callUUID, displayName, uri) {
-        console.log('Callkeep: update display', displayName, uri);
+        utils.timestampedLog('Callkeep: update display', displayName, uri);
         this.callKeep.updateDisplay(callUUID, displayName, uri);
     }
 
     sendDTMF(callUUID, digits) {
-        console.log('Callkeep: send DTMF: ', digits);
+        utils.timestampedLog('Callkeep: send DTMF: ', digits);
         this.callKeep.sendDTMF(callUUID, digits);
     }
 
     setCurrentCallActive(callUUID) {
-        console.log('Callkeep: set call active', callUUID);
+        utils.timestampedLog('Callkeep: set call active', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
     }
 
     rejectCall(callUUID) {
-        console.log('Callkeep: reject call', callUUID);
+        utils.timestampedLog('Callkeep: reject call', callUUID);
         this.callKeep.rejectCall(callUUID);
     }
 
     endCall(callUUID, reason) {
-        console.log('Callkeep: end call', callUUID);
+        utils.timestampedLog('Callkeep: end call', callUUID);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
         } else {
@@ -131,23 +131,23 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnActiveAudioSession(data) {
-        console.log('Callkeep: activated audio call');
+        utils.timestampedLog('Callkeep: activated audio call');
     }
 
     _rnDeactiveAudioSession(data) {
-        console.log('Callkeep: deactivated audio call');
+        utils.timestampedLog('Callkeep: deactivated audio call');
     }
 
     _rnAccept(data) {
         let callUUID = data.callUUID.toLowerCase();
-        console.log('Callkeep: accept call callback', callUUID);
+        utils.timestampedLog('Callkeep: accept call callback', callUUID);
         if (this._conferences.has(callUUID)) {
-            console.log('Accept conference invite', callUUID);
+            utils.timestampedLog('Accept conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            console.log('Callkeep: hangup for incoming conference', callUUID);
+            utils.timestampedLog('Callkeep: hangup for incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
-            console.log('Will start conference to', room);
+            utils.timestampedLog('Will start conference to', room);
             this._sylkConferenceCall(room);
             // start an outgoing conference call
         } else if (this._calls.has(callUUID)) {
@@ -161,31 +161,31 @@ export default class CallManager extends events.EventEmitter {
     _rnEnd(data) {
         //get the uuid, find the call with that uuid and ccept it
         let callUUID = data.callUUID.toLowerCase();
-        console.log('Callkeep: end call callback', callUUID);
+        utils.timestampedLog('Callkeep: end call callback', callUUID);
         if (this._conferences.has(callUUID)) {
-            console.log('Callkeep:    Reject conference invite', callUUID);
+            utils.timestampedLog('Callkeep:    Reject conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            console.log('Callkeep: hangup for incoming conference', callUUID);
+            utils.timestampedLog('Callkeep: hangup for incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {
-            console.log('Callkeep: hangup call', callUUID);
+            utils.timestampedLog('Callkeep: hangup call', callUUID);
             let call = this._calls.get(callUUID);
-            console.log('Callkeep: call', callUUID, 'state is', call.state);
+            utils.timestampedLog('Callkeep: call', callUUID, 'state is', call.state);
             if (call.state === 'incoming') {
                 this._sylkRejectCall(callUUID);
             } else {
                 this._sylkHangupCall(callUUID);
             }
         } else {
-            console.log('Callkeep: add to waitings list call', callUUID);
+            utils.timestampedLog('Callkeep: add to waitings list call', callUUID);
             this._waitingCalls.set(callUUID, '_sylkHangupCall');
         }
     }
 
     _rnMute(data) {
-        console.log('Callkeep: mute ' + data.muted + ' for call', data.callUUID);
+        utils.timestampedLog('Callkeep: mute ' + data.muted + ' for call', data.callUUID);
         //get the uuid, find the call with that uuid and mute/unmute it
         if (this._calls.has(data.callUUID.toLowerCase())) {
             let call = this._calls.get(data.callUUID.toLowerCase());
@@ -195,23 +195,23 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnDTMF(data) {
-        console.log('Callkeep: got dtmf for call', data.callUUID);
+        utils.timestampedLog('Callkeep: got dtmf for call', data.callUUID);
         if (this._calls.has(data.callUUID.toLowerCase())) {
             let call = this._calls.get(data.callUUID.toLowerCase());
-            console.log('sending webrtc dtmf', data.digits)
+            utils.timestampedLog('sending webrtc dtmf', data.digits)
             call.sendDtmf(data.digits);
         }
     }
 
     _rnProviderReset() {
-        console.log('Callkeep: got a provider reset, clearing down all calls');
+        utils.timestampedLog('Callkeep: got a provider reset, clearing down all calls');
         this._calls.forEach((call) => {
             call.terminate();
         })
     }
 
     handleCallLater(callUUID, notificationContent) {
-        console.log('Callkeep: handle later incoming call', callUUID);
+        utils.timestampedLog('Callkeep: handle later incoming call', callUUID);
 
         let reason;
         if (this._waitingCalls.has(callUUID)) {
@@ -221,7 +221,7 @@ export default class CallManager extends events.EventEmitter {
         }
 
         this._timeouts.set(callUUID, setTimeout(() => {
-            console.log('Callkeep: end call later', callUUID);
+            utils.timestampedLog('Callkeep: end call later', callUUID);
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
@@ -233,15 +233,22 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        console.log('CallKeep: handle conference', callUUID, 'to room', room);
+        utils.timestampedLog('CallKeep: handle conference', callUUID, 'to room', room);
         this._conferences.set(callUUID, room);
         this.showConferenceAlertPanel(callUUID, room);
+
+        // there is no cancel, so we add a timer
+        this._timeouts.set(callUUID, setTimeout(() => {
+            utils.timestampedLog('Callkeep: end conference call later', callUUID);
+            this.callKeep.reportEndCallWithUUID(callUUID, 3);
+            this._timeouts.delete(callUUID);
+        }, 30000));
 
         this._emitSessionsChange(true);
     }
 
     showConferenceAlertPanel(callUUID, room) {
-        console.log('Callkeep: show alert panel');
+        utils.timestampedLog('Callkeep: show alert panel');
 
         let roomUsername = room.split('@')[0];
         let title = 'Join conference ' + roomUsername + '?';
@@ -256,7 +263,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showAlertPanel(call) {
-        console.log('Callkeep: show alert panel');
+        utils.timestampedLog('Callkeep: show alert panel');
 
         if (Platform.OS === 'ios') {
             this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', call.mediaTypes.video);
@@ -271,13 +278,13 @@ export default class CallManager extends events.EventEmitter {
             call._callkeepUUID = callUUID;
 
             this._calls.set(call._callkeepUUID, call);
-            console.log('Callkeep: start outgoing call', call._callkeepUUID);
+            utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
             this._calls.set(call._callkeepUUID, call);
         } else if (call.id) {
             call._callkeepUUID = call.id;
 
             this._calls.set(call._callkeepUUID, call);
-            console.log('Callkeep: start incoming call', call._callkeepUUID);
+            utils.timestampedLog('Callkeep: start incoming call', call._callkeepUUID);
 
             if (this._timeouts.has(call.id)) {
                 clearTimeout(this._timeouts.get(call.id));
