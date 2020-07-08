@@ -12,6 +12,10 @@ import config from '../config';
 
 import styles from '../assets/styles/blink/_RegisterForm.scss';
 
+function isASCII(str) {
+    return /^[\x00-\x7F]*$/.test(str);
+}
+
 class RegisterForm extends Component {
     constructor(props) {
         super(props);
@@ -74,7 +78,7 @@ class RegisterForm extends Component {
     render() {
         const domain = this.state.accountId.indexOf('@') !== -1 ? this.state.accountId.substring(this.state.accountId.indexOf('@') + 1): '';
         const validDomain = domain === '' || (!ipaddr.IPv4.isValidFourPartDecimal(domain) && !ipaddr.IPv6.isValid(domain) && domain.length > 3 && domain.indexOf('.') !== - 1 && (domain.length - 2 - domain.indexOf('.')) > 0);
-        const validInput =  validDomain && this.state.password !== '';
+        const validInput =  isASCII(this.state.accountId) && validDomain && this.state.password !== '' && isASCII(this.state.password);
         const containerClass = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
 
         return (

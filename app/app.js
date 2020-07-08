@@ -485,9 +485,13 @@ class Sylk extends Component {
             if (reason.match(/904/)) {
                 // Sofia SIP: WAT
                 reason = 'Wrong account or password';
+
             } else {
                 reason = 'Connection failed';
             }
+
+            logger.debug('Registration error: ' + reason);
+
             this.setState({
                 loading     : null,
                 status      : {
@@ -804,7 +808,6 @@ class Sylk extends Component {
     }
 
     processRegistration(accountId, password, displayName) {
-        /*
         if (this.state.account !== null) {
             logger.debug('We already have an account, removing it');
             this.state.connection.removeAccount(this.state.account,
@@ -816,7 +819,6 @@ class Sylk extends Component {
                 }
             );
         }
-        */
 
         const options = {
             account: accountId,
@@ -869,9 +871,15 @@ class Sylk extends Component {
                         break;
                 }
             } else {
-                logger.debug('Add account error: ' + error);
-                this.setState({loading: null, status: {msg: error.message, level:'danger'}});
-                // TODO: Handle: Add account error:  [Error: Account already added]
+                logger.debug('Add account error: ' + error.message);
+                let reason = 'Wrong account or password';
+                this.setState({
+                    loading     : null,
+                    status      : {
+                        msg   : 'Sign In failed: ' + reason,
+                        level : 'danger'
+                    }
+                });
             }
         });
 
