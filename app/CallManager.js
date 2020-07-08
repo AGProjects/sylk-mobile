@@ -75,6 +75,20 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
+    showUnclosedCalls() {
+        for (let callUUID of this._callHistory.keys()) {
+            if (this.callKeep.isCallActive(callUUID)) {
+                utils.timestampedLog('Callkeep: call', callUUID, 'started at', this._callHistory.get(callUUID), 'is still active');
+            }
+        }
+    }
+
+    saveToHistory(callUUID) {
+        let current_datetime = new Date();
+        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+        this._callHistory.set(callUUID, formatted_date);
+    }
+
     backToForeground() {
        utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
@@ -96,7 +110,7 @@ export default class CallManager extends events.EventEmitter {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
             this.callKeep.startCall(callUUID, targetUri, targetUri);
-            this._callHistory.set(callUUID, )
+            this.saveToHistory(callUUID);
         }
     }
 
@@ -140,13 +154,18 @@ export default class CallManager extends events.EventEmitter {
 
     _rnAccept(data) {
         let callUUID = data.callUUID.toLowerCase();
-        utils.timestampedLog('Callkeep: accept call callback', callUUID);
+        utils.timestampedLog('Callkeep: accept callback', callUUID);
         if (this._conferences.has(callUUID)) {
-            utils.timestampedLog('Accept conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            utils.timestampedLog('Callkeep: hangup for incoming conference', callUUID);
+            utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
+
+            if (this._timeouts.has(callUUID)) {
+                clearTimeout(this._timeouts.get(callUUID));
+                this._timeouts.delete(callUUID);
+            }
+
             utils.timestampedLog('Will start conference to', room);
             this._sylkConferenceCall(room);
             // start an outgoing conference call
@@ -161,25 +180,28 @@ export default class CallManager extends events.EventEmitter {
     _rnEnd(data) {
         //get the uuid, find the call with that uuid and ccept it
         let callUUID = data.callUUID.toLowerCase();
-        utils.timestampedLog('Callkeep: end call callback', callUUID);
+        utils.timestampedLog('Callkeep: end callback', callUUID);
         if (this._conferences.has(callUUID)) {
-            utils.timestampedLog('Callkeep:    Reject conference invite', callUUID);
+            utils.timestampedLog('Callkeep: reject conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            utils.timestampedLog('Callkeep: hangup for incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
+
+            if (this._timeouts.has(callUUID)) {
+                clearTimeout(this._timeouts.get(callUUID));
+                this._timeouts.delete(callUUID);
+            }
 
         } else if (this._calls.has(callUUID)) {
             utils.timestampedLog('Callkeep: hangup call', callUUID);
             let call = this._calls.get(callUUID);
-            utils.timestampedLog('Callkeep: call', callUUID, 'state is', call.state);
             if (call.state === 'incoming') {
                 this._sylkRejectCall(callUUID);
             } else {
                 this._sylkHangupCall(callUUID);
             }
         } else {
-            utils.timestampedLog('Callkeep: add to waitings list call', callUUID);
+            utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
             this._waitingCalls.set(callUUID, '_sylkHangupCall');
         }
     }
@@ -270,6 +292,8 @@ export default class CallManager extends events.EventEmitter {
         } else if (Platform.OS === 'android') {
             this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
         }
+
+        this.saveToHistory(call._callkeepUUID);
     }
 
     handleCall(call, callUUID) {

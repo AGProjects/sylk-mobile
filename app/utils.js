@@ -18,7 +18,8 @@ function timestampedLog() {
     let message = formatted_date;
 
     for (var i = 0; i < arguments.length; i++) {
-        message = message + ' ' + arguments[i];
+        let txt = arguments[i] ? arguments[i].toString() : '';
+        message = message + ' ' + txt;
     }
     console.log(message);
 }
@@ -163,6 +164,7 @@ exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
 exports.generateSillyName = generateSillyName;
 exports.timestampedLog = timestampedLog;
+exports.appendLeadingZeroes = appendLeadingZeroes;
 exports.generateUniqueId = generateUniqueId;
 exports.generateMaterialColor = generateMaterialColor;
 exports.generateVideoTrack = generateVideoTrack;

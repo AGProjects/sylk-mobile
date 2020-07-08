@@ -28,6 +28,7 @@ class Conference extends React.Component {
     start() {
         if (this.props.currentCall === null) {
             const options = {
+                id: this.props.callUUID,
                 pcConfig: {iceServers: config.iceServers},
                 localStream: this.props.localMedia,
                 audio: true,
@@ -38,7 +39,7 @@ class Conference extends React.Component {
                 },
                 initialParticipants: this.props.participantsToInvite
             };
-            console.log('Creating conference call', this.props.targetUri.toLowerCase(), options);
+            console.log('Starting conference call', this.props.callUUID, 'to', this.props.targetUri.toLowerCase(), options);
             const confCall = this.props.account.joinConference(this.props.targetUri.toLowerCase(), options);
             confCall.on('stateChanged', this.confStateChanged);
         } else {
@@ -47,7 +48,7 @@ class Conference extends React.Component {
     }
 
     hangup() {
-        this.props.hangupCall();
+        this.props.hangupCall(this.props.callUUID);
     }
 
     mediaPlaying() {
@@ -100,7 +101,8 @@ Conference.propTypes = {
     localMedia              : PropTypes.object,
     targetUri               : PropTypes.string,
     participantsToInvite    : PropTypes.array,
-    generatedVideoTrack     : PropTypes.bool
+    generatedVideoTrack     : PropTypes.bool,
+    callUUID                : PropTypes.string
 };
 
 

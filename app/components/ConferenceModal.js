@@ -73,7 +73,7 @@ class ConferenceModal extends Component {
                             onPress={this.joinAudio}
                             disabled={!validUri}
                             icon="speaker"
-                        >Audio Only</Button>
+                        >Audio</Button>
                         <Button
                             mode="contained"
                             style={styles.button}
