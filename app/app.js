@@ -79,6 +79,7 @@ const callkeepOptions = {
         maximumCallGroups: 1,
         maximumCallsPerCallGroup: 2,
         supportsVideo: true,
+        includesCallsInRecents: true,
         imageName: "Image-1"
     },
     android: {
