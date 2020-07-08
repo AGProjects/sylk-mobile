@@ -443,10 +443,15 @@ class Sylk extends Component {
                     sylkrtc.utils.closeMediaStream(this.state.localMedia);
                 }
 
-                if (this.state.currentCall || this.state.inboundCall) {
-                    InCallManager.stop({busytone: '_BUNDLE_'});
-                    history.push('/ready');
+                if (this.state.currentCall) {
+                    this.hangupCall(this.state.currentCall._callkeepUUID);
                 }
+
+                if (this.state.inboundCall) {
+                    this.hangupCall(this.state.inboundCall._callkeepUUID);
+                }
+
+                //history.push('/ready');
 
                 this.setState({
                     registrationState: 'failed',
@@ -457,7 +462,7 @@ class Sylk extends Component {
                     showIncomingModal: false
                     });
 
-//                this._notificationCenter.postSystemNotification('Connecting to server...', {body: '', timeout: 5000});
+                this._notificationCenter.postSystemNotification('Connection lost', {body: '', timeout: 5000});
 
                 break;
             default:
@@ -509,7 +514,7 @@ class Sylk extends Component {
             RNCallKeep.setAvailable(true);
             this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
             history.push('/ready');
-            this._notificationCenter.postSystemNotification('Ready to receive calls', {body: '', timeout: 1});
+            //this._notificationCenter.postSystemNotification('Ready to receive calls', {body: '', timeout: 1});
             return;
         } else {
             this.setState({status: null });
