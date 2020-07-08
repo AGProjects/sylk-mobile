@@ -32,6 +32,7 @@ const UserIcon = (props) => {
     const name = props.identity.displayName || props.identity.uri;
     let initials = name.split(' ', 2).map(x => x[0]).join('');
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
+    const avatarSize = props.large ? 120: 60;
 
     if (photo) {
         console.log('got an image', photo)
@@ -51,7 +52,7 @@ const UserIcon = (props) => {
     }
 
     return (
-        <Avatar.Text style={{backgroundColor: color}} label={initials.toUpperCase()} />
+        <Avatar.Text style={{backgroundColor: color}} size={avatarSize} label={initials.toUpperCase()} />
     );
 };
 
