@@ -824,62 +824,56 @@ class Sylk extends Component {
             displayName: displayName
         };
 
-        try {
-            const account = this.state.connection.addAccount(options, (error, account) => {
-                if (!error) {
-                    account.on('outgoingCall', this.outgoingCall);
-                    account.on('conferenceCall', this.outgoingCall);
-                    switch (this.state.mode) {
-                        case MODE_PRIVATE:
-                        case MODE_NORMAL:
-                            account.on('registrationStateChanged', this.registrationStateChanged);
-                            account.on('incomingCall', this.incomingCall);
-                            account.on('missedCall', this.missedCall);
-                            account.on('conferenceInvite', this.conferenceInvite);
-                            this.setState({account: account});
-                            this._sendPushToken();
-                            account.register();
-                            logger.debug(this.state.mode);
-                            if (this.state.mode !== MODE_PRIVATE) {
-                                storage.set('account', {
-                                    accountId: this.state.accountId,
-                                    password: this.state.password
-                                });
-                            } else {
-                                // Wipe storage if private login
-                                //storage.remove('account'); // lets try this out
-                                // history.clear().then(() => {
-                                //     this.setState({history: []});
-                                // });
-                            }
-                            break;
-                        case MODE_GUEST_CALL:
-                            this.setState({account: account, loading: null, registrationState: 'registered'});
-                            logger.debug(`${accountId} (guest) signed in`);
-                            // Start the call immediately, this is call started with "Call by URI"
-                            this.startGuestCall(this.state.targetUri, {audio: true, video: true});
-                            break;
-                        case MODE_GUEST_CONFERENCE:
-                            this.setState({account: account, loading: null, registrationState: 'registered'});
-                            logger.debug(`${accountId} (conference guest) signed in`);
-                            // Start the call immediately, this is call started with "Conference by URI"
-                            this.startGuestConference(this.state.targetUri);
-                            break;
-                        default:
-                            logger.debug(`Unknown mode: ${this.state.mode}`);
-                            break;
-                    }
-                } else {
-                    logger.debug('Add account error: ' + error);
-                    this.setState({loading: null, status: {msg: error.message, level:'danger'}});
-                    // TODO: Handle: Add account error:  [Error: Account already added]
+        const account = this.state.connection.addAccount(options, (error, account) => {
+            if (!error) {
+                account.on('outgoingCall', this.outgoingCall);
+                account.on('conferenceCall', this.outgoingCall);
+                switch (this.state.mode) {
+                    case MODE_PRIVATE:
+                    case MODE_NORMAL:
+                        account.on('registrationStateChanged', this.registrationStateChanged);
+                        account.on('incomingCall', this.incomingCall);
+                        account.on('missedCall', this.missedCall);
+                        account.on('conferenceInvite', this.conferenceInvite);
+                        this.setState({account: account});
+                        this._sendPushToken();
+                        account.register();
+                        logger.debug(this.state.mode);
+                        if (this.state.mode !== MODE_PRIVATE) {
+                            storage.set('account', {
+                                accountId: this.state.accountId,
+                                password: this.state.password
+                            });
+                        } else {
+                            // Wipe storage if private login
+                            //storage.remove('account'); // lets try this out
+                            // history.clear().then(() => {
+                            //     this.setState({history: []});
+                            // });
+                        }
+                        break;
+                    case MODE_GUEST_CALL:
+                        this.setState({account: account, loading: null, registrationState: 'registered'});
+                        logger.debug(`${accountId} (guest) signed in`);
+                        // Start the call immediately, this is call started with "Call by URI"
+                        this.startGuestCall(this.state.targetUri, {audio: true, video: true});
+                        break;
+                    case MODE_GUEST_CONFERENCE:
+                        this.setState({account: account, loading: null, registrationState: 'registered'});
+                        logger.debug(`${accountId} (conference guest) signed in`);
+                        // Start the call immediately, this is call started with "Conference by URI"
+                        this.startGuestConference(this.state.targetUri);
+                        break;
+                    default:
+                        logger.debug(`Unknown mode: ${this.state.mode}`);
+                        break;
                 }
-            });
-
-        } catch(error) {
-            utils.timestampedLog('Add account error: ', error);
-            this.setState({loading: null, status: {msg: error.message, level:'danger'}});
-        }
+            } else {
+                logger.debug('Add account error: ' + error);
+                this.setState({loading: null, status: {msg: error.message, level:'danger'}});
+                // TODO: Handle: Add account error:  [Error: Account already added]
+            }
+        });
 
     }
 
