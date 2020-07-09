@@ -36,18 +36,18 @@ const UserIcon = (props) => {
 
     if (photo) {
         console.log('got an image', photo)
-        return  <Avatar.Image source={{uri: photo}} />
+        return  <Avatar.Image source={{uri: photo}} size={avatarSize} />
     }
 
     if (props.identity.uri.search('anonymous') !== -1) {
         return (
-            <Avatar.Icon style={{backgroundColor: color}} icon="user" />
+            <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />
         )
     }
 
     if (props.identity.uri.search('videoconference') !== -1) {
         return (
-            <Avatar.Icon style={{backgroundColor: color}} icon="account-group" />
+            <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />
         )
     }
 

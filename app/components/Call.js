@@ -116,19 +116,25 @@ class Call extends Component {
     render() {
         //console.log('Call: render');
         let box = null;
-        let remoteIdentity;
+
+        let remoteUri;
+        let remoteDisplayName;
 
         if (this.props.currentCall !== null) {
-            remoteIdentity = this.props.currentCall.remoteIdentity.displayName || this.props.currentCall.remoteIdentity.uri;
+            remoteUri = this.props.currentCall.remoteIdentity.uri;
+            remoteDisplayName = this.props.currentCall.remoteIdentity.displayName || this.props.currentCall.remoteIdentity.uri;
+
         } else {
-            remoteIdentity = this.props.targetUri;
+            remoteUri = this.props.targetUri;
+            remoteDisplayName = this.props.targetUri;
         }
 
         if (this.props.localMedia !== null) {
             if (this.state.audioOnly) {
                 box = (
                     <AudioCallBox
-                        remoteIdentity = {remoteIdentity}
+                        remoteUri = {remoteUri}
+                        remoteDisplayName = {remoteDisplayName}
                         hangupCall = {this.hangupCall}
                         call = {this.props.currentCall}
                         mediaPlaying = {this.mediaPlaying}
@@ -144,6 +150,8 @@ class Call extends Component {
                     box = (
                         <VideoBox
                             call = {this.props.currentCall}
+                            remoteUri = {remoteUri}
+                            remoteDisplayName = {remoteDisplayName}
                             localMedia = {this.props.localMedia}
                             shareScreen = {this.props.shareScreen}
                             hangupCall = {this.hangupCall}
@@ -161,7 +169,7 @@ class Call extends Component {
                     } else {
                         box = (
                             <LocalMedia
-                                remoteIdentity = {remoteIdentity}
+                                remoteIdentity = {remoteUri}
                                 localMedia = {this.props.localMedia}
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}

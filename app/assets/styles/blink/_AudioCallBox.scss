@@ -12,7 +12,7 @@
     flex-direction: row;
     margin: 0 auto;
     margin-top:auto;
-    bottom: 30;
+    bottom: 20;
 }
 
 .button {
@@ -38,9 +38,16 @@
     background-color: rgba(#a94442, .8);
 }
 
-.address {
-    padding: 0px;
+.displayName {
+    padding-top: 10px;
     font-size: 30px;
     text-align: center;
     color: white;
 }
+.uri {
+    padding: 0px;
+    font-size: 18px;
+    text-align: center;
+    color: white;
+}
+

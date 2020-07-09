@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { View, Platform } from 'react-native';
-import { IconButton, Dialog } from 'react-native-paper';
+import { IconButton, Dialog, Text } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
@@ -9,6 +9,8 @@ import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
 import EscalateConferenceModal from './EscalateConferenceModal';
 import UserIcon from './UserIcon';
+
+import utils from '../utils';
 
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
 
@@ -51,6 +53,7 @@ class AudioCallBox extends Component {
         } else {
             this.props.mediaPlaying();
         }
+
     }
 
     componentWillReceiveProps(nextProps) {
@@ -132,27 +135,35 @@ class AudioCallBox extends Component {
             showEscalateConferenceModal: !this.state.showEscalateConferenceModal
         });
     }
+
     render() {
+
         let remoteIdentity;
-        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         if (this.props.call !== null) {
             remoteIdentity = this.props.call.remoteIdentity;
         } else {
-            remoteIdentity = {uri: this.props.remoteIdentity};
+            remoteIdentity = {uri: this.props.remoteUri};
         }
+
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         return (
             <View style={styles.container}>
                 <CallOverlay style={styles.callStatus}
                     show={true}
-                    remoteIdentity={this.props.remoteIdentity}
+                    remoteIdentity={this.props.remoteDisplayName}
                     call={this.props.call}
                 />
                 <View style={styles.userIconContainer}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
-                <Dialog.Title style={styles.address}>{this.props.remoteIdentity}</Dialog.Title>
+                <Dialog.Title style={styles.displayName}>{this.props.remoteDisplayName}</Dialog.Title>
+
+                { (this.props.remoteUri !== this.props.remoteDisplayName) ?
+                <Text style={styles.uri}>{this.props.remoteUri}</Text>
+                : null }
+
                 <View style={styles.buttonContainer}>
                     <IconButton
                         size={34}
@@ -208,7 +219,8 @@ AudioCallBox.propTypes = {
     escalateToConference    : PropTypes.func,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
-    remoteIdentity          : PropTypes.string,
+    remoteUri               : PropTypes.string,
+    remoteDisplayName       : PropTypes.string,
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,

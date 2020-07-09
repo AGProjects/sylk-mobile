@@ -388,6 +388,8 @@ class VideoBox extends Component {
 
 VideoBox.propTypes = {
     call                    : PropTypes.object,
+    remoteUri               : PropTypes.string,
+    remoteDisplayName       : PropTypes.string,
     localMedia              : PropTypes.object,
     hangupCall              : PropTypes.func,
     shareScreen             : PropTypes.func,
