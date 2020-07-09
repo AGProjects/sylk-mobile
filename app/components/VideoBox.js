@@ -293,7 +293,8 @@ class VideoBox extends Component {
                 {/*onMouseMove={this.showCallOverlay}*/}
                 <CallOverlay
                     show = {true}
-                    remoteIdentity = {this.props.call.remoteIdentity.uri}
+                    remoteUri={this.props.remoteUri}
+                    remoteDisplayName={this.props.remoteDisplayName}
                     call = {this.props.call}
                 />
                 {/* <TransitionGroup> */}

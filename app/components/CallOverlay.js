@@ -72,6 +72,13 @@ class CallOverlay extends React.Component {
     render() {
         let header = null;
 
+        let displayName = this.props.remoteUri;
+        console.log('uri', this.props.remoteUri);
+
+        if (this.props.remoteDisplayName && this.props.remoteDisplayName !== this.props.remoteUri) {
+            displayName = this.props.remoteDisplayName;
+        }
+
         if (this.props.show) {
             let callDetail;
             if (this.duration !== null) {
@@ -84,7 +91,7 @@ class CallOverlay extends React.Component {
             header = (
                 <Appbar.Header style={{backgroundColor: 'black'}}>
                     <Appbar.Content
-                        title={`Call with ${this.props.remoteIdentity}`}
+                        title={`Call with ${displayName}`}
                         subtitle={callDetail}
                     />
                 </Appbar.Header>
@@ -97,7 +104,8 @@ class CallOverlay extends React.Component {
 
 CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
-    remoteIdentity: PropTypes.string.isRequired,
+    remoteUri: PropTypes.string.isRequired,
+    remoteDisplayName: PropTypes.string.isRequired,
     call: PropTypes.object
 };
 

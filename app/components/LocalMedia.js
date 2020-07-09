@@ -35,7 +35,8 @@ class LocalMedia extends Component {
             <Fragment>
                 <CallOverlay
                     show = {true}
-                    remoteIdentity = {this.props.remoteIdentity}
+                    remoteUri = {this.props.remoteUri}
+                    remoteDisplayName = {this.props.remoteDisplayName}
                     call = {null}
                 />
                 <View style={styles.buttonContainer}>
@@ -52,8 +53,9 @@ class LocalMedia extends Component {
 LocalMedia.propTypes = {
     hangupCall          : PropTypes.func,
     localMedia          : PropTypes.object.isRequired,
+    remoteUri           : PropTypes.string,
+    remoteDisplayName   : PropTypes.string,
     mediaPlaying        : PropTypes.func.isRequired,
-    remoteIdentity      : PropTypes.string,
     generatedVideoTrack : PropTypes.bool
 };
 

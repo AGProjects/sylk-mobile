@@ -164,12 +164,14 @@ class Call extends Component {
                         />
                     );
                 } else {
+                    console.log('Will render local media');
                     if (this.props.currentCall && this.props.currentCall.state && this.props.currentCall.state === 'terminated') {
                         // do not render
                     } else {
                         box = (
                             <LocalMedia
-                                remoteIdentity = {remoteUri}
+                                remoteUri = {remoteUri}
+                                remoteDisplayName = {remoteDisplayName}
                                 localMedia = {this.props.localMedia}
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}
