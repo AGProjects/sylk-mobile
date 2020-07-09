@@ -1,6 +1,6 @@
 'use strict';
 
-const defaultDomain = 'sip2sip.info';
+const defaultDomain = 'sylk.link';
 
 const configOptions = {
     defaultDomain           : defaultDomain,
@@ -9,7 +9,7 @@ const configOptions = {
     defaultGuestDomain      : `guest.${defaultDomain}`,
     wsServer                : 'wss://webrtc-gateway.sipthor.net:9999/webrtcgateway/ws',
     publicUrl               : 'https://webrtc.sipthor.net',
-    enrollmentUrl           : 'https://blink.sipthor.net/enrollment-webrtc.phtml',
+    enrollmentUrl           : 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
     serverCallHistoryUrl    : 'https://blink.sipthor.net/settings-webrtc.phtml',
     serverSettingsUrl       : 'https://mdns.sipthor.net/sip_settings.phtml',
     fileSharingUrl          : 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
