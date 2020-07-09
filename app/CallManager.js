@@ -76,6 +76,15 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showUnclosedCalls() {
+        if (Platform.OS !== 'ios') {
+            return;
+        }
+
+        let len = this._callHistory.length;
+        if (len > 0) {
+            utils.timestampedLog('Callkeep:', len, 'calls are still active');
+        }
+
         for (let callUUID of this._callHistory.keys()) {
             if (this.callKeep.isCallActive(callUUID)) {
                 utils.timestampedLog('Callkeep: call', callUUID, 'started at', this._callHistory.get(callUUID), 'is still active');
@@ -135,7 +144,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
-        utils.timestampedLog('Callkeep: end call', callUUID);
+        utils.timestampedLog('Callkeep: end call', callUUID, 'reason=', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
         } else {

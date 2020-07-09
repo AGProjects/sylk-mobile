@@ -67,6 +67,8 @@ const theme = {
 let bundleId = `${getBundleId()}`;
 const deviceId = getUniqueId();
 
+const version = '1.0.0';
+
 
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
@@ -828,7 +830,9 @@ class Sylk extends Component {
         });
 
         if (this.state.connection === null) {
-            let connection = sylkrtc.createConnection({server: config.wsServer});
+
+            let userAgent = 'Sylk for' + Platform.OS + ' ' + Platform.Version;
+            let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
         } else {
@@ -1447,10 +1451,10 @@ class Sylk extends Component {
                             (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
                                 known.push(elem.remoteParty);
                                 if (elem.remoteParty.indexOf('3333@') > -1) {
-                                    elem.displayName = 'Echo Test';
+                                    elem.displayName = 'Video Test';
                                 }
                                 if (elem.remoteParty.indexOf('4444@') > -1) {
-                                    elem.displayName = 'Video Test';
+                                    elem.displayName = 'Echo Test';
                                 }
                                 return elem;
                         }
