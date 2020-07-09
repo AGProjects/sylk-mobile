@@ -110,6 +110,8 @@ class ReadyBox extends Component {
     }
 
     render() {
+        const defaultDomain = `${config.defaultDomain}`;
+
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         const uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
         const uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
@@ -122,6 +124,8 @@ class ReadyBox extends Component {
 
         history = [...new Set(history)];
         //console.log('history from server is', this.props.serverHistory);
+        const placehoder = 'Enter a SIP address like alice@' + defaultDomain;
+
         return (
             <Fragment>
                 <View style={styles.wholeContainer}>
@@ -134,7 +138,7 @@ class ReadyBox extends Component {
                                     data={history}
                                     onChange={this.handleTargetChange}
                                     onSelect={this.handleTargetSelect}
-                                    placeholder="Enter a SIP address like alice@sip2sip.info"
+                                    placeholder={placehoder}
                                     autoFocus={false}
                                 />
                             </View>
