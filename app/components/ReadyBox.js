@@ -116,6 +116,7 @@ class ReadyBox extends Component {
         const uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
         const uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
         const titleClass = this.props.orientation === 'landscape' ? styles.landscapeTitle : styles.portraitTitle;
+        const historyClass = this.props.orientation === 'landscape' ? styles.landscapeHistory : styles.portraitHistory;
 
         // Join URIs from local and server history for input
         let history = this.props.history.concat(
@@ -166,7 +167,7 @@ class ReadyBox extends Component {
                             </View>
                         </View>
                     </View>
-                    <View style={styles.history}>
+                    <View style={historyClass}>
                         <HistoryTileBox>
                             {this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri)).map((historyItem, idx) =>
                                 (<HistoryCard
