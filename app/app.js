@@ -1206,7 +1206,7 @@ class Sylk extends Component {
         let event = notificationContent['event'];
         let callUUID = notificationContent['session-id'];
         utils.timestampedLog('Handle iOS', event, 'push notification for', callUUID);
-        utils.timestampedLog(notificationContent);
+        logger.debug(notificationContent);
 
         if (notificationContent['event'] === 'incoming_session') {
             utils.timestampedLog('Incoming call for push mobile notification for call', callUUID);
@@ -1299,9 +1299,11 @@ class Sylk extends Component {
 
     conferenceInvite(data) {
         // comes from web socket
-        utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, data.room);
+        utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
         //this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
-        //this.incomingConference(data.id, data.room, data.originator);
+        if (Platform.OS === 'android') {
+            this.incomingConference(data.id, data.room, data.originator);
+        }
     }
 
     incomingCall(call, mediaTypes) {
