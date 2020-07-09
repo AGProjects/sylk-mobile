@@ -82,6 +82,15 @@ class Call extends Component {
         this.forceUpdate();
     }
 
+    findObjectByKey(array, key, value) {
+        for (var i = 0; i < array.length; i++) {
+            if (array[i][key] === value) {
+                return array[i];
+            }
+        }
+        return null;
+    }
+
     call() {
         assert(this.props.currentCall === null, 'currentCall is not null');
         //console.log('Call: starting call', this.props.callUUID, 'to', this.props.targetUri);
@@ -114,22 +123,34 @@ class Call extends Component {
     }
 
     render() {
-        //console.log('Call: render');
+        console.log('Call: render call to', this.props.targetUri);
         let box = null;
 
-        let remoteUri;
+        let remoteUri = this.props.targetUri;
         let remoteDisplayName;
 
-        if (this.props.currentCall !== null) {
+        if (this.props.currentCall !== null && this.props.currentCall.state == 'established') {
             remoteUri = this.props.currentCall.remoteIdentity.uri;
             remoteDisplayName = this.props.currentCall.remoteIdentity.displayName || this.props.currentCall.remoteIdentity.uri;
-
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
         }
 
+        if (remoteUri.indexOf('3333@') > -1) {
+            remoteDisplayName = 'Video Test';
+        } else if (remoteUri.indexOf('4444@') > -1) {
+            remoteDisplayName = 'Echo Test';
+        } else {
+            var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', remoteUri);
+            if (contact_obj) {
+                remoteDisplayName = contact_obj.displayName;
+            }
+        }
+        console.log('Call: render call to remoteUri', remoteUri);
+
         if (this.props.localMedia !== null) {
+            console.log('Will render audio box');
             if (this.state.audioOnly) {
                 box = (
                     <AudioCallBox
@@ -199,7 +220,8 @@ Call.propTypes = {
     callKeepToggleMute      : PropTypes.func,
     speakerphoneOn          : PropTypes.func,
     speakerphoneOff         : PropTypes.func,
-    callUUID                : PropTypes.string
+    callUUID                : PropTypes.string,
+    contacts                : PropTypes.object
 };
 
 

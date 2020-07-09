@@ -139,6 +139,7 @@ class Sylk extends Component {
             localMedia: null,
             generatedVideoTrack: false,
             history: [],
+            contacts: [],
             serverHistory: [],
             devices: {},
             pushtoken: null,
@@ -216,6 +217,62 @@ class Sylk extends Component {
               })
             }
           })
+
+          Contacts.getAll((err, contacts) => {
+            if (err === 'denied'){
+                console.log('Access to contacts denied')
+            } else {
+                // contacts returned in Array
+                let contact_cards = [];
+                let name;
+
+                let seen_uris = new Map();
+
+                var arrayLength = contacts.length;
+                for (var i = 0; i < arrayLength; i++) {
+                    contact = contacts[i];
+                    if (contact['givenName'] && contact['familyName']) {
+                        name = contact['givenName'] + ' ' + contact['familyName'];
+                    } else if (contact['givenName']) {
+                        name = contact['givenName'];
+                    } else if (contact['familyName']) {
+                        name = contact['familyName'];
+                    } else if (contact['company']) {
+                        name = contact['company'];
+                    } else {
+                        continue;
+                    }
+
+                    //console.log(name);
+                    contact['phoneNumbers'].forEach(function (number, index) {
+                        let number_stripped =  number['number'].replace(/\s|\-|\(|\)/g, '');
+                        if (number_stripped) {
+                            if (!seen_uris.has(number_stripped)) {
+                                //console.log('   ---->    ', number['label'], number_stripped);
+                                var contact_card = {displayName: name, uri: number_stripped};
+                                contact_cards.push(contact_card);
+                                seen_uris.set(number_stripped, true);
+                            }
+                        }
+                    });
+
+                    contact['emailAddresses'].forEach(function (email, index) {
+                        let email_stripped =  email['email'].replace(/\s|\(|\)/g, '');
+                        if (!seen_uris.has(email_stripped)) {
+                            //console.log(name, email['label'], email_stripped);
+                            //console.log('   ---->    ', email['label'], email_stripped);
+                            var contact_card = {displayName: name, uri: email_stripped};
+                            contact_cards.push(contact_card);
+                            seen_uris.set(email_stripped, true);
+                        }
+                    });
+                }
+
+              this.setState({contacts: contact_cards});
+              //this._notificationCenter.postSystemNotification(this.state.contacts.length + ' contacts loaded', {body: '', timeout: 2});
+            }
+          })
+
         // Load camera/mic preferences
         storage.get('devices').then((devices) => {
             if (devices) {
@@ -232,6 +289,14 @@ class Sylk extends Component {
         return this.__notificationCenter;
     }
 
+    findObjectByKey(array, key, value) {
+        for (var i = 0; i < array.length; i++) {
+            if (array[i][key] === value) {
+                return array[i];
+            }
+        }
+        return null;
+    }
 
     _detectOrientation() {
         if(this.state.Width_Layout > this.state.Height_Layout) {
@@ -1448,19 +1513,28 @@ class Sylk extends Component {
                         if (!this.state.account || !this.state.account.id) {
                             return;
                         }
+                        var contact_obj = this.findObjectByKey(this.state.contacts, 'uri', elem.remoteParty);
+                        if (contact_obj) {
+                            elem.displayName = contact_obj.displayName;
+                            // TODO update icon here
+                        }
+
                         if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
                             (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
                                 known.push(elem.remoteParty);
                                 if (elem.remoteParty.indexOf('3333@') > -1) {
+                                    // see Call.js as well if we change this
                                     elem.displayName = 'Video Test';
                                 }
                                 if (elem.remoteParty.indexOf('4444@') > -1) {
+                                    // see Call.js as well if we change this
                                     elem.displayName = 'Echo Test';
                                 }
                                 return elem;
                         }
                     }
                 });
+
                 this.setState({serverHistory: history});
             }
         }, (errorCode) => {
@@ -1634,6 +1708,7 @@ class Sylk extends Component {
                 speakerphoneOn = {this.speakerphoneOn}
                 speakerphoneOff = {this.speakerphoneOff}
                 callUUID = {this.state.outgoingCallUUID}
+                contacts = {this.state.contacts}
             />
         )
     }
