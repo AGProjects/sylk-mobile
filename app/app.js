@@ -146,7 +146,36 @@ class Sylk extends Component {
             Width_Layout : '',
             outgoingCallUUID: null
         };
+
         this.state = Object.assign({}, this._initialSstate);
+
+        const echoTest = {
+            remoteParty: '4444@sylk.link',
+            displayName: 'Echo test',
+            direction: 'placed',
+            duration: null,
+            media: ['audio'],
+            stopTime: null,
+            startTime: null,
+            timezone: 'Europe/Amsterdam'
+            };
+
+        const videoTest = {
+            remoteParty: '3333@sylk.link',
+            displayName: 'Video test',
+            direction: 'placed',
+            duration: null,
+            media: ['audio', 'video'],
+            stopTime: null,
+            startTime: null,
+            timezone: 'Europe/Amsterdam'
+            };
+
+        const echoTestCard = Object.assign({}, echoTest);
+        const videoTestCard = Object.assign({}, videoTest);
+
+        let initialContacts = [echoTestCard, videoTestCard];
+        this.initialContacts = initialContacts;
 
         this.__notificationCenter = null;
 
@@ -199,6 +228,7 @@ class Sylk extends Component {
         }
         return this.__notificationCenter;
     }
+
 
     _detectOrientation() {
         if(this.state.Width_Layout > this.state.Height_Layout) {
@@ -1381,17 +1411,26 @@ class Sylk extends Component {
                 logger.debug('Error getting call history from server: %o', data.error_message)
                 return;
             }
+
             let history = [];
             if (data.placed) {
                 data.placed.map(elem => {elem.direction = 'placed'; return elem});
             }
+
             if (data.received) {
                 data.received.map(elem => {elem.direction = 'received'; return elem});
             }
+
             history = data.placed;
+
+            if (data.placed.length < 3) {
+                history = history.concat(this.initialContacts);
+            }
+
             if (data.received && history) {
                 history = history.concat(data.received);
             }
+
             if (history) {
                 history.sort((a,b) => {
                     return new Date(b.startTime) - new Date(a.startTime);
@@ -1405,6 +1444,12 @@ class Sylk extends Component {
                         if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
                             (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
                                 known.push(elem.remoteParty);
+                                if (elem.remoteParty.indexOf('3333@') > -1) {
+                                    elem.displayName = 'Echo Test';
+                                }
+                                if (elem.remoteParty.indexOf('4444@') > -1) {
+                                    elem.displayName = 'Video Test';
+                                }
                                 return elem;
                         }
                     }

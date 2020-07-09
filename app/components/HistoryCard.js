@@ -47,7 +47,11 @@ const HistoryCard = (props) => {
     const name = identity.displayName || identity.uri;
 
     let title = identity.displayName || identity.uri;
-    let subtitle = identity.uri + ' (' + duration + ')';
+    let subtitle = identity.uri;
+
+    if (duration) {
+        let subtitle = identity.uri + ' (' + duration + ')';
+    }
 
     if (!identity.displayName) {
         title = identity.uri;
