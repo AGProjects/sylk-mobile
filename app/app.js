@@ -1103,18 +1103,33 @@ class Sylk extends Component {
         });
     }
 
-    callKeepStartCall(targetUri, options) {
-        this.showCalls('callKeepStartCall');
-        this._callKeepManager.showUnclosedCalls();
+    callKeepStartConference(targetUri, options={audio: true, video: true}) {
+        utils.timestampedLog('CallKeep will start conference to', targetUri);
+        //this.showCalls('callKeepStartCall');
+        //this._callKeepManager.showUnclosedCalls();
 
-        // this is how we start an outgoing call
+        this._tmpCallStartInfo = {
+                uuid: uuid.v4()
+            };
+
+        this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
+        this.startCallWhenConnected(targetUri, {audio: options.audio, video: options.video, conference: true});
+    }
+
+    callKeepStartCall(targetUri, options) {
+        utils.timestampedLog('CallKeep will start call to', targetUri);
+
+        //this.showCalls('callKeepStartCall');
+        //this._callKeepManager.showUnclosedCalls();
+
         this._tmpCallStartInfo = {
             uuid: uuid.v4(),
             options,
         };
 
         this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
-        this._callKeepManager.startCall(this._tmpCallStartInfo.uuid, targetUri, targetUri, options.video ? true : false);
+        this.startCallWhenConnected(targetUri, {audio: options.audio, video: options.video});
+
     }
 
     startCall(targetUri, options) {
@@ -1326,16 +1341,6 @@ class Sylk extends Component {
         this.setFocusEvents(true);
 
         // when call is accepted this.callKeepStartConference is called
-    }
-
-    callKeepStartConference(room, options={audio: true, video: true}) {
-        utils.timestampedLog('CallKeep start conference to', room);
-        this._tmpCallStartInfo = {
-                uuid: uuid.v4()
-            };
-
-        this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
-        this.startCallWhenConnected(room, {audio: options.audio, video: options.video, conference: true});
     }
 
     startConference(targetUri, options={audio: true, video: true}) {
