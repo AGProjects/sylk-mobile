@@ -150,7 +150,7 @@ class Call extends Component {
         console.log('Call: render call to remoteUri', remoteUri);
 
         if (this.props.localMedia !== null) {
-            console.log('Will render audio box');
+            //console.log('Will render audio box');
             if (this.state.audioOnly) {
                 box = (
                     <AudioCallBox
