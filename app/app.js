@@ -896,8 +896,7 @@ class Sylk extends Component {
         });
 
         if (this.state.connection === null) {
-
-            let userAgent = 'Sylk for' + Platform.OS + ' ' + Platform.Version;
+            let userAgent = 'SylkMobile ' + version + ' (' + Platform.Version + ')';
             let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
