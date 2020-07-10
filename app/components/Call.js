@@ -123,7 +123,7 @@ class Call extends Component {
     }
 
     render() {
-        console.log('Call: render call to', this.props.targetUri);
+        //console.log('Call: render call to', this.props.targetUri);
         let box = null;
 
         let remoteUri = this.props.targetUri;

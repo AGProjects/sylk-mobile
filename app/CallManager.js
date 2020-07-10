@@ -10,7 +10,7 @@ import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 // https://github.com/react-native-webrtc/react-native-callkeep
 export default class CallManager extends events.EventEmitter {
     constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, _sylkConferenceCallFunc) {
-        logger.debug('constructor()');
+        //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
 

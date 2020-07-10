@@ -53,7 +53,7 @@ function copyToClipboard(text) {
 
 function findContact(uri) {
     return new Promise((resolve, reject) => {
-        console.log('findContact')
+        //console.log('findContact')
         Contacts.checkPermission((err, permission) => {
             if (err) {
                 //log the error
@@ -62,7 +62,7 @@ function findContact(uri) {
             }
 
             if (permission === 'authorized') {
-                console.log('HELLO', uri);
+                //console.log('HELLO', uri);
                 Contacts.getContactsByEmailAddress(uri, (err, contacts) => {
                     if (err) {
                         console.log('error getting contacts by email')

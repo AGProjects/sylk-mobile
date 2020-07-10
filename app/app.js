@@ -300,12 +300,12 @@ class Sylk extends Component {
 
     _detectOrientation() {
         if(this.state.Width_Layout > this.state.Height_Layout) {
-            utils.timestampedLog("Orientation is landcape")
+            //utils.timestampedLog("Orientation is landcape")
             this.setState({
             orientation : 'landscape'
             });
         } else {
-            utils.timestampedLog("Orientation is portrait")
+            //utils.timestampedLog("Orientation is portrait")
             this.setState({
             orientation : 'portrait'
             });
@@ -326,7 +326,7 @@ class Sylk extends Component {
         history.push('/login');
 
         // prime the ref
-        logger.debug('NotificationCenter ref: %o', this._notificationCenter);
+        //logger.debug('NotificationCenter ref: %o', this._notificationCenter);
 
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
         this._boundOnPushRegistered = this._onPushRegistered.bind(this);
@@ -403,7 +403,6 @@ class Sylk extends Component {
     }
 
     _proximityDetect(data) {
-        utils.timestampedLog('Proximity changed');
         return;
 
         if (data.isNear) {
@@ -600,13 +599,13 @@ class Sylk extends Component {
 
             if (this.state.registrationKeepalive === true) {
                 if (this.state.connection !== null) {
-                    logger.debug('Retry to register...');
+                    utils.timestampedLog('Retry to register...');
                     //this.setState({loading: 'Register...'});
                     this._notificationCenter.postSystemNotification('Registering', {body: 'now', timeout: 10000});
                     this.state.account.register();
                 } else {
                     // add a timer to retry register after awhile
-                    logger.debug('Retry to register after a delay...');
+                    utils.timestampedLog('Retry to register after a delay...');
                     setTimeout(this.state.account.register(), 5000);
                 }
             }

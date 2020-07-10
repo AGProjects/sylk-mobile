@@ -17,7 +17,6 @@ const UserIcon = (props) => {
     const getPhoto = async () => {
         try {
             let contacts = await utils.findContact(props.identity.uri);
-            console.log('contacts', contacts)
             contacts.some((contact) => {
                 if (contact.hasThumbnail) {
                     setPhoto(contact.thumbnailPath);
@@ -35,7 +34,6 @@ const UserIcon = (props) => {
     const avatarSize = props.large ? 120: 60;
 
     if (photo) {
-        console.log('got an image', photo)
         return  <Avatar.Image source={{uri: photo}} size={avatarSize} />
     }
 

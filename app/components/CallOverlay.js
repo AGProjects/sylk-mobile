@@ -73,7 +73,6 @@ class CallOverlay extends React.Component {
         let header = null;
 
         let displayName = this.props.remoteUri;
-        console.log('uri', this.props.remoteUri);
 
         if (this.props.remoteDisplayName && this.props.remoteDisplayName !== this.props.remoteUri) {
             displayName = this.props.remoteDisplayName;
