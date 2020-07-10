@@ -19,13 +19,13 @@ class Preview extends Component {
         super(props);
         autoBind(this);
 
-        let mic = { label: 'No mic' };
-        let camera = { label: 'No Camera' };
+        let mic = { label: 'No microphone' };
+        let camera = { label: 'No camera' };
 
         if ('camera' in this.props.selectedDevices) {
             camera = this.props.selectedDevices.camera;
         } else if (this.props.localMedia.getVideoTracks().length !== 0) {
-            camera.label = this.props.localMedia.getVideoTracks()[0].label;
+            camera.label = camera.facing === 'environment' ? 'Back camera': 'Front camera';
         }
 
         if ('mic' in this.props.selectedDevices) {
@@ -51,19 +51,20 @@ class Preview extends Component {
         navigator.mediaDevices.enumerateDevices()
             .then((devices) => {
                 this.devices = devices;
-
                 let newState = {};
-                if (this.state.camera.label !== 'No Camera') {
-                    if (!devices.find((device) => {return device.kind === 'videoinput'})) {
-                        newState.camera = {label: 'No Camera'};
-                    } else if (this.props.localMedia.getVideoTracks().length !== 0) {
-                        newState.camera = {label: this.props.localMedia.getVideoTracks()[0].label};
-                    }
-                }
 
-                if (this.state.mic.label !== 'No mic') {
+                newState.camera = {label: 'No camera'};
+
+                devices.forEach((device) => {
+                    if (device.kind === 'videoinput') {
+                        let label = device.facing === 'environment' ? 'Back camera': 'Front camera';
+                        newState.camera = {label: label};
+                    }
+                });
+
+                if (this.state.mic.label !== 'No microphone') {
                     if (!devices.find((device) => {return device.kind === 'audioinput'})) {
-                        newState.mic = {label: 'No mic'};
+                        newState.mic = {label: 'No microphone'};
                     } else if (this.props.localMedia.getAudioTracks().length !== 0) {
                         newState.mic = { label: this.props.localMedia.getAudioTracks()[0].label};
                     }
@@ -72,10 +73,12 @@ class Preview extends Component {
                 if (Object.keys(newState).length != 0) {
                     this.setState(Object.assign({},newState));
                 }
+
             })
             .catch(function(error) {
                 DEBUG('Device enumeration failed: %o', error);
             });
+
     }
 
     componentWillReceiveProps(nextProps) {
@@ -83,12 +86,12 @@ class Preview extends Component {
             this.setState({streamURL: nextProps.localMedia})
         }
 
-
         if (nextProps.selectedDevices !== this.props.selectedDevices) {
-            let camera = {label: 'No Camera'};
-            let mic = {label: 'No Mic'};
+            let camera = {label: 'No camera'};
+            let mic = {label: 'No microphone'};
             if ('camera' in nextProps.selectedDevices) {
                 camera = nextProps.selectedDevices.camera;
+                camera.label = camera.facing === 'environment' ? 'Back camera': 'Front camera';
             }
 
             if ('mic' in nextProps.selectedDevices) {
@@ -102,8 +105,8 @@ class Preview extends Component {
         e.preventDefault();
         if (device.label !== this.state.mic.label && device.label !== this.state.camera.label) {
             this.props.setDevice(device);
-            this.setState({showDrawer: false});
         }
+        this.setState({showDrawer: false});
     }
 
     hangupCall(event) {
@@ -116,21 +119,21 @@ class Preview extends Component {
     }
 
     render() {
-        // let cameras = [];
-        // let mics = [];
+        let cameras = [];
+        let mics = [];
 
-        // this.devices.forEach((device) => {
-        //     if (device.kind === 'videoinput') {
-        //         cameras.push(
-        //             <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.camera.label} title={device.label} />
-        //         );
-        //     } else if (device.kind === 'audioinput') {
-        //         mics.push(
-        //             <List.Item key={device.deviceId} onPress={this.setDevice(device)} active={device.label === this.state.mic.label} title={device.label} />
-        //         );
-        //     }
-        // });
-
+        this.devices.forEach((device) => {
+            if (device.kind === 'videoinput') {
+                device.label = device.facing === 'environment' ? 'Back camera': 'Front camera';
+                cameras.push(
+                    <List.Item key={device.deviceId} onPress={this.setDevice(device)} title={device.label} />
+                );
+            } else if (device.kind === 'audioinput') {
+                mics.push(
+                    <List.Item key={device.deviceId} onPress={this.setDevice(device)} title={device.label} />
+                );
+            }
+        });
 
         let header = null;
         if (this.state.camera !== '') {
@@ -138,7 +141,7 @@ class Preview extends Component {
                 <Fragment>
                     <Appbar.Header style={{backgroundColor: 'black'}}>
                         <Appbar.Content
-                            title="Preview"
+                            title="Video preview"
                             subtitle={this.state.camera.label}
                         />
                         { !this.state.showDrawer ?
@@ -150,18 +153,18 @@ class Preview extends Component {
             );
         }
 
-        // let drawercontent = (
-        //     <View>
-        //         <List.Section>
-        //             <List.Subheader>Video Camera</List.Subheader>
-        //             {cameras}
-        //         </List.Section>
-        //         <List.Section>
-        //             <List.Subheader>Audio Input</List.Subheader>
-        //             {mics}
-        //         </List.Section>
-        //     </View>
-        // );
+        let drawercontent = (
+            <View>
+                <List.Section>
+                    <List.Subheader style={styles.subheader}>Video cameras</List.Subheader>
+                    {cameras}
+                </List.Section>
+                <List.Section>
+                    <List.Subheader style={styles.subheader}>Audio inputs</List.Subheader>
+                    {mics}
+                </List.Section>
+            </View>
+        );
 
         return (
             <View style={styles.container}>
@@ -172,9 +175,9 @@ class Preview extends Component {
                 <View style={styles.videoContainer}>
                     <RTCView objectFit="cover" style={styles.video} streamURL={this.state.streamURL ? this.state.streamURL.toURL() : null} mirror={true}/>
                 </View>
-                {/* <ConferenceDrawer show={this.state.showDrawer} close={this.toggleDrawer}>
+                <ConferenceDrawer show={this.state.showDrawer} close={this.toggleDrawer}>
                     {drawercontent}
-                </ConferenceDrawer> */}
+                </ConferenceDrawer>
             </View>
         );
     }
