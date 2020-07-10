@@ -82,57 +82,57 @@ continueUserActivity:(NSUserActivity *)userActivity
 #endif
 }
 
-// // Required to register for notifications
-// - (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
-// {
-//  [RNCPushNotificationIOS didRegisterUserNotificationSettings:notificationSettings];
-// }
-// // Required for the register event.
-// - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
-// {
-//  [RNCPushNotificationIOS didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
-// }
-// // Required for the notification event. You must call the completion handler after handling the remote notification.
-// - (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
-// fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
-// {
-//   NSLog(@"Got a PUSH NOTIFICATION");
+ // Required to register for notifications
+ - (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
+ {
+  [RNCPushNotificationIOS didRegisterUserNotificationSettings:notificationSettings];
+ }
+ // Required for the register event.
+ - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
+ {
+  [RNCPushNotificationIOS didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
+ }
+ // Required for the notification event. You must call the completion handler after handling the remote notification.
+ - (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
+ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
+ {
+   NSLog(@"Got a PUSH NOTIFICATION");
 
-//   NSString *eventType = userInfo[@"event"];
-//   NSLog(@"Value of eventType = %@", eventType);
+   NSString *eventType = userInfo[@"event"];
+   NSLog(@"Value of eventType = %@", eventType);
 
-//   if ([eventType isEqualToString:@"cancel"])
-//   {
-//     NSString *calluuid = userInfo[@"session-id"];
-//     BOOL active = [RNCallKeep isCallActive:calluuid];
+   if ([eventType isEqualToString:@"cancel"])
+   {
+     NSString *calluuid = userInfo[@"session-id"];
+     BOOL active = [RNCallKeep isCallActive:calluuid];
 
-//     if (active) {
-//       [RNCallKeep endCallWithUUID:calluuid reason:2];
+     if (active) {
+       [RNCallKeep endCallWithUUID:calluuid reason:2];
 
-//     }
-//     return completionHandler(UIBackgroundFetchResultNoData);
-//   }
+     }
+     return completionHandler(UIBackgroundFetchResultNoData);
+   }
 
-//   [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
-// }
-// // Required for the registrationError event.
-// - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
-// {
-//  [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
-// }
-// // IOS 10+ Required for localNotification event
-// - (void)userNotificationCenter:(UNUserNotificationCenter *)center
-// didReceiveNotificationResponse:(UNNotificationResponse *)response
-//          withCompletionHandler:(void (^)(void))completionHandler
-// {
-//   [RNCPushNotificationIOS didReceiveNotificationResponse:response];
-//   completionHandler();
-// }
-// // IOS 4-10 Required for the localNotification event.
-// - (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
-// {
-//  [RNCPushNotificationIOS didReceiveLocalNotification:notification];
-// }
+   [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
+ }
+ // Required for the registrationError event.
+ - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
+ {
+  [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
+ }
+ // IOS 10+ Required for localNotification event
+ - (void)userNotificationCenter:(UNUserNotificationCenter *)center
+ didReceiveNotificationResponse:(UNNotificationResponse *)response
+          withCompletionHandler:(void (^)(void))completionHandler
+ {
+   [RNCPushNotificationIOS didReceiveNotificationResponse:response];
+   completionHandler();
+ }
+ // IOS 4-10 Required for the localNotification event.
+ - (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
+ {
+  [RNCPushNotificationIOS didReceiveLocalNotification:notification];
+ }
 
 
 // --- Handle updated push credentials
