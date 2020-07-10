@@ -20,7 +20,7 @@ class Call extends Component {
         autoBind(this);
 
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
-            logger.debug('Will send audio only');
+            //logger.debug('Will send audio only');
             this.state = {audioOnly: true};
         } else {
             this.state = {audioOnly: false};
@@ -147,7 +147,6 @@ class Call extends Component {
                 remoteDisplayName = contact_obj.displayName;
             }
         }
-        console.log('Call: render call to remoteUri', remoteUri);
 
         if (this.props.localMedia !== null) {
             //console.log('Will render audio box');
@@ -185,7 +184,7 @@ class Call extends Component {
                         />
                     );
                 } else {
-                    console.log('Will render local media');
+                    //console.log('Will render local media');
                     if (this.props.currentCall && this.props.currentCall.state && this.props.currentCall.state === 'terminated') {
                         // do not render
                     } else {

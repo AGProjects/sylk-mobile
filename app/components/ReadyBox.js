@@ -33,6 +33,13 @@ class ReadyBox extends Component {
         return utils.normalizeUri(this.state.targetUri, defaultDomain);
     }
 
+    async componentDidMount() {
+        console.log('Ready now');
+        if (this.state.targetUri) {
+            console.log('We must call', this.state.targetUri);
+        }
+    }
+
     handleTargetChange(value) {
         if (this.state.targetUri) {
             let currentUri = this.getTargetUri();

@@ -144,7 +144,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
-        utils.timestampedLog('Callkeep: end call', callUUID, 'reason=', reason);
+        utils.timestampedLog('Callkeep: end call', callUUID, ' with reason', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
         } else {
@@ -155,10 +155,12 @@ export default class CallManager extends events.EventEmitter {
 
     _rnActiveAudioSession(data) {
         utils.timestampedLog('Callkeep: activated audio call');
+        console.log(data);
     }
 
     _rnDeactiveAudioSession(data) {
         utils.timestampedLog('Callkeep: deactivated audio call');
+        console.log(data);
     }
 
     _rnAccept(data) {
