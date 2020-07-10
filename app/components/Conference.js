@@ -69,7 +69,7 @@ class Conference extends React.Component {
                         notificationCenter = {this.props.notificationCenter}
                         call = {this.props.currentCall}
                         hangup = {this.hangup}
-                        remoteIdentity = {this.props.targetUri}
+                        remoteUri = {this.props.targetUri}
                         shareScreen = {this.props.shareScreen}
                         generatedVideoTrack = {this.props.generatedVideoTrack}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
@@ -79,7 +79,7 @@ class Conference extends React.Component {
             } else {
                 box = (
                     <LocalMedia
-                        remoteIdentity = {this.props.targetUri.split('@')[0]}
+                        remoteUri = {this.props.targetUri}
                         localMedia = {this.props.localMedia}
                         mediaPlaying = {this.mediaPlaying}
                         hangupCall = {this.hangup}

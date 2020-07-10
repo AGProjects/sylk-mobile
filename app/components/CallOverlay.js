@@ -88,14 +88,23 @@ class CallOverlay extends React.Component {
                 callDetail = 'Connecting...'
             }
 
-            header = (
-                <Appbar.Header style={{backgroundColor: 'black'}}>
-                    <Appbar.Content
-                        title={`Call with ${displayName}`}
-                        subtitle={callDetail}
-                    />
-                </Appbar.Header>
-            );
+            if (this.props.remoteUri.search('videoconference') > -1) {
+                header = (
+                    <Appbar.Header style={{backgroundColor: 'black'}}>
+                        <Appbar.Content
+                            title={`Conference: ${displayName}`} subtitle={callDetail}
+                        />
+                    </Appbar.Header>
+                );
+            } else {
+                header = (
+                    <Appbar.Header style={{backgroundColor: 'black'}}>
+                        <Appbar.Content
+                            title={`Call with ${displayName}`} subtitle={callDetail}
+                        />
+                    </Appbar.Header>
+                );
+            }
         }
 
         return header

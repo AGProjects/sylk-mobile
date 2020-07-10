@@ -99,9 +99,9 @@ class ReadyBox extends Component {
     handleConferenceCall(targetUri, options={audio: true, video: true}) {
         if (targetUri) {
             if (!options.video) {
-                console.log('Handle audio only conference call to',targetUri);
+                console.log('ReadyBox: Handle audio only conference call to',targetUri);
             } else {
-                console.log('Handle video conference call to',targetUri);
+                console.log('ReadyBox: Handle video conference call to',targetUri);
             }
             this.props.startConference(targetUri, options);
         }

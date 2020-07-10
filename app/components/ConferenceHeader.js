@@ -52,7 +52,7 @@ const ConferenceHeader = (props) => {
         videoHeader = (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Appbar.Content
-                    title={`Conference: ${props.remoteIdentity}`}
+                    title={`Conference: ${props.remoteUri}`}
                     subtitle={callDetail}
                 />
                 {props.buttons.top.right}
@@ -76,7 +76,7 @@ const ConferenceHeader = (props) => {
 
 ConferenceHeader.propTypes = {
     show: PropTypes.bool.isRequired,
-    remoteIdentity: PropTypes.string.isRequired,
+    remoteUri: PropTypes.string.isRequired,
     participants: PropTypes.array.isRequired,
     buttons: PropTypes.object.isRequired
 };

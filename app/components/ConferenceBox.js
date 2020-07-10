@@ -52,7 +52,7 @@ class ConferenceBox extends Component {
             largeVideoStream: null
         };
 
-        const friendlyName = this.props.remoteIdentity.split('@')[0];
+        const friendlyName = this.props.remoteUri.split('@')[0];
         //if (window.location.origin.startsWith('file://')) {
             this.callUrl = `${config.publicUrl}/conference/${friendlyName}`;
         //} else {
@@ -294,7 +294,7 @@ class ConferenceBox extends Component {
                     }
                 );
                 uploadRequest = superagent
-                .post(`${config.fileSharingUrl}/${this.props.remoteIdentity}/${this.props.call.id}/${filename}`)
+                .post(`${config.fileSharingUrl}/${this.props.remoteUri}/${this.props.call.id}/${filename}`)
                 .send(files[key])
                 .on('progress', (e) => {
                     this.props.notificationCenter().editFileUploadNotification(e.percent, progressNotification);
@@ -314,7 +314,7 @@ class ConferenceBox extends Component {
 
     downloadFile(filename) {
         // const a = document.createElement('a');
-        // a.href = `${config.fileSharingUrl}/${this.props.remoteIdentity}/${this.props.call.id}/${filename}`;
+        // a.href = `${config.fileSharingUrl}/${this.props.remoteUri}/${this.props.call.id}/${filename}`;
         // a.target = '_blank';
         // a.download = filename;
         // const clickEvent = document.createEvent('MouseEvent');
@@ -441,7 +441,7 @@ class ConferenceBox extends Component {
             'drawer-visible': this.state.showDrawer || this.state.showFiles
         });
 
-        const remoteIdentity = this.props.remoteIdentity.split('@')[0];
+        const remoteUri = this.props.remoteUri.split('@')[0];
 
         // const shareOverlay = (
         //     <Portal>
@@ -664,7 +664,7 @@ class ConferenceBox extends Component {
             <View style={styles.container}>
                 <ConferenceHeader
                     show={true}
-                    remoteIdentity={remoteIdentity}
+                    remoteUri={remoteUri}
                     participants={this.state.participants}
                     buttons={buttons}
                 />
@@ -708,7 +708,7 @@ ConferenceBox.propTypes = {
     notificationCenter  : PropTypes.func.isRequired,
     call                : PropTypes.object,
     hangup              : PropTypes.func,
-    remoteIdentity      : PropTypes.string,
+    remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool
