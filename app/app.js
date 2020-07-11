@@ -156,7 +156,8 @@ class Sylk extends Component {
             manufacturer: '',
             brand: '',
             model: '',
-            phoneNumber: ''
+            phoneNumber: '',
+            osVersion: ''
         };
 
         this.state = Object.assign({}, this._initialSstate);
@@ -188,7 +189,10 @@ class Sylk extends Component {
         this.muteIncoming = false;
 
         DeviceInfo.getManufacturer().then(manufacturer => {
-            this.setState({manufacturer: manufacturer, model: DeviceInfo.getModel(), brand: DeviceInfo.getBrand()});
+            this.setState({manufacturer: manufacturer,
+                           model: DeviceInfo.getModel(),
+                           brand: DeviceInfo.getBrand(),
+                           osVersion: Platform.Version});
         });
 
         DeviceInfo.getPhoneNumber().then(phoneNumber => {
@@ -923,9 +927,9 @@ class Sylk extends Component {
         if (this.state.connection === null) {
 
             let model = this.state.brand + ' ' + this.state.model;
-            let userAgent = 'SylkMobile on ' + model + '';
-            console.log('Starting User Agent', userAgent);
-            console.log('Phone number', this.state.phoneNumber);
+            let userAgent = 'SylkMobile '+ version + ' on ' + model + ' (v' + this.state.osVersion + ')';
+            console.log('User Agent:', userAgent);
+            console.log('Phone number:', this.state.phoneNumber);
 
             let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
             connection.on('stateChanged', this.connectionStateChanged);
