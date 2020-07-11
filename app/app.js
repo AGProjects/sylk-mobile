@@ -491,9 +491,9 @@ class Sylk extends Component {
                 }
                 return;
             }
-            if (n === wait_interval && options.callUUID - 1) {
+            if (n === wait_interval - 1) {
                 utils.timestampedLog('Terminating call', options.callUUID, 'that did not start yet');
-                this._callKeepManager.endCall(callUUID, 15);
+                this._callKeepManager.endCall(callUUID, 6);
                 this.setState({targetUri: null});
             }
             n++;
@@ -1370,18 +1370,43 @@ class Sylk extends Component {
         }
     }
 
-    incomingConference(callUUID, to_uri, from_uri) {
+    incomingConferenceOld(callUUID, to_uri, from_uri) {
         utils.timestampedLog('Incoming conference', callUUID);
         // this does not work for Android when is in the background
         // this does not work for iOS when app is in the foreground
 
         // TODO: for Android we need to handle background notifications
 
-        this._callKeepManager.handleConference(callUUID, to_uri);
         this.setFocusEvents(true);
 
         // when call is accepted this.callKeepStartConference is called
     }
+
+    async incomingConference(callUUID, to_uri, from_uri) {
+        utils.timestampedLog('Handle incoming conference', callUUID, 'when ready');
+        var n = 0;
+        let wait_interval = 15;
+        while (n < wait_interval) {
+            if (!this.state.connection || this.state.connection.state !== 'ready' || this.state.account === null) {
+                utils.timestampedLog('Waiting for connection...');
+                this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 1});
+                await this._sleep(1000);
+            } else {
+                utils.timestampedLog('Web socket is ready');
+                utils.timestampedLog('Using account', this.state.account.id);
+                // answer here
+                this._callKeepManager.handleConference(callUUID, to_uri);
+                this.setFocusEvents(true);
+                return;
+            }
+            if (n === wait_interval - 1) {
+                utils.timestampedLog('Terminating call', callUUID, 'that did not start yet');
+                this._callKeepManager.endCall(callUUID, 6);
+            }
+            n++;
+        }
+    }
+
 
     startConference(targetUri, options={audio: true, video: true}) {
         utils.timestampedLog('New outgoing conference to room', targetUri);
@@ -1433,14 +1458,39 @@ class Sylk extends Component {
         InCallManager.start({media: media_type});
         this._callKeepManager.handleCall(call);
 
-        this.setFocusEvents(true);
+        this.acceptCallWhenReady(call);
 
-        call.on('stateChanged', this.callStateChanged);
-        this.setState({inboundCall: call, showIncomingModal: true});
+        this.setFocusEvents(true);
 
         // if (!this.shouldUseHashRouting) {
         //     this._notificationCenter.postSystemNotification('Incoming call', {body: `From ${call.remoteIdentity.displayName || call.remoteIdentity.uri}`, timeout: 15, silent: false});
         // }
+    }
+
+    async acceptCallWhenReady(call) {
+        let callUUID = call._callkeepUUID;
+        utils.timestampedLog('Accept call', callUUID, 'when ready');
+        var n = 0;
+        let wait_interval = 15;
+        while (n < wait_interval) {
+            if (!this.state.connection || this.state.connection.state !== 'ready' || this.state.account === null) {
+                utils.timestampedLog('Waiting for connection...');
+                this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 1});
+                await this._sleep(1000);
+            } else {
+                utils.timestampedLog('Web socket is ready');
+                utils.timestampedLog('Using account', this.state.account.id);
+                // answer here
+                call.on('stateChanged', this.callStateChanged);
+                this.setState({inboundCall: call, showIncomingModal: true});
+                return;
+            }
+            if (n === wait_interval - 1) {
+                utils.timestampedLog('Terminating call', callUUID, 'that did not start yet');
+                this._callKeepManager.endCall(callUUID, 6);
+            }
+            n++;
+        }
     }
 
     setFocusEvents(enabled) {
