@@ -7,7 +7,6 @@ import { View, Platform} from 'react-native';
 import { IconButton, Title } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
-import HistoryCard from './HistoryCard';
 import HistoryTileBox from './HistoryTileBox';
 import FooterBox from './FooterBox';
 import URIInput from './URIInput';
@@ -175,17 +174,13 @@ class ReadyBox extends Component {
                         </View>
                     </View>
                     <View style={historyClass}>
-                        <HistoryTileBox>
-                            {this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri)).map((historyItem, idx) =>
-                                (<HistoryCard
-                                    key={idx}
-                                    historyItem    = {historyItem}
-                                    setTargetUri   = {this.handleTargetChange}
-                                    startVideoCall = {this.handleVideoCall}
-                                    startAudioCall = {this.handleAudioCall}
-                                />)
-                            )}
-                        </HistoryTileBox>
+                        <HistoryTileBox
+                            items={this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri))}
+                            orientation={this.props.orientation}
+                            setTargetUri={this.handleTargetChange}
+                            startVideoCall={this.handleVideoCall}
+                            startAudioCall={this.handleAudioCall}
+                        />
                     </View>
                     <View style={styles.footer}>
                         <FooterBox />
@@ -200,6 +195,7 @@ class ReadyBox extends Component {
         );
     }
 }
+
 
 ReadyBox.propTypes = {
     account         : PropTypes.object.isRequired,

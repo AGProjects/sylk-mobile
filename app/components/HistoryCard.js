@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { View } from 'react-native';
 import PropTypes from 'prop-types';
 import moment from 'moment';
@@ -15,6 +15,8 @@ const HistoryCard = (props) => {
         displayName: props.historyItem.displayName,
         uri: props.historyItem.remoteParty || props.historyItem
     }
+
+    console.log(identity);
 
     const startVideoCall = (e) => {
         e.stopPropagation();
@@ -35,6 +37,8 @@ const HistoryCard = (props) => {
     }
 
     let duration = moment.duration(props.historyItem.duration, 'seconds').format('hh:mm:ss', {trim: false});
+    let containerClass = (props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+
     let color = {};
     if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
         color.color = '#a94442';
@@ -68,7 +72,7 @@ const HistoryCard = (props) => {
         <Card
             onPress={() => {props.setTargetUri(identity.uri)}}
             onLongPress={startVideoCall}
-            style={styles.container}
+            style={containerClass}
         >
             <Card.Content style={styles.content}>
                 <View style={styles.mainContent}>
@@ -97,9 +101,10 @@ const HistoryCard = (props) => {
 
 HistoryCard.propTypes = {
     historyItem    : PropTypes.object,
-    startAudioCall : PropTypes.func.isRequired,
-    startVideoCall : PropTypes.func.isRequired,
-    setTargetUri   : PropTypes.func.isRequired
+    startAudioCall : PropTypes.func,
+    startVideoCall : PropTypes.func,
+    setTargetUri   : PropTypes.func,
+    orientation : PropTypes.string
 };
 
 

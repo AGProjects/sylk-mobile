@@ -4,10 +4,7 @@
 }
 
 .mainContent {
-    width: 80%;
-}
-
-.userIcon {
+    width: 100%;
 }
 
 .userAvatarContent {
@@ -15,7 +12,14 @@
     margin-left: auto;
 }
 
-.container {
+.landscapeContainer {
+    width: 42%;
+    margin-left: 5%;
+    margin-top: 10px;
+    border-radius: 5px;
+}
+
+.portraitContainer {
     width: 90%;
     margin: 0 auto;
     margin-top: 10px;

@@ -9,7 +9,7 @@
 .container {
     margin: 0 auto;
     width: 90%;
-    padding-top: 20px;
+    padding-top: 10px;
 }
 
 .landscapeTitle {
@@ -58,6 +58,7 @@
 .landscapeUriButtonGroup {
     flex-direction: row;
     justify-content: space-between;
+    width: 90%;
 }
 
 .portraitUriButtonGroup {
@@ -66,7 +67,7 @@
 
 .buttonGroup {
     flex-direction: row;
-    padding-top: 10px;
+    padding-top: 5px;
     justify-content: center;
 }
 
@@ -79,7 +80,7 @@
 .landscapeUriInputBox {
     align: left;
     padding-top: 10px;
-    width: 350px;
+    width: 52%;
 }
 
 .portraitUriInputBox {
