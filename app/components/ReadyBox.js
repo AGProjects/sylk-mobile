@@ -133,10 +133,29 @@ class ReadyBox extends Component {
         //console.log('Render ready box');
         const defaultDomain = `${config.defaultDomain}`;
 
+        let uriClass = styles.portraitUriInputBox;
+        let uriGroupClass = styles.portraitUriButtonGroup;
+        let titleClass = styles.portraitTitle;
+
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
-        const uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
-        const uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
-        const titleClass = this.props.orientation === 'landscape' ? styles.landscapeTitle : styles.portraitTitle;
+
+        if (this.props.isTablet) {
+             titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;
+        } else {
+             titleClass = this.props.orientation === 'landscape' ? styles.landscapeTitle : styles.portraitTitle;
+        }
+
+        if (this.props.isTablet) {
+             uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriButtonGroup : styles.portraitTabletUriButtonGroup;
+        } else {
+             uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
+        }
+
+        if (this.props.isTablet) {
+            uriClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriInputBox : styles.portraitTabletUriInputBox;
+        } else {
+            uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
+        }
         const historyClass = this.props.orientation === 'landscape' ? styles.landscapeHistory : styles.portraitHistory;
 
         // Join URIs from local and server history for input
@@ -153,7 +172,7 @@ class ReadyBox extends Component {
         return (
             <Fragment>
                 <View style={styles.wholeContainer}>
-                    <View style={styles.container}>
+                    <View >
                         <Title style={titleClass}>Enter address or phone number</Title>
                         <View style={uriGroupClass}>
                             <View style={uriClass}>
@@ -198,6 +217,7 @@ class ReadyBox extends Component {
                             setTargetUri={this.handleTargetChange}
                             startVideoCall={this.handleVideoCall}
                             startAudioCall={this.handleAudioCall}
+                            isTablet={this.props.isTablet}
                         />
                     </View>
                     <View style={styles.footer}>
@@ -223,7 +243,8 @@ ReadyBox.propTypes = {
     history         : PropTypes.array,
     serverHistory   : PropTypes.array,
     orientation     : PropTypes.string,
-    contacts        : PropTypes.array
+    contacts        : PropTypes.array,
+    isTablet        : PropTypes.bool
 };
 
 

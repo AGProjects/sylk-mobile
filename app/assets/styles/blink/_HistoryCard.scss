@@ -17,10 +17,25 @@
     margin-left: 5%;
     margin-top: 10px;
     border-radius: 5px;
+    border: 1px;
 }
 
 .portraitContainer {
     width: 90%;
+    margin: 0 auto;
+    margin-top: 10px;
+    border-radius: 5px;
+}
+
+.landscapeTabletContainer {
+    width: 29%;
+    margin-left: 3%;
+    margin-top: 10px;
+    border-radius: 5px;
+}
+
+.portraitTabletContainer {
+    width: 41%;
     margin: 0 auto;
     margin-top: 10px;
     border-radius: 5px;

@@ -39,7 +39,13 @@ const HistoryCard = (props) => {
         });
     }
 
-    let containerClass = (props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+    let containerClass = styles.portraitContainer;
+
+    if (props.isTablet) {
+        containerClass = (props.orientation === 'landscape') ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
+    } else {
+        containerClass = (props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+    }
 
     let color = {};
 
@@ -116,7 +122,6 @@ const HistoryCard = (props) => {
     }
 
 
-
 /*
             <Card.Actions>
                 <IconButton icon="phone" onPress={startAudioCall} title={`Audio call to ${name}`} />
@@ -132,7 +137,8 @@ HistoryCard.propTypes = {
     startAudioCall : PropTypes.func,
     startVideoCall : PropTypes.func,
     setTargetUri   : PropTypes.func,
-    orientation : PropTypes.string
+    orientation    : PropTypes.string,
+    isTablet       : PropTypes.bool
 };
 
 

@@ -6,27 +6,103 @@
     justify-content: center;
 }
 
-.container {
-    margin: 0 auto;
-    width: 90%;
-    padding-top: 10px;
-}
-
 .landscapeTitle {
     color: white;
     font-size: 20px;
-    height: 0%;
+    width: 90%;
+    margin-left: 5%;
 }
 
 .portraitTitle {
     color: white;
     font-size: 20px;
+    width: 90%;
+    margin-top: 10px;
+    margin-left: 5%;
 }
 
-.footer {
-    flex: 1;
+.landscapeTabletTitle {
+    color: white;
+    font-size: 20px;
+    width: 90%;
+    margin-left: 3%;
+}
+
+.portraitTabletTitle {
+    color: white;
+    font-size: 20px;
+    width: 90%;
+    margin-top: 10px;
+    margin-left: 5%;
+}
+
+.portraitUriButtonGroup {
+    flex-direction: column;
+    width: 90%;
+    margin-left: 5%;
+}
+
+.landscapeUriButtonGroup {
+    flex-direction: row;
+    width: 90%;
+    margin-left: 5%;
+    justify-content: space-between;
+}
+
+.portraitTabletUriButtonGroup {
+    flex-direction: column;
+    width: 90%;
+    margin-left: 5%;
+    justify-content: space-between;
+}
+
+.landscapeTabletUriButtonGroup {
+    flex-direction: row;
+    width: 94%;
+    margin-left: 3%;
+    justify-content: space-between;
+}
+
+.portraitUriInputBox {
+    align: left;
+    padding-top: 20px;
+    width: 100%;
+}
+
+.landscapeUriInputBox {
+    align: left;
+    padding-top: 10px;
+    width: 47%;
+}
+
+.portraitTabletUriInputBox {
+    align: left;
+    padding-top: 10px;
+    width: 100%;
+}
+
+.landscapeTabletUriInputBox {
+    align: left;
+    padding-top: 10px;
+    width: 65%;
+}
+
+.buttonGroup {
+    flex-direction: row;
+    padding-top: 5px;
+    justify-content: center;
+}
+
+.landscapeButtonGroup {
+    flex-direction: row;
+    padding-top: 5px;
     justify-content: flex-end;
-    padding-bottom: 15px;
+}
+
+.uriInputBox {
+    align: left;
+    padding-top: 10px;
+    width: 100%;
 }
 
 .button {
@@ -55,40 +131,6 @@
     margin: 10px;
 }
 
-.landscapeUriButtonGroup {
-    flex-direction: row;
-    justify-content: space-between;
-    width: 90%;
-}
-
-.portraitUriButtonGroup {
-    flex-direction: column;
-}
-
-.buttonGroup {
-    flex-direction: row;
-    padding-top: 5px;
-    justify-content: center;
-}
-
-.uriInputBox {
-    align: left;
-    padding-top: 10px;
-    width: 100%;
-}
-
-.landscapeUriInputBox {
-    align: left;
-    padding-top: 10px;
-    width: 52%;
-}
-
-.portraitUriInputBox {
-    align: left;
-    padding-top: 10px;
-    width: 100%;
-}
-
 .landscapeHistory {
     width: 100%;
     flex: 9;
@@ -98,4 +140,11 @@
     width: 100%;
     flex: 9;
 }
+
+.footer {
+    flex: 1;
+    justify-content: flex-end;
+    padding-bottom: 15px;
+}
+
 

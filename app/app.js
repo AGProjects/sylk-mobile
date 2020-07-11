@@ -157,7 +157,8 @@ class Sylk extends Component {
             brand: '',
             model: '',
             phoneNumber: '',
-            osVersion: ''
+            osVersion: '',
+            isTablet: false
         };
 
         this.state = Object.assign({}, this._initialSstate);
@@ -192,7 +193,9 @@ class Sylk extends Component {
             this.setState({manufacturer: manufacturer,
                            model: DeviceInfo.getModel(),
                            brand: DeviceInfo.getBrand(),
-                           osVersion: Platform.Version});
+                           osVersion: Platform.Version,
+                           isTablet: DeviceInfo.isTablet()
+                           });
         });
 
         DeviceInfo.getPhoneNumber().then(phoneNumber => {
@@ -1724,6 +1727,7 @@ class Sylk extends Component {
                     serverHistory = {this.state.serverHistory}
                     orientation = {this.state.orientation}
                     contacts = {this.state.contacts}
+                    isTablet = {this.state.isTablet}
                 />
             </Fragment>
         );

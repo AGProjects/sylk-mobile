@@ -14,10 +14,17 @@ const HistoryTileBox = (props) => {
         setTargetUri={props.setTargetUri}
         startVideoCall={props.startVideoCall}
         startAudioCall={props.startAudioCall}
+        isTablet={props.isTablet}
     />
   );
 
-  let columns = props.orientation === 'landscape' ? 2 : 1;
+  let columns = 1;
+  if (props.isTablet) {
+      columns = props.orientation === 'landscape' ? 3 : 2;
+  } else {
+      columns = props.orientation === 'landscape' ? 2 : 1;
+  }
+
   let items = props.historyItems.concat(props.contactItems);
 
 /*
@@ -46,7 +53,8 @@ HistoryTileBox.propTypes = {
     orientation : PropTypes.string,
     startAudioCall : PropTypes.func,
     startVideoCall : PropTypes.func,
-    setTargetUri   : PropTypes.func
+    setTargetUri   : PropTypes.func,
+    isTablet       : PropTypes.bool
 };
 
 
