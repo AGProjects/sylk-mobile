@@ -12,10 +12,12 @@ import autoBind from 'auto-bind';
 import { firebase } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
-import { getUniqueId, getBundleId } from 'react-native-device-info';
+import { getUniqueId, getBundleId, getManufacturer } from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import Contacts from 'react-native-contacts';
+import DeviceInfo from 'react-native-device-info';
+
 registerGlobals();
 
 import * as sylkrtc from 'sylkrtc';
@@ -113,6 +115,7 @@ const MODE_GUEST_CALL       = Symbol('mode-guest-call');
 const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
 
 
+
 class Sylk extends Component {
     constructor() {
         super();
@@ -148,7 +151,12 @@ class Sylk extends Component {
             orientation : '',
             Height_Layout : '',
             Width_Layout : '',
-            outgoingCallUUID: null
+            outgoingCallUUID: null,
+            hardware: '',
+            manufacturer: '',
+            brand: '',
+            model: '',
+            phoneNumber: ''
         };
 
         this.state = Object.assign({}, this._initialSstate);
@@ -178,6 +186,14 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.muteIncoming = false;
+
+        DeviceInfo.getManufacturer().then(manufacturer => {
+            this.setState({manufacturer: manufacturer, model: DeviceInfo.getModel(), brand: DeviceInfo.getBrand()});
+        });
+
+        DeviceInfo.getPhoneNumber().then(phoneNumber => {
+            this.setState({phoneNumber: phoneNumber});
+        });
 
         storage.initialize();
 
@@ -905,7 +921,12 @@ class Sylk extends Component {
         });
 
         if (this.state.connection === null) {
-            let userAgent = 'SylkMobile (' + Platform.Version + ')';
+
+            let model = this.state.brand + ' ' + this.state.model;
+            let userAgent = 'SylkMobile on ' + model + '';
+            console.log('Starting User Agent', userAgent);
+            console.log('Phone number', this.state.phoneNumber);
+
             let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
