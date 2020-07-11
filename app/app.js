@@ -154,25 +154,15 @@ class Sylk extends Component {
         this.state = Object.assign({}, this._initialSstate);
 
         const echoTest = {
-            remoteParty: '4444@sylk.link',
-            displayName: 'Echo test',
-            direction: 'placed',
-            duration: null,
-            media: ['audio'],
-            stopTime: null,
-            startTime: null,
-            timezone: 'Europe/Amsterdam'
+            uri: '4444@sylk.link',
+            name: 'Echo test',
+            type: 'contact'
             };
 
         const videoTest = {
-            remoteParty: '3333@sylk.link',
-            displayName: 'Video test',
-            direction: 'placed',
-            duration: null,
-            media: ['audio', 'video'],
-            stopTime: null,
-            startTime: null,
-            timezone: 'Europe/Amsterdam'
+            uri: '3333@sylk.link',
+            name: 'Video test',
+            type: 'contact'
             };
 
         const echoTestCard = Object.assign({}, echoTest);
@@ -225,11 +215,13 @@ class Sylk extends Component {
                 // contacts returned in Array
                 let contact_cards = [];
                 let name;
+                let photo;
 
                 let seen_uris = new Map();
 
                 var arrayLength = contacts.length;
                 for (var i = 0; i < arrayLength; i++) {
+                    photo = null;
                     contact = contacts[i];
                     if (contact['givenName'] && contact['familyName']) {
                         name = contact['givenName'] + ' ' + contact['familyName'];
@@ -243,13 +235,17 @@ class Sylk extends Component {
                         continue;
                     }
 
+                    if (contact.hasThumbnail) {
+                        photo = contact.thumbnailPath;
+                    }
+
                     //console.log(name);
                     contact['phoneNumbers'].forEach(function (number, index) {
                         let number_stripped =  number['number'].replace(/\s|\-|\(|\)/g, '');
                         if (number_stripped) {
                             if (!seen_uris.has(number_stripped)) {
                                 //console.log('   ---->    ', number['label'], number_stripped);
-                                var contact_card = {displayName: name, uri: number_stripped};
+                                var contact_card = {name: name, uri: number_stripped, type: 'contact', photo: photo, label: number['label']};
                                 contact_cards.push(contact_card);
                                 seen_uris.set(number_stripped, true);
                             }
@@ -261,7 +257,7 @@ class Sylk extends Component {
                         if (!seen_uris.has(email_stripped)) {
                             //console.log(name, email['label'], email_stripped);
                             //console.log('   ---->    ', email['label'], email_stripped);
-                            var contact_card = {displayName: name, uri: email_stripped};
+                            var contact_card = {name: name, uri: email_stripped, type: 'contact', photo: photo, label: email['label']};
                             contact_cards.push(contact_card);
                             seen_uris.set(email_stripped, true);
                         }
@@ -462,7 +458,7 @@ class Sylk extends Component {
                 this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 1});
                 await this._sleep(1000);
             } else {
-                this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
+                //this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
                 utils.timestampedLog('Web socket is ready');
                 utils.timestampedLog('Using account', this.state.account.id);
                 if (options.conference) {
@@ -1515,10 +1511,6 @@ class Sylk extends Component {
 
             history = data.placed;
 
-            if (data.placed.length < 3) {
-                history = history.concat(this.initialContacts);
-            }
-
             if (data.received && history) {
                 history = history.concat(data.received);
             }
@@ -1533,10 +1525,21 @@ class Sylk extends Component {
                         if (!this.state.account || !this.state.account.id) {
                             return;
                         }
+
+                        elem.type = 'history';
                         var contact_obj = this.findObjectByKey(this.state.contacts, 'uri', elem.remoteParty);
                         if (contact_obj) {
-                            elem.displayName = contact_obj.displayName;
+                            elem.displayName = contact_obj.name;
+                            elem.photo = contact_obj.photo;
                             // TODO update icon here
+                        } else {
+                            elem.photo = null;
+                        }
+
+                        elem.label = elem.direction;
+
+                        if (!elem.displayName) {
+                            elem.displayName = elem.remoteParty;
                         }
 
                         if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
@@ -1554,6 +1557,10 @@ class Sylk extends Component {
                         }
                     }
                 });
+
+                if (data.placed.length < 3) {
+                    history = history.concat(this.initialContacts);
+                }
 
                 this.setState({serverHistory: history});
             }
@@ -1691,6 +1698,7 @@ class Sylk extends Component {
                     key = {this.state.missedTargetUri}
                     serverHistory = {this.state.serverHistory}
                     orientation = {this.state.orientation}
+                    contacts = {this.state.contacts}
                 />
             </Fragment>
         );

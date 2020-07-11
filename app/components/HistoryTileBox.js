@@ -18,12 +18,19 @@ const HistoryTileBox = (props) => {
   );
 
   let columns = props.orientation === 'landscape' ? 2 : 1;
+  let items = props.historyItems.concat(props.contactItems);
+
+/*
+  console.log('History items', props.historyItems);
+  console.log('Contacts items', props.contactItems);
+  console.log('All items', items);
+*/
 
   return (
     <SafeAreaView style={styles.container}>
       <FlatList horizontal={false}
         numColumns={columns}
-        data={props.items}
+        data={items}
         renderItem={renderItem}
         keyExtractor={item => item.sessionId}
         key={props.orientation}
@@ -34,7 +41,8 @@ const HistoryTileBox = (props) => {
 }
 
 HistoryTileBox.propTypes = {
-    items    : PropTypes.array,
+    historyItems    : PropTypes.array,
+    contactItems    : PropTypes.array,
     orientation : PropTypes.string,
     startAudioCall : PropTypes.func,
     startVideoCall : PropTypes.func,

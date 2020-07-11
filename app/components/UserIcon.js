@@ -4,6 +4,8 @@ import utils from '../utils';
 import { Avatar } from 'react-native-paper';
 
 const UserIcon = (props) => {
+
+    /*
     const [photo, setPhoto] = useState('');
 
     useEffect(() => {
@@ -27,11 +29,14 @@ const UserIcon = (props) => {
             console.log('error getting contacts', err);
         }
     }
+    */
 
     const name = props.identity.displayName || props.identity.uri;
+    const photo = props.identity.photo;
+
     let initials = name.split(' ', 2).map(x => x[0]).join('');
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
-    const avatarSize = props.large ? 120: 60;
+    const avatarSize = props.large ? 120: 50;
 
     if (photo) {
         return  <Avatar.Image source={{uri: photo}} size={avatarSize} />

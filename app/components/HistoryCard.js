@@ -12,11 +12,14 @@ import UserIcon from './UserIcon';
 
 const HistoryCard = (props) => {
     const identity = {
-        displayName: props.historyItem.displayName,
-        uri: props.historyItem.remoteParty || props.historyItem
+        displayName: props.historyItem.displayName || props.historyItem.name,
+        uri: props.historyItem.remoteParty || props.historyItem.uri,
+        type: props.historyItem.type || 'contact',
+        photo: props.historyItem.photo,
+        label: props.historyItem.label
     }
 
-    console.log(identity);
+    //console.log('History card', identity);
 
     const startVideoCall = (e) => {
         e.stopPropagation();
@@ -36,58 +39,83 @@ const HistoryCard = (props) => {
         });
     }
 
-    let duration = moment.duration(props.historyItem.duration, 'seconds').format('hh:mm:ss', {trim: false});
     let containerClass = (props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
 
     let color = {};
-    if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
-        color.color = '#a94442';
-        duration = 'missed';
-    } else if (props.historyItem.direction === 'placed' && props.historyItem.duration === 0) {
-//        color.color = 'blue';
-        duration = 'cancelled';
-    }
 
     const name = identity.displayName || identity.uri;
 
     let title = identity.displayName || identity.uri;
     let subtitle = identity.uri;
 
-    if (duration) {
-        let subtitle = identity.uri + ' (' + duration + ')';
-    }
-
-    if (!identity.displayName) {
-        title = identity.uri;
-        if (duration === 'missed') {
-            subtitle = 'Last call missed';
-        } else if (duration === 'cancelled') {
-            subtitle = 'Last call cancelled';
-        } else {
-            subtitle = 'Last call duration ' + duration ;
+    if (identity.type === 'history') {
+        let duration = moment.duration(props.historyItem.duration, 'seconds').format('hh:mm:ss', {trim: false});
+        if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
+            color.color = '#a94442';
+            duration = 'missed';
+        } else if (props.historyItem.direction === 'placed' && props.historyItem.duration === 0) {
+    //        color.color = 'blue';
+            duration = 'cancelled';
         }
+        if (duration) {
+            let subtitle = identity.uri + ' (' + duration + ')';
+        }
+
+        if (!identity.displayName) {
+            title = identity.uri;
+            if (duration === 'missed') {
+                subtitle = 'Last call missed';
+            } else if (duration === 'cancelled') {
+                subtitle = 'Last call cancelled';
+            } else {
+                subtitle = 'Last call duration ' + duration ;
+            }
+        }
+        return (
+            <Card
+                onPress={() => {props.setTargetUri(identity.uri)}}
+                onLongPress={startVideoCall}
+                style={containerClass}
+            >
+                <Card.Content style={styles.content}>
+                    <View style={styles.mainContent}>
+                        <Title noWrap style={color}>{title}</Title>
+                        <Subheading noWrap style={color}>{subtitle}</Subheading>
+                        <Caption color="textSecondary">
+                            <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{props.historyItem.startTime}
+                        </Caption>
+                    </View>
+                    <View style={styles.userAvatarContent}>
+                        <UserIcon style={styles.userIcon} identity={identity} card/>
+                    </View>
+                </Card.Content>
+            </Card>
+        );
+
+    } else {
+        if (identity.label) {
+            subtitle = identity.uri + ' (' + identity.label + ')';
+        }
+        return (
+            <Card
+                onPress={() => {props.setTargetUri(identity.uri, props.historyItem)}}
+                onLongPress={startVideoCall}
+                style={containerClass}
+            >
+                <Card.Content style={styles.content}>
+                    <View style={styles.mainContent}>
+                        <Title noWrap style={color}>{title}</Title>
+                        <Subheading noWrap style={color}>{subtitle}</Subheading>
+                    </View>
+                    <View style={styles.userAvatarContent}>
+                        <UserIcon style={styles.userIcon} identity={identity} card/>
+                    </View>
+                </Card.Content>
+            </Card>
+        );
     }
 
-    return (
-        <Card
-            onPress={() => {props.setTargetUri(identity.uri)}}
-            onLongPress={startVideoCall}
-            style={containerClass}
-        >
-            <Card.Content style={styles.content}>
-                <View style={styles.mainContent}>
-                    <Title noWrap style={color}>{title}</Title>
-                    <Subheading noWrap style={color}>{subtitle}</Subheading>
-                    <Caption color="textSecondary">
-                        <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{props.historyItem.startTime}
-                    </Caption>
-                </View>
-                <View style={styles.userAvatarContent}>
-                    <UserIcon style={styles.userIcon} identity={identity} card/>
-                </View>
-            </Card.Content>
-        </Card>
-    );
+
 
 /*
             <Card.Actions>

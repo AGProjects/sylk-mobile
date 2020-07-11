@@ -24,6 +24,7 @@ class ReadyBox extends Component {
             targetUri: this.props.missedTargetUri,
             showConferenceModal: false,
             sticky: false,
+            matchedContacts: []
         };
     }
 
@@ -33,24 +34,37 @@ class ReadyBox extends Component {
     }
 
     async componentDidMount() {
-        console.log('Ready now');
+        //console.log('Ready now');
         if (this.state.targetUri) {
             console.log('We must call', this.state.targetUri);
         }
     }
 
-    handleTargetChange(value) {
+    handleTargetChange(value, contact) {
+        let matchedContacts = [];
+        let new_value = value;
+
+        if (contact) {
+            if (this.state.targetUri != contact.uri) {
+                matchedContacts = matchedContacts.concat(contact);
+            } else {
+                new_value = '';
+            }
+        }
+
         if (this.state.targetUri) {
             let currentUri = this.getTargetUri();
             if (currentUri.trim() === value.trim()) {
-                this.setState({targetUri: ''});
-            } else {
-                this.setState({targetUri: value});
+                new_value = '';
             }
-        } else {
-            this.setState({targetUri: value});
         }
-        this.forceUpdate();
+
+        if (new_value.length > 2 && !contact) {
+            matchedContacts = this.props.contacts.filter(contact => (contact.uri.toLowerCase().search(new_value) > -1 || contact.name.toLowerCase().search(new_value) > -1));
+        }
+
+        this.setState({targetUri: new_value, matchedContacts: matchedContacts});
+        //this.forceUpdate();
     }
 
     handleTargetSelect() {
@@ -116,6 +130,7 @@ class ReadyBox extends Component {
     }
 
     render() {
+        //console.log('Render ready box');
         const defaultDomain = `${config.defaultDomain}`;
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
@@ -132,6 +147,8 @@ class ReadyBox extends Component {
         history = [...new Set(history)];
         //console.log('history from server is', this.props.serverHistory);
         const placehoder = 'Enter a SIP address like alice@' + defaultDomain;
+
+        let historyItems = this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri))
 
         return (
             <Fragment>
@@ -175,7 +192,8 @@ class ReadyBox extends Component {
                     </View>
                     <View style={historyClass}>
                         <HistoryTileBox
-                            items={this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri))}
+                            historyItems={historyItems}
+                            contactItems={this.state.matchedContacts}
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             startVideoCall={this.handleVideoCall}
@@ -204,7 +222,8 @@ ReadyBox.propTypes = {
     missedTargetUri : PropTypes.string,
     history         : PropTypes.array,
     serverHistory   : PropTypes.array,
-    orientation     : PropTypes.string
+    orientation     : PropTypes.string,
+    contacts        : PropTypes.array
 };
 
 
