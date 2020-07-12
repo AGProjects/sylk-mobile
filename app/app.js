@@ -1653,9 +1653,8 @@ class Sylk extends Component {
             }
 
             if (history) {
-                history.sort((a,b) => {
-                    return new Date(b.startTime) - new Date(a.startTime);
-                });
+                history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
+
                 const known = [];
                 history = history.filter((elem) => {
                     if (known.indexOf(elem.remoteParty) <= -1) {
@@ -1699,7 +1698,7 @@ class Sylk extends Component {
                     }
                 });
 
-                if (data.placed.length < 3) {
+                if (! data.placed || data.placed.length < 3) {
                     history = history.concat(this.initialContacts);
                 }
                 this.setState({serverHistory: history});
