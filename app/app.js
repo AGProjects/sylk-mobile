@@ -1023,7 +1023,7 @@ class Sylk extends Component {
                 this.setState({
                     loading     : null,
                     status      : {
-                        msg   : 'Sign In failed: ' + reason,
+                        msg   : ' Sign In failed: ' + reason,
                         level : 'danger'
                     }
                 });
