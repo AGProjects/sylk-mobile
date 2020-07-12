@@ -167,14 +167,14 @@ class Sylk extends Component {
         this.myInvitedParties = new Map;
 
         const echoTest = {
-            uri: '4444@sylk.link',
-            name: 'Echo test',
+            remoteParty: '4444@sylk.link',
+            displayName: 'Echo test',
             type: 'contact'
             };
 
         const videoTest = {
-            uri: '3333@sylk.link',
-            name: 'Video test',
+            remoteParty: '3333@sylk.link',
+            displayName: 'Video test',
             type: 'contact'
             };
 
