@@ -67,13 +67,15 @@ const HistoryCard = (props) => {
         }
     }
 
+    let description = props.historyItem.startTime;
+
     if (identity.type === 'history') {
         let duration = moment.duration(props.historyItem.duration, 'seconds').format('hh:mm:ss', {trim: false});
+
         if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
             color.color = '#a94442';
             duration = 'missed';
         } else if (props.historyItem.direction === 'placed' && props.historyItem.duration === 0) {
-    //        color.color = 'blue';
             duration = 'cancelled';
         }
 
@@ -91,6 +93,9 @@ const HistoryCard = (props) => {
                 subtitle = 'Last call duration ' + duration ;
             }
         }
+
+        description = description + ' (' + duration + ')';
+
         return (
             <Card
                 onPress={() => {props.setTargetUri(identity.uri)}}
@@ -102,7 +107,7 @@ const HistoryCard = (props) => {
                         <Title noWrap style={color}>{title}</Title>
                         <Subheading noWrap style={color}>{subtitle}</Subheading>
                         <Caption color="textSecondary">
-                            <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{props.historyItem.startTime}
+                            <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
                         </Caption>
                     </View>
                     <View style={styles.userAvatarContent}>
