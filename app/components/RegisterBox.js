@@ -1,15 +1,10 @@
 import React from 'react';
-import { View, Text, Linking  } from 'react-native';
+import { View, Text  } from 'react-native';
 import PropTypes from 'prop-types';
 
 import RegisterForm from './RegisterForm';
 import Logo from './Logo';
 import styles from '../assets/styles/blink/_RegisterBox.scss';
-import FooterBox from './FooterBox';
-
-function handleLink(event) {
-    Linking.openURL('https://mdns.sipthor.net/sip_login_reminder.phtml');
-}
 
 const RegisterBox = (props) => {
     let containerClass;
@@ -28,6 +23,7 @@ const RegisterBox = (props) => {
                     orientation={props.orientation}
                     isTablet={props.isTablet}
                 />
+
             </View>
             <View>
                 <RegisterForm
@@ -38,8 +34,7 @@ const RegisterBox = (props) => {
                     isTablet={props.isTablet}
                     phoneNumber={props.phoneNumber}
                 />
-                <Text onPress={() => handleLink()} style={styles.recoverLink}>Recover lost passsword...</Text>
-                <FooterBox />
+
             </View>
 
         </View>

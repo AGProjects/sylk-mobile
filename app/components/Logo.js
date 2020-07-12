@@ -1,5 +1,5 @@
 import React, { Fragment } from 'react';
-import { View, Image } from 'react-native';
+import { View, Image, Text} from 'react-native';
 import { Title } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import styles from '../assets/styles/blink/_Logo.scss';
@@ -18,6 +18,7 @@ const Logo = (props) => {
     return (
             <View style={containerClass}>
                 <Image source={blinkLogo} style={styles.logo}/>
+                <Text style={styles.text}>&copy; AG Projects</Text>
             </View>
     );
 }

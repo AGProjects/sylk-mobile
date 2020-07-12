@@ -1,8 +1,9 @@
 import React, { Component } from 'react';
-import { View, Keyboard } from 'react-native';
+import { View, Text, Linking, Keyboard } from 'react-native';
 import PropTypes from 'prop-types';
 import ipaddr from 'ipaddr.js';
 import autoBind from 'auto-bind';
+import FooterBox from './FooterBox';
 
 import { Button, TextInput, Title, Subheading } from 'react-native-paper';
 
@@ -14,6 +15,10 @@ import styles from '../assets/styles/blink/_RegisterForm.scss';
 
 function isASCII(str) {
     return /^[\x00-\x7F]*$/.test(str);
+}
+
+function handleLink(event) {
+    Linking.openURL('https://mdns.sipthor.net/sip_login_reminder.phtml');
 }
 
 class RegisterForm extends Component {
@@ -49,6 +54,10 @@ class RegisterForm extends Component {
     }
 
     handleSubmit(event) {
+        if (!this.validInput()) {
+            return;
+        }
+
         if (event) {
             event.preventDefault();
         }
@@ -75,10 +84,14 @@ class RegisterForm extends Component {
         this.setState({showEnrollmentModal: true});
     }
 
-    render() {
+    validInput() {
         const domain = this.state.accountId.indexOf('@') !== -1 ? this.state.accountId.substring(this.state.accountId.indexOf('@') + 1): '';
         const validDomain = domain === '' || (!ipaddr.IPv4.isValidFourPartDecimal(domain) && !ipaddr.IPv6.isValid(domain) && domain.length > 3 && domain.indexOf('.') !== - 1 && (domain.length - 2 - domain.indexOf('.')) > 0);
         const validInput =  isASCII(this.state.accountId) && validDomain && this.state.password !== '' && isASCII(this.state.password);
+        return validInput;
+    }
+
+    render() {
         let containerClass;
         if (this.props.isTablet) {
             containerClass = this.props.orientation === 'landscape' ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
@@ -127,7 +140,7 @@ class RegisterForm extends Component {
                         <Button
                             style={styles.button}
                             icon="login"
-                            disabled={this.props.registrationInProgress || !validInput}
+                            disabled={this.props.registrationInProgress || !this.validInput()}
                             onPress={this.handleSubmit}
                             mode="contained"
                             loading={this.state.registering}
@@ -149,12 +162,14 @@ class RegisterForm extends Component {
                         </Button>
                         : null }
                     </View>
+                <Text onPress={() => handleLink()} style={styles.recoverLink}>Recover lost passsword...</Text>
                 <EnrollmentModal
                    show={this.state.showEnrollmentModal}
                    handleEnrollment={this.handleEnrollment}
                    phoneNumber={this.props.phoneNumber}
                 />
             </View>
+
         );
     }
 }
