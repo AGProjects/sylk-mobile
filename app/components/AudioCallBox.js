@@ -147,6 +147,7 @@ class AudioCallBox extends Component {
         }
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
 
         return (
             <View style={styles.container}>
@@ -159,9 +160,8 @@ class AudioCallBox extends Component {
                 <View style={styles.userIconContainer}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
-                <Dialog.Title style={styles.displayName}>{this.props.remoteDisplayName}</Dialog.Title>
-
-                { (this.props.remoteUri !== this.props.remoteDisplayName) ?
+                <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
+                { (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ?
                 <Text style={styles.uri}>{this.props.remoteUri}</Text>
                 : null }
 
