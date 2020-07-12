@@ -877,7 +877,7 @@ class Sylk extends Component {
                     history.push('/ready');
                     setTimeout(() => {
                         this.getServerHistory();
-                    }, 3000);
+                    }, 1500);
                 }
 
                 this.updateHistoryEntry(callUUID);
