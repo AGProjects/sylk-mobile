@@ -1,6 +1,23 @@
-.logoContainer {
-    padding: 15px;
-    padding-top: 5px;
+.landscapeContainer {
+    flex: 1;
+    flex-direction: row;
+    justify-content: space-evenly;
+    align-items: center;
+}
+
+.portraitContainer {
+    margin-top: 10px;
+    align-items: center;
+}
+
+.landscapeTabletContainer {
+    flex: 1;
+    margin-top: 200px;
+}
+
+.portraitTabletContainer {
+    margin-top: 50px;
+    margin-bottom: 50px;
 }
 
 .logo {

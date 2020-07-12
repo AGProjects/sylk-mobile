@@ -1654,7 +1654,7 @@ class Sylk extends Component {
 
             if (history) {
                 history.sort((a,b) => {
-                    return new Date(a.startTime) - new Date(b.startTime);
+                    return new Date(b.startTime) - new Date(a.startTime);
                 });
                 const known = [];
                 history = history.filter((elem) => {
@@ -1759,7 +1759,12 @@ class Sylk extends Component {
                                                                            }, ()=> this._detectOrientation())}>
                             <SafeAreaView style={[styles.root, extraStyles]}>
 
-                                <LoadingScreen text={this.state.loading} show={this.state.loading !== null} orientation={this.state.orientation}/>
+                                <LoadingScreen
+                                text={this.state.loading}
+                                show={this.state.loading !== null}
+                                orientation={this.state.orientation}
+                                isTablet={this.state.isTablet}
+                                />
 
                                 {/*
                                 {<IncomingCallModal
@@ -1988,6 +1993,8 @@ class Sylk extends Component {
                     handleRegistration = {this.handleRegistration}
                     autoLogin={true}
                     orientation = {this.state.orientation}
+                    isTablet = {this.state.isTablet}
+                    phoneNumber= {this.state.phoneNumber}
                 />
             );
         }

@@ -5,6 +5,7 @@ import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { Dialog, Portal, Button, TextInput, Title, Surface, HelperText, Snackbar } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import LoadingScreen from './LoadingScreen';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -37,18 +38,29 @@ class EnrollmentModal extends Component {
         });
     }
 
-    enrollmentFormSubmitted(event) {
+    validInput() {
+        let valid_input = !this.state.enrolling &&
+                          this.state.displayName !== '' &&
+                          this.state.username !== '' &&
+                          this.state.username.length > 2 &&
+                          this.state.password !== '' &&
+                          this.state.password2 !== '' &&
+                          this.state.password === this.state.password2 &&
+                          this.state.password.length > 4 &&
+                          this.state.email !== '';
+        return valid_input;
+    }
+
+    enroll(event) {
         event.preventDefault();
-        // validate the password fields
-        if (this.state.password !== this.state.password2) {
-            this.setState({error: 'Password missmatch'});
-            return;
-        }
+
         this.setState({enrolling: true, error:''});
+
         superagent.post(config.enrollmentUrl)
                   .send(superagent.serialize['application/x-www-form-urlencoded']({username: this.state.username,
                                                                                    password: this.state.password,
                                                                                    email: this.state.email,
+                                                                                   phoneNumber: this.props.phoneNumber,
                                                                                    display_name: this.state.displayName}))   //eslint-disable-line camelcase
                   .end((error, res) => {
                       this.setState({enrolling: false});
@@ -68,7 +80,7 @@ class EnrollmentModal extends Component {
                                                        password: this.state.password});
                           this.setState(this.initialState);
                       } else if (data.error === 'user_exists') {
-                          this.setState({error: 'User already exists', errorVisible: true});
+                          this.setState({error: 'Username already exists. Chose another!', errorVisible: true});
                       } else {
                           this.setState({error: data.error_message, errorVisible: true});
                       }
@@ -81,30 +93,26 @@ class EnrollmentModal extends Component {
     }
 
     render() {
-        let buttonText = 'Create';
+        let buttonText = 'Sign Up';
         let buttonIcon = null;
+        let loadingText = 'Enrolling...';
+
         if (this.state.enrolling) {
             buttonIcon = "cog";
         }
 
-        let valid_input = !this.state.enrolling &&
-                          this.state.password !== '' &&
-                          this.state.password2 !== '' &&
-                          this.state.password === this.state.password2 &&
-                          this.state.password.length > 4 &&
-                          this.state.username !== '' &&
-                          this.state.username.length > 3 &&
-                          this.state.email !== '' &&
-                          this.state.displayName !== '';
-
         return (
             <Portal>
-                <DialogType visible={this.props.show} onDismiss={this.onHide} style={styles.container}>
-                    <Surface>
-                        <Dialog.Title style={styles.title}>Create SIP account</Dialog.Title>
+                    <DialogType visible={this.props.show} onDismiss={this.onHide}>
+                    <LoadingScreen
+                    text={loadingText}
+                    show={this.state.enrolling}
+                    />
+                    <Surface style={styles.container}>
+                        <Dialog.Title style={styles.title}>Create account</Dialog.Title>
                         <TextInput style={styles.row}
                             mode="flat"
-                            label="Name"
+                            label="Display name"
                             name="displayName"
                             type="text"
                             placeholder="Displayed on remote devices"
@@ -117,7 +125,7 @@ class EnrollmentModal extends Component {
                         />
                         <TextInput style={styles.row}
                             mode="flat"
-                            label="E-Mail"
+                            label="E-mail"
                             textContentType="emailAddress"
                             name="email"
                             autoCapitalize="none"
@@ -178,10 +186,11 @@ class EnrollmentModal extends Component {
                             }}
                         />
                         <Button
+                            mode="contained"
+                            style={styles.button}
                             icon={buttonIcon}
-                            loading={this.state.enrolling}
-                            disabled={!valid_input}
-                            onPress={this.enrollmentFormSubmitted}
+                            disabled={!this.validInput()}
+                            onPress={this.enroll}
                         >
                             {buttonText}
                         </Button>
@@ -201,7 +210,8 @@ class EnrollmentModal extends Component {
 
 EnrollmentModal.propTypes = {
     handleEnrollment: PropTypes.func.isRequired,
-    show: PropTypes.bool.isRequired
+    show: PropTypes.bool.isRequired,
+    phoneNumber : PropTypes.string
 };
 
 export default EnrollmentModal;

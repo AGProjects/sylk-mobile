@@ -79,7 +79,12 @@ class RegisterForm extends Component {
         const domain = this.state.accountId.indexOf('@') !== -1 ? this.state.accountId.substring(this.state.accountId.indexOf('@') + 1): '';
         const validDomain = domain === '' || (!ipaddr.IPv4.isValidFourPartDecimal(domain) && !ipaddr.IPv6.isValid(domain) && domain.length > 3 && domain.indexOf('.') !== - 1 && (domain.length - 2 - domain.indexOf('.')) > 0);
         const validInput =  isASCII(this.state.accountId) && validDomain && this.state.password !== '' && isASCII(this.state.password);
-        const containerClass = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
+        let containerClass;
+        if (this.props.isTablet) {
+            containerClass = this.props.orientation === 'landscape' ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
+        } else {
+            containerClass = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
+        }
 
         return (
             <View style={containerClass}>
@@ -144,7 +149,11 @@ class RegisterForm extends Component {
                         </Button>
                         : null }
                     </View>
-                <EnrollmentModal show={this.state.showEnrollmentModal} handleEnrollment={this.handleEnrollment} />
+                <EnrollmentModal
+                   show={this.state.showEnrollmentModal}
+                   handleEnrollment={this.handleEnrollment}
+                   phoneNumber={this.props.phoneNumber}
+                />
             </View>
         );
     }
@@ -155,7 +164,9 @@ RegisterForm.propTypes = {
     handleRegistration     : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool.isRequired,
     autoLogin              : PropTypes.bool,
-    orientation            : PropTypes.string
+    orientation            : PropTypes.string,
+    isTablet               : PropTypes.bool,
+    phoneNumber            : PropTypes.string
 };
 
 

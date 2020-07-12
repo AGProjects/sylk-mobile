@@ -55,7 +55,6 @@ class ConferenceModal extends Component {
                 <DialogType visible={this.props.show} onDismiss={this.onHide}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Join Conference</Dialog.Title>
-
                         <TextInput
                             style={styles.body}
                             mode="flat"
