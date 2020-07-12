@@ -126,6 +126,10 @@ class ConferenceBox extends Component {
 
     onParticipantJoined(p) {
         DEBUG(`Participant joined: ${p.identity}`);
+        if (p.identity._uri.search('guest.') === -1) {
+            // used for history item
+            this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
+        }
         // this.refs.audioPlayerParticipantJoined.play();
         p.on('stateChanged', this.onParticipantStateChanged);
         p.attach();
@@ -416,6 +420,12 @@ class ConferenceBox extends Component {
         clearTimeout(this.overlayTimer);
     }
 
+    inviteParticipants(uris) {
+        console.log('Invite participants', uris);
+        this.props.saveInvitedParties(this.props.call.id, this.props.remoteUri.split('@')[0], uris);
+        this.props.call.inviteParticipants(uris);
+    }
+
     render() {
         if (this.props.call === null) {
             return (<View></View>);
@@ -681,8 +691,10 @@ class ConferenceBox extends Component {
 
                 <InviteParticipantsModal
                     show={this.state.showInviteModal}
-                    call={this.props.call}
+                    inviteParticipants={this.inviteParticipants}
+                    previousInvitedParties={this.props.previousInvitedParties}
                     close={this.toggleInviteModal}
+                    room={this.props.remoteUri.split('@')[0]}
                 />
 
                 <ConferenceDrawer
@@ -708,10 +720,13 @@ ConferenceBox.propTypes = {
     notificationCenter  : PropTypes.func.isRequired,
     call                : PropTypes.object,
     hangup              : PropTypes.func,
+    saveParticipant     : PropTypes.func,
+    saveInvitedParties  : PropTypes.func,
+    previousInvitedParties: PropTypes.object,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
-    toggleSpeakerPhone      : PropTypes.func,
-    speakerPhoneEnabled     : PropTypes.bool
+    toggleSpeakerPhone  : PropTypes.func,
+    speakerPhoneEnabled : PropTypes.bool
 };
 
 export default ConferenceBox;

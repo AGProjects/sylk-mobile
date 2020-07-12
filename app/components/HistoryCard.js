@@ -19,7 +19,7 @@ const HistoryCard = (props) => {
         label: props.historyItem.label
     }
 
-    //console.log('History card', identity);
+    //console.log('History card', props.historyItem);
 
     const startVideoCall = (e) => {
         e.stopPropagation();
@@ -54,6 +54,19 @@ const HistoryCard = (props) => {
     let title = identity.displayName || identity.uri;
     let subtitle = identity.uri;
 
+    if (props.historyItem.conference) {
+//        console.log('Item participants', props.historyItem.participants);
+        if (props.historyItem.participants) {
+            if (props.historyItem.participants.length === 0) {
+                subtitle = 'No participants';
+            } else if (props.historyItem.participants.length === 1) {
+                subtitle = 'One participant';
+            } else {
+                subtitle = props.historyItem.participants.length + ' participants';
+            }
+        }
+    }
+
     if (identity.type === 'history') {
         let duration = moment.duration(props.historyItem.duration, 'seconds').format('hh:mm:ss', {trim: false});
         if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
@@ -63,6 +76,7 @@ const HistoryCard = (props) => {
     //        color.color = 'blue';
             duration = 'cancelled';
         }
+
         if (duration) {
             let subtitle = identity.uri + ' (' + duration + ')';
         }

@@ -31,8 +31,8 @@ class InviteParticipantsModal extends Component {
                 uris.push(item);
             });
         }
-        if (uris && this.props.call) {
-            this.props.call.inviteParticipants(uris);
+        if (uris) {
+            this.props.inviteParticipants(uris);
         }
         this.props.close();
     }
@@ -46,7 +46,7 @@ class InviteParticipantsModal extends Component {
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title>Invite Participants</Dialog.Title>
+                        <Dialog.Title>Invite participants</Dialog.Title>
                         <Text>Enter users to invite</Text>
                         <TextInput
                             mode="flat"
@@ -54,7 +54,7 @@ class InviteParticipantsModal extends Component {
                             label="Users"
                             onChangeText={this.onInputChange}
                             value={this.state.users}
-                            placeholder="alice@sip2sip.info,bob,carol"
+                            placeholder="bob,carol,alice@sip2sip.info"
                             required
                             autoCapitalize="none"
                         />
@@ -76,7 +76,9 @@ class InviteParticipantsModal extends Component {
 InviteParticipantsModal.propTypes = {
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
-    call: PropTypes.object
+    inviteParticipants: PropTypes.func,
+    previousInvitedParties: PropTypes.object,
+    room: PropTypes.string
 };
 
 export default InviteParticipantsModal;

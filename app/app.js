@@ -141,7 +141,6 @@ class Sylk extends Component {
             mode: MODE_PRIVATE,
             localMedia: null,
             generatedVideoTrack: false,
-            history: [],
             contacts: [],
             serverHistory: [],
             devices: {},
@@ -162,6 +161,10 @@ class Sylk extends Component {
         };
 
         this.state = Object.assign({}, this._initialSstate);
+
+        this.localHistory = [];
+        this.myParticipants = new Map;
+        this.myInvitedParties = new Map;
 
         const echoTest = {
             uri: '4444@sylk.link',
@@ -298,6 +301,13 @@ class Sylk extends Component {
                 this.setState({devices: devices});
             }
         });
+
+        storage.get('history').then((history) => {
+            if (history) {
+                this.localHistory = history;
+            }
+        });
+
     }
 
     get _notificationCenter() {
@@ -870,6 +880,8 @@ class Sylk extends Component {
                     }, 3000);
                 }
 
+                this.updateHistoryEntry(callUUID);
+
                 break;
             default:
                 break;
@@ -1150,6 +1162,7 @@ class Sylk extends Component {
                 uuid: options.callUUID || uuid.v4()
             };
 
+        this.addHistoryEntry(targetUri, this._tmpCallStartInfo.uuid);
         this.setState({outgoingCallUUID: this._tmpCallStartInfo.uuid});
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: this._tmpCallStartInfo.uuid});
     }
@@ -1173,7 +1186,7 @@ class Sylk extends Component {
     startCall(targetUri, options) {
         utils.timestampedLog('startCall', targetUri);
         this.setState({targetUri: targetUri});
-        //this.addCallHistoryEntry(targetUri);
+        //this.addHistoryEntry(targetUri);
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
@@ -1410,7 +1423,6 @@ class Sylk extends Component {
 
     startConference(targetUri, options={audio: true, video: true}) {
         utils.timestampedLog('New outgoing conference to room', targetUri);
-        this.addCallHistoryEntry(targetUri);
         this.setState({targetUri: targetUri, isConference: true});
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
     }
@@ -1531,22 +1543,67 @@ class Sylk extends Component {
         this.getLocalMedia({audio: true, video: true}, '/preview');
     }
 
-    addCallHistoryEntry(uri) {
+    updateHistoryEntry(callUUID) {
+        var historyItem = this.findObjectByKey(this.localHistory, 'sessionId', callUUID);
+        if (historyItem) {
+            let current_datetime = new Date();
+            let stopTime = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+            historyItem.stopTime = stopTime;
+            var diff = current_datetime.getTime() - historyItem.startTimeObject.getTime();
+            historyItem.duration = parseInt(diff/1000);
+            delete historyItem['startTimeObject'];
+            console.log('Update history item', historyItem);
+            storage.set('history', this.localHistory);
+        }
+    }
+
+    saveParticipant(callUUID, room, uri) {
+        console.log('Save participant', uri, 'for conference', room);
+        // TODO
+    }
+
+    saveInvitedParties(callUUID, room, uris) {
+        console.log('Save invited parties', uris, 'for conference', room);
+        // TODO
+    }
+
+    addHistoryEntry(uri, callUUID) {
         if (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE) {
-            let entries = this.state.history.slice();
+            let current_datetime = new Date();
+            let startTime = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+
+            let item = {
+                        remoteParty: uri,
+                        direction: 'placed',
+                        type: 'history',
+                        conference: true,
+                        media: ['audio', 'video'],
+                        displayName: 'Conference ' + uri.split('@')[0],
+                        sessionId: callUUID,
+                        startTime: startTime,
+                        startTimeObject: current_datetime,
+                        duration: 0,
+                        stopTime: null
+                        };
+
+            const historyItem = Object.assign({}, item);
+            console.log('Added history item', historyItem);
+            this.localHistory.push(historyItem);
+
+            /*
+            let entries = this.localHistory.slice();
             if (entries.length !== 0) {
                 const idx = entries.indexOf(uri);
                 if (idx !== -1) {
                     entries.splice(idx, 1);
                 }
                 entries.unshift(uri);
-                // keep just the last 50
+                // keep just the last 100
                 entries = entries.slice(0, 100);
             } else {
                 entries = [uri];
             }
-            this.setState({history: entries});
-            utils.timestampedLog(this.state.history);
+            */
         } else {
             // history.add(uri).then((entries) => {
             //     this.setState({history: entries});
@@ -1578,7 +1635,8 @@ class Sylk extends Component {
                 return;
             }
 
-            let history = [];
+            let history = this.localHistory;
+
             if (data.placed) {
                 data.placed.map(elem => {elem.direction = 'placed'; return elem});
             }
@@ -1587,15 +1645,17 @@ class Sylk extends Component {
                 data.received.map(elem => {elem.direction = 'received'; return elem});
             }
 
-            history = data.placed;
+            if (data.placed) {
+                history = history.concat(data.placed);
+            }
 
-            if (data.received && history) {
+            if (data.received) {
                 history = history.concat(data.received);
             }
 
             if (history) {
                 history.sort((a,b) => {
-                    return new Date(b.startTime) - new Date(a.startTime);
+                    return new Date(a.startTime) - new Date(b.startTime);
                 });
                 const known = [];
                 history = history.filter((elem) => {
@@ -1620,6 +1680,10 @@ class Sylk extends Component {
                             elem.displayName = elem.remoteParty;
                         }
 
+                        if (!elem.media || !Array.isArray(elem.media)) {
+                            elem.media = ['audio'];
+                        }
+
                         if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
                             (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
                                 known.push(elem.remoteParty);
@@ -1639,7 +1703,6 @@ class Sylk extends Component {
                 if (data.placed.length < 3) {
                     history = history.concat(this.initialContacts);
                 }
-
                 this.setState({serverHistory: history});
             }
         }, (errorCode) => {
@@ -1755,7 +1818,6 @@ class Sylk extends Component {
             return null;
         }
 
-
         return (
             <Fragment>
                 <NavigationBar
@@ -1772,7 +1834,7 @@ class Sylk extends Component {
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
                     missedTargetUri = {this.state.missedTargetUri}
-                    history = {this.state.history}
+                    history = {this.localHistory}
                     key = {this.state.missedTargetUri}
                     serverHistory = {this.state.serverHistory}
                     orientation = {this.state.orientation}
@@ -1856,6 +1918,9 @@ class Sylk extends Component {
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
                 currentCall = {this.state.currentCall}
+                saveParticipant = {this.saveParticipant}
+                saveInvitedParties = {this.saveInvitedParties}
+                previousInvitedParties = {this.myInvitedParties}
                 participantsToInvite = {this.participantsToInvite}
                 hangupCall = {this.hangupCall}
                 shareScreen = {this.switchScreensharing}
