@@ -79,6 +79,24 @@ yarn react-native run-android --deviceId "DeviceId"
 >   --deviceId [string] builds your app and starts it on a specific device/simulator with the given device id (listed by running "adb devices" on the command line).
 
 
+### Running without debugging
+ 
+To run the app on your device without tethering it to USB:
+
+On Android:
+
+```bash
+yarn react-native run-android --variant=release
+
+``` 
+On iOS:
+
+Select menu Product -> Scheme -> Edit scheme andselect for Run Build Configuration = Release
+
+Beware that iOS push tokens are still meant for sandbox unless the app is
+released through Apple Store.
+
+
 ## Clean the project
 
 You might want to bring the project back to a clean repo if you're hitting any issues.
