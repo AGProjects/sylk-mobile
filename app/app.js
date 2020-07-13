@@ -1575,7 +1575,7 @@ class Sylk extends Component {
         }
 
         if (this.myParticipants.hasOwnProperty(room)) {
-            old_uris = this.myParticipants[room];
+            let old_uris = this.myParticipants[room];
             uris.forEach((uri) => {
                 if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
                     this.myParticipants[room].push(uri);
@@ -1585,13 +1585,12 @@ class Sylk extends Component {
         } else {
             this.myParticipants[room] = {};
             uris.forEach((uri) => {
-                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
                     this.myParticipants[room].push(uri);
                 }
             });
         }
         storage.set('myParticipants', this.myParticipants);
-        console.log('New myParticipants:', this.myParticipants);
         // TODO
     }
 
@@ -1603,7 +1602,7 @@ class Sylk extends Component {
         }
 
         if (this.myInvitedParties.hasOwnProperty(room)) {
-            old_uris = this.myInvitedParties[room];
+            let old_uris = this.myInvitedParties[room];
             uris.forEach((uri) => {
                 if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
                     this.myInvitedParties[room].push(uri);
@@ -1613,7 +1612,7 @@ class Sylk extends Component {
         } else {
             this.myInvitedParties[room] = {};
             uris.forEach((uri) => {
-                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
                     this.myInvitedParties[room].push(uri);
                 }
             });

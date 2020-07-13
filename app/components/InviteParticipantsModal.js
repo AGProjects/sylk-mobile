@@ -34,6 +34,7 @@ class InviteParticipantsModal extends Component {
         }
         if (uris) {
             this.props.inviteParticipants(uris);
+            this.setState({users: null});
         }
         this.props.close();
     }
