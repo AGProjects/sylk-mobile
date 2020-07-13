@@ -163,8 +163,8 @@ class Sylk extends Component {
         this.state = Object.assign({}, this._initialSstate);
 
         this.localHistory = [];
-        this.myParticipants = new Map;
-        this.myInvitedParties = new Map;
+        this.myParticipants = [];
+        this.myInvitedParties = []
 
         const echoTest = {
             remoteParty: '4444@sylk.link',
@@ -305,6 +305,18 @@ class Sylk extends Component {
         storage.get('history').then((history) => {
             if (history) {
                 this.localHistory = history;
+            }
+        });
+
+        storage.get('myParticipants').then((myParticipants) => {
+            if (myParticipants) {
+                this.myParticipants = myParticipants;
+            }
+        });
+
+        storage.get('myInvitedParties').then((myInvitedParties) => {
+            if (myInvitedParties) {
+                this.myInvitedParties = myInvitedParties;
             }
         });
 
@@ -614,7 +626,6 @@ class Sylk extends Component {
 
     registrationStateChanged(oldState, newState, data) {
         utils.timestampedLog('Registration state changed:', oldState, '->', newState);
-        console.log(data);
 
         this.setState({registrationState: newState});
         if (newState === 'failed') {
@@ -1558,11 +1569,58 @@ class Sylk extends Component {
 
     saveParticipant(callUUID, room, uri) {
         console.log('Save participant', uri, 'for conference', room);
+        if (!this.myParticipants) {
+            console.log('myParticipants=', this.myParticipants);
+            this.myParticipants = {};
+        }
+
+        if (this.myParticipants.hasOwnProperty(room)) {
+            old_uris = this.myParticipants[room];
+            uris.forEach((uri) => {
+                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                    this.myParticipants[room].push(uri);
+                }
+            });
+
+        } else {
+            this.myParticipants[room] = {};
+            uris.forEach((uri) => {
+                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                    this.myParticipants[room].push(uri);
+                }
+            });
+        }
+        storage.set('myParticipants', this.myParticipants);
+        console.log('New myParticipants:', this.myParticipants);
         // TODO
     }
 
     saveInvitedParties(callUUID, room, uris) {
         console.log('Save invited parties', uris, 'for conference', room);
+        if (!this.myInvitedParties) {
+            console.log('myInvitedParties=', this.myInvitedParties);
+            this.myInvitedParties = {};
+        }
+
+        if (this.myInvitedParties.hasOwnProperty(room)) {
+            old_uris = this.myInvitedParties[room];
+            uris.forEach((uri) => {
+                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                    this.myInvitedParties[room].push(uri);
+                }
+            });
+
+        } else {
+            this.myInvitedParties[room] = {};
+            uris.forEach((uri) => {
+                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                    this.myInvitedParties[room].push(uri);
+                }
+            });
+        }
+
+        storage.set('myInvitedParties', this.myInvitedParties);
+        console.log('New invited parties:', this.myInvitedParties);
         // TODO
     }
 
@@ -1914,6 +1972,40 @@ class Sylk extends Component {
     }
 
     conference() {
+        let _previousParticipants = new Set();
+
+        if (this.myParticipants) {
+            let room = this.state.targetUri.split('@')[0];
+            if (this.myParticipants.hasOwnProperty(room)) {
+                let uris = this.myParticipants[room];
+                uris.forEach((uri) => {
+                    if (uri.search(config.defaultDomain) > -1) {
+                        let user = uri.split('@')[0];
+                        _previousParticipants.add(user);
+                    } else {
+                        _previousParticipants.add(uri);
+                    }
+                });
+            }
+        }
+
+        if (this.myInvitedParties) {
+            let room = this.state.targetUri.split('@')[0];
+            if (this.myInvitedParties.hasOwnProperty(room)) {
+                let uris = this.myInvitedParties[room];
+                uris.forEach((uri) => {
+                    if (uri.search(config.defaultDomain) > -1) {
+                        let user = uri.split('@')[0];
+                        _previousParticipants.add(user);
+                    } else {
+                        _previousParticipants.add(uri);
+                    }
+                });
+            }
+        }
+
+        let previousParticipants = Array.from(_previousParticipants);
+
         return (
             <Conference
                 notificationCenter = {this.notificationCenter}
@@ -1923,7 +2015,7 @@ class Sylk extends Component {
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
                 saveInvitedParties = {this.saveInvitedParties}
-                previousInvitedParties = {this.myInvitedParties}
+                previousParticipants = {previousParticipants}
                 participantsToInvite = {this.participantsToInvite}
                 hangupCall = {this.hangupCall}
                 shareScreen = {this.switchScreensharing}

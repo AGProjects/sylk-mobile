@@ -14,8 +14,9 @@ class InviteParticipantsModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+        let users = this.props.previousParticipants ? this.props.previousParticipants.toString(): null;
         this.state = {
-            users: null
+            users: users
         }
     }
 
@@ -77,7 +78,7 @@ InviteParticipantsModal.propTypes = {
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
     inviteParticipants: PropTypes.func,
-    previousInvitedParties: PropTypes.object,
+    previousParticipants: PropTypes.array,
     room: PropTypes.string
 };
 

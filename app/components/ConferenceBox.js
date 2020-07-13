@@ -692,7 +692,7 @@ class ConferenceBox extends Component {
                 <InviteParticipantsModal
                     show={this.state.showInviteModal}
                     inviteParticipants={this.inviteParticipants}
-                    previousInvitedParties={this.props.previousInvitedParties}
+                    previousParticipants={this.props.previousParticipants}
                     close={this.toggleInviteModal}
                     room={this.props.remoteUri.split('@')[0]}
                 />
@@ -722,7 +722,7 @@ ConferenceBox.propTypes = {
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
     saveInvitedParties  : PropTypes.func,
-    previousInvitedParties: PropTypes.object,
+    previousParticipants: PropTypes.object,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
     toggleSpeakerPhone  : PropTypes.func,

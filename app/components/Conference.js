@@ -71,7 +71,7 @@ class Conference extends React.Component {
                         hangup = {this.hangup}
                         saveParticipant = {this.props.saveParticipant}
                         saveInvitedParties = {this.props.saveInvitedParties}
-                        previousInvitedParties = {this.props.previousInvitedParties}
+                        previousParticipants = {this.props.previousParticipants}
                         remoteUri = {this.props.targetUri}
                         shareScreen = {this.props.shareScreen}
                         generatedVideoTrack = {this.props.generatedVideoTrack}
@@ -102,7 +102,7 @@ Conference.propTypes = {
     hangupCall              : PropTypes.func.isRequired,
     saveParticipant         : PropTypes.func,
     saveInvitedParties      : PropTypes.func,
-    previousInvitedParties  : PropTypes.object,
+    previousParticipants    : PropTypes.array,
     currentCall             : PropTypes.object,
     localMedia              : PropTypes.object,
     targetUri               : PropTypes.string,

@@ -3,15 +3,20 @@ import AsyncStorage from '@react-native-community/async-storage';
 function initialize() {}
 
 async function set(key, value) {
-    value = JSON.stringify(value);
+    obj = JSON.stringify(value);
+    //console.log('Storage set', key);
+    //console.log(obj);
 
-    return await AsyncStorage.setItem(key, value);
+    return await AsyncStorage.setItem(key, obj);
 }
 
 async function get(key) {
     let res = await AsyncStorage.getItem(key);
+    let obj = JSON.parse(res);
+    //console.log('Storage get', key);
+    //console.log(obj);
 
-    return JSON.parse(res);
+    return obj;
 }
 
 async function remove(key) {
