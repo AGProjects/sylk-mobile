@@ -834,7 +834,7 @@ class Sylk extends Component {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/486/) || reason.match(/60[036]/)) {
                     reason = 'Busy';
-                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else if (reason.match(/487/)) {
                     reason = 'Cancelled';
                     play_busy_tone = false;
@@ -1232,21 +1232,15 @@ class Sylk extends Component {
             this.hangupCall(this.state.currentCall._callkeepUUID);
             this.setState({currentCall: null});
 
-            /*
             if (this.state.localMedia != null) {
                 sylkrtc.utils.closeMediaStream(this.state.localMedia);
                 utils.timestampedLog('Sylkrtc close local media');
             }
-            */
-
         }
 
         this.setState({localMedia: null});
-        this.state.inboundCall.on('stateChanged', this.callStateChanged);
-
         let hasVideo = this.state.inboundCall.mediaTypes.video ? true : false;
         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
-        this.forceUpdate();
     }
 
     rejectCall(callUUID) {
@@ -1334,7 +1328,7 @@ class Sylk extends Component {
 
     outgoingCall(call) {
         utils.timestampedLog('New outgoing call to', call.remoteIdentity.uri);
-        this._callKeepManager.handleCall(call, this._tmpCallStartInfo.uuid);
+        this._callKeepManager.handleOutgoingCall(call, this._tmpCallStartInfo.uuid);
         InCallManager.start({media: this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.video ? 'video' : 'audio'});
         this._tmpCallStartInfo = {};
         call.on('stateChanged', this.callStateChanged);
@@ -1364,7 +1358,7 @@ class Sylk extends Component {
         if (notificationContent['event'] === 'incoming_session') {
             utils.timestampedLog('Incoming call for push mobile notification for call', callUUID);
 
-            this._callKeepManager.handleCallLater(callUUID, notificationContent);
+            this._callKeepManager.handleIncomingPushCall(callUUID, notificationContent);
 
             if (VoipPushNotification.wakeupByPush) {
                 utils.timestampedLog('We wake up by a push notification');
@@ -1388,6 +1382,7 @@ class Sylk extends Component {
         */
 
         if (notificationContent['event'] === 'cancel') {
+            this._callKeepManager.endCall(callUUID, 6);
             VoipPushNotification.presentLocalNotification({
                 alertBody:'Call cancelled'
             });
@@ -1484,39 +1479,15 @@ class Sylk extends Component {
 
         utils.timestampedLog('New', media_type, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
 
-        InCallManager.start({media: media_type});
-        this._callKeepManager.handleCall(call);
+        call.on('stateChanged', this.callStateChanged);
+        this.setState({inboundCall: call, showIncomingModal: true});
 
-        this.acceptCallWhenReady(call);
+        InCallManager.start({media: media_type});
+
+        this._callKeepManager.handleIncomingWebSocketCall(call);
 
         this.setFocusEvents(true);
 
-    }
-
-    async acceptCallWhenReady(call) {
-        let callUUID = call._callkeepUUID;
-        utils.timestampedLog('Accept call', callUUID, 'when ready');
-        var n = 0;
-        let wait_interval = 15;
-        while (n < wait_interval) {
-            if (!this.state.connection || this.state.connection.state !== 'ready' || this.state.account === null) {
-                utils.timestampedLog('Waiting for connection...');
-                this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 1});
-                await this._sleep(1000);
-            } else {
-                utils.timestampedLog('Web socket is ready');
-                utils.timestampedLog('Using account', this.state.account.id);
-                // answer here
-                call.on('stateChanged', this.callStateChanged);
-                this.setState({inboundCall: call, showIncomingModal: true});
-                return;
-            }
-            if (n === wait_interval - 1) {
-                utils.timestampedLog('Terminating call', callUUID, 'that did not start yet');
-                this._callKeepManager.endCall(callUUID, 6);
-            }
-            n++;
-        }
     }
 
     setFocusEvents(enabled) {
@@ -1651,102 +1622,6 @@ class Sylk extends Component {
         }
     }
 
-    getServerHistory() {
-        if (!this.state.account|| !this.state.account.id) {
-            return;
-        }
-
-        if (config.useServerCallHistory) {
-            let history = this.localHistory;
-
-            utils.timestampedLog('Requesting call history from server');
-            let getServerCallHistory = new DigestAuthRequest(
-                'GET',
-                `${config.serverCallHistoryUrl}?action=get_history&realm=${this.state.account.id.split('@')[1]}`,
-                this.state.account.id.split('@')[0],
-                this.state.password
-            );
-            // Disable logging
-
-            getServerCallHistory.loggingOn = false;
-            getServerCallHistory.request((data) => {
-                if (data.success !== undefined && data.success === false) {
-                    logger.debug('Error getting call history from server: %o', data.error_message)
-                    return;
-                }
-
-                if (data.placed) {
-                    data.placed.map(elem => {elem.direction = 'placed'; return elem});
-                    history = history.concat(data.placed);
-                }
-
-                if (data.received) {
-                    data.received.map(elem => {elem.direction = 'received'; return elem});
-                    history = history.concat(data.received);
-                }
-
-                if (history) {
-                    history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
-
-                    const known = [];
-                    history = history.filter((elem) => {
-                        if (known.indexOf(elem.remoteParty) <= -1) {
-                            if (!this.state.account || !this.state.account.id) {
-                                return;
-                            }
-
-                            elem.type = 'history';
-                            var contact_obj = this.findObjectByKey(this.contacts, 'uri', elem.remoteParty);
-                            if (contact_obj) {
-                                elem.displayName = contact_obj.name;
-                                elem.photo = contact_obj.photo;
-                                // TODO update icon here
-                            } else {
-                                elem.photo = null;
-                            }
-
-                            elem.label = elem.direction;
-
-                            if (!elem.displayName) {
-                                elem.displayName = elem.remoteParty;
-                            }
-
-                            if (!elem.media || !Array.isArray(elem.media)) {
-                                elem.media = ['audio'];
-                            }
-
-                            if (elem.remoteParty.indexOf('@videoconference') > -1) {
-                                elem.remoteParty = elem.remoteParty.split('@')[0] + '@videoconference.' + config.defaultDomain;
-                            }
-
-                            if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
-                                (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
-                                    known.push(elem.remoteParty);
-                                    if (elem.remoteParty.indexOf('3333@') > -1) {
-                                        // see Call.js as well if we change this
-                                        elem.displayName = 'Video Test';
-                                    }
-                                    if (elem.remoteParty.indexOf('4444@') > -1) {
-                                        // see Call.js as well if we change this
-                                        elem.displayName = 'Echo Test';
-                                    }
-                                    return elem;
-                            }
-                        }
-                    });
-
-                    if (history.length < 3) {
-                        history = history.concat(this.initialContacts);
-                    }
-
-                    this.setState({serverHistory: history});
-                }
-            }, (errorCode) => {
-                logger.debug('Error getting call history from server: %o', errorCode)
-            });
-        }
-    }
-
     // checkRoute(nextPath, navigation, match) {
     //     if (nextPath !== this.prevPath) {
     //         logger.debug(`Transition from ${this.prevPath} to ${nextPath}`);
@@ -1856,6 +1731,7 @@ class Sylk extends Component {
             />
         );
     }
+
 
     ready() {
         //utils.timestampedLog('Ready screen');

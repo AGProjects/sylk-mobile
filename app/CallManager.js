@@ -8,20 +8,33 @@ const logger = new Logger('CallManager');
 import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 
 // https://github.com/react-native-webrtc/react-native-callkeep
+
+/*
+const CONSTANTS = {
+  END_CALL_REASONS: {
+    FAILED: 1,
+    REMOTE_ENDED: 2,
+    UNANSWERED: 3,
+    ANSWERED_ELSEWHERE: 4,
+    DECLINED_ELSEWHERE: 5,
+    MISSED: 6
+  }
+};
+*/
+
 export default class CallManager extends events.EventEmitter {
     constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
 
-        // Set of current SIP sessions
-        this._calls = new Map();
-        this._callHistory = new Map();
-        this._conferences = new Map();
-
-        this._waitingCalls = new Map();
-        this._timeouts = new Map();
         this._RNCallKeep = RNCallKeep;
+
+        this._calls = new Map();
+        this._conferences = new Map();
+        this._rejectedCalls = new Map();
+        this._decideLater = new Map();
+        this._timeouts = new Map();
 
         this.sylkAcceptCall = acceptFunc;
         this.sylkRejectCall = rejectFunc;
@@ -74,37 +87,9 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
-    showUnclosedCalls() {
-        if (Platform.OS !== 'ios') {
-            return;
-        }
-
-        let len = this._callHistory.length;
-        if (len > 0) {
-            utils.timestampedLog('Callkeep:', len, 'calls are still active');
-        }
-
-        for (let callUUID of this._callHistory.keys()) {
-            if (this.callKeep.isCallActive(callUUID)) {
-                utils.timestampedLog('Callkeep: call', callUUID, 'started at', this._callHistory.get(callUUID), 'is still active');
-            }
-        }
-    }
-
-    saveToHistory(callUUID) {
-        let current_datetime = new Date();
-        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
-        this._callHistory.set(callUUID, formatted_date);
-    }
-
     backToForeground() {
        utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
-    }
-
-    acceptIncomingCall(callUUID) {
-        utils.timestampedLog('Callkeep: accept incoming call', callUUID);
-        this.callKeep.acceptIncomingCall(callUUID);
     }
 
     setMutedCall(callUUID, mute) {
@@ -118,7 +103,6 @@ export default class CallManager extends events.EventEmitter {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
             this.callKeep.startCall(callUUID, targetUri, targetUri);
-            this.saveToHistory(callUUID);
         }
     }
 
@@ -185,7 +169,7 @@ export default class CallManager extends events.EventEmitter {
         } else {
             // We accepted the call before it arrived on web socket
             // from iOS push notifications
-            this._waitingCalls.set(callUUID, 'sylkAcceptCall');
+            this._decideLater.set(callUUID, 'accept');
         }
     }
 
@@ -216,7 +200,9 @@ export default class CallManager extends events.EventEmitter {
             // We rejected the call before it arrived on web socket
             // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
-            this._waitingCalls.set(callUUID, 'sylkHangupCall');
+            this._decideLater.set(callUUID, 'reject');
+            this._rejectedCalls.set(callUUID, true);
+
         }
     }
 
@@ -246,22 +232,61 @@ export default class CallManager extends events.EventEmitter {
         })
     }
 
-    handleCallLater(callUUID, notificationContent) {
+    handleIncomingPushCall(callUUID, notificationContent) {
+        // call is received by push notification
         utils.timestampedLog('Callkeep: handle later incoming call', callUUID);
 
-        let reason;
-        if (this._waitingCalls.has(callUUID)) {
-            reason = 1;
-        } else {
-            reason = 2;
-        }
+        let reason = this._decideLater.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
 
+        // if user does not decide anything this will be handled later
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: end call later', callUUID);
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
+    }
 
+    handleIncomingWebSocketCall(call) {
+        call._callkeepUUID = call.id;
+
+        this._calls.set(call._callkeepUUID, call);
+        utils.timestampedLog('Callkeep: start incoming call', call._callkeepUUID);
+
+        if (this._timeouts.has(call.id)) {
+            clearTimeout(this._timeouts.get(call.id));
+            this._timeouts.delete(call.id);
+        }
+
+        // if the call came via push and was already accepted or rejected
+        if (this._decideLater.get(call._callkeepUUID)) {
+            let action = this._decideLater.get(call._callkeepUUID);
+            utils.timestampedLog('Callkeep: execute action', action);
+            if (action === 'accept') {
+                this.sylkAcceptCall(call.id);
+            } else {
+                this.sylkRejectCall(call.id);
+            }
+            this._decideLater.delete(call._callkeepUUID);
+        } else if (this._rejectedCalls.has(call._callkeepUUID)) {
+            this.sylkRejectCall(call.id);
+        } else {
+            this.showAlertPanel(call);
+        }
+
+        // Emit event.
+        this._emitSessionsChange(true);
+    }
+
+    handleOutgoingCall(call, callUUID) {
+        // this is an outgoing call
+        call._callkeepUUID = callUUID;
+
+        this._calls.set(call._callkeepUUID, call);
+        utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
+        this._calls.set(call._callkeepUUID, call);
+
+        // Emit event.
+        this._emitSessionsChange(true);
     }
 
     handleConference(callUUID, room, from_uri) {
@@ -277,7 +302,7 @@ export default class CallManager extends events.EventEmitter {
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: conference timeout', callUUID);
             this.timeoutCall(callUUID, from_uri);
-            this.callKeep.reportEndCallWithUUID(callUUID, 3);
+            this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.MISSED);
             this._timeouts.delete(callUUID);
         }, 45000));
 
@@ -302,43 +327,6 @@ export default class CallManager extends events.EventEmitter {
         } else if (Platform.OS === 'android') {
             this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
         }
-
-        this.saveToHistory(call._callkeepUUID);
-    }
-
-    handleCall(call, callUUID) {
-        // callUUID is present only for outgoing calls
-
-        if (callUUID) {
-            call._callkeepUUID = callUUID;
-
-            this._calls.set(call._callkeepUUID, call);
-            utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
-            this._calls.set(call._callkeepUUID, call);
-        } else if (call.id) {
-            call._callkeepUUID = call.id;
-
-            this._calls.set(call._callkeepUUID, call);
-            utils.timestampedLog('Callkeep: start incoming call', call._callkeepUUID);
-
-            if (this._timeouts.has(call.id)) {
-                clearTimeout(this._timeouts.get(call.id));
-                this._timeouts.delete(call.id);
-            }
-
-            //if the call is in waiting then accept it (or decline it)
-            if (this._waitingCalls.get(call._callkeepUUID)) {
-                let action = this._waitingCalls.get(call._callkeepUUID);
-                utils.timestampedLog('Callkeep: execute action', action);
-                this[action]();
-                this._waitingCalls.delete(call._callkeepUUID);
-            } else {
-                this.showAlertPanel(call);
-            }
-        }
-
-        // Emit event.
-        this._emitSessionsChange(true);
     }
 
     _emitSessionsChange(countChanged) {
