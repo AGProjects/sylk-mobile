@@ -1,5 +1,6 @@
-﻿import React from 'react';
+﻿import React, { Component} from 'react';
 import { View } from 'react-native';
+import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
@@ -10,136 +11,130 @@ import styles from '../assets/styles/blink/_HistoryCard.scss';
 
 import UserIcon from './UserIcon';
 
-const HistoryCard = (props) => {
-    const identity = {
-        displayName: props.historyItem.displayName || props.historyItem.name,
-        uri: props.historyItem.remoteParty || props.historyItem.uri,
-        type: props.historyItem.type || 'contact',
-        photo: props.historyItem.photo,
-        label: props.historyItem.label
-    }
 
-    //console.log('History card', props.historyItem);
+class HistoryCard extends Component {
+    constructor(props) {
+        super(props);
+        autoBind(this);
 
-    const startVideoCall = (e) => {
+        this.identity = {
+            displayName: this.props.contact.displayName || this.props.contact.name,
+            uri: this.props.contact.remoteParty || this.props.contact.uri,
+            type: this.props.contact.type || 'contact',
+            photo: this.props.contact.photo,
+            label: this.props.contact.label
+        }
+
+        //console.log(this.props.contact);
+   }
+
+    startVideoCall(e) {
         e.stopPropagation();
-        props.setTargetUri(identity.uri);
+        this.props.setTargetUri(this.identity.uri);
         // We need to wait for targetURI
         setImmediate(() => {
-            props.startVideoCall(e);
+            this.props.startVideoCall(e);
         });
     }
 
-    const startAudioCall = (e) => {
+    startAudioCall(e) {
         e.stopPropagation();
-        props.setTargetUri(identity.uri);
+        this.props.setTargetUri(this.identity.uri);
         // We need to wait for targetURI
         setImmediate(() => {
-            props.startAudioCall(e);
+            this.props.startAudioCall(e);
         });
     }
 
-    let containerClass = styles.portraitContainer;
+    render () {
+        //console.log(this.props.contact.index, 'Render card', this.identity.uri, 'in', this.props.orientation);
 
-    if (props.isTablet) {
-        containerClass = (props.orientation === 'landscape') ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
-    } else {
-        containerClass = (props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
-    }
+        let containerClass = styles.portraitContainer;
 
-    let color = {};
+        if (this.props.isTablet) {
+            containerClass = (this.props.orientation === 'landscape') ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
+        } else {
+            containerClass = (this.props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+        }
 
-    const name = identity.displayName || identity.uri;
+        let color = {};
+        const name = this.identity.displayName || this.identity.uri;
+        let title = this.identity.displayName || this.identity.uri;
+        let subtitle = this.identity.uri;
 
-    let title = identity.displayName || identity.uri;
-    let subtitle = identity.uri;
+        let description = this.props.contact.startTime;
 
-    if (props.historyItem.conference) {
-//        console.log('Item participants', props.historyItem.participants);
-        if (props.historyItem.participants) {
-            if (props.historyItem.participants.length === 0) {
-                subtitle = 'No participants';
-            } else if (props.historyItem.participants.length === 1) {
-                subtitle = 'One participant';
-            } else {
-                subtitle = props.historyItem.participants.length + ' participants';
+        if (this.identity.type === 'history') {
+            let duration = moment.duration(this.props.contact.duration, 'seconds').format('hh:mm:ss', {trim: false});
+
+            if (this.props.contact.direction === 'received' && this.props.contact.duration === 0) {
+                color.color = '#a94442';
+                duration = 'missed';
+            } else if (this.props.contact.direction === 'placed' && this.props.contact.duration === 0) {
+                duration = 'cancelled';
             }
-        }
-    }
 
-    let description = props.historyItem.startTime;
-
-    if (identity.type === 'history') {
-        let duration = moment.duration(props.historyItem.duration, 'seconds').format('hh:mm:ss', {trim: false});
-
-        if (props.historyItem.direction === 'received' && props.historyItem.duration === 0) {
-            color.color = '#a94442';
-            duration = 'missed';
-        } else if (props.historyItem.direction === 'placed' && props.historyItem.duration === 0) {
-            duration = 'cancelled';
-        }
-
-        if (duration) {
-            let subtitle = identity.uri + ' (' + duration + ')';
-        }
-
-        if (!identity.displayName) {
-            title = identity.uri;
-            if (duration === 'missed') {
-                subtitle = 'Last call missed';
-            } else if (duration === 'cancelled') {
-                subtitle = 'Last call cancelled';
-            } else {
-                subtitle = 'Last call duration ' + duration ;
+            if (duration) {
+                let subtitle = this.identity.uri + ' (' + duration + ')';
             }
+
+            if (!this.identity.displayName) {
+                title = this.identity.uri;
+                if (duration === 'missed') {
+                    subtitle = 'Last call missed';
+                } else if (duration === 'cancelled') {
+                    subtitle = 'Last call cancelled';
+                } else {
+                    subtitle = 'Last call duration ' + duration ;
+                }
+            }
+
+            description = description + ' (' + duration + ')';
+
+            return (
+                <Card
+                    onPress={() => {this.props.setTargetUri(this.identity.uri)}}
+                    onLongPress={this.startVideoCall}
+                    style={containerClass}
+                    >
+                    <Card.Content style={styles.content}>
+                        <View style={styles.mainContent}>
+                            <Title noWrap style={color}>{title}</Title>
+                            <Subheading noWrap style={color}>{subtitle}</Subheading>
+                            <Caption color="textSecondary">
+                                <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
+                            </Caption>
+                        </View>
+                        <View style={styles.userAvatarContent}>
+                            <UserIcon style={styles.userIcon} identity={this.identity} card/>
+                        </View>
+                    </Card.Content>
+                </Card>
+            );
+
+        } else {
+            return (
+                <Card
+                    onPress={() => {this.props.setTargetUri(this.identity.uri, this.props.contact)}}
+                    onLongPress={this.startVideoCall}
+                    style={containerClass}
+                >
+                    <Card.Content style={styles.content}>
+                        <View style={styles.mainContent}>
+                            <Title noWrap style={color}>{title}</Title>
+                            <Subheading noWrap style={color}>{this.identity.uri}</Subheading>
+                            <Caption color="textSecondary">
+                                {this.identity.label}
+                            </Caption>
+                        </View>
+                        <View style={styles.userAvatarContent}>
+                            <UserIcon style={styles.userIcon} identity={this.identity} card/>
+                        </View>
+                    </Card.Content>
+                </Card>
+            );
         }
-
-        description = description + ' (' + duration + ')';
-
-        return (
-            <Card
-                onPress={() => {props.setTargetUri(identity.uri)}}
-                onLongPress={startVideoCall}
-                style={containerClass}
-            >
-                <Card.Content style={styles.content}>
-                    <View style={styles.mainContent}>
-                        <Title noWrap style={color}>{title}</Title>
-                        <Subheading noWrap style={color}>{subtitle}</Subheading>
-                        <Caption color="textSecondary">
-                            <Icon name={props.historyItem.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
-                        </Caption>
-                    </View>
-                    <View style={styles.userAvatarContent}>
-                        <UserIcon style={styles.userIcon} identity={identity} card/>
-                    </View>
-                </Card.Content>
-            </Card>
-        );
-
-    } else {
-        if (identity.label) {
-            subtitle = identity.uri + ' (' + identity.label + ')';
-        }
-        return (
-            <Card
-                onPress={() => {props.setTargetUri(identity.uri, props.historyItem)}}
-                onLongPress={startVideoCall}
-                style={containerClass}
-            >
-                <Card.Content style={styles.content}>
-                    <View style={styles.mainContent}>
-                        <Title noWrap style={color}>{title}</Title>
-                        <Subheading noWrap style={color}>{subtitle}</Subheading>
-                    </View>
-                    <View style={styles.userAvatarContent}>
-                        <UserIcon style={styles.userIcon} identity={identity} card/>
-                    </View>
-                </Card.Content>
-            </Card>
-        );
     }
-
 
 /*
             <Card.Actions>
@@ -152,7 +147,7 @@ const HistoryCard = (props) => {
 }
 
 HistoryCard.propTypes = {
-    historyItem    : PropTypes.object,
+    contact    : PropTypes.object,
     startAudioCall : PropTypes.func,
     startVideoCall : PropTypes.func,
     setTargetUri   : PropTypes.func,

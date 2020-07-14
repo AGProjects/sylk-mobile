@@ -23,9 +23,11 @@ class ReadyBox extends Component {
         this.state = {
             targetUri: this.props.missedTargetUri,
             showConferenceModal: false,
-            sticky: false,
-            matchedContacts: []
+            sticky: false
         };
+
+        this.matchedContacts = [];
+
     }
 
     getTargetUri() {
@@ -59,12 +61,13 @@ class ReadyBox extends Component {
             }
         }
 
+        this.setState({targetUri: new_value});
+
         if (new_value.length > 2 && !contact) {
             matchedContacts = this.props.contacts.filter(contact => (contact.uri.toLowerCase().search(new_value) > -1 || contact.name.toLowerCase().search(new_value) > -1));
         }
 
-        this.setState({targetUri: new_value, matchedContacts: matchedContacts});
-        //this.forceUpdate();
+        this.matchedContacts = matchedContacts;
     }
 
     handleTargetSelect() {
@@ -130,7 +133,7 @@ class ReadyBox extends Component {
     }
 
     render() {
-        //console.log('Render ready box');
+        //utils.timestampedLog('Render ready box');
         const defaultDomain = `${config.defaultDomain}`;
 
         let uriClass = styles.portraitUriInputBox;
@@ -156,6 +159,7 @@ class ReadyBox extends Component {
         } else {
             uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
         }
+
         const historyClass = this.props.orientation === 'landscape' ? styles.landscapeHistory : styles.portraitHistory;
 
         // Join URIs from local and server history for input
@@ -212,7 +216,7 @@ class ReadyBox extends Component {
                     <View style={historyClass}>
                         <HistoryTileBox
                             historyItems={historyItems}
-                            contactItems={this.state.matchedContacts}
+                            contactItems={this.matchedContacts}
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             startVideoCall={this.handleVideoCall}

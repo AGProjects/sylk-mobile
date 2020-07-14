@@ -31,6 +31,9 @@ const UserIcon = (props) => {
     }
     */
 
+    if (!props.identity) {
+        return (null)
+    }
     const name = props.identity.displayName || props.identity.uri;
     const photo = props.identity.photo;
 
