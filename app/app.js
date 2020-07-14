@@ -144,13 +144,12 @@ class Sylk extends Component {
             contacts: [],
             serverHistory: [],
             devices: {},
-            pushtoken: null,
-            pushkittoken: null,
             speakerPhoneEnabled: null,
-            orientation : '',
+            orientation : 'portrait',
             Height_Layout : '',
             Width_Layout : '',
             outgoingCallUUID: null,
+            outgoingMedia: null,
             hardware: '',
             manufacturer: '',
             brand: '',
@@ -160,22 +159,27 @@ class Sylk extends Component {
             isTablet: false
         };
 
+        this.pushtoken = null;
+        this.pushkittoken = null;
+
         this.state = Object.assign({}, this._initialSstate);
 
         this.localHistory = [];
-        this.myParticipants = [];
-        this.myInvitedParties = []
+        this.myParticipants = {};
+        this.myInvitedParties = {};
 
         const echoTest = {
             remoteParty: '4444@sylk.link',
             displayName: 'Echo test',
-            type: 'contact'
+            type: 'contact',
+            label: 'Call to test microphone'
             };
 
         const videoTest = {
             remoteParty: '3333@sylk.link',
             displayName: 'Video test',
-            type: 'contact'
+            type: 'contact',
+            label: 'Call to test video'
             };
 
         const echoTestCard = Object.assign({}, echoTest);
@@ -211,7 +215,7 @@ class Sylk extends Component {
             RNCallKeep.setReachable();
         });
 
-        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.callKeepStartConference);
+        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.timeoutCall, this.callKeepStartConference);
 
         if (InCallManager.recordPermission !== 'granted') {
             InCallManager.requestRecordPermission()
@@ -290,8 +294,7 @@ class Sylk extends Component {
                     });
                 }
 
-              this.setState({contacts: contact_cards});
-              //this._notificationCenter.postSystemNotification(this.state.contacts.length + ' contacts loaded', {body: '', timeout: 2});
+              this.contacts = contact_cards;
             }
           })
 
@@ -311,15 +314,16 @@ class Sylk extends Component {
         storage.get('myParticipants').then((myParticipants) => {
             if (myParticipants) {
                 this.myParticipants = myParticipants;
+                console.log('My participants', this.myParticipants);
             }
         });
 
         storage.get('myInvitedParties').then((myInvitedParties) => {
             if (myInvitedParties) {
                 this.myInvitedParties = myInvitedParties;
+                console.log('My invited parties', this.myInvitedParties);
             }
         });
-
     }
 
     get _notificationCenter() {
@@ -340,18 +344,13 @@ class Sylk extends Component {
     }
 
     _detectOrientation() {
-        if(this.state.Width_Layout > this.state.Height_Layout) {
-            //utils.timestampedLog("Orientation is landcape")
-            this.setState({
-            orientation : 'landscape'
-            });
+        if(this.state.Width_Layout > this.state.Height_Layout && this.state.orientation !== 'landscape') {
+            utils.timestampedLog("Orientation is landcape")
+            this.setState({orientation: 'landscape'});
         } else {
-            //utils.timestampedLog("Orientation is portrait")
-            this.setState({
-            orientation : 'portrait'
-            });
+            utils.timestampedLog("Orientation is portrait")
+            this.setState({orientation: 'portrait'});
         }
-        this.forceUpdate();
      }
 
     async componentDidMount() {
@@ -447,7 +446,7 @@ class Sylk extends Component {
                 });
         }
 
-        this._detectOrientation();
+        //this._detectOrientation();
     }
 
     _proximityDetect(data) {
@@ -529,22 +528,22 @@ class Sylk extends Component {
 
     _onPushkitRegistered(token) {
         utils.timestampedLog('Set VoIP pushkit token', token);
-        this.setState({ pushkittoken: token });
+        this.pushkittoken = token;
     }
 
     _onPushRegistered(token) {
         utils.timestampedLog('Set background push token', token);
-        this.setState({ pushtoken: token });
+        this.pushtoken = token;
     }
 
     _sendPushToken() {
-        if (this.state.account && this.state.pushtoken) {
+        if (this.state.account && this.pushtoken) {
             let token = null;
 
             if (Platform.OS === 'ios') {
-                token = `${this.state.pushkittoken}#${this.state.pushtoken}`;
+                token = `${this.pushkittoken}#${this.pushtoken}`;
             } else if (Platform.OS === 'android') {
-                token = this.state.pushtoken;
+                token = this.pushtoken;
             }
             utils.timestampedLog('Push token', token, 'sent to server');
             this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
@@ -598,7 +597,7 @@ class Sylk extends Component {
                     this.hangupCall(this.state.inboundCall._callkeepUUID);
                 }
 
-                //history.push('/ready');
+                history.push('/ready');
 
                 this.setState({
                     registrationState: 'failed',
@@ -627,7 +626,6 @@ class Sylk extends Component {
     registrationStateChanged(oldState, newState, data) {
         utils.timestampedLog('Registration state changed:', oldState, '->', newState);
 
-        this.setState({registrationState: newState});
         if (newState === 'failed') {
             RNCallKeep.setAvailable(false);
             let reason = data.reason;
@@ -640,9 +638,9 @@ class Sylk extends Component {
             }
 
             logger.debug('Registration error: ' + reason);
-
             this.setState({
                 loading     : null,
+                registrationState: newState,
                 status      : {
                     msg   : 'Sign In failed: ' + reason,
                     level : 'danger'
@@ -665,13 +663,14 @@ class Sylk extends Component {
             this.getServerHistory();
             RNCallKeep.setAvailable(true);
             this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
+
             if (!this.state.currentCall) {
                 history.push('/ready');
             }
             //this._notificationCenter.postSystemNotification('Ready to receive calls', {body: '', timeout: 1});
             return;
         } else {
-            this.setState({status: null });
+            this.setState({status: null, registrationState: newState });
             RNCallKeep.setAvailable(false);
         }
     }
@@ -954,7 +953,9 @@ class Sylk extends Component {
             let model = this.state.brand + ' ' + this.state.model;
             let userAgent = 'Sylk Mobile ' + model + ' (v' + this.state.osVersion + ')';
             console.log('User Agent:', userAgent);
-            console.log('Phone number:', this.state.phoneNumber);
+            if (this.state.phoneNumber) {
+                console.log('Phone number:', this.state.phoneNumber);
+            }
 
             let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
             connection.on('stateChanged', this.connectionStateChanged);
@@ -1157,7 +1158,6 @@ class Sylk extends Component {
                 this.setState({
                     loading: null
                 });
-                utils.timestampedLog('Go to ready screen');
                 history.push('/ready');
             });
         });
@@ -1173,7 +1173,7 @@ class Sylk extends Component {
             };
 
         this.addHistoryEntry(targetUri, this._tmpCallStartInfo.uuid);
-        this.setState({outgoingCallUUID: this._tmpCallStartInfo.uuid});
+        this.setState({outgoingCallUUID: this._tmpCallStartInfo.uuid, outgoingMedia: options});
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: this._tmpCallStartInfo.uuid});
     }
 
@@ -1206,6 +1206,20 @@ class Sylk extends Component {
         this.getLocalMedia(Object.assign({audio: true, video: true}, this._tmpCallStartInfo.options));
     }
 
+    callKeepAcceptCall(callUUID) {
+        // called from user interaction with Old alert panel
+        utils.timestampedLog('CallKeep answer call', callUUID);
+        this._callKeepManager.answerIncomingCall(callUUID);
+        this.acceptCall();
+    }
+
+    callKeepRejectCall(callUUID) {
+        // called from user interaction with Old alert panel
+        utils.timestampedLog('CallKeep must reject call', callUUID);
+        this._callKeepManager.rejectCall(callUUID);
+        this.rejectCall(callUUID);
+    }
+
     acceptCall() {
         utils.timestampedLog('Alert panel answer call');
 
@@ -1235,21 +1249,8 @@ class Sylk extends Component {
         this.forceUpdate();
     }
 
-    callKeepAcceptCall(callUUID) {
-        // called from user interaction
-        utils.timestampedLog('CallKeep answer call', callUUID);
-        this._callKeepManager.answerIncomingCall(callUUID);
-        this.acceptCall();
-    }
-
-    callKeepRejectCall(callUUID) {
-        // called from user interaction
-        utils.timestampedLog('CallKeep must reject call', callUUID);
-        this._callKeepManager.rejectCall(callUUID);
-        this.rejectCall(callUUID);
-    }
-
     rejectCall(callUUID) {
+        // called by Call Keep when user rejects call
         utils.timestampedLog('Alert panel reject call', callUUID);
         this.setState({showIncomingModal: false});
         if (!this.state.currentCall) {
@@ -1260,6 +1261,12 @@ class Sylk extends Component {
             this.state.inboundCall.terminate();
             utils.timestampedLog('Sylkrtc reject call', callUUID);
         }
+        this.forceUpdate();
+    }
+
+    timeoutCall(callUUID, uri) {
+        utils.timestampedLog('Timeout answering call', callUUID);
+        this.addHistoryEntry(uri, callUUID, direction='received');
         this.forceUpdate();
     }
 
@@ -1278,7 +1285,6 @@ class Sylk extends Component {
                 utils.timestampedLog('Sylkrtc close media');
             }
         }
-        utils.timestampedLog('Go to ready screen');
         history.push('/ready');
         this.forceUpdate();
     }
@@ -1418,7 +1424,7 @@ class Sylk extends Component {
                 utils.timestampedLog('Web socket is ready');
                 utils.timestampedLog('Using account', this.state.account.id);
                 // answer here
-                this._callKeepManager.handleConference(callUUID, to_uri);
+                this._callKeepManager.handleConference(callUUID, to_uri, from_uri);
                 this.setFocusEvents(true);
                 return;
             }
@@ -1451,7 +1457,6 @@ class Sylk extends Component {
         }
 
         this.setState({localMedia: null});
-
         history.push('/ready');
 
         this.participantsToInvite = participants;
@@ -1468,6 +1473,8 @@ class Sylk extends Component {
     }
 
     incomingCall(call, mediaTypes) {
+        // this is called by the websocket invite
+
         // because of limitation in Sofia stack, we cannot have more then two calls at a time
         // we can have one outgoing call and one incoming call but not two incoming calls
         // we cannot have two incoming calls, second one is automatically rejected by sylkrtc.js
@@ -1484,9 +1491,6 @@ class Sylk extends Component {
 
         this.setFocusEvents(true);
 
-        // if (!this.shouldUseHashRouting) {
-        //     this._notificationCenter.postSystemNotification('Incoming call', {body: `From ${call.remoteIdentity.displayName || call.remoteIdentity.uri}`, timeout: 15, silent: false});
-        // }
     }
 
     async acceptCallWhenReady(call) {
@@ -1562,43 +1566,40 @@ class Sylk extends Component {
             var diff = current_datetime.getTime() - historyItem.startTimeObject.getTime();
             historyItem.duration = parseInt(diff/1000);
             delete historyItem['startTimeObject'];
-            console.log('Update history item', historyItem);
             storage.set('history', this.localHistory);
         }
     }
 
     saveParticipant(callUUID, room, uri) {
-        console.log('Save participant', uri, 'for conference', room);
+        //console.log('Save participant', uri, 'for conference', room);
+
         if (!this.myParticipants) {
-            console.log('myParticipants=', this.myParticipants);
-            this.myParticipants = {};
+            this.myParticipants = new Object();
         }
 
         if (this.myParticipants.hasOwnProperty(room)) {
             let old_uris = this.myParticipants[room];
-            uris.forEach((uri) => {
-                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
-                    this.myParticipants[room].push(uri);
-                }
-            });
+            if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                this.myParticipants[room].push(uri);
+            }
 
         } else {
-            this.myParticipants[room] = {};
-            uris.forEach((uri) => {
-                if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
-                    this.myParticipants[room].push(uri);
-                }
-            });
+            let new_uris = [];
+            if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                new_uris.push(uri);
+            }
+
+            if (new_uris) {
+                this.myParticipants[room] = new_uris;
+            }
         }
+
         storage.set('myParticipants', this.myParticipants);
-        // TODO
     }
 
     saveInvitedParties(callUUID, room, uris) {
-        console.log('Save invited parties', uris, 'for conference', room);
         if (!this.myInvitedParties) {
-            console.log('myInvitedParties=', this.myInvitedParties);
-            this.myInvitedParties = {};
+            this.myInvitedParties = new Object();
         }
 
         if (this.myInvitedParties.hasOwnProperty(room)) {
@@ -1610,159 +1611,140 @@ class Sylk extends Component {
             });
 
         } else {
-            this.myInvitedParties[room] = {};
+            let new_uris = [];
             uris.forEach((uri) => {
                 if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
-                    this.myInvitedParties[room].push(uri);
+                    new_uris.push(uri);
                 }
             });
+
+            if (new_uris) {
+                this.myInvitedParties[room] = new_uris;
+            }
         }
 
         storage.set('myInvitedParties', this.myInvitedParties);
-        console.log('New invited parties:', this.myInvitedParties);
-        // TODO
     }
 
-    addHistoryEntry(uri, callUUID) {
+    addHistoryEntry(uri, callUUID, direction='placed') {
         if (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE) {
             let current_datetime = new Date();
             let startTime = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
 
             let item = {
                         remoteParty: uri,
-                        direction: 'placed',
+                        direction: direction,
                         type: 'history',
                         conference: true,
                         media: ['audio', 'video'],
                         displayName: 'Conference ' + uri.split('@')[0],
                         sessionId: callUUID,
                         startTime: startTime,
+                        stopTime: startTime,
                         startTimeObject: current_datetime,
-                        duration: 0,
-                        stopTime: null
+                        duration: 0
                         };
 
             const historyItem = Object.assign({}, item);
             console.log('Added history item', historyItem);
             this.localHistory.push(historyItem);
-
-            /*
-            let entries = this.localHistory.slice();
-            if (entries.length !== 0) {
-                const idx = entries.indexOf(uri);
-                if (idx !== -1) {
-                    entries.splice(idx, 1);
-                }
-                entries.unshift(uri);
-                // keep just the last 100
-                entries = entries.slice(0, 100);
-            } else {
-                entries = [uri];
-            }
-            */
-        } else {
-            // history.add(uri).then((entries) => {
-            //     this.setState({history: entries});
-            // });
         }
     }
 
     getServerHistory() {
-        if (!config.useServerCallHistory) {
-            return;
-        }
-
         if (!this.state.account|| !this.state.account.id) {
             return;
         }
 
-        utils.timestampedLog('Requesting call history from server');
-        let getServerCallHistory = new DigestAuthRequest(
-            'GET',
-            `${config.serverCallHistoryUrl}?action=get_history&realm=${this.state.account.id.split('@')[1]}`,
-            this.state.account.id.split('@')[0],
-            this.state.password
-        );
-        // Disable logging
-        getServerCallHistory.loggingOn = false;
-        getServerCallHistory.request((data) => {
-            if (data.success !== undefined && data.success === false) {
-                logger.debug('Error getting call history from server: %o', data.error_message)
-                return;
-            }
-
+        if (config.useServerCallHistory) {
             let history = this.localHistory;
 
-            if (data.placed) {
-                data.placed.map(elem => {elem.direction = 'placed'; return elem});
-            }
+            utils.timestampedLog('Requesting call history from server');
+            let getServerCallHistory = new DigestAuthRequest(
+                'GET',
+                `${config.serverCallHistoryUrl}?action=get_history&realm=${this.state.account.id.split('@')[1]}`,
+                this.state.account.id.split('@')[0],
+                this.state.password
+            );
+            // Disable logging
 
-            if (data.received) {
-                data.received.map(elem => {elem.direction = 'received'; return elem});
-            }
-
-            if (data.placed) {
-                history = history.concat(data.placed);
-            }
-
-            if (data.received) {
-                history = history.concat(data.received);
-            }
-
-            if (history) {
-                history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
-
-                const known = [];
-                history = history.filter((elem) => {
-                    if (known.indexOf(elem.remoteParty) <= -1) {
-                        if (!this.state.account || !this.state.account.id) {
-                            return;
-                        }
-
-                        elem.type = 'history';
-                        var contact_obj = this.findObjectByKey(this.state.contacts, 'uri', elem.remoteParty);
-                        if (contact_obj) {
-                            elem.displayName = contact_obj.name;
-                            elem.photo = contact_obj.photo;
-                            // TODO update icon here
-                        } else {
-                            elem.photo = null;
-                        }
-
-                        elem.label = elem.direction;
-
-                        if (!elem.displayName) {
-                            elem.displayName = elem.remoteParty;
-                        }
-
-                        if (!elem.media || !Array.isArray(elem.media)) {
-                            elem.media = ['audio'];
-                        }
-
-                        if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
-                            (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
-                                known.push(elem.remoteParty);
-                                if (elem.remoteParty.indexOf('3333@') > -1) {
-                                    // see Call.js as well if we change this
-                                    elem.displayName = 'Video Test';
-                                }
-                                if (elem.remoteParty.indexOf('4444@') > -1) {
-                                    // see Call.js as well if we change this
-                                    elem.displayName = 'Echo Test';
-                                }
-                                return elem;
-                        }
-                    }
-                });
-
-                if (! data.placed || data.placed.length < 3) {
-                    history = history.concat(this.initialContacts);
+            getServerCallHistory.loggingOn = false;
+            getServerCallHistory.request((data) => {
+                if (data.success !== undefined && data.success === false) {
+                    logger.debug('Error getting call history from server: %o', data.error_message)
+                    return;
                 }
-                this.setState({serverHistory: history});
-            }
-        }, (errorCode) => {
-            logger.debug('Error getting call history from server: %o', errorCode)
-        });
+
+                if (data.placed) {
+                    data.placed.map(elem => {elem.direction = 'placed'; return elem});
+                    history = history.concat(data.placed);
+                }
+
+                if (data.received) {
+                    data.received.map(elem => {elem.direction = 'received'; return elem});
+                    history = history.concat(data.received);
+                }
+
+                if (history) {
+                    history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
+
+                    const known = [];
+                    history = history.filter((elem) => {
+                        if (known.indexOf(elem.remoteParty) <= -1) {
+                            if (!this.state.account || !this.state.account.id) {
+                                return;
+                            }
+
+                            elem.type = 'history';
+                            var contact_obj = this.findObjectByKey(this.contacts, 'uri', elem.remoteParty);
+                            if (contact_obj) {
+                                elem.displayName = contact_obj.name;
+                                elem.photo = contact_obj.photo;
+                                // TODO update icon here
+                            } else {
+                                elem.photo = null;
+                            }
+
+                            elem.label = elem.direction;
+
+                            if (!elem.displayName) {
+                                elem.displayName = elem.remoteParty;
+                            }
+
+                            if (!elem.media || !Array.isArray(elem.media)) {
+                                elem.media = ['audio'];
+                            }
+
+                            if (elem.remoteParty.indexOf('@videoconference') > -1) {
+                                elem.remoteParty = elem.remoteParty.split('@')[0] + '@videoconference.' + config.defaultDomain;
+                            }
+
+                            if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
+                                (elem.remoteParty !== this.state.account.id || elem.direction !== 'placed')) {
+                                    known.push(elem.remoteParty);
+                                    if (elem.remoteParty.indexOf('3333@') > -1) {
+                                        // see Call.js as well if we change this
+                                        elem.displayName = 'Video Test';
+                                    }
+                                    if (elem.remoteParty.indexOf('4444@') > -1) {
+                                        // see Call.js as well if we change this
+                                        elem.displayName = 'Echo Test';
+                                    }
+                                    return elem;
+                            }
+                        }
+                    });
+
+                    if (history.length < 3) {
+                        history = history.concat(this.initialContacts);
+                    }
+
+                    this.setState({serverHistory: history});
+                }
+            }, (errorCode) => {
+                logger.debug('Error getting call history from server: %o', errorCode)
+            });
+        }
     }
 
     // checkRoute(nextPath, navigation, match) {
@@ -1797,6 +1779,7 @@ class Sylk extends Component {
     // }
 
     render() {
+        //utils.timestampedLog('Render main app');
         let footerBox = <View style={styles.footer}><FooterBox /></View>;
 
         let extraStyles = {};
@@ -1804,12 +1787,13 @@ class Sylk extends Component {
         if (this.state.localMedia || this.state.registrationState === 'registered') {
            footerBox = null;
         }
+
         return (
             <BreadProvider>
                 <PaperProvider theme={theme}>
                     <Router history={history} ref="router">
                         <ImageBackground source={backgroundImage} style={{width: '100%', height: '100%'}}>
-                            <View style={mainStyle.MainContainer} onLayout={(event) => this.setState({
+                                    <View style={mainStyle.MainContainer} onLayout={(event) => this.setState({
                                                                             Width_Layout : event.nativeEvent.layout.width,
                                                                             Height_Layout : event.nativeEvent.layout.height
                                                                            }, ()=> this._detectOrientation())}>
@@ -1874,6 +1858,7 @@ class Sylk extends Component {
     }
 
     ready() {
+        //utils.timestampedLog('Ready screen');
         if (!this.state.account) {
             return null;
         }
@@ -1898,7 +1883,7 @@ class Sylk extends Component {
                     key = {this.state.missedTargetUri}
                     serverHistory = {this.state.serverHistory}
                     orientation = {this.state.orientation}
-                    contacts = {this.state.contacts}
+                    contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
                 />
             </Fragment>
@@ -1937,7 +1922,7 @@ class Sylk extends Component {
                 speakerphoneOn = {this.speakerphoneOn}
                 speakerphoneOff = {this.speakerphoneOff}
                 callUUID = {this.state.outgoingCallUUID}
-                contacts = {this.state.contacts}
+                contacts = {this.contacts}
             />
         )
     }
@@ -1977,14 +1962,16 @@ class Sylk extends Component {
             let room = this.state.targetUri.split('@')[0];
             if (this.myParticipants.hasOwnProperty(room)) {
                 let uris = this.myParticipants[room];
-                uris.forEach((uri) => {
-                    if (uri.search(config.defaultDomain) > -1) {
-                        let user = uri.split('@')[0];
-                        _previousParticipants.add(user);
-                    } else {
-                        _previousParticipants.add(uri);
-                    }
-                });
+                if (uris) {
+                    uris.forEach((uri) => {
+                        if (uri.search(config.defaultDomain) > -1) {
+                            let user = uri.split('@')[0];
+                            _previousParticipants.add(user);
+                        } else {
+                            _previousParticipants.add(uri);
+                        }
+                    });
+                }
             }
         }
 
@@ -1992,14 +1979,16 @@ class Sylk extends Component {
             let room = this.state.targetUri.split('@')[0];
             if (this.myInvitedParties.hasOwnProperty(room)) {
                 let uris = this.myInvitedParties[room];
-                uris.forEach((uri) => {
-                    if (uri.search(config.defaultDomain) > -1) {
-                        let user = uri.split('@')[0];
-                        _previousParticipants.add(user);
-                    } else {
-                        _previousParticipants.add(uri);
-                    }
-                });
+                if (uris) {
+                    uris.forEach((uri) => {
+                        if (uri.search(config.defaultDomain) > -1) {
+                            let user = uri.split('@')[0];
+                            _previousParticipants.add(user);
+                        } else {
+                            _previousParticipants.add(uri);
+                        }
+                    });
+                }
             }
         }
 
@@ -2022,6 +2011,7 @@ class Sylk extends Component {
                 toggleSpeakerPhone = {this.toggleSpeakerPhone}
                 speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
                 callUUID = {this.state.outgoingCallUUID}
+                proposedMedia = {this.state.outgoingMedia}
             />
         )
     }

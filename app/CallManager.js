@@ -9,7 +9,7 @@ import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 
 // https://github.com/react-native-webrtc/react-native-callkeep
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, _sylkConferenceCallFunc) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -22,12 +22,12 @@ export default class CallManager extends events.EventEmitter {
         this._waitingCalls = new Map();
         this._timeouts = new Map();
         this._RNCallKeep = RNCallKeep;
-        utils.timestampedLog(RNCallKeep);
 
-        this._sylkAcceptCall = acceptFunc;
-        this._sylkRejectCall = rejectFunc;
-        this._sylkHangupCall = hangupFunc;
-        this._sylkConferenceCall = _sylkConferenceCallFunc;
+        this.sylkAcceptCall = acceptFunc;
+        this.sylkRejectCall = rejectFunc;
+        this.sylkHangupCall = hangupFunc;
+        this.timeoutCall = timeoutFunc;
+        this.conferenceCall = conferenceCallFunc;
 
         this._boundRnAccept = this._rnAccept.bind(this);
         this._boundRnEnd = this._rnEnd.bind(this);
@@ -40,7 +40,6 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('answerCall', this._boundRnAccept);
         this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
         this._RNCallKeep.addEventListener('didPerformSetMutedCallAction', this._boundRnMute);
-
         this._RNCallKeep.addEventListener('didActivateAudioSession', this._boundRnActiveAudioCall);
         this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall.bind(this));
         this._RNCallKeep.addEventListener('didPerformDTMFAction', this._boundRnDTMF);
@@ -178,13 +177,15 @@ export default class CallManager extends events.EventEmitter {
             }
 
             utils.timestampedLog('Will start conference to', room);
-            this._sylkConferenceCall(room);
+            this.conferenceCall(room);
             // start an outgoing conference call
         } else if (this._calls.has(callUUID)) {
             // if we have audio only we must skip video from get local media
-            this._sylkAcceptCall();
+            this.sylkAcceptCall();
         } else {
-            this._waitingCalls.set(callUUID, '_sylkAcceptCall');
+            // We accepted the call before it arrived on web socket
+            // from iOS push notifications
+            this._waitingCalls.set(callUUID, 'sylkAcceptCall');
         }
     }
 
@@ -207,13 +208,15 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: hangup call', callUUID);
             let call = this._calls.get(callUUID);
             if (call.state === 'incoming') {
-                this._sylkRejectCall(callUUID);
+                this.sylkRejectCall(callUUID);
             } else {
-                this._sylkHangupCall(callUUID);
+                this.sylkHangupCall(callUUID);
             }
         } else {
+            // We rejected the call before it arrived on web socket
+            // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
-            this._waitingCalls.set(callUUID, '_sylkHangupCall');
+            this._waitingCalls.set(callUUID, 'sylkHangupCall');
         }
     }
 
@@ -261,37 +264,33 @@ export default class CallManager extends events.EventEmitter {
 
     }
 
-    handleConference(callUUID, room) {
+    handleConference(callUUID, room, from_uri) {
         if (this._conferences.has(callUUID)) {
             return;
         }
 
-        utils.timestampedLog('CallKeep: handle conference', callUUID, 'to room', room);
+        utils.timestampedLog('CallKeep: handle conference', callUUID, 'to uri', room);
         this._conferences.set(callUUID, room);
-        this.showConferenceAlertPanel(callUUID, room);
+        this.showConferenceAlertPanel(callUUID, from_uri);
 
         // there is no cancel, so we add a timer
         this._timeouts.set(callUUID, setTimeout(() => {
-            utils.timestampedLog('Callkeep: end conference call later', callUUID);
+            utils.timestampedLog('Callkeep: conference timeout', callUUID);
+            this.timeoutCall(callUUID, from_uri);
             this.callKeep.reportEndCallWithUUID(callUUID, 3);
             this._timeouts.delete(callUUID);
-        }, 30000));
+        }, 45000));
 
         this._emitSessionsChange(true);
     }
 
-    showConferenceAlertPanel(callUUID, room) {
+    showConferenceAlertPanel(callUUID, uri) {
         utils.timestampedLog('Callkeep: show alert panel');
 
-        let roomUsername = room.split('@')[0];
-        let title = 'Join conference ' + roomUsername + '?';
-
-        // strange behavior when showing the above, the iOS history seem to be messed up
-
         if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(callUUID, room, room, 'email', true);
+            this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', true);
         } else if (Platform.OS === 'android') {
-            this.callKeep.displayIncomingCall(callUUID, room, room);
+            this.callKeep.displayIncomingCall(callUUID, uri, uri);
         }
     }
 
@@ -309,6 +308,7 @@ export default class CallManager extends events.EventEmitter {
 
     handleCall(call, callUUID) {
         // callUUID is present only for outgoing calls
+
         if (callUUID) {
             call._callkeepUUID = callUUID;
 
@@ -329,6 +329,7 @@ export default class CallManager extends events.EventEmitter {
             //if the call is in waiting then accept it (or decline it)
             if (this._waitingCalls.get(call._callkeepUUID)) {
                 let action = this._waitingCalls.get(call._callkeepUUID);
+                utils.timestampedLog('Callkeep: execute action', action);
                 this[action]();
                 this._waitingCalls.delete(call._callkeepUUID);
             } else {

@@ -26,13 +26,15 @@ class Conference extends React.Component {
     }
 
     start() {
+        console.log('Starting conference call', this.props.proposedMedia);
+
         if (this.props.currentCall === null) {
             const options = {
                 id: this.props.callUUID,
                 pcConfig: {iceServers: config.iceServers},
                 localStream: this.props.localMedia,
-                audio: true,
-                video: true,
+                audio: this.props.proposedMedia.audio,
+                video: this.props.proposedMedia.video,
                 offerOptions: {
                     offerToReceiveAudio: false,
                     offerToReceiveVideo: false
@@ -108,7 +110,8 @@ Conference.propTypes = {
     targetUri               : PropTypes.string,
     participantsToInvite    : PropTypes.array,
     generatedVideoTrack     : PropTypes.bool,
-    callUUID                : PropTypes.string
+    callUUID                : PropTypes.string,
+    proposedMedia           : PropTypes.object
 };
 
 
