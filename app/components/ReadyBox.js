@@ -22,12 +22,13 @@ class ReadyBox extends Component {
 
         this.state = {
             targetUri: this.props.missedTargetUri,
+            contacts: this.props.contacts,
+            selectedContact: null,
             showConferenceModal: false,
             sticky: false
         };
 
-        this.matchedContacts = [];
-
+        console.log('Loaded ready box', this.state.targetUri);
     }
 
     getTargetUri() {
@@ -43,31 +44,20 @@ class ReadyBox extends Component {
     }
 
     handleTargetChange(value, contact) {
-        let matchedContacts = [];
         let new_value = value;
 
         if (contact) {
-            if (this.state.targetUri != contact.uri) {
-                matchedContacts = matchedContacts.concat(contact);
-            } else {
+            if (this.state.targetUri === contact.uri) {
                 new_value = '';
             }
         }
 
-        if (this.state.targetUri) {
-            let currentUri = this.getTargetUri();
-            if (currentUri.trim() === value.trim()) {
-                new_value = '';
-            }
+        if (this.state.targetUri === value) {
+            new_value = '';
         }
 
-        this.setState({targetUri: new_value});
-
-        if (new_value.length > 2 && !contact) {
-            matchedContacts = this.props.contacts.filter(contact => (contact.uri.toLowerCase().search(new_value) > -1 || contact.name.toLowerCase().search(new_value) > -1));
-        }
-
-        this.matchedContacts = matchedContacts;
+        this.setState({targetUri: new_value,
+                       selectedContact: contact});
     }
 
     handleTargetSelect() {
@@ -133,7 +123,7 @@ class ReadyBox extends Component {
     }
 
     render() {
-        //utils.timestampedLog('Render ready box');
+        //utils.timestampedLog('Render ready');
         const defaultDomain = `${config.defaultDomain}`;
 
         let uriClass = styles.portraitUriInputBox;
@@ -163,15 +153,18 @@ class ReadyBox extends Component {
         const historyClass = this.props.orientation === 'landscape' ? styles.landscapeHistory : styles.portraitHistory;
 
         // Join URIs from local and server history for input
+/*
         let history = this.props.history.concat(
             this.props.serverHistory.map(e => e.remoteParty)
         );
 
         history = [...new Set(history)];
+        */
+
         //console.log('history from server is', this.props.serverHistory);
         const placehoder = 'Enter a SIP address like alice@' + defaultDomain;
 
-        let historyItems = this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri))
+//        let historyItems = this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri))
 
         return (
             <Fragment>
@@ -182,7 +175,6 @@ class ReadyBox extends Component {
                             <View style={uriClass}>
                                 <URIInput
                                     defaultValue={this.state.targetUri}
-                                    data={history}
                                     onChange={this.handleTargetChange}
                                     onSelect={this.handleTargetSelect}
                                     placeholder={placehoder}
@@ -215,13 +207,17 @@ class ReadyBox extends Component {
                     </View>
                     <View style={historyClass}>
                         <HistoryTileBox
-                            historyItems={historyItems}
-                            contactItems={this.matchedContacts}
+                            contacts={this.state.contacts}
+                            targetUri={this.state.targetUri}
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
+                            selectedContact={this.state.selectedContact}
                             startVideoCall={this.handleVideoCall}
                             startAudioCall={this.handleAudioCall}
                             isTablet={this.props.isTablet}
+                            account={this.props.account}
+                            password={this.props.password}
+                            config={this.props.config}
                         />
                     </View>
                     <View style={styles.footer}>
@@ -241,14 +237,16 @@ class ReadyBox extends Component {
 
 ReadyBox.propTypes = {
     account         : PropTypes.object.isRequired,
+    password        : PropTypes.string.isRequired,
+    config          : PropTypes.object.isRequired,
     startCall       : PropTypes.func.isRequired,
     startConference : PropTypes.func.isRequired,
     missedTargetUri : PropTypes.string,
-    history         : PropTypes.array,
-    serverHistory   : PropTypes.array,
     orientation     : PropTypes.string,
     contacts        : PropTypes.array,
-    isTablet        : PropTypes.bool
+    isTablet        : PropTypes.bool,
+    refreshHistory  : PropTypes.func
+
 };
 
 

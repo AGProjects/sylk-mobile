@@ -47,7 +47,7 @@ class HistoryCard extends Component {
     }
 
     render () {
-        //console.log(this.props.contact.index, 'Render card', this.identity.uri, 'in', this.props.orientation);
+        //console.log('Render card', this.identity.uri);
 
         let containerClass = styles.portraitContainer;
 
@@ -93,8 +93,7 @@ class HistoryCard extends Component {
 
             return (
                 <Card
-                    onPress={() => {this.props.setTargetUri(this.identity.uri)}}
-                    onLongPress={this.startVideoCall}
+                    onPress={() => {this.props.setTargetUri(this.identity.uri, this.props.contact)}}
                     style={containerClass}
                     >
                     <Card.Content style={styles.content}>

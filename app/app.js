@@ -7,7 +7,6 @@ import { registerGlobals } from 'react-native-webrtc';
 import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
 import Logger from "../Logger";
-import DigestAuthRequest from 'digest-auth-request';
 import autoBind from 'auto-bind';
 import { firebase } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
@@ -142,7 +141,6 @@ class Sylk extends Component {
             localMedia: null,
             generatedVideoTrack: false,
             contacts: [],
-            serverHistory: [],
             devices: {},
             speakerPhoneEnabled: null,
             orientation : 'portrait',
@@ -165,28 +163,9 @@ class Sylk extends Component {
         this.state = Object.assign({}, this._initialSstate);
 
         this.localHistory = [];
+
         this.myParticipants = {};
         this.myInvitedParties = {};
-
-        const echoTest = {
-            remoteParty: '4444@sylk.link',
-            displayName: 'Echo test',
-            type: 'contact',
-            label: 'Call to test microphone'
-            };
-
-        const videoTest = {
-            remoteParty: '3333@sylk.link',
-            displayName: 'Video test',
-            type: 'contact',
-            label: 'Call to test video'
-            };
-
-        const echoTestCard = Object.assign({}, echoTest);
-        const videoTestCard = Object.assign({}, videoTest);
-
-        let initialContacts = [echoTestCard, videoTestCard];
-        this.initialContacts = initialContacts;
 
         this.__notificationCenter = null;
 
@@ -660,7 +639,6 @@ class Sylk extends Component {
                 }
             }
         } else if (newState === 'registered') {
-            this.getServerHistory();
             RNCallKeep.setAvailable(true);
             this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
 
@@ -885,9 +863,11 @@ class Sylk extends Component {
                 if (!newCurrentCall && !newInboundCall) {
                     this.participantsToInvite = null;
                     history.push('/ready');
+                    /*
                     setTimeout(() => {
                         this.getServerHistory();
                     }, 1500);
+                    */
                 }
 
                 this.updateHistoryEntry(callUUID);
@@ -1423,6 +1403,7 @@ class Sylk extends Component {
                 this.setFocusEvents(true);
                 return;
             }
+
             if (n === wait_interval - 1) {
                 utils.timestampedLog('Terminating call', callUUID, 'that did not start yet');
                 this._callKeepManager.endCall(callUUID, 6);
@@ -1751,13 +1732,12 @@ class Sylk extends Component {
                     registration = {this.state.registrationState}
                 />
                 <ReadyBox
-                    account   = {this.state.account}
+                    account = {this.state.account}
+                    password = {this.state.password}
+                    config = {config}
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
                     missedTargetUri = {this.state.missedTargetUri}
-                    history = {this.localHistory}
-                    key = {this.state.missedTargetUri}
-                    serverHistory = {this.state.serverHistory}
                     orientation = {this.state.orientation}
                     contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
@@ -1978,11 +1958,11 @@ class Sylk extends Component {
             });
         }
         storage.set('account', {accountId: this.state.accountId, password: ''});
+        this.serverHistory = [];
         this.setState({account: null,
                        registrationState: null,
                        registrationKeepalive: false,
                        status: null,
-                       serverHistory: [],
                        history: []
                        });
         history.push('/login');

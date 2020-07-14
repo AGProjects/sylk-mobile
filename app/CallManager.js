@@ -283,7 +283,6 @@ export default class CallManager extends events.EventEmitter {
 
         this._calls.set(call._callkeepUUID, call);
         utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
-        this._calls.set(call._callkeepUUID, call);
 
         // Emit event.
         this._emitSessionsChange(true);
