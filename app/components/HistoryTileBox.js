@@ -174,7 +174,7 @@ class HistoryTileBox extends Component {
 
     render() {
 
-        utils.timestampedLog('Render history');
+        //utils.timestampedLog('Render history');
         // Join URIs from local and server history for input
         let matchedContacts = [];
 

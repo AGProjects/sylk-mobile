@@ -209,7 +209,7 @@ Call.propTypes = {
     targetUri               : PropTypes.string.isRequired,
     account                 : PropTypes.object.isRequired,
     hangupCall              : PropTypes.func.isRequired,
-    localMedia              : PropTypes.object.isRequired,
+    localMedia              : PropTypes.object,
     currentCall             : PropTypes.object,
     shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,

@@ -125,6 +125,7 @@ export default class CallManager extends events.EventEmitter {
     rejectCall(callUUID) {
         utils.timestampedLog('Callkeep: reject call', callUUID);
         this.callKeep.rejectCall(callUUID);
+        this._rejectedCalls.set(callUUID, true);
     }
 
     endCalls() {
@@ -241,6 +242,11 @@ export default class CallManager extends events.EventEmitter {
         // call is received by push notification
         if (this._calls.has(callUUID)) {
             utils.timestampedLog('Callkeep: call', callUUID, 'already handled');
+            return;
+        }
+
+        if (this._rejectedCalls.has(callUUID)) {
+            this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
             return;
         }
 
