@@ -18,3 +18,4 @@ firebase.messaging().setBackgroundMessageHandler(bgMessaging);
 AppRegistry.registerComponent(appName, () => App);
 
 AppRegistry.registerHeadlessTask('RNCallKeepBackgroundMessage', () => bgCalling);
+AppRegistry.registerHeadlessTask('RNFirebaseBackgroundMessage', () => bgMessaging);
