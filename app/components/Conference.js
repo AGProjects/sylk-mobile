@@ -85,6 +85,7 @@ class Conference extends React.Component {
                 box = (
                     <LocalMedia
                         remoteUri = {this.props.targetUri}
+                        remoteDisplayName = {this.props.targetUri}
                         localMedia = {this.props.localMedia}
                         mediaPlaying = {this.mediaPlaying}
                         hangupCall = {this.hangup}

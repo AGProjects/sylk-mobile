@@ -722,7 +722,7 @@ ConferenceBox.propTypes = {
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
     saveInvitedParties  : PropTypes.func,
-    previousParticipants: PropTypes.object,
+    previousParticipants: PropTypes.array,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
     toggleSpeakerPhone  : PropTypes.func,

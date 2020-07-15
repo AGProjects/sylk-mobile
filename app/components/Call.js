@@ -93,7 +93,6 @@ class Call extends Component {
 
     call() {
         assert(this.props.currentCall === null, 'currentCall is not null');
-        //console.log('Call: starting call', this.props.callUUID, 'to', this.props.targetUri);
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
         options.localStream = this.props.localMedia;
         let call = this.props.account.call(this.props.targetUri, options);
@@ -101,7 +100,6 @@ class Call extends Component {
     }
 
     answerCall() {
-        console.log('Call: answer call');
         assert(this.props.currentCall !== null, 'currentCall is null');
         let options = {pcConfig: {iceServers: config.iceServers}};
         options.localStream = this.props.localMedia;
@@ -109,8 +107,8 @@ class Call extends Component {
     }
 
     hangupCall() {
-        console.log('Call: hangup call');
         let callUUID = this.props.currentCall._callkeepUUID;
+        this.props.currentCall.removeListener('stateChanged', this.callStateChanged);
         this.props.hangupCall(callUUID);
     }
 
@@ -127,7 +125,7 @@ class Call extends Component {
         let box = null;
 
         let remoteUri = this.props.targetUri;
-        let remoteDisplayName;
+        let remoteDisplayName = remoteUri;
 
         if (this.props.currentCall !== null && this.props.currentCall.state == 'established') {
             remoteUri = this.props.currentCall.remoteIdentity.uri;
@@ -142,14 +140,15 @@ class Call extends Component {
         } else if (remoteUri.indexOf('4444@') > -1) {
             remoteDisplayName = 'Echo Test';
         } else {
-            var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', remoteUri);
-            if (contact_obj) {
-                remoteDisplayName = contact_obj.displayName;
+            if (this.props.contacts) {
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', remoteUri);
+                if (contact_obj) {
+                    remoteDisplayName = contact_obj.displayName;
+                }
             }
         }
 
         if (this.props.localMedia !== null) {
-            //console.log('Will render audio box');
             if (this.state.audioOnly) {
                 box = (
                     <AudioCallBox
@@ -207,20 +206,20 @@ class Call extends Component {
 }
 
 Call.propTypes = {
+    targetUri               : PropTypes.string.isRequired,
     account                 : PropTypes.object.isRequired,
     hangupCall              : PropTypes.func.isRequired,
-    shareScreen             : PropTypes.func,
+    localMedia              : PropTypes.object.isRequired,
     currentCall             : PropTypes.object,
+    shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,
-    localMedia              : PropTypes.object,
-    targetUri               : PropTypes.string,
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
     speakerphoneOn          : PropTypes.func,
     speakerphoneOff         : PropTypes.func,
     callUUID                : PropTypes.string,
-    contacts                : PropTypes.object
+    contacts                : PropTypes.array
 };
 
 

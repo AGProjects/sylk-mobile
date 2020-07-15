@@ -33,6 +33,7 @@ export default class CallManager extends events.EventEmitter {
         this._calls = new Map();
         this._conferences = new Map();
         this._rejectedCalls = new Map();
+
         this._decideLater = new Map();
         this._timeouts = new Map();
 
@@ -126,6 +127,11 @@ export default class CallManager extends events.EventEmitter {
         this.callKeep.rejectCall(callUUID);
     }
 
+    endCalls() {
+        utils.timestampedLog('Callkeep: end all calls');
+        this.callKeep.endAllCalls();
+    }
+
     endCall(callUUID, reason) {
         utils.timestampedLog('Callkeep: end call', callUUID, ' with reason', reason);
         if (reason) {
@@ -136,14 +142,12 @@ export default class CallManager extends events.EventEmitter {
         this._calls.delete(callUUID);
     }
 
-    _rnActiveAudioSession(data) {
+    _rnActiveAudioSession() {
         utils.timestampedLog('Callkeep: activated audio call');
-        console.log(data);
     }
 
-    _rnDeactiveAudioSession(data) {
+    _rnDeactiveAudioSession() {
         utils.timestampedLog('Callkeep: deactivated audio call');
-        console.log(data);
     }
 
     _rnAccept(data) {
@@ -169,6 +173,7 @@ export default class CallManager extends events.EventEmitter {
         } else {
             // We accepted the call before it arrived on web socket
             // from iOS push notifications
+            this.backToForeground();
             this._decideLater.set(callUUID, 'accept');
         }
     }
@@ -234,6 +239,11 @@ export default class CallManager extends events.EventEmitter {
 
     handleIncomingPushCall(callUUID, notificationContent) {
         // call is received by push notification
+        if (this._calls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: call', callUUID, 'already handled');
+            return;
+        }
+
         utils.timestampedLog('Callkeep: handle later incoming call', callUUID);
 
         let reason = this._decideLater.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
@@ -280,7 +290,6 @@ export default class CallManager extends events.EventEmitter {
     handleOutgoingCall(call, callUUID) {
         // this is an outgoing call
         call._callkeepUUID = callUUID;
-
         this._calls.set(call._callkeepUUID, call);
         utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
 

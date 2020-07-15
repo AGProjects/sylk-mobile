@@ -154,7 +154,8 @@ class Sylk extends Component {
             model: '',
             phoneNumber: '',
             osVersion: '',
-            isTablet: false
+            isTablet: false,
+            refreshHistory: false
         };
 
         this.pushtoken = null;
@@ -731,11 +732,11 @@ class Sylk extends Component {
             }
         } else if (this.state.inboundCall) {
             if (oldState === 'incoming' && newState === 'terminated') {
-                utils.timestampedLog("New call must be cancelled");
+                utils.timestampedLog("Incoming call was cancelled");
                 newInboundCall = null;
                 newCurrentCall = null;
             } else if (oldState === 'incoming' && newState === 'accepted') {
-                utils.timestampedLog("New call is accepted");
+                utils.timestampedLog("Incoming call is accepted");
                 newCurrentCall = this.state.inboundCall;
                 newInboundCall = this.state.inboundCall;
             } else if (oldState === 'established' && newState === 'terminated') {
@@ -756,6 +757,7 @@ class Sylk extends Component {
                 break;
             case 'established':
                 this._callKeepManager.setCurrentCallActive(callUUID);
+                this._callKeepManager.backToForeground();
             case 'accepted':
                 if (this.state.isConference) {
                     // allow ringtone to play once as connection is too fast
@@ -763,8 +765,6 @@ class Sylk extends Component {
                 } else {
                     InCallManager.stopRingback();
                 }
-
-                this._callKeepManager.backToForeground();
 
                 if (this.state.isConference) {
                     //this._callKeepManager.backToForeground();
@@ -851,7 +851,6 @@ class Sylk extends Component {
                 }
 
                 this.setState({
-                    targetUri           : callSuccesfull || config.useServerCallHistory ? '' : this.state.targetUri,
                     showIncomingModal   : false,
                     isConference        : false,
                     localMedia          : null,
@@ -863,11 +862,10 @@ class Sylk extends Component {
                 if (!newCurrentCall && !newInboundCall) {
                     this.participantsToInvite = null;
                     history.push('/ready');
-                    /*
+
                     setTimeout(() => {
-                        this.getServerHistory();
+                        this.setState({refreshHistory: !this.state.refreshHistory});
                     }, 1500);
-                    */
                 }
 
                 this.updateHistoryEntry(callUUID);
@@ -878,11 +876,10 @@ class Sylk extends Component {
         }
 
         this.setState({
-                    currentCall         : newCurrentCall,
-                    inboundCall         : newInboundCall
+                    currentCall: newCurrentCall,
+                    inboundCall: newInboundCall
                 });
 
-        //this.showCalls('End callStateChanged');
     }
 
     handleCallByUri(displayName, targetUri) {
@@ -1259,8 +1256,10 @@ class Sylk extends Component {
                 utils.timestampedLog('Sylkrtc close media');
             }
         }
+
+        // just terminate all calls to be sure
+        this._callKeepManager.endCalls();
         history.push('/ready');
-        this.forceUpdate();
     }
 
     callKeepSendDtmf(digits) {
@@ -1338,7 +1337,12 @@ class Sylk extends Component {
         if (notificationContent['event'] === 'incoming_session') {
             utils.timestampedLog('Incoming call for push mobile notification for call', callUUID);
 
-            this._callKeepManager.handleIncomingPushCall(callUUID, notificationContent);
+            if (notificationContent['from_uri'] === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri) {
+                utils.timestampedLog('Reject call to myself', callUUID);
+                this._callKeepManager.rejectCall(callUUID);
+            } else {
+                this._callKeepManager.handleIncomingPushCall(callUUID, notificationContent);
+            }
 
             if (VoipPushNotification.wakeupByPush) {
                 utils.timestampedLog('We wake up by a push notification');
@@ -1433,8 +1437,6 @@ class Sylk extends Component {
         }
 
         this.setState({localMedia: null});
-        history.push('/ready');
-
         this.participantsToInvite = participants;
         this.callKeepStartConference(uri);
     }
@@ -1454,6 +1456,13 @@ class Sylk extends Component {
         // because of limitation in Sofia stack, we cannot have more then two calls at a time
         // we can have one outgoing call and one incoming call but not two incoming calls
         // we cannot have two incoming calls, second one is automatically rejected by sylkrtc.js
+
+        if (call.remoteIdentity.uri === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri) {
+            utils.timestampedLog('Reject call to myself', call.id);
+            this._callKeepManager.rejectCall(call.id);
+            call.terminate();
+            return;
+        }
 
         let media_type = mediaTypes.video ? 'video' : 'audio';
         call.mediaTypes = mediaTypes;
@@ -1741,6 +1750,7 @@ class Sylk extends Component {
                     orientation = {this.state.orientation}
                     contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
+                    refreshHistory = {this.state.refreshHistory}
                 />
             </Fragment>
         );
@@ -1760,12 +1770,14 @@ class Sylk extends Component {
     }
 
     call() {
+        let currentCall = this.state.currentCall || this.state.inboundCall;
+
         return (
             <Call
-                localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
-                currentCall = {this.state.currentCall || this.state.inboundCall}
+                currentCall = {currentCall}
+                localMedia = {this.state.localMedia}
                 escalateToConference = {this.escalateToConference}
                 hangupCall = {this.hangupCall}
                 // shareScreen = {this.switchScreensharing}

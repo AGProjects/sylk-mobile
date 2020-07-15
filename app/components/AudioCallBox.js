@@ -216,12 +216,12 @@ class AudioCallBox extends Component {
 }
 
 AudioCallBox.propTypes = {
+    remoteUri               : PropTypes.string.isRequired,
     call                    : PropTypes.object,
+    remoteDisplayName       : PropTypes.string,
     escalateToConference    : PropTypes.func,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
-    remoteUri               : PropTypes.string,
-    remoteDisplayName       : PropTypes.string,
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,

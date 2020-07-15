@@ -282,7 +282,7 @@ class VideoBox extends Component {
             // );
         }
 
-        console.log('local media stream in videobox', this.state);
+        //console.log('local media stream in videobox', this.state);
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';

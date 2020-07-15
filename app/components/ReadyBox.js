@@ -28,7 +28,6 @@ class ReadyBox extends Component {
             sticky: false
         };
 
-        console.log('Loaded ready box', this.state.targetUri);
     }
 
     getTargetUri() {
@@ -212,12 +211,11 @@ class ReadyBox extends Component {
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             selectedContact={this.state.selectedContact}
-                            startVideoCall={this.handleVideoCall}
-                            startAudioCall={this.handleAudioCall}
                             isTablet={this.props.isTablet}
                             account={this.props.account}
                             password={this.props.password}
                             config={this.props.config}
+                            refreshHistory={this.props.refreshHistory}
                         />
                     </View>
                     <View style={styles.footer}>
@@ -245,7 +243,7 @@ ReadyBox.propTypes = {
     orientation     : PropTypes.string,
     contacts        : PropTypes.array,
     isTablet        : PropTypes.bool,
-    refreshHistory  : PropTypes.func
+    refreshHistory  : PropTypes.bool
 
 };
 

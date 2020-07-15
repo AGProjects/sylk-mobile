@@ -118,7 +118,6 @@ class URIInput extends React.Component {
 
 URIInput.propTypes = {
     defaultValue: PropTypes.string.isRequired,
-    data: PropTypes.array.isRequired,
     autoFocus: PropTypes.bool.isRequired,
     onChange: PropTypes.func.isRequired,
     onSelect: PropTypes.func.isRequired,

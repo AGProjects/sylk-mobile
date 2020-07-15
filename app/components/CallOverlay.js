@@ -113,7 +113,7 @@ class CallOverlay extends React.Component {
 CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string.isRequired,
-    remoteDisplayName: PropTypes.string.isRequired,
+    remoteDisplayName: PropTypes.string,
     call: PropTypes.object
 };
 
