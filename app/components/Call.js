@@ -181,6 +181,7 @@ class Call extends Component {
                             callKeepToggleMute = {this.props.callKeepToggleMute}
                             speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                             toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
+                            intercomDtmfTone = {this.props.intercomDtmfTone}
                         />
                     );
                 } else {
@@ -220,7 +221,8 @@ Call.propTypes = {
     speakerphoneOn          : PropTypes.func,
     speakerphoneOff         : PropTypes.func,
     callUUID                : PropTypes.string,
-    contacts                : PropTypes.array
+    contacts                : PropTypes.array,
+    intercomDtmfTone        : PropTypes.string
 };
 
 

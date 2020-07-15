@@ -50,7 +50,7 @@ class VideoBox extends Component {
     }
 
     openDoor() {
-        const tone = config.intercomDtmfTone;
+        const tone = this.props.intercomDtmfTone;
         DEBUG('DTMF tone sent to intercom: ' + tone);
         this.setState({doorOpened: true});
         this.forceUpdate();
@@ -313,7 +313,7 @@ class VideoBox extends Component {
                     </View>
                 </TouchableOpacity>
                 : null }
-                { config.intercomDtmfTone ?
+                { this.props.intercomDtmfTone ?
                  <View style={styles.buttonContainer}>
                     <IconButton
                         size={50}
@@ -399,7 +399,8 @@ VideoBox.propTypes = {
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,
-    speakerPhoneEnabled     : PropTypes.bool
+    speakerPhoneEnabled     : PropTypes.bool,
+    intercomDtmfTone        : PropTypes.string
 };
 
 export default VideoBox;

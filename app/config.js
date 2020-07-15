@@ -15,7 +15,7 @@ const configOptions = {
     fileSharingUrl          : 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
     iceServers              : [{urls: 'stun:stun.sipthor.net:3478'}],
     useServerCallHistory    : true,
-    intercomDtmfTone        : false
+    intercomDomains         : []
 };
 
 

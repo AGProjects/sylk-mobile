@@ -161,6 +161,7 @@ class Sylk extends Component {
         this.currentRoute = null;
         this.pushtoken = null;
         this.pushkittoken = null;
+        this.intercomDtmfTone = null;
 
         this.state = Object.assign({}, this._initialSstate);
 
@@ -1807,6 +1808,7 @@ class Sylk extends Component {
                 speakerphoneOff = {this.speakerphoneOff}
                 callUUID = {this.state.outgoingCallUUID}
                 contacts = {this.contacts}
+                intercomDtmfTone = {this.intercomDtmfTone}
             />
         )
     }
