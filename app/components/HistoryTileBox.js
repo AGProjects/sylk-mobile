@@ -7,7 +7,7 @@ import HistoryCard from './HistoryCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import storage from '../storage';
-
+import uuid from 'react-native-uuid';
 
 import styles from '../assets/styles/blink/_HistoryTileBox.scss';
 
@@ -18,22 +18,24 @@ class HistoryTileBox extends Component {
         autoBind(this);
 
         this.state = {
-            serverHistory: []
+            serverHistory: [],
+            refreshHistory: this.props.refreshHistory
         }
-
 
         const echoTest = {
             remoteParty: '4444@sylk.link',
             displayName: 'Echo test',
             type: 'contact',
-            label: 'Call to test microphone'
+            label: 'Call to test microphone',
+            id: uuid.v4()
             };
 
         const videoTest = {
             remoteParty: '3333@sylk.link',
             displayName: 'Video test',
             type: 'contact',
-            label: 'Call to test video'
+            label: 'Call to test video',
+            id: uuid.v4()
             };
 
         const echoTestCard = Object.assign({}, echoTest);
@@ -51,18 +53,16 @@ class HistoryTileBox extends Component {
     }
 
     componentDidMount() {
-        this.getServerHistory()
+        this.getServerHistory();
     }
 
-    refreshHistory = res => this.setState({ serverHistory: res.history })
+    refreshHistory = res => this.setState({ serverHistory: res.history})
 
     renderItem(item) {
         return(
             <HistoryCard
             contact={item.item}
             setTargetUri={this.props.setTargetUri}
-            startVideoCall={this.props.startVideoCall}
-            startAudioCall={this.props.startAudioCall}
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
             />);
@@ -77,6 +77,12 @@ class HistoryTileBox extends Component {
         return null;
     }
 
+    UNSAFE_componentWillReceiveProps(props) {
+        if (props.refreshHistory !== this.state.refreshHistory) {
+            this.getServerHistory();
+        }
+    }
+
     getServerHistory() {
         let history = [];
 
@@ -87,8 +93,8 @@ class HistoryTileBox extends Component {
             this.props.account.id.split('@')[0],
             this.props.password
         );
-        // Disable logging
 
+        // Disable logging
         getServerCallHistory.loggingOn = false;
         getServerCallHistory.request((data) => {
             if (data.success !== undefined && data.success === false) {
@@ -113,7 +119,7 @@ class HistoryTileBox extends Component {
                 history = history.filter((elem) => {
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         elem.type = 'history';
-                        var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', elem.remoteParty);
+                        var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
                         if (contact_obj) {
                             elem.displayName = contact_obj.name;
                             elem.photo = contact_obj.photo;
@@ -147,6 +153,7 @@ class HistoryTileBox extends Component {
                                     // see Call.js as well if we change this
                                     elem.displayName = 'Echo Test';
                                 }
+                                elem.id = uuid.v4();
                                 return elem;
                         }
                     }
@@ -166,20 +173,26 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-        //console.log('Render history');
+
+        utils.timestampedLog('Render history');
         // Join URIs from local and server history for input
-        //console.log('history from server is', this.props.serverHistory);
         let matchedContacts = [];
 
         let items = this.state.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
+        let searchExtraItems = this.props.contacts;
+        searchExtraItems.concat(this.initialContacts);
+
         if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
-            matchedContacts = this.props.contacts.filter(contact => (contact.uri.toLowerCase().search(this.props.targetUri) > -1 || contact.name.toLowerCase().search(this.props.targetUri) > -1));
-        } else if (this.props.selectedContact) {
+            matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().search(this.props.targetUri) > -1 || contact.displayName.toLowerCase().search(this.props.targetUri) > -1));
+        } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
             matchedContacts.push(this.props.selectedContact);
         }
 
         items = items.concat(matchedContacts);
+        //console.log(items);
+
+        items = items.slice(0, 8);
 
         //utils.timestampedLog('Render history in', this.props.orientation);
 
@@ -191,13 +204,14 @@ class HistoryTileBox extends Component {
             columns = this.props.orientation === 'landscape' ? 2 : 1;
         }
 
+
         return (
             <SafeAreaView style={styles.container}>
               <FlatList horizontal={false}
                 numColumns={columns}
                 data={items}
                 renderItem={this.renderItem}
-                keyExtractor={item => item.sessionId}
+                keyExtractor={item => item.id}
                 key={this.props.orientation}
               />
             </SafeAreaView>
@@ -209,15 +223,13 @@ HistoryTileBox.propTypes = {
     account         : PropTypes.object.isRequired,
     password        : PropTypes.string.isRequired,
     config          : PropTypes.object.isRequired,
-    defaultDomain   : PropTypes.string.isRequired,
-    targetUri       : PropTypes.string.isRequired,
-    selectedContact : PropTypes.object.isRequired,
+    targetUri       : PropTypes.string,
+    selectedContact : PropTypes.object,
     contacts        : PropTypes.array,
     orientation     : PropTypes.string,
-    startAudioCall  : PropTypes.func,
-    startVideoCall  : PropTypes.func,
     setTargetUri    : PropTypes.func,
-    isTablet        : PropTypes.bool
+    isTablet        : PropTypes.bool,
+    refreshHistory  : PropTypes.bool
 };
 
 

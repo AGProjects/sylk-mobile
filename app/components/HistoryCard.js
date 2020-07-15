@@ -17,54 +17,38 @@ class HistoryCard extends Component {
         super(props);
         autoBind(this);
 
-        this.identity = {
-            displayName: this.props.contact.displayName || this.props.contact.name,
-            uri: this.props.contact.remoteParty || this.props.contact.uri,
-            type: this.props.contact.type || 'contact',
+        this.state = {
+            displayName: this.props.contact.displayName,
+            uri: this.props.contact.remoteParty,
+            type: this.props.contact.type,
             photo: this.props.contact.photo,
-            label: this.props.contact.label
+            label: this.props.contact.label,
+            orientation: this.props.orientation,
+            isTablet: this.props.isTablet
         }
 
         //console.log(this.props.contact);
-   }
-
-    startVideoCall(e) {
-        e.stopPropagation();
-        this.props.setTargetUri(this.identity.uri);
-        // We need to wait for targetURI
-        setImmediate(() => {
-            this.props.startVideoCall(e);
-        });
-    }
-
-    startAudioCall(e) {
-        e.stopPropagation();
-        this.props.setTargetUri(this.identity.uri);
-        // We need to wait for targetURI
-        setImmediate(() => {
-            this.props.startAudioCall(e);
-        });
     }
 
     render () {
-        //console.log('Render card', this.identity.uri);
+        //console.log('Render card', this.state.uri, 'in', this.state.orientation);
 
         let containerClass = styles.portraitContainer;
 
-        if (this.props.isTablet) {
-            containerClass = (this.props.orientation === 'landscape') ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
+        if (this.state.isTablet) {
+            containerClass = (this.state.orientation === 'landscape') ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
         } else {
-            containerClass = (this.props.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+            containerClass = (this.state.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
         }
 
         let color = {};
-        const name = this.identity.displayName || this.identity.uri;
-        let title = this.identity.displayName || this.identity.uri;
-        let subtitle = this.identity.uri;
+        const name = this.state.displayName || this.state.uri;
+        let title = this.state.displayName || this.state.uri;
+        let subtitle = this.state.uri;
 
         let description = this.props.contact.startTime;
 
-        if (this.identity.type === 'history') {
+        if (this.state.type === 'history') {
             let duration = moment.duration(this.props.contact.duration, 'seconds').format('hh:mm:ss', {trim: false});
 
             if (this.props.contact.direction === 'received' && this.props.contact.duration === 0) {
@@ -75,11 +59,11 @@ class HistoryCard extends Component {
             }
 
             if (duration) {
-                let subtitle = this.identity.uri + ' (' + duration + ')';
+                let subtitle = this.state.uri + ' (' + duration + ')';
             }
 
-            if (!this.identity.displayName) {
-                title = this.identity.uri;
+            if (!this.state.displayName) {
+                title = this.state.uri;
                 if (duration === 'missed') {
                     subtitle = 'Last call missed';
                 } else if (duration === 'cancelled') {
@@ -93,7 +77,7 @@ class HistoryCard extends Component {
 
             return (
                 <Card
-                    onPress={() => {this.props.setTargetUri(this.identity.uri, this.props.contact)}}
+                    onPress={() => {this.props.setTargetUri(this.state.uri, this.props.contact)}}
                     style={containerClass}
                     >
                     <Card.Content style={styles.content}>
@@ -105,7 +89,7 @@ class HistoryCard extends Component {
                             </Caption>
                         </View>
                         <View style={styles.userAvatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.identity} card/>
+                            <UserIcon style={styles.userIcon} identity={this.state} card/>
                         </View>
                     </Card.Content>
                 </Card>
@@ -114,20 +98,19 @@ class HistoryCard extends Component {
         } else {
             return (
                 <Card
-                    onPress={() => {this.props.setTargetUri(this.identity.uri, this.props.contact)}}
-                    onLongPress={this.startVideoCall}
+                    onPress={() => {this.props.setTargetUri(this.state.uri, this.props.contact)}}
                     style={containerClass}
                 >
                     <Card.Content style={styles.content}>
                         <View style={styles.mainContent}>
                             <Title noWrap style={color}>{title}</Title>
-                            <Subheading noWrap style={color}>{this.identity.uri}</Subheading>
+                            <Subheading noWrap style={color}>{this.state.uri}</Subheading>
                             <Caption color="textSecondary">
-                                {this.identity.label}
+                                {this.state.label}
                             </Caption>
                         </View>
                         <View style={styles.userAvatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.identity} card/>
+                            <UserIcon style={styles.userIcon} identity={this.state} card/>
                         </View>
                     </Card.Content>
                 </Card>
@@ -135,20 +118,10 @@ class HistoryCard extends Component {
         }
     }
 
-/*
-            <Card.Actions>
-                <IconButton icon="phone" onPress={startAudioCall} title={`Audio call to ${name}`} />
-                <IconButton icon="video" onPress={startVideoCall} title={`Video call to ${name}`} />
-            </Card.Actions>
-*/
-
-
 }
 
 HistoryCard.propTypes = {
-    contact    : PropTypes.object,
-    startAudioCall : PropTypes.func,
-    startVideoCall : PropTypes.func,
+    contact        : PropTypes.object,
     setTargetUri   : PropTypes.func,
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool
