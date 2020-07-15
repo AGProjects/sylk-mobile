@@ -13,30 +13,34 @@
 }
 
 .landscapeContainer {
-    width: 42%;
+    width: 43%;
+    height: 110px;
     margin-left: 5%;
     margin-top: 10px;
-    border-radius: 5px;
+    border-radius: 2px;
     border: 1px;
 }
 
 .portraitContainer {
     width: 90%;
     margin: 0 auto;
-    margin-top: 10px;
-    border-radius: 5px;
+    height: 110px;
+    margin-top: 7px;
+    border-radius: 2px;
 }
 
 .landscapeTabletContainer {
     width: 29%;
+    height: 110px;
     margin-left: 3%;
     margin-top: 10px;
-    border-radius: 5px;
+    border-radius: 2px;
 }
 
 .portraitTabletContainer {
     width: 41%;
+    height: 110px;
     margin: 0 auto;
     margin-top: 10px;
-    border-radius: 5px;
+    border-radius: 2px;
 }
