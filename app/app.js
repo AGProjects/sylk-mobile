@@ -939,7 +939,7 @@ class Sylk extends Component {
 
         if (this.state.connection === null) {
             let model = this.state.brand + ' ' + this.state.model;
-            let userAgent = 'Sylk Mobile ' + model + ' (v' + this.state.osVersion + ')';
+            let userAgent = 'Sylk Mobile on ' + model + ' (v' + this.state.osVersion + ')';
             console.log('User Agent:', userAgent);
             if (this.state.phoneNumber) {
                 console.log('Phone number:', this.state.phoneNumber);
