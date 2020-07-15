@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { View, SafeAreaView, ImageBackground, PermissionsAndroid, AppState, Linking, Platform, StyleSheet} from 'react-native';
+import { View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet} from 'react-native';
 import { DeviceEventEmitter } from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
@@ -40,7 +40,6 @@ import NavigationBar from './components/NavigationBar';
 import Preview from './components/Preview';
 import CallManager from "./CallManager";
 
-
 import utils from './utils';
 import config from './config';
 import storage from './storage';
@@ -76,25 +75,6 @@ if (Platform.OS == 'ios') {
     // bundleId = `${bundleId}.dev`;
 }
 
-const callkeepOptions = {
-    ios: {
-        appName: 'Sylk',
-        maximumCallGroups: 1,
-        maximumCallsPerCallGroup: 2,
-        supportsVideo: true,
-        includesCallsInRecents: true,
-        imageName: "Image-1"
-    },
-    android: {
-        alertTitle: 'Calling account permission',
-        alertDescription: 'Please allow Sylk inside All calling accounts',
-        cancelButton: 'Deny',
-        okButton: 'Allow',
-        imageName: 'phone_account_icon',
-        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, PermissionsAndroid.PERMISSIONS.READ_CONTACTS]
-    }
-};
-
 const mainStyle = StyleSheet.create({
 
  MainContainer: {
@@ -105,14 +85,11 @@ const mainStyle = StyleSheet.create({
  }
 });
 
-RNCallKeep.setup(callkeepOptions);
-
 // Application modes
 const MODE_NORMAL           = Symbol('mode-normal');
 const MODE_PRIVATE          = Symbol('mode-private');
 const MODE_GUEST_CALL       = Symbol('mode-guest-call');
 const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
-
 
 
 class Sylk extends Component {
@@ -194,11 +171,7 @@ class Sylk extends Component {
 
         storage.initialize();
 
-        RNCallKeep.addEventListener('checkReachability', () => {
-            RNCallKeep.setReachable();
-        });
-
-        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.timeoutCall, this.callKeepStartConference);
+        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.timeoutCall, this.callKeepStartConference, this.startCallFromCallKeeper);
 
         if (InCallManager.recordPermission !== 'granted') {
             InCallManager.requestRecordPermission()
@@ -411,12 +384,8 @@ class Sylk extends Component {
             //}
         }
 
-        this.boundRnStartAction = this._callkeepStartedCall.bind(this);
-        this.boundRnDisplayIncomingCall = this._callkeepDisplayIncomingCall.bind(this);
         this.boundProximityDetect = this._proximityDetect.bind(this);
 
-        RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
-        RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
         DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
 
         AppState.addEventListener('change', this._handleAppStateChange);
@@ -463,11 +432,7 @@ class Sylk extends Component {
         }
     }
 
-    _callkeepDisplayIncomingCall(data) {
-        utils.timestampedLog('Incoming alert panel displayed');
-    }
-
-    _callkeepStartedCall(data) {
+   _callkeepStartedCall(data) {
         utils.timestampedLog("_callkeepStartedCall from outside");
         console.log(data);
 
@@ -555,8 +520,6 @@ class Sylk extends Component {
     }
 
     componentWillUnmount() {
-        RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
-
         AppState.removeEventListener('change', this._handleAppStateChange);
     }
 
@@ -575,6 +538,30 @@ class Sylk extends Component {
                 this.state.connection.reconnect();
             }
         }
+    }
+
+    startCallFromCallKeeper(data) {
+        // like from native iOS history
+        if (!this._tmpCallStartInfo || ! this._tmpCallStartInfo.options) {
+            utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
+            // we dont have options in the tmp var, which means this likely came from the native dialer
+            // for now, we only do audio calls from the native dialer.
+            let callUUID = data.callUUID || uuid.v4();
+            let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
+            if (is_conf) {
+                this.callKeepStartConference(data.handle, {audio: true, video: true, callUUID: callUUID});
+            } else {
+                this.callKeepStartCall(data.handle, {audio: true, video: false, callUUID: callUUID});
+            }
+        } else {
+            utils.timestampedLog("CallKeep started call from the app to", data.handle, this._tmpCallStartInfo);
+            if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
+                this.startConference(data.handle);
+            } else if (this._tmpCallStartInfo.options) {
+                this.startCall(data.handle, this._tmpCallStartInfo.options);
+            }
+        }
+        this._notificationCenter.removeNotification();
     }
 
     connectionStateChanged(oldState, newState) {
@@ -630,7 +617,7 @@ class Sylk extends Component {
         utils.timestampedLog('Registration state changed:', oldState, '->', newState);
 
         if (newState === 'failed') {
-            RNCallKeep.setAvailable(false);
+            this._callKeepManager.setAvailable(false);
             let reason = data.reason;
             if (reason.match(/904/)) {
                 // Sofia SIP: WAT
@@ -663,7 +650,7 @@ class Sylk extends Component {
                 }
             }
         } else if (newState === 'registered') {
-            RNCallKeep.setAvailable(true);
+            this._callKeepManager.setAvailable(true);
             this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
 
             if (!this.state.currentCall) {
@@ -673,7 +660,7 @@ class Sylk extends Component {
             return;
         } else {
             this.setState({status: null, registrationState: newState });
-            RNCallKeep.setAvailable(false);
+            this._callKeepManager.setAvailable(false);
         }
     }
 
@@ -1980,7 +1967,7 @@ class Sylk extends Component {
     }
 
     logout() {
-        RNCallKeep.setAvailable(false);
+        this._callKeepManager.setAvailable(false);
 
         if (this.state.registrationState !== null && (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE)) {
             this.state.account.unregister();

@@ -52,6 +52,9 @@ class HistoryTileBox extends Component {
 
     }
 
+    componentWillUnmount() {
+    }
+
     componentDidMount() {
         this.getServerHistory();
     }
@@ -119,11 +122,19 @@ class HistoryTileBox extends Component {
 
                 const known = [];
                 history = history.filter((elem) => {
+                    if (elem.remoteParty.indexOf('@conference.sip2sip.info') > -1) {
+                        elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
+                        elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
+                    } else if (elem.remoteParty.indexOf('@videoconference.') > -1) {
+                        elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
+                        elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
+                    }
+
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         elem.type = 'history';
                         var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
                         if (contact_obj) {
-                            elem.displayName = contact_obj.name;
+                            elem.displayName = contact_obj.displayName;
                             elem.photo = contact_obj.photo;
                             // TODO update icon here
                         } else {
@@ -140,12 +151,7 @@ class HistoryTileBox extends Component {
                             elem.media = ['audio'];
                         }
 
-                        if (elem.remoteParty.indexOf('@videoconference') > -1) {
-                            elem.remoteParty = elem.remoteParty.split('@')[0] + '@videoconference.' + this.props.config.defaultDomain;
-                        }
-
-                        if ((elem.media.indexOf('audio') > -1 || elem.media.indexOf('video') > -1) &&
-                            (elem.remoteParty !== this.props.account.id || elem.direction !== 'placed')) {
+                        if (elem.remoteParty !== this.props.account.id || elem.direction !== 'placed') {
                                 known.push(elem.remoteParty);
                                 if (elem.remoteParty.indexOf('3333@') > -1) {
                                     // see Call.js as well if we change this

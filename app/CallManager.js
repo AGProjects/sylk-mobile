@@ -1,7 +1,7 @@
 import events from 'events';
 import Logger from '../Logger';
 import uuid from 'react-native-uuid';
-import { Platform } from 'react-native';
+import { Platform, PermissionsAndroid } from 'react-native';
 import utils from './utils';
 
 const logger = new Logger('CallManager');
@@ -22,8 +22,27 @@ const CONSTANTS = {
 };
 */
 
+const options = {
+    ios: {
+        appName: 'Sylk',
+        maximumCallGroups: 1,
+        maximumCallsPerCallGroup: 2,
+        supportsVideo: true,
+        includesCallsInRecents: true,
+        imageName: "Image-1"
+    },
+    android: {
+        alertTitle: 'Calling account permission',
+        alertDescription: 'Please allow Sylk inside All calling accounts',
+        cancelButton: 'Deny',
+        okButton: 'Allow',
+        imageName: 'phone_account_icon',
+        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, PermissionsAndroid.PERMISSIONS.READ_CONTACTS]
+    }
+};
+
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromOutsideFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -33,6 +52,7 @@ export default class CallManager extends events.EventEmitter {
         this._calls = new Map();
         this._conferences = new Map();
         this._rejectedCalls = new Map();
+        this._alertedCalls = new Map();
 
         this._decideWhenWebSocketInviteArrives = new Map();
         this._timeouts = new Map();
@@ -42,6 +62,7 @@ export default class CallManager extends events.EventEmitter {
         this.sylkHangupCall = hangupFunc;
         this.timeoutCall = timeoutFunc;
         this.conferenceCall = conferenceCallFunc;
+        this.startCallFromOutside = startCallFromOutsideFunc;
 
         this._boundRnAccept = this._rnAccept.bind(this);
         this._boundRnEnd = this._rnEnd.bind(this);
@@ -50,6 +71,8 @@ export default class CallManager extends events.EventEmitter {
         this._boundRnDeactiveAudioCall = this._rnDeactiveAudioSession.bind(this);
         this._boundRnDTMF = this._rnDTMF.bind(this);
         this._boundRnProviderReset = this._rnProviderReset.bind(this);
+        this.boundRnStartAction = this._startedCall.bind(this);
+        this.boundRnDisplayIncomingCall = this._displayIncomingCall.bind(this);
 
         this._RNCallKeep.addEventListener('answerCall', this._boundRnAccept);
         this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
@@ -58,6 +81,14 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall.bind(this));
         this._RNCallKeep.addEventListener('didPerformDTMFAction', this._boundRnDTMF);
         this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
+        this._RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
+        this._RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+
+        this._RNCallKeep.setup(options);
+
+        this._RNCallKeep.addEventListener('checkReachability', () => {
+            this._RNCallKeep.setReachable();
+        });
     }
 
     get callKeep() {
@@ -86,6 +117,10 @@ export default class CallManager extends events.EventEmitter {
                 return call;
             }
         }
+    }
+
+    setAvailable(available) {
+        this.callKeep.setAvailable(available);
     }
 
     backToForeground() {
@@ -332,7 +367,23 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
+   _startedCall(data) {
+        utils.timestampedLog("Callkeep: started call from outside");
+        console.log(data);
+        this.startCallFromOutside(data);
+    }
+
+    _displayIncomingCall(data) {
+        utils.timestampedLog('Incoming alert panel displayed');
+        this._alertedCalls.set(data.callUUID.toLowerCase(), true);
+    }
+
     showAlertPanel(call) {
+        if (this._alertedCalls.has(call._callkeepUUID)) {
+            utils.timestampedLog('Callkeep: alert panel was already shown for call', call._callkeepUUID);
+            return;
+        }
+
         utils.timestampedLog('Callkeep: show alert panel');
 
         if (Platform.OS === 'ios') {
@@ -354,5 +405,8 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.removeEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
         this._RNCallKeep.removeEventListener('didPerformDTMFAction', this._boundRnDTMF);
         this._RNCallKeep.removeEventListener('didResetProvider', this._boundRnProviderReset);
+        this._RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
+        this._RNCallKeep.removeEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+
     }
 }
