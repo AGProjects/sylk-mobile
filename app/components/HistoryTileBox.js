@@ -166,7 +166,6 @@ class HistoryTileBox extends Component {
                 }
 
                 this.setState({serverHistory: history});
-
             }
         }, (errorCode) => {
             logger.debug('Error getting call history from server: %o', errorCode)
@@ -175,9 +174,6 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-
-        //utils.timestampedLog('Render history');
-        // Join URIs from local and server history for input
         let matchedContacts = [];
 
         let items = this.state.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
@@ -192,11 +188,6 @@ class HistoryTileBox extends Component {
         }
 
         items = items.concat(matchedContacts);
-        //console.log(items);
-
-        items = items.slice(0, 8);
-
-        //utils.timestampedLog('Render history in', this.props.orientation);
 
         let columns = 1;
 
@@ -209,7 +200,8 @@ class HistoryTileBox extends Component {
 
         return (
             <SafeAreaView style={styles.container}>
-              <FlatList horizontal={false}
+              <FlatList
+                horizontal={false}
                 numColumns={columns}
                 data={items}
                 renderItem={this.renderItem}

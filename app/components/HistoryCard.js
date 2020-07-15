@@ -89,13 +89,14 @@ class HistoryCard extends Component {
                             </Caption>
                         </View>
                         <View style={styles.userAvatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.state} card/>
+                            <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
                 </Card>
             );
 
         } else {
+
             return (
                 <Card
                     onPress={() => {this.props.setTargetUri(this.state.uri, this.props.contact)}}
@@ -110,7 +111,7 @@ class HistoryCard extends Component {
                             </Caption>
                         </View>
                         <View style={styles.userAvatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.state} card/>
+                            <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
                 </Card>

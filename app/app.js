@@ -256,7 +256,7 @@ class Sylk extends Component {
                         if (number_stripped) {
                             if (!seen_uris.has(number_stripped)) {
                                 //console.log('   ---->    ', number['label'], number_stripped);
-                                var contact_card = {id: uuid.v4(), remoteParty: name, displayName: number_stripped, type: 'contact', photo: photo, label: number['label']};
+                                var contact_card = {id: uuid.v4(), displayName: name, remoteParty: number_stripped, type: 'contact', photo: photo, label: number['label']};
                                 contact_cards.push(contact_card);
                                 seen_uris.set(number_stripped, true);
                             }
@@ -268,7 +268,7 @@ class Sylk extends Component {
                         if (!seen_uris.has(email_stripped)) {
                             //console.log(name, email['label'], email_stripped);
                             //console.log('   ---->    ', email['label'], email_stripped);
-                            var contact_card = {id: uuid.v4(), remoteParty: name, displayName: email_stripped, type: 'contact', photo: photo, label: email['label']};
+                            var contact_card = {id: uuid.v4(), displayName: name, remoteParty: email_stripped, type: 'contact', photo: photo, label: email['label']};
                             contact_cards.push(contact_card);
                             seen_uris.set(email_stripped, true);
                         }

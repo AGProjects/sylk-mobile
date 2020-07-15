@@ -5,32 +5,6 @@ import { Avatar } from 'react-native-paper';
 
 const UserIcon = (props) => {
 
-    /*
-    const [photo, setPhoto] = useState('');
-
-    useEffect(() => {
-        // You need to restrict it at some point
-        // This is just dummy code and should be replaced by actual
-        if (!photo && props.identity.uri) {
-            getPhoto();
-        }
-    }, []);
-
-    const getPhoto = async () => {
-        try {
-            let contacts = await utils.findContact(props.identity.uri);
-            contacts.some((contact) => {
-                if (contact.hasThumbnail) {
-                    setPhoto(contact.thumbnailPath);
-                    return true;
-                }
-            });
-        } catch (err) {
-            console.log('error getting contacts', err);
-        }
-    }
-    */
-
     if (!props.identity) {
         return (null)
     }
@@ -40,6 +14,7 @@ const UserIcon = (props) => {
     let initials = name.split(' ', 2).map(x => x[0]).join('');
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
     const avatarSize = props.large ? 120: 50;
+
 
     if (photo) {
         return  <Avatar.Image source={{uri: photo}} size={avatarSize} />
@@ -64,9 +39,7 @@ const UserIcon = (props) => {
 
 UserIcon.propTypes = {
     identity: PropTypes.object.isRequired,
-    large: PropTypes.bool,
-    card: PropTypes.bool,
-    active: PropTypes.bool
+    large: PropTypes.bool
 };
 
 
