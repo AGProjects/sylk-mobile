@@ -337,10 +337,21 @@ class Sylk extends Component {
         this._loaded = true;
 
         try {
-            await RNDrawOverlay.askForDispalayOverOtherAppsPermission();
             await RNCallKeep.hasPhoneAccount();
         } catch(err) {
             utils.timestampedLog(err);
+        }
+
+        if (Platform.OS === 'android') {
+            RNDrawOverlay.askForDispalayOverOtherAppsPermission()
+                 .then(res => {
+                   utils.timestampedLog("Display over other apps was granted");
+                     // res will be true if permission was granted
+                 })
+                 .catch(e => {
+                   utils.timestampedLog("Display over other apps was declined");
+                     // permission was declined
+                 })
         }
 
         history.push('/login');
