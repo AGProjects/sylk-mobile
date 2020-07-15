@@ -34,7 +34,7 @@ export default class CallManager extends events.EventEmitter {
         this._conferences = new Map();
         this._rejectedCalls = new Map();
 
-        this._decideLater = new Map();
+        this._decideWhenWebSocketInviteArrives = new Map();
         this._timeouts = new Map();
 
         this.sylkAcceptCall = acceptFunc;
@@ -169,13 +169,12 @@ export default class CallManager extends events.EventEmitter {
             this.conferenceCall(room);
             // start an outgoing conference call
         } else if (this._calls.has(callUUID)) {
-            // if we have audio only we must skip video from get local media
             this.sylkAcceptCall();
         } else {
             // We accepted the call before it arrived on web socket
             // from iOS push notifications
             this.backToForeground();
-            this._decideLater.set(callUUID, 'accept');
+            this._decideWhenWebSocketInviteArrives.set(callUUID, 'accept');
         }
     }
 
@@ -206,7 +205,7 @@ export default class CallManager extends events.EventEmitter {
             // We rejected the call before it arrived on web socket
             // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
-            this._decideLater.set(callUUID, 'reject');
+            this._decideWhenWebSocketInviteArrives.set(callUUID, 'reject');
             this._rejectedCalls.set(callUUID, true);
 
         }
@@ -252,7 +251,7 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('Callkeep: handle later incoming call', callUUID);
 
-        let reason = this._decideLater.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
+        let reason = this._decideWhenWebSocketInviteArrives.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
 
         // if user does not decide anything this will be handled later
         this._timeouts.set(callUUID, setTimeout(() => {
@@ -274,15 +273,15 @@ export default class CallManager extends events.EventEmitter {
         }
 
         // if the call came via push and was already accepted or rejected
-        if (this._decideLater.get(call._callkeepUUID)) {
-            let action = this._decideLater.get(call._callkeepUUID);
+        if (this._decideWhenWebSocketInviteArrives.get(call._callkeepUUID)) {
+            let action = this._decideWhenWebSocketInviteArrives.get(call._callkeepUUID);
             utils.timestampedLog('Callkeep: execute action', action);
             if (action === 'accept') {
                 this.sylkAcceptCall(call.id);
             } else {
                 this.sylkRejectCall(call.id);
             }
-            this._decideLater.delete(call._callkeepUUID);
+            this._decideWhenWebSocketInviteArrives.delete(call._callkeepUUID);
         } else if (this._rejectedCalls.has(call._callkeepUUID)) {
             this.sylkRejectCall(call.id);
         } else {
