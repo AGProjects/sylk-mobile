@@ -32,7 +32,8 @@ class Call extends Component {
         }
     }
 
-    componentWillReceiveProps(nextProps) {
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
         // Needed for switching to incoming call while in a call
         if (this.props.currentCall != null && this.props.currentCall != nextProps.currentCall) {
             if (nextProps.currentCall != null) {

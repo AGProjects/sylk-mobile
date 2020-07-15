@@ -56,7 +56,8 @@ class AudioCallBox extends Component {
 
     }
 
-    componentWillReceiveProps(nextProps) {
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
         if (this.props.call == null && nextProps.call) {
             if (nextProps.call.state === 'established') {
                 this.attachStream(nextProps.call);

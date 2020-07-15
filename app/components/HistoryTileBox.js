@@ -77,6 +77,8 @@ class HistoryTileBox extends Component {
         return null;
     }
 
+
+    //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(props) {
         if (props.refreshHistory !== this.state.refreshHistory) {
             this.getServerHistory();

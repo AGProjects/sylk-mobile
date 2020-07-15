@@ -22,7 +22,8 @@ class CallByUriBox extends Component {
         this._notificationCenter = this.props.notificationCenter();
     }
 
-    componentWillReceiveProps(nextProps) {
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
         if (!this.props.currentCall && nextProps.currentCall) {
             nextProps.currentCall.on('stateChanged', this.callStateChanged);
         }

@@ -23,7 +23,8 @@ class ConferenceModal extends Component {
         this.joinVideo = this.joinVideo.bind(this);
     }
 
-    componentWillReceiveProps(nextProps) {
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({conferenceTargetUri: nextProps.targetUri.split('@')[0]});
     }
 
