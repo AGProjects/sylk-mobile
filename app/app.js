@@ -162,6 +162,7 @@ class Sylk extends Component {
         this.pushtoken = null;
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
+        this.history = [];
 
         this.state = Object.assign({}, this._initialSstate);
 
@@ -1740,6 +1741,9 @@ class Sylk extends Component {
         );
     }
 
+    cacheHistory(history) {
+        this.history = history;
+    }
 
     ready() {
         if (!this.state.account) {
@@ -1768,6 +1772,8 @@ class Sylk extends Component {
                     contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
                     refreshHistory = {this.state.refreshHistory}
+                    cacheHistory={this.cacheHistory}
+                    initialHistory={this.history}
                 />
             </Fragment>
         );

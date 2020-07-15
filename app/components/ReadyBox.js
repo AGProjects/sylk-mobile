@@ -216,6 +216,8 @@ class ReadyBox extends Component {
                             password={this.props.password}
                             config={this.props.config}
                             refreshHistory={this.props.refreshHistory}
+                            cacheHistory={this.props.cacheHistory}
+                            initialHistory={this.props.initialHistory}
                         />
                     </View>
                     <View style={styles.footer}>
@@ -243,8 +245,9 @@ ReadyBox.propTypes = {
     orientation     : PropTypes.string,
     contacts        : PropTypes.array,
     isTablet        : PropTypes.bool,
-    refreshHistory  : PropTypes.bool
-
+    refreshHistory  : PropTypes.bool,
+    cacheHistory    : PropTypes.func,
+    initialHistory  : PropTypes.array
 };
 
 

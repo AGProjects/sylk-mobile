@@ -18,7 +18,7 @@ class HistoryTileBox extends Component {
         autoBind(this);
 
         this.state = {
-            serverHistory: [],
+            serverHistory: this.props.initialHistory,
             refreshHistory: this.props.refreshHistory
         }
 
@@ -100,7 +100,7 @@ class HistoryTileBox extends Component {
         getServerCallHistory.loggingOn = false;
         getServerCallHistory.request((data) => {
             if (data.success !== undefined && data.success === false) {
-                logger.debug('Error getting call history from server: %o', data.error_message)
+                console.log('Error getting call history from server', data.error_message);
                 return;
             }
 
@@ -165,10 +165,12 @@ class HistoryTileBox extends Component {
                     history = history.concat(this.initialContacts);
                 }
 
+                this.props.cacheHistory(history);
                 this.setState({serverHistory: history});
+
             }
         }, (errorCode) => {
-            logger.debug('Error getting call history from server: %o', errorCode)
+            console.log('Error getting call history from server', errorCode)
         });
 
     }
@@ -197,7 +199,6 @@ class HistoryTileBox extends Component {
             columns = this.props.orientation === 'landscape' ? 2 : 1;
         }
 
-
         return (
             <SafeAreaView style={styles.container}>
               <FlatList
@@ -223,7 +224,9 @@ HistoryTileBox.propTypes = {
     orientation     : PropTypes.string,
     setTargetUri    : PropTypes.func,
     isTablet        : PropTypes.bool,
-    refreshHistory  : PropTypes.bool
+    refreshHistory  : PropTypes.bool,
+    cacheHistory    : PropTypes.func,
+    initialHistory  : PropTypes.array
 };
 
 
