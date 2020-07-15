@@ -5,7 +5,7 @@ const defaultDomain = 'sylk.link';
 const configOptions = {
     defaultDomain           : defaultDomain,
     enrollmentDomain        : defaultDomain,
-    defaultConferenceDomain : `videoconference.${defaultDomain}`,
+    defaultConferenceDomain : `videoconference.sip2sip.info`,
     defaultGuestDomain      : `guest.${defaultDomain}`,
     wsServer                : 'wss://webrtc-gateway.sipthor.net:9999/webrtcgateway/ws',
     publicUrl               : 'https://webrtc.sipthor.net',
