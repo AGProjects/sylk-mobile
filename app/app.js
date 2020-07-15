@@ -1355,7 +1355,7 @@ class Sylk extends Component {
         if (notificationContent['event'] === 'incoming_session') {
             utils.timestampedLog('Incoming call for push mobile notification for call', callUUID);
 
-            if (notificationContent['from_uri'] === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri) {
+            if (this.state.account && notificationContent['from_uri'] === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri) {
                 utils.timestampedLog('Reject call to myself', callUUID);
                 this._callKeepManager.rejectCall(callUUID);
             } else {
