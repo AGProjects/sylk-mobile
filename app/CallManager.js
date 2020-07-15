@@ -342,7 +342,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('CallKeep: handle conference', callUUID, 'to uri', room);
+        utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
         this._conferences.set(callUUID, room);
         this.showConferenceAlertPanel(callUUID, from_uri);
 
@@ -358,7 +358,8 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showConferenceAlertPanel(callUUID, uri) {
-        utils.timestampedLog('Callkeep: show alert panel');
+        //uri = uri.toString();
+        utils.timestampedLog('Callkeep: show alert panel for conference', callUUID, 'from', uri);
 
         if (Platform.OS === 'ios') {
             this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', true);
@@ -384,7 +385,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('Callkeep: show alert panel');
+        utils.timestampedLog('Callkeep: show alert panel for call', call._callkeepUUID);
 
         if (Platform.OS === 'ios') {
             this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', call.mediaTypes.video);

@@ -415,11 +415,17 @@ class Sylk extends Component {
                     utils.timestampedLog('Handle Firebase', event, 'push notification for', message.data['session-id']);
                     if (event === 'incoming_conference_request') {
                         this.incomingConference(message.data['session-id'], message.data['to_uri'], message.data['from_uri']);
+                    } else if (event === 'cancel') {
+                        this.cancelIncomingCall(message.data['session-id']);
                     }
                 });
         }
 
         //this._detectOrientation();
+    }
+
+    cancelIncomingCall(callUUID) {
+        this._callKeepManager.endCall(callUUID, 6);
     }
 
     _proximityDetect(data) {
@@ -472,8 +478,8 @@ class Sylk extends Component {
                 await this._sleep(1000);
             } else {
                 //this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
-                utils.timestampedLog('Web socket is ready');
-                utils.timestampedLog('Using account', this.state.account.id);
+                //utils.timestampedLog('Web socket is ready');
+                //utils.timestampedLog('Using account', this.state.account.id);
                 if (options.conference) {
                     this.startConference(targetUri, options);
                 } else {
@@ -1163,9 +1169,6 @@ class Sylk extends Component {
     callKeepStartCall(targetUri, options) {
         utils.timestampedLog('CallKeep will start call to', targetUri);
 
-        //this.showCalls('callKeepStartCall');
-        //this._callKeepManager.showUnclosedCalls();
-
         this._tmpCallStartInfo = {
             uuid: options.callUUID || uuid.v4(),
             options,
@@ -1173,7 +1176,6 @@ class Sylk extends Component {
 
         this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, callUUID: this._tmpCallStartInfo.uuid});
-
     }
 
     startCall(targetUri, options) {
@@ -1264,7 +1266,7 @@ class Sylk extends Component {
         }
 
         // just terminate all calls to be sure
-        //this._callKeepManager.endCalls();
+        // this._callKeepManager.endCalls();
         this.changeRoute('/ready');
     }
 
@@ -1372,7 +1374,7 @@ class Sylk extends Component {
         */
 
         if (notificationContent['event'] === 'cancel') {
-            this._callKeepManager.endCall(callUUID, 6);
+            this.cancelIncomingCall(callUUID);
             VoipPushNotification.presentLocalNotification({
                 alertBody:'Call cancelled'
             });
@@ -1452,7 +1454,7 @@ class Sylk extends Component {
         utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
         //this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
         if (Platform.OS === 'android') {
-            this.incomingConference(data.id, data.room, data.originator);
+            this.incomingConference(data.id, data.room, data.originator.uri);
         }
     }
 
