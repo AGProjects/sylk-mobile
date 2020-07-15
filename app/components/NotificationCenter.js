@@ -21,11 +21,11 @@ class NotificationCenter extends Component {
     }
 
     componentDidMount() {
-        console.log('Notification Center mounted');
+        //console.log('Notification Center mounted');
     }
 
     componentWillUnmount() {
-        console.log('Notification Center will unmount');
+        //console.log('Notification Center will unmount');
     }
 
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
