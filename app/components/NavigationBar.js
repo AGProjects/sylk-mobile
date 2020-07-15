@@ -81,14 +81,17 @@ class NavigationBar extends Component {
             callUrl = config.publicUrl + "/call/" + account_id;
         }
 
-
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Image source={blinkLogo} style={styles.logo}/>
                 <Appbar.Content
                     title="Sylk"
-                    subtitle={`Account: ${account_id}`}
+                    titleStyle={styles.title}
+                    subtitleStyle={styles.subtitle}
                 />
+                <Text style={styles.subtitle}>{account_id}</Text>
+
+
                 {statusIcon ?
                     <Icon name={statusIcon} size={20} color="white" />
                 : null }
@@ -109,7 +112,7 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                     <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings" />
-                    <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign Out" />
+                    <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                 </Menu>
 
                 <AboutModal

@@ -1,14 +1,19 @@
 .titleContainer {
 }
 
-.title {
+.subtitle {
     color: white;
+    font-size: 16;
+    margin-right: 10px;
+
+}
+
+.title {
+    font-size: 20;
 }
 
 .logo {
-    margin-top: 0px;
-    margin-left: 0px;
-    margin-right: 0px;
-    height: 40px;
-    width: 40px;
+    margin-left: 10px;
+    height: 35px;
+    width: 35px;
 }
