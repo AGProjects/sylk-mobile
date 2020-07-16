@@ -56,6 +56,8 @@ class HistoryTileBox extends Component {
     }
 
     componentDidMount() {
+        console.log('My display name', this.props.myDisplayName);
+        console.log('My phone number', this.props.myPhoneNumber);
         this.getServerHistory();
     }
 
@@ -130,8 +132,14 @@ class HistoryTileBox extends Component {
                         elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
                     }
 
+                    if (elem.remoteParty === this.props.account.id) {
+                        elem.displayName = this.props.myDisplayName || 'Myself';
+                    }
+
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         elem.type = 'history';
+                        elem.id = uuid.v4();
+
                         var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
                         if (contact_obj) {
                             elem.displayName = contact_obj.displayName;
@@ -151,19 +159,17 @@ class HistoryTileBox extends Component {
                             elem.media = ['audio'];
                         }
 
-                        if (elem.remoteParty !== this.props.account.id || elem.direction !== 'placed') {
-                                known.push(elem.remoteParty);
-                                if (elem.remoteParty.indexOf('3333@') > -1) {
-                                    // see Call.js as well if we change this
-                                    elem.displayName = 'Video Test';
-                                }
-                                if (elem.remoteParty.indexOf('4444@') > -1) {
-                                    // see Call.js as well if we change this
-                                    elem.displayName = 'Echo Test';
-                                }
-                                elem.id = uuid.v4();
-                                return elem;
+                        if (elem.remoteParty.indexOf('3333@') > -1) {
+                            // see Call.js as well if we change this
+                            elem.displayName = 'Video Test';
                         }
+                        if (elem.remoteParty.indexOf('4444@') > -1) {
+                            // see Call.js as well if we change this
+                            elem.displayName = 'Echo Test';
+                        }
+
+                        known.push(elem.remoteParty);
+                        return elem;
                     }
                 });
 
@@ -232,7 +238,9 @@ HistoryTileBox.propTypes = {
     isTablet        : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     cacheHistory    : PropTypes.func,
-    initialHistory  : PropTypes.array
+    initialHistory  : PropTypes.array,
+    myDisplayName   : PropTypes.string,
+    myPhoneNumber   : PropTypes.string
 };
 
 

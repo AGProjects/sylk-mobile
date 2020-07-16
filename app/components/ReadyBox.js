@@ -242,12 +242,14 @@ ReadyBox.propTypes = {
     startCall       : PropTypes.func.isRequired,
     startConference : PropTypes.func.isRequired,
     missedTargetUri : PropTypes.string,
-    orientation     : PropTypes.string,
     contacts        : PropTypes.array,
+    orientation     : PropTypes.string,
     isTablet        : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     cacheHistory    : PropTypes.func,
-    initialHistory  : PropTypes.array
+    initialHistory  : PropTypes.array,
+    myDisplayName   : PropTypes.string,
+    myPhoneNumber   : PropTypes.string
 };
 
 

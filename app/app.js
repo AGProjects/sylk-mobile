@@ -132,7 +132,9 @@ class Sylk extends Component {
             phoneNumber: '',
             osVersion: '',
             isTablet: false,
-            refreshHistory: false
+            refreshHistory: false,
+            myDisplayName: null,
+            myPhoneNumber: null
         };
 
         this.currentRoute = null;
@@ -165,10 +167,6 @@ class Sylk extends Component {
                            });
         });
 
-        DeviceInfo.getPhoneNumber().then(phoneNumber => {
-            this.setState({phoneNumber: phoneNumber});
-        });
-
         storage.initialize();
 
         this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.timeoutCall, this.callKeepStartConference, this.startCallFromCallKeeper);
@@ -183,6 +181,37 @@ class Sylk extends Component {
             });
         }
 
+
+        // Load camera/mic preferences
+        storage.get('devices').then((devices) => {
+            if (devices) {
+                this.setState({devices: devices});
+            }
+        });
+
+        storage.get('history').then((history) => {
+            if (history) {
+                this.localHistory = history;
+            }
+        });
+
+        storage.get('myParticipants').then((myParticipants) => {
+            if (myParticipants) {
+                this.myParticipants = myParticipants;
+                console.log('My participants', this.myParticipants);
+            }
+        });
+
+        storage.get('myInvitedParties').then((myInvitedParties) => {
+            if (myInvitedParties) {
+                this.myInvitedParties = myInvitedParties;
+                console.log('My invited parties', this.myInvitedParties);
+            }
+        });
+
+    }
+
+    async loadContacts() {
         Contacts.checkPermission((err, permission) => {
             if (permission === Contacts.PERMISSION_UNDEFINED) {
               Contacts.requestPermission((err, requestedContactsPermissionResult) => {
@@ -234,6 +263,7 @@ class Sylk extends Component {
                                 var contact_card = {id: uuid.v4(), displayName: name, remoteParty: number_stripped, type: 'contact', photo: photo, label: number['label']};
                                 contact_cards.push(contact_card);
                                 seen_uris.set(number_stripped, true);
+                                var contact_card = {id: uuid.v4(), displayName: name, remoteParty: number_stripped, type: 'contact', photo: photo, label: number['label']};
                             }
                         }
                     });
@@ -251,35 +281,13 @@ class Sylk extends Component {
                 }
 
               this.contacts = contact_cards;
+
+              if (this.state.myPhoneNumber) {
+                  var myContact = this.findObjectByKey(contact_cards, 'remoteParty', this.state.myPhoneNumber);
+                  this.setState({myDisplayName: myContact.displayName});
+              }
             }
           })
-
-        // Load camera/mic preferences
-        storage.get('devices').then((devices) => {
-            if (devices) {
-                this.setState({devices: devices});
-            }
-        });
-
-        storage.get('history').then((history) => {
-            if (history) {
-                this.localHistory = history;
-            }
-        });
-
-        storage.get('myParticipants').then((myParticipants) => {
-            if (myParticipants) {
-                this.myParticipants = myParticipants;
-                console.log('My participants', this.myParticipants);
-            }
-        });
-
-        storage.get('myInvitedParties').then((myInvitedParties) => {
-            if (myInvitedParties) {
-                this.myInvitedParties = myInvitedParties;
-                console.log('My invited parties', this.myInvitedParties);
-            }
-        });
     }
 
     get _notificationCenter() {
@@ -421,7 +429,12 @@ class Sylk extends Component {
                 });
         }
 
-        //this._detectOrientation();
+        this._detectOrientation();
+
+        DeviceInfo.getPhoneNumber().then(phoneNumber => {
+            this.setState({myPhoneNumber: phoneNumber});
+            this.loadContacts();
+        });
     }
 
     cancelIncomingCall(callUUID) {
@@ -1763,6 +1776,8 @@ class Sylk extends Component {
                     refreshHistory = {this.state.refreshHistory}
                     cacheHistory={this.cacheHistory}
                     initialHistory={this.history}
+                    myDisplayName={this.state.myDisplayName}
+                    myPhoneNumber={this.state.myPhoneNumber}
                 />
             </Fragment>
         );
