@@ -24,17 +24,17 @@
 .landscapeTabletTitle {
     margin-top: 20px;
     color: white;
-    font-size: 20px;
-    width: 90%;
-    margin-left: 3%;
+    font-size: 24px;
+    width: 100%;
+    margin-left: 3px;
 }
 
 .portraitTabletTitle {
     margin-top: 20px;
     color: white;
     font-size: 20px;
-    width: 90%;
-    margin-left: 5%;
+    width: 100%;
+    margin-left: 10px;
 }
 
 .portraitUriButtonGroup {
@@ -52,15 +52,15 @@
 
 .portraitTabletUriButtonGroup {
     flex-direction: column;
-    width: 90%;
-    margin-left: 5%;
+    width: 100%;
+    margin-left: 0%;
     justify-content: space-between;
 }
 
 .landscapeTabletUriButtonGroup {
     flex-direction: row;
-    width: 94%;
-    margin-left: 3%;
+    width: 100%;
+    margin-left: 0%;
     justify-content: space-between;
 }
 
@@ -85,7 +85,9 @@
 .landscapeTabletUriInputBox {
     align: left;
     padding-top: 10px;
-    width: 65%;
+    width: 66%;
+    margin-left: 3px;
+
 }
 
 .buttonGroup {
@@ -133,7 +135,9 @@
 }
 
 .landscapeHistory {
+    margin-top: 20px;
     width: 100%;
+    margin-left: 3px;
     flex: 9;
 }
 

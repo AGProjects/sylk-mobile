@@ -156,7 +156,7 @@ class ReadyBox extends Component {
                 <View style={styles.wholeContainer}>
                     <View >
 
-                        {this.props.isTablet === 'landscape'?<Title style={titleClass}>Enter address</Title>: null}
+                        {this.props.isTablet?<Title style={titleClass}>Enter address</Title>: null}
                         <View style={uriGroupClass}>
                             <View style={uriClass}>
                                 <URIInput

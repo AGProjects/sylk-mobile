@@ -31,17 +31,19 @@
 }
 
 .landscapeTabletContainer {
-    width: 29%;
+    width: 33%;
     height: 110px;
-    margin-left: 3%;
-    margin-top: 10px;
+    margin-left: 0%;
+    margin-top: 0px;
+    border: 1px;
     border-radius: 2px;
 }
 
 .portraitTabletContainer {
-    width: 41%;
+    width: 50%;
     height: 110px;
     margin: 0 auto;
-    margin-top: 10px;
+    margin-top: 0px;
+    border: 1px;
     border-radius: 2px;
 }

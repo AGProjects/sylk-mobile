@@ -65,6 +65,9 @@ class NavigationBar extends Component {
     render() {
         const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
+        let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
+        let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
+
         let statusIcon = null;
         let account_id = '';
 
@@ -81,19 +84,19 @@ class NavigationBar extends Component {
             callUrl = config.publicUrl + "/call/" + account_id;
         }
 
-        let subtitle = 'Signed in as ' +  account_id.split('@')[0];
+        let subtitle = 'Signed in as ' +  account_id;
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Image source={blinkLogo} style={styles.logo}/>
                 <Appbar.Content
                     title="Sylk"
-                    titleStyle={styles.title}
-                    subtitleStyle={styles.subtitle}
+                    titleStyle={titleStyle}
+                    subtitleStyle={subtitleStyle}
                     subtitle={this.props.isTablet? null: account_id}
                 />
                 {this.props.isTablet?
-                <Text style={styles.subtitle}>{account_id}</Text>
+                <Text style={subtitleStyle}>{subtitle}</Text>
                 : null}
 
 
