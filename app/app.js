@@ -284,7 +284,9 @@ class Sylk extends Component {
 
               if (this.state.myPhoneNumber) {
                   var myContact = this.findObjectByKey(contact_cards, 'remoteParty', this.state.myPhoneNumber);
-                  this.setState({myDisplayName: myContact.displayName});
+                  if (myContact) {
+                      this.setState({myDisplayName: myContact.displayName});
+                  }
               }
             }
           })
