@@ -12,6 +12,15 @@ import styles from '../assets/styles/blink/_HistoryCard.scss';
 import UserIcon from './UserIcon';
 
 
+function toTitleCase(str) {
+    return str.replace(
+        /\w\S*/g,
+        function(txt) {
+            return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+        }
+    );
+}
+
 class HistoryCard extends Component {
     constructor(props) {
         super(props);
@@ -40,10 +49,14 @@ class HistoryCard extends Component {
         }
 
         let color = {};
-        const name = this.state.displayName || this.state.uri;
-        let title = this.state.displayName || this.state.uri;
+
+        let title = this.state.displayName || this.state.uri.split('@')[0];
         let subtitle = this.state.uri;
         let description = this.props.contact.startTime;
+
+        if (this.state.displayName === this.state.uri) {
+            title = toTitleCase(this.state.uri.split('@')[0]);
+        }
 
         if (this.state.type === 'history') {
             let duration = moment.duration(this.props.contact.duration, 'seconds').format('hh:mm:ss', {trim: false});
@@ -67,7 +80,7 @@ class HistoryCard extends Component {
                         }
                     });
                 } else {
-                        subtitle = 'No participants';
+                    subtitle = 'No participants';
                 }
             }
 
