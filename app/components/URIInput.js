@@ -95,10 +95,12 @@ class URIInput extends React.Component {
     }
 
     render() {
+        const placehoder = 'Enter a SIP address like alice@example.com';
+
         return (
             <TextInput
                 mode="flat"
-                label="Address"
+                label="Enter address"
                 ref={this.uriInput}
                 onChangeText={this.onInputChange}
                 onKeyDown={this.onInputKeyDown}
@@ -109,7 +111,7 @@ class URIInput extends React.Component {
                 autoCorrect={false}
                 required
                 autoFocus={this.props.autoFocus}
-                placeholder={this.props.placeholder}
+                placeholder={placehoder}
             />
         );
 
@@ -120,8 +122,7 @@ URIInput.propTypes = {
     defaultValue: PropTypes.string.isRequired,
     autoFocus: PropTypes.bool.isRequired,
     onChange: PropTypes.func.isRequired,
-    onSelect: PropTypes.func.isRequired,
-    placeholder : PropTypes.string
+    onSelect: PropTypes.func.isRequired
 };
 
 

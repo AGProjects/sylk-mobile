@@ -151,32 +151,18 @@ class ReadyBox extends Component {
 
         const historyClass = this.props.orientation === 'landscape' ? styles.landscapeHistory : styles.portraitHistory;
 
-        // Join URIs from local and server history for input
-/*
-        let history = this.props.history.concat(
-            this.props.serverHistory.map(e => e.remoteParty)
-        );
-
-        history = [...new Set(history)];
-        */
-
-        //console.log('history from server is', this.props.serverHistory);
-        const placehoder = 'Enter a SIP address like alice@' + defaultDomain;
-
-//        let historyItems = this.props.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.state.targetUri))
-
         return (
             <Fragment>
                 <View style={styles.wholeContainer}>
                     <View >
-                        <Title style={titleClass}>Enter address or phone number</Title>
+
+                        {this.props.isTablet === 'landscape'?<Title style={titleClass}>Enter address</Title>: null}
                         <View style={uriGroupClass}>
                             <View style={uriClass}>
                                 <URIInput
                                     defaultValue={this.state.targetUri}
                                     onChange={this.handleTargetChange}
                                     onSelect={this.handleTargetSelect}
-                                    placeholder={placehoder}
                                     autoFocus={false}
                                 />
                             </View>
@@ -218,11 +204,15 @@ class ReadyBox extends Component {
                             refreshHistory={this.props.refreshHistory}
                             cacheHistory={this.props.cacheHistory}
                             initialHistory={this.props.initialHistory}
+                            myDisplayName={this.props.myDisplayName}
+                            myPhoneNumber={this.props.myPhoneNumber}
                         />
                     </View>
+                    {this.props.isTablet ?
                     <View style={styles.footer}>
                         <FooterBox />
                     </View>
+                        : null}
                 </View>
                 <ConferenceModal
                     show={this.state.showConferenceModal}

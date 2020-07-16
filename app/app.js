@@ -1759,9 +1759,10 @@ class Sylk extends Component {
                     account = {this.state.account}
                     logout = {this.logout}
                     preview = {this.startPreview}
-                    toggleMute = {this.toggleMute}
                     connection = {this.state.connection}
                     registration = {this.state.registrationState}
+                    orientation = {this.state.orientation}
+                    isTablet = {this.state.isTablet}
                 />
                 <ReadyBox
                     account = {this.state.account}

@@ -81,6 +81,8 @@ class NavigationBar extends Component {
             callUrl = config.publicUrl + "/call/" + account_id;
         }
 
+        let subtitle = 'Signed in as ' +  account_id.split('@')[0];
+
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Image source={blinkLogo} style={styles.logo}/>
@@ -88,8 +90,11 @@ class NavigationBar extends Component {
                     title="Sylk"
                     titleStyle={styles.title}
                     subtitleStyle={styles.subtitle}
+                    subtitle={this.props.isTablet? null: account_id}
                 />
+                {this.props.isTablet?
                 <Text style={styles.subtitle}>{account_id}</Text>
+                : null}
 
 
                 {statusIcon ?
@@ -135,7 +140,9 @@ NavigationBar.propTypes = {
     account            : PropTypes.object.isRequired,
     logout             : PropTypes.func.isRequired,
     preview            : PropTypes.func.isRequired,
-    toggleMute         : PropTypes.func.isRequired
+    toggleMute         : PropTypes.func,
+    orientation        : PropTypes.string,
+    isTablet           : PropTypes.bool
 };
 
 export default NavigationBar;
