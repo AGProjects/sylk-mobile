@@ -39,14 +39,14 @@
 
 .portraitUriButtonGroup {
     flex-direction: column;
-    width: 90%;
-    margin-left: 5%;
+    width: 100%;
+    margin-left: 0%;
 }
 
 .landscapeUriButtonGroup {
     flex-direction: row;
-    width: 90%;
-    margin-left: 5%;
+    width: 100%;
+    margin-left: 0%;
     justify-content: space-between;
 }
 
@@ -73,7 +73,7 @@
 .landscapeUriInputBox {
     align: left;
     padding-top: 10px;
-    width: 47%;
+    width: 50%;
 }
 
 .portraitTabletUriInputBox {
