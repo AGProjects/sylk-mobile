@@ -358,7 +358,6 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showConferenceAlertPanel(callUUID, uri) {
-        //uri = uri.toString();
         utils.timestampedLog('Callkeep: show alert panel for conference', callUUID, 'from', uri);
 
         if (Platform.OS === 'ios') {

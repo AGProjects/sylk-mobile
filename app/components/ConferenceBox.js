@@ -40,15 +40,15 @@ class ConferenceBox extends Component {
             callOverlayVisible: true,
             audioMuted: false,
             videoMuted: false,
-            participants: props.call.participants.slice(),
+            participants: [],
             showInviteModal: false,
             showDrawer: false,
             showFiles: false,
             shareOverlayVisible: false,
-            activeSpeakers: props.call.activeParticipants.slice(),
+            activeSpeakers: [],
             selfDisplayedLarge: false,
             eventLog: [],
-            sharedFiles: props.call.sharedFiles.slice(),
+            sharedFiles: [],
             largeVideoStream: null
         };
 
@@ -78,7 +78,7 @@ class ConferenceBox extends Component {
         ].forEach((level) => {
             this.logEvent[level] = (
                 (action, messages, originator) => {
-                    const log = this.state.eventLog.slice();
+                    const log = this.state.eventLog;
                     log.unshift({originator, originator, level: level, action: action, messages: messages});
                     this.setState({eventLog: log});
                 }
@@ -142,7 +142,7 @@ class ConferenceBox extends Component {
     onParticipantLeft(p) {
         DEBUG(`Participant left: ${p.identity}`);
         // this.refs.audioPlayerParticipantLeft.play();
-        const participants = this.state.participants.slice();
+        const participants = this.state.participants;
         const idx = participants.indexOf(p);
         if (idx !== -1) {
             participants.splice(idx, 1);
@@ -175,7 +175,7 @@ class ConferenceBox extends Component {
     }
 
     onFileSharing(files) {
-        let stateFiles = this.state.sharedFiles.slice();
+        let stateFiles = this.state.sharedFiles;
         stateFiles = stateFiles.concat(files);
         this.setState({sharedFiles: stateFiles});
         files.forEach((file)=>{
@@ -244,7 +244,7 @@ class ConferenceBox extends Component {
     }
 
     handleActiveSpeakerSelected(participant, secondVideo=false) {      // eslint-disable-line space-infix-ops
-        let newActiveSpeakers = this.state.activeSpeakers.slice();
+        let newActiveSpeakers = this.state.activeSpeakers;
         if (secondVideo) {
             if (participant.id !== 'none') {
                 if (newActiveSpeakers.length >= 1) {
