@@ -20,19 +20,17 @@ class HistoryCard extends Component {
         this.state = {
             displayName: this.props.contact.displayName,
             uri: this.props.contact.remoteParty,
+            participants: this.props.contact.participants,
+            conference: this.props.contact.conference,
             type: this.props.contact.type,
             photo: this.props.contact.photo,
             label: this.props.contact.label,
             orientation: this.props.orientation,
             isTablet: this.props.isTablet
         }
-
-        //console.log(this.props.contact);
     }
 
     render () {
-        //console.log('Render card', this.state.uri, 'in', this.state.orientation);
-
         let containerClass = styles.portraitContainer;
 
         if (this.state.isTablet) {
@@ -45,7 +43,6 @@ class HistoryCard extends Component {
         const name = this.state.displayName || this.state.uri;
         let title = this.state.displayName || this.state.uri;
         let subtitle = this.state.uri;
-
         let description = this.props.contact.startTime;
 
         if (this.state.type === 'history') {
@@ -58,8 +55,20 @@ class HistoryCard extends Component {
                 duration = 'cancelled';
             }
 
-            if (duration) {
-                let subtitle = this.state.uri + ' (' + duration + ')';
+            if (this.state.conference) {
+                if (this.state.participants && this.state.participants.length) {
+                    subtitle = 'With: ';
+                    let i = 0;
+                    this.state.participants.forEach((participant) => {
+                        if (i > 0) {
+                            subtitle = subtitle + ', ' + participant.split('@')[0];
+                        } else {
+                            subtitle = subtitle + participant.split('@')[0];
+                        }
+                    });
+                } else {
+                        subtitle = 'No participants';
+                }
             }
 
             if (!this.state.displayName) {

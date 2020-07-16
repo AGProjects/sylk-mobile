@@ -134,21 +134,22 @@ class Sylk extends Component {
             isTablet: false,
             refreshHistory: false,
             myDisplayName: null,
-            myPhoneNumber: null
+            myPhoneNumber: null,
+            localHistory: []
         };
 
         this.currentRoute = null;
         this.pushtoken = null;
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
-        this.history = [];
+
+        this.serverHistory = []; // used for caching server history
 
         this.state = Object.assign({}, this._initialSstate);
 
-        this.localHistory = [];
-
         this.myParticipants = {};
         this.myInvitedParties = {};
+        this._historyConferenceParticipants = new Map(); // for saving to local history
 
         this.__notificationCenter = null;
 
@@ -191,7 +192,10 @@ class Sylk extends Component {
 
         storage.get('history').then((history) => {
             if (history) {
-                this.localHistory = history;
+                console.log('Loaded', history.length, 'local history entries');
+                this.setState({localHistory: history});
+            } else {
+                console.log('Loaded 0 local history entries');
             }
         });
 
@@ -1542,7 +1546,8 @@ class Sylk extends Component {
     }
 
     updateHistoryEntry(callUUID) {
-        var historyItem = this.findObjectByKey(this.localHistory, 'sessionId', callUUID);
+        let newHistory = this.state.localHistory;
+        var historyItem = this.findObjectByKey(newHistory, 'sessionId', callUUID);
         if (historyItem) {
             let current_datetime = new Date();
             let stopTime = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
@@ -1550,12 +1555,30 @@ class Sylk extends Component {
             var diff = current_datetime.getTime() - historyItem.startTimeObject.getTime();
             historyItem.duration = parseInt(diff/1000);
             delete historyItem['startTimeObject'];
-            storage.set('history', this.localHistory);
+            if (this._historyConferenceParticipants.has(callUUID)) {
+                historyItem.participants = this._historyConferenceParticipants.get(callUUID);
+            } else {
+                historyItem.participants = [];
+            }
+            console.log('Save history', historyItem);
+            this.setState({localHistory: newHistory});
+            storage.set('history', newHistory);
         }
     }
 
     saveParticipant(callUUID, room, uri) {
         //console.log('Save participant', uri, 'for conference', room);
+
+        if (this._historyConferenceParticipants.has(callUUID)) {
+            let old_participants = this._historyConferenceParticipants.get(callUUID);
+            if (old_participants.indexOf(uri) === -1) {
+                old_participants.push(uri);
+            }
+
+        } else {
+            let new_participants = [uri];
+            this._historyConferenceParticipants.set(callUUID, new_participants);
+        }
 
         if (!this.myParticipants) {
             this.myParticipants = new Object();
@@ -1631,7 +1654,10 @@ class Sylk extends Component {
 
             const historyItem = Object.assign({}, item);
             console.log('Added history item', historyItem);
-            this.localHistory.push(historyItem);
+            let newHistory = this.state.localHistory;
+            newHistory.push(historyItem);
+            this.setState({localHistory: newHistory});
+            storage.set('history', newHistory);
         }
     }
 
@@ -1776,11 +1802,12 @@ class Sylk extends Component {
                     orientation = {this.state.orientation}
                     contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
+                    localHistory = {this.state.localHistory}
                     refreshHistory = {this.state.refreshHistory}
-                    cacheHistory={this.cacheHistory}
-                    initialHistory={this.history}
-                    myDisplayName={this.state.myDisplayName}
-                    myPhoneNumber={this.state.myPhoneNumber}
+                    cacheHistory = {this.cacheHistory}
+                    initialHistory = {this.serverHistory}
+                    myDisplayName = {this.state.myDisplayName}
+                    myPhoneNumber = {this.state.myPhoneNumber}
                 />
             </Fragment>
         );

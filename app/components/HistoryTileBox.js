@@ -6,7 +6,6 @@ import { SafeAreaView, ScrollView, View, FlatList, Text } from 'react-native';
 import HistoryCard from './HistoryCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
-import storage from '../storage';
 import uuid from 'react-native-uuid';
 
 import styles from '../assets/styles/blink/_HistoryTileBox.scss';
@@ -18,8 +17,11 @@ class HistoryTileBox extends Component {
         autoBind(this);
 
         this.state = {
-            serverHistory: this.props.initialHistory,
-            refreshHistory: this.props.refreshHistory
+            history: this.props.initialHistory,        // combined local and server history
+            localHistory: this.props.localHistory,
+            refreshHistory: this.props.refreshHistory,
+            accountId: this.props.account.id,
+            password: this.props.password
         }
 
         const echoTest = {
@@ -43,25 +45,16 @@ class HistoryTileBox extends Component {
 
         let initialContacts = [echoTestCard, videoTestCard];
         this.initialContacts = initialContacts;
-
-        storage.get('history').then((history) => {
-            if (history) {
-                this.setState({localHistory: history});
-            }
-        });
-
     }
 
     componentWillUnmount() {
     }
 
     componentDidMount() {
-        console.log('My display name', this.props.myDisplayName);
-        console.log('My phone number', this.props.myPhoneNumber);
         this.getServerHistory();
     }
 
-    refreshHistory = res => this.setState({ serverHistory: res.history})
+    refreshHistory = res => this.setState({history: res.history})
 
     renderItem(item) {
         return(
@@ -91,14 +84,13 @@ class HistoryTileBox extends Component {
     }
 
     getServerHistory() {
-        let history = [];
-
+        let history = this.props.localHistory;
         utils.timestampedLog('Requesting call history from server');
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
-            `${this.props.config.serverCallHistoryUrl}?action=get_history&realm=${this.props.account.id.split('@')[1]}`,
-            this.props.account.id.split('@')[0],
-            this.props.password
+            `${this.props.config.serverCallHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
+            this.state.accountId.split('@')[0],
+            this.state.password
         );
 
         // Disable logging
@@ -124,15 +116,19 @@ class HistoryTileBox extends Component {
 
                 const known = [];
                 history = history.filter((elem) => {
+                    elem.conference = false;
                     if (elem.remoteParty.indexOf('@conference.sip2sip.info') > -1) {
-                        elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
-                        elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
-                    } else if (elem.remoteParty.indexOf('@videoconference.') > -1) {
-                        elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
-                        elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
+                        return null;
                     }
 
-                    if (elem.remoteParty === this.props.account.id) {
+                    if (elem.remoteParty.indexOf('@videoconference.') > -1) {
+                        elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
+                        elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
+                        elem.conference = true;
+                        elem.media = ['audio', 'video', 'chat'];
+                    }
+
+                    if (elem.remoteParty === this.state.accountId) {
                         elem.displayName = this.props.myDisplayName || 'Myself';
                     }
 
@@ -178,23 +174,22 @@ class HistoryTileBox extends Component {
                 }
 
                 this.props.cacheHistory(history);
-                this.setState({serverHistory: history});
+                this.setState({history: history});
 
             }
         }, (errorCode) => {
-            console.log('Error getting call history from server', errorCode)
+            console.log('Error getting call history from server', errorCode);
         });
 
     }
 
     render() {
-        let matchedContacts = [];
-
-        let items = this.state.serverHistory.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
+        let items = this.state.history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
         let searchExtraItems = this.props.contacts;
         searchExtraItems.concat(this.initialContacts);
 
+        let matchedContacts = [];
         if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
             matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().search(this.props.targetUri) > -1 || contact.displayName.toLowerCase().search(this.props.targetUri) > -1));
         } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
@@ -239,6 +234,7 @@ HistoryTileBox.propTypes = {
     refreshHistory  : PropTypes.bool,
     cacheHistory    : PropTypes.func,
     initialHistory  : PropTypes.array,
+    localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string
 };

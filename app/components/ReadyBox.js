@@ -202,6 +202,7 @@ class ReadyBox extends Component {
                             password={this.props.password}
                             config={this.props.config}
                             refreshHistory={this.props.refreshHistory}
+                            localHistory={this.props.localHistory}
                             cacheHistory={this.props.cacheHistory}
                             initialHistory={this.props.initialHistory}
                             myDisplayName={this.props.myDisplayName}
@@ -238,6 +239,7 @@ ReadyBox.propTypes = {
     refreshHistory  : PropTypes.bool,
     cacheHistory    : PropTypes.func,
     initialHistory  : PropTypes.array,
+    localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string
 };
