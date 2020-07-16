@@ -19,7 +19,6 @@ class HistoryTileBox extends Component {
         this.state = {
             history: this.props.initialHistory,        // combined local and server history
             localHistory: this.props.localHistory,
-            refreshHistory: this.props.refreshHistory,
             accountId: this.props.account.id,
             password: this.props.password
         }
@@ -54,8 +53,6 @@ class HistoryTileBox extends Component {
         this.getServerHistory();
     }
 
-    refreshHistory = res => this.setState({history: res.history})
-
     renderItem(item) {
         return(
             <HistoryCard
@@ -75,10 +72,10 @@ class HistoryTileBox extends Component {
         return null;
     }
 
-
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(props) {
-        if (props.refreshHistory !== this.state.refreshHistory) {
+        const { refreshHistory } = this.props;
+        if (props.refreshHistory !== refreshHistory) {
             this.getServerHistory();
         }
     }
