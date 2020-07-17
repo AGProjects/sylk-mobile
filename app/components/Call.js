@@ -25,17 +25,37 @@ class Call extends Component {
             audioOnly = true;
         }
 
-        // If current call is available on mount we must have incoming
-        if (this.props.currentCall != null) {
-            this.props.currentCall.on('stateChanged', this.callStateChanged);
+        let remoteUri = '';
+        let remoteDisplayName = '';
+
+        if (this.props.call !== null) {
+            // If current call is available on mount we must have incoming
+            this.props.call.on('stateChanged', this.callStateChanged);
+            remoteUri = this.props.call.remoteIdentity.uri;
+            remoteDisplayName = this.props.call.remoteIdentity.displayName;
+        } else {
+            remoteUri = this.props.targetUri;
+            remoteDisplayName = this.props.targetUri;
         }
 
-        let remoteUri = this.props.targetUri;
-        let remoteDisplayName = remoteUri;
+        this.state = {
+                      audioOnly: audioOnly,
+                      remoteUri: remoteUri,
+                      remoteDisplayName: remoteDisplayName
+                      }
 
-        if (this.props.currentCall !== null && this.props.currentCall.state == 'established') {
-            remoteUri = this.props.currentCall.remoteIdentity.uri;
-            remoteDisplayName = this.props.currentCall.remoteIdentity.displayName || this.props.currentCall.remoteIdentity.uri;
+    }
+
+    lookupContact() {
+        // console.log('Lookup contact');
+        let remoteUri = '';
+        let remoteDisplayName = '';
+
+        if (this.props.call !== null) {
+            remoteUri = this.props.call.remoteIdentity.uri;
+            remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
+            console.log('Incoming call remoteUri', remoteUri);
+            console.log('Incoming call remoteDisplayName', remoteDisplayName);
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
@@ -45,46 +65,41 @@ class Call extends Component {
             remoteDisplayName = 'Video Test';
         } else if (remoteUri.indexOf('4444@') > -1) {
             remoteDisplayName = 'Echo Test';
-        } else {
-            if (this.props.contacts) {
-                let username = remoteUri.split('@')[0];
-                let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+        } else if (this.props.contacts) {
+            let username = remoteUri.split('@')[0];
+            let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
 
+            if (isPhoneNumber) {
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
+            } else {
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', remoteUri);
+            }
+
+            if (contact_obj) {
+                remoteDisplayName = contact_obj.displayName;
+                this.setState({remoteDisplayName: remoteDisplayName});
                 if (isPhoneNumber) {
-                    var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
-                } else {
-                    var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', remoteUri);
+                    remoteUri = username;
                 }
-
-                if (contact_obj) {
-                    remoteDisplayName = contact_obj.displayName;
-                    this.setState({remoteDisplayName: remoteDisplayName});
-                    if (isPhoneNumber) {
-                        remoteUri = username;
-                    }
-                } else {
-                    if (isPhoneNumber) {
-                        remoteUri = username;
-                        remoteDisplayName = username;
-                    }
+            } else {
+                if (isPhoneNumber) {
+                    remoteUri = username;
+                    remoteDisplayName = username;
                 }
             }
         }
 
-        this.state = {audioOnly: audioOnly,
-              remoteDisplayName: remoteDisplayName,
-              remoteUri: remoteUri
-              };
+        this.setState({remoteDisplayName: remoteDisplayName,
+                       remoteUri: remoteUri
+                       });
     }
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         // Needed for switching to incoming call while in a call
-        if (this.props.currentCall != null && this.props.currentCall != nextProps.currentCall) {
+        if (this.props.call != null && this.props.call != nextProps.currentCall) {
             if (nextProps.currentCall != null) {
                 nextProps.currentCall.on('stateChanged', this.callStateChanged);
-            } else {
-                this.props.currentCall.removeListener('stateChanged', this.callStateChanged);
             }
         }
     }
@@ -93,7 +108,7 @@ class Call extends Component {
         // console.log('Call: callStateChanged', newState, '->', newState);
         if (newState === 'established') {
             // Check the media type again, remote can choose to not accept all offered media types
-            const currentCall = this.props.currentCall;
+            const currentCall = this.props.call;
             const remoteHasStreams = currentCall.getRemoteStreams().length > 0;
             const remoteHasNoVideoTracks = currentCall.getRemoteStreams()[0].getVideoTracks().length === 0;
             const remoteIsRecvOnly = currentCall.remoteMediaDirections.video[0] === 'recvonly';
@@ -138,7 +153,11 @@ class Call extends Component {
     }
 
     call() {
-        assert(this.props.currentCall === null, 'currentCall is not null');
+        //console.log('Call: Make new call');
+        assert(this.props.call === null, 'currentCall is not null');
+
+        this.lookupContact();
+
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
         options.localStream = this.props.localMedia;
         let call = this.props.account.call(this.props.targetUri, options);
@@ -146,20 +165,25 @@ class Call extends Component {
     }
 
     answerCall() {
-        assert(this.props.currentCall !== null, 'currentCall is null');
+        //console.log('Call: Answer call');
+        assert(this.props.call !== null, 'currentCall is null');
+
+        this.lookupContact();
+        console.log('lookup done');
+
         let options = {pcConfig: {iceServers: config.iceServers}};
         options.localStream = this.props.localMedia;
-        this.props.currentCall.answer(options);
+        this.props.call.answer(options);
     }
 
     hangupCall() {
-        let callUUID = this.props.currentCall._callkeepUUID;
-        this.props.currentCall.removeListener('stateChanged', this.callStateChanged);
+        let callUUID = this.props.call._callkeepUUID;
+        this.props.call.removeListener('stateChanged', this.callStateChanged);
         this.props.hangupCall(callUUID);
     }
 
     mediaPlaying() {
-        if (this.props.currentCall === null) {
+        if (this.props.call === null) {
             this.call();
         } else {
             this.answerCall();
@@ -167,7 +191,7 @@ class Call extends Component {
     }
 
     render() {
-        console.log('Call: render call to', this.props.targetUri);
+        //console.log('Call: render call to', this.state.remoteUri);
         let box = null;
 
         if (this.props.localMedia !== null) {
@@ -177,7 +201,7 @@ class Call extends Component {
                         remoteUri = {this.state.remoteUri}
                         remoteDisplayName = {this.state.remoteDisplayName}
                         hangupCall = {this.hangupCall}
-                        call = {this.props.currentCall}
+                        call = {this.props.call}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
@@ -187,12 +211,12 @@ class Call extends Component {
                     />
                 );
             } else {
-                if (this.props.currentCall != null && this.props.currentCall.state === 'established') {
+                if (this.props.call != null && this.props.call.state === 'established') {
                     box = (
                         <VideoBox
-                            call = {this.props.currentCall}
-                            remoteUri = {remoteUri}
-                            remoteDisplayName = {remoteDisplayName}
+                            call = {this.props.call}
+                            remoteUri = {this.state.remoteUri}
+                            remoteDisplayName = {this.state.remoteDisplayName}
                             localMedia = {this.props.localMedia}
                             shareScreen = {this.props.shareScreen}
                             hangupCall = {this.hangupCall}
@@ -207,13 +231,13 @@ class Call extends Component {
                     );
                 } else {
                     //console.log('Will render local media');
-                    if (this.props.currentCall && this.props.currentCall.state && this.props.currentCall.state === 'terminated') {
+                    if (this.props.call && this.props.call.state && this.props.call.state === 'terminated') {
                         // do not render
                     } else {
                         box = (
                             <LocalMedia
-                                remoteUri = {remoteUri}
-                                remoteDisplayName = {remoteDisplayName}
+                                remoteUri = {this.state.remoteUri}
+                                remoteDisplayName = {this.state.remoteDisplayName}
                                 localMedia = {this.props.localMedia}
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}
@@ -232,8 +256,8 @@ Call.propTypes = {
     targetUri               : PropTypes.string.isRequired,
     account                 : PropTypes.object.isRequired,
     hangupCall              : PropTypes.func.isRequired,
+    call                    : PropTypes.object,
     localMedia              : PropTypes.object,
-    currentCall             : PropTypes.object,
     shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,
     generatedVideoTrack     : PropTypes.bool,

@@ -8,15 +8,31 @@ import autoBind from 'auto-bind';
 import { Appbar } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
+function toTitleCase(str) {
+    return str.replace(
+        /\w\S*/g,
+        function(txt) {
+            return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+        }
+    );
+}
 
 class CallOverlay extends React.Component {
     constructor(props) {
         super(props);
         autoBind(this);
 
+        this.state = {
+            callState: null
+        }
+
         this.duration = null;
         this.timer = null;
         this._isMounted = true;
+
+        if (this.props.call) {
+            this.props.call.on('stateChanged', this.callStateChanged);
+        }
     }
 
     componentDidMount() {
@@ -32,15 +48,16 @@ class CallOverlay extends React.Component {
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (this.props.call == null && nextProps.call) {
-            if (nextProps.call.state === 'established') {
-                this.startTimer();
-            } else if (nextProps.call.state !== 'terminated') {
+            if (nextProps.call.state !== 'terminated') {
                 nextProps.call.on('stateChanged', this.callStateChanged);
             }
         }
     }
 
     componentWillUnmount() {
+        if (this.props.call) {
+            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        }
         this._isMounted = false;
         clearTimeout(this.timer);
     }
@@ -49,8 +66,13 @@ class CallOverlay extends React.Component {
         // Prevent starting timer when we are unmounted
         if (newState === 'established' && this._isMounted) {
             this.startTimer();
+        }
+
+        if (newState === 'terminated') {
             this.props.call.removeListener('stateChanged', this.callStateChanged);
         }
+
+        this.setState({callState: newState});
     }
 
     startTimer() {
@@ -85,7 +107,7 @@ class CallOverlay extends React.Component {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
                 callDetail = 'Duration:' + this.duration;
             } else {
-                callDetail = 'Connecting...'
+                callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
             }
 
             if (this.props.remoteUri.search('videoconference') > -1) {

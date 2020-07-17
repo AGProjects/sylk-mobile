@@ -129,7 +129,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setMutedCall(callUUID, mute) {
-        utils.timestampedLog('Callkeep: set muted: ', mute);
+        utils.timestampedLog('Callkeep: set call', callUUID, 'muted =', mute);
         this.callKeep.setMutedCall(callUUID, mute);
     }
 

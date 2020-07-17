@@ -98,6 +98,9 @@ class VideoBox extends Component {
         // clearTimeout(this.overlayTimer);
         // this.remoteVideo.current.removeEventListener('playing', this.handleRemoteVideoPlaying);
         // this.exitFullscreen();
+        if (this.props.call != null) {
+            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        }
     }
 
     showDtmfModal() {
@@ -136,17 +139,16 @@ class VideoBox extends Component {
         event.preventDefault();
         const localStream = this.state.localStream;
         if (localStream.getAudioTracks().length > 0) {
-            //const track = localStream.getAudioTracks()[0];
+            const track = localStream.getAudioTracks()[0];
             if(this.state.audioMuted) {
                 DEBUG('Unmute microphone');
-                //track.enabled = true;
+                track.enabled = true;
                 this.props.callKeepToggleMute(false);
                 this.setState({audioMuted: false});
             } else {
                 DEBUG('Mute microphone');
-                // track.enabled = false;
+                track.enabled = false;
                 this.props.callKeepToggleMute(true);
-
                 this.setState({audioMuted: true});
             }
         }

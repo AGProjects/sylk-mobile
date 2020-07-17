@@ -1836,13 +1836,11 @@ class Sylk extends Component {
     }
 
     call() {
-        let currentCall = this.state.currentCall || this.state.inboundCall;
-
         return (
             <Call
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
-                currentCall = {currentCall}
+                call = {this.state.currentCall || this.state.inboundCall}
                 localMedia = {this.state.localMedia}
                 escalateToConference = {this.escalateToConference}
                 hangupCall = {this.hangupCall}

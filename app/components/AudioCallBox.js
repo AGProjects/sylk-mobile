@@ -55,6 +55,12 @@ class AudioCallBox extends Component {
         }
     }
 
+    componentWillUnmount() {
+        if (this.props.call != null) {
+            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        }
+    }
+
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (this.props.call == null && nextProps.call) {
@@ -67,7 +73,10 @@ class AudioCallBox extends Component {
     }
 
     componentWillUnmount() {
-        clearTimeout(this.callTimer);
+        if (this.props.call != null) {
+            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        }
+                clearTimeout(this.callTimer);
         // if (this.speechEvents !== null) {
         //     this.speechEvents.stop();
         //     this.speechEvents = null;
@@ -106,16 +115,17 @@ class AudioCallBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        //const localStream = this.props.call.getLocalStreams()[0];
+        const localStream = this.props.call.getLocalStreams()[0];
+        const track = localStream.getAudioTracks()[0];
 
         if(this.state.audioMuted) {
-            logger.debug('Unmute microphone');
+            //console.log('Unmute microphone');
             this.props.callKeepToggleMute(false);
-            //localStream.getAudioTracks()[0].enabled = true;
+            track.enabled = true;
             this.setState({audioMuted: false});
         } else {
-            logger.debug('Mute microphone');
-            //localStream.getAudioTracks()[0].enabled = false;
+            //console.log('Mute microphone');
+            track.enabled = false;
             this.props.callKeepToggleMute(true);
             this.setState({audioMuted: true});
         }
@@ -136,13 +146,8 @@ class AudioCallBox extends Component {
     }
 
     render() {
-        let remoteIdentity;
-
-        if (this.props.call !== null) {
-            remoteIdentity = this.props.call.remoteIdentity;
-        } else {
-            remoteIdentity = {uri: this.props.remoteUri, remoteDisplayName: this.props.remoteDisplayName};
-        }
+        let remoteIdentity = {uri: this.props.remoteUri,
+                              displayName: this.props.remoteDisplayName};
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
@@ -215,8 +220,8 @@ class AudioCallBox extends Component {
 
 AudioCallBox.propTypes = {
     remoteUri               : PropTypes.string.isRequired,
-    call                    : PropTypes.object,
     remoteDisplayName       : PropTypes.string,
+    call                    : PropTypes.object,
     escalateToConference    : PropTypes.func,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
