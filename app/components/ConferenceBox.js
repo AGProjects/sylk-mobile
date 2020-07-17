@@ -78,7 +78,7 @@ class ConferenceBox extends Component {
         ].forEach((level) => {
             this.logEvent[level] = (
                 (action, messages, originator) => {
-                    const log = this.state.eventLog;
+                    const log = this.state.eventLog.slice();
                     log.unshift({originator, originator, level: level, action: action, messages: messages});
                     this.setState({eventLog: log});
                 }
@@ -142,7 +142,7 @@ class ConferenceBox extends Component {
     onParticipantLeft(p) {
         DEBUG(`Participant left: ${p.identity}`);
         // this.refs.audioPlayerParticipantLeft.play();
-        const participants = this.state.participants;
+        const participants = this.state.participants.slice();
         const idx = participants.indexOf(p);
         if (idx !== -1) {
             participants.splice(idx, 1);
@@ -244,7 +244,7 @@ class ConferenceBox extends Component {
     }
 
     handleActiveSpeakerSelected(participant, secondVideo=false) {      // eslint-disable-line space-infix-ops
-        let newActiveSpeakers = this.state.activeSpeakers;
+        let newActiveSpeakers = this.state.activeSpeakers.slice();
         if (secondVideo) {
             if (participant.id !== 'none') {
                 if (newActiveSpeakers.length >= 1) {
