@@ -679,7 +679,7 @@ class ConferenceBox extends Component {
                     buttons={buttons}
                 />
                 <View style={styles.conferenceContainer}>
-                    <View style={styles.videosContainer}>
+                    <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
                         {videos}
                     </View>
                     <View style={styles.carouselContainer}>
@@ -726,7 +726,8 @@ ConferenceBox.propTypes = {
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
     toggleSpeakerPhone  : PropTypes.func,
-    speakerPhoneEnabled : PropTypes.bool
+    speakerPhoneEnabled : PropTypes.bool,
+    isLandscape         : PropTypes.bool
 };
 
 export default ConferenceBox;
