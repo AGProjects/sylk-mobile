@@ -40,15 +40,15 @@ class ConferenceBox extends Component {
             callOverlayVisible: true,
             audioMuted: false,
             videoMuted: false,
-            participants: [],
+            participants: props.call.participants.slice(),
             showInviteModal: false,
             showDrawer: false,
             showFiles: false,
             shareOverlayVisible: false,
-            activeSpeakers: [],
+            activeSpeakers: props.call.activeParticipants.slice(),
             selfDisplayedLarge: false,
             eventLog: [],
-            sharedFiles: [],
+            sharedFiles: props.call.sharedFiles.slice(),
             largeVideoStream: null
         };
 
