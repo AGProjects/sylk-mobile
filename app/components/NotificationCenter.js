@@ -31,7 +31,7 @@ class NotificationCenter extends Component {
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
         this.setState({
             visible: true,
-            autoDismiss: 10,
+            autoDismiss: 5,
             title: title,
             message: options.body,
             action: null

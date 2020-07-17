@@ -601,10 +601,11 @@ class Sylk extends Component {
         switch (newState) {
             case 'closed':
                 this.setState({connection: null, loading: null});
-                this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 5000});
+                this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 3000});
                 break;
             case 'ready':
-                //this._notificationCenter.postSystemNotification('Connected to server', {body: '', timeout: 3});
+                this._notificationCenter.removeNotification();
+                this._notificationCenter.postSystemNotification('Connection OK', {body: '', timeout: 1});
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
                 break;
             case 'disconnected':
@@ -630,7 +631,7 @@ class Sylk extends Component {
                     generatedVideoTrack: false,
                     });
 
-                this._notificationCenter.postSystemNotification('Connection lost', {body: '', timeout: 5000});
+                this._notificationCenter.postSystemNotification('Connection lost', {body: '', timeout: 3000});
 
                 break;
             default:
@@ -724,7 +725,7 @@ class Sylk extends Component {
         }
 
         let callUUID = call._callkeepUUID;
-        utils.timestampedLog('State for', call.direction, 'call', callUUID, ' changed:', oldState, '->', newState);
+        utils.timestampedLog(call.direction, 'call', callUUID, ' state change:', oldState, '->', newState);
 
         let newCurrentCall;
         let newInboundCall;
@@ -750,7 +751,7 @@ class Sylk extends Component {
                         newCurrentCall = null;
                         newInboundCall = null;
                     } else {
-                        utils.timestampedLog('Call state changed:', 'Error: unclear call state')
+                        utils.timestampedLog('Call state changed:', 'Error: unclear call combination')
                     }
                 }
             } else if (newState === 'accepted') {
