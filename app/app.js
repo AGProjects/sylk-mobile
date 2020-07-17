@@ -143,7 +143,7 @@ class Sylk extends Component {
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
 
-        this.serverHistory = []; // used for caching server history
+        this.cachedHistory = []; // used for caching server history
 
         this.state = Object.assign({}, this._initialSstate);
 
@@ -196,6 +196,13 @@ class Sylk extends Component {
                 this.setState({localHistory: history});
             } else {
                 console.log('Loaded 0 local history entries');
+            }
+        });
+
+        storage.get('cachedHistory').then((history) => {
+            if (history) {
+                console.log('Loaded', history.length, 'cached history entries');
+                this.cachedHistory = history;
             }
         });
 
@@ -1771,8 +1778,10 @@ class Sylk extends Component {
         );
     }
 
-    cacheHistory(history) {
-        this.history = history;
+    saveHistoryForLater(history) {
+        //console.log('Cache history for later', history.length)
+        this.cachedHistory = history;
+        storage.set('cachedHistory', history);
     }
 
     ready() {
@@ -1804,8 +1813,8 @@ class Sylk extends Component {
                     isTablet = {this.state.isTablet}
                     localHistory = {this.state.localHistory}
                     refreshHistory = {this.state.refreshHistory}
-                    cacheHistory = {this.cacheHistory}
-                    initialHistory = {this.serverHistory}
+                    cacheHistory = {this.saveHistoryForLater}
+                    initialHistory = {this.cachedHistory}
                     myDisplayName = {this.state.myDisplayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
                 />

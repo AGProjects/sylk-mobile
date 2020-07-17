@@ -19,17 +19,62 @@ class Call extends Component {
         super(props);
         autoBind(this);
 
+        let audioOnly = false;
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
             //logger.debug('Will send audio only');
-            this.state = {audioOnly: true};
-        } else {
-            this.state = {audioOnly: false};
+            audioOnly = true;
         }
 
         // If current call is available on mount we must have incoming
         if (this.props.currentCall != null) {
             this.props.currentCall.on('stateChanged', this.callStateChanged);
         }
+
+        let remoteUri = this.props.targetUri;
+        let remoteDisplayName = remoteUri;
+
+        if (this.props.currentCall !== null && this.props.currentCall.state == 'established') {
+            remoteUri = this.props.currentCall.remoteIdentity.uri;
+            remoteDisplayName = this.props.currentCall.remoteIdentity.displayName || this.props.currentCall.remoteIdentity.uri;
+        } else {
+            remoteUri = this.props.targetUri;
+            remoteDisplayName = this.props.targetUri;
+        }
+
+        if (remoteUri.indexOf('3333@') > -1) {
+            remoteDisplayName = 'Video Test';
+        } else if (remoteUri.indexOf('4444@') > -1) {
+            remoteDisplayName = 'Echo Test';
+        } else {
+            if (this.props.contacts) {
+                let username = remoteUri.split('@')[0];
+                let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+                if (isPhoneNumber) {
+                    var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
+                } else {
+                    var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', remoteUri);
+                }
+
+                if (contact_obj) {
+                    remoteDisplayName = contact_obj.displayName;
+                    this.setState({remoteDisplayName: remoteDisplayName});
+                    if (isPhoneNumber) {
+                        remoteUri = username;
+                    }
+                } else {
+                    if (isPhoneNumber) {
+                        remoteUri = username;
+                        remoteDisplayName = username;
+                    }
+                }
+            }
+        }
+
+        this.state = {audioOnly: audioOnly,
+              remoteDisplayName: remoteDisplayName,
+              remoteUri: remoteUri
+              };
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -122,39 +167,15 @@ class Call extends Component {
     }
 
     render() {
-        //console.log('Call: render call to', this.props.targetUri);
+        console.log('Call: render call to', this.props.targetUri);
         let box = null;
-
-        let remoteUri = this.props.targetUri;
-        let remoteDisplayName = remoteUri;
-
-        if (this.props.currentCall !== null && this.props.currentCall.state == 'established') {
-            remoteUri = this.props.currentCall.remoteIdentity.uri;
-            remoteDisplayName = this.props.currentCall.remoteIdentity.displayName || this.props.currentCall.remoteIdentity.uri;
-        } else {
-            remoteUri = this.props.targetUri;
-            remoteDisplayName = this.props.targetUri;
-        }
-
-        if (remoteUri.indexOf('3333@') > -1) {
-            remoteDisplayName = 'Video Test';
-        } else if (remoteUri.indexOf('4444@') > -1) {
-            remoteDisplayName = 'Echo Test';
-        } else {
-            if (this.props.contacts) {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', remoteUri);
-                if (contact_obj) {
-                    remoteDisplayName = contact_obj.displayName;
-                }
-            }
-        }
 
         if (this.props.localMedia !== null) {
             if (this.state.audioOnly) {
                 box = (
                     <AudioCallBox
-                        remoteUri = {remoteUri}
-                        remoteDisplayName = {remoteDisplayName}
+                        remoteUri = {this.state.remoteUri}
+                        remoteDisplayName = {this.state.remoteDisplayName}
                         hangupCall = {this.hangupCall}
                         call = {this.props.currentCall}
                         mediaPlaying = {this.mediaPlaying}

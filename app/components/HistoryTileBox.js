@@ -118,6 +118,26 @@ class HistoryTileBox extends Component {
                         return null;
                     }
 
+                    let username = elem.remoteParty.split('@')[0];
+                    let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+                    if (isPhoneNumber) {
+                        var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
+                    } else {
+                        var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
+                    }
+
+                    if (contact_obj) {
+                        elem.displayName = contact_obj.displayName;
+                        elem.photo = contact_obj.photo;
+                        if (isPhoneNumber) {
+                            elem.remoteParty = username;
+                        }
+                        // TODO update icon here
+                    } else {
+                        elem.photo = null;
+                    }
+
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {
                         elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
                         elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
@@ -132,15 +152,6 @@ class HistoryTileBox extends Component {
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         elem.type = 'history';
                         elem.id = uuid.v4();
-
-                        var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
-                        if (contact_obj) {
-                            elem.displayName = contact_obj.displayName;
-                            elem.photo = contact_obj.photo;
-                            // TODO update icon here
-                        } else {
-                            elem.photo = null;
-                        }
 
                         elem.label = elem.direction;
 
@@ -172,7 +183,6 @@ class HistoryTileBox extends Component {
 
                 this.props.cacheHistory(history);
                 this.setState({history: history});
-
             }
         }, (errorCode) => {
             console.log('Error getting call history from server', errorCode);

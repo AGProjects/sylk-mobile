@@ -53,7 +53,6 @@ class AudioCallBox extends Component {
         } else {
             this.props.mediaPlaying();
         }
-
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -120,7 +119,6 @@ class AudioCallBox extends Component {
             this.props.callKeepToggleMute(true);
             this.setState({audioMuted: true});
         }
-
     }
 
     showDtmfModal() {
@@ -138,13 +136,12 @@ class AudioCallBox extends Component {
     }
 
     render() {
-
         let remoteIdentity;
 
         if (this.props.call !== null) {
             remoteIdentity = this.props.call.remoteIdentity;
         } else {
-            remoteIdentity = {uri: this.props.remoteUri};
+            remoteIdentity = {uri: this.props.remoteUri, remoteDisplayName: this.props.remoteDisplayName};
         }
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
