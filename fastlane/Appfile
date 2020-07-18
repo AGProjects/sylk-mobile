@@ -1,5 +1,5 @@
 app_identifier("com.agprojects.sylk-ios") # The bundle identifier of your app
-apple_id("me@dan-jenkins.co.uk") # Your Apple email address
+apple_id("macstore@ag-projects.com") # Your Apple email address
 
 itc_team_id("467748") # App Store Connect Team ID
 team_id("4DFEFUDLKZ") # Developer Portal Team ID
