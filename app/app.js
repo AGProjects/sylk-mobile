@@ -149,6 +149,7 @@ class Sylk extends Component {
 
         this.myParticipants = {};
         this.myInvitedParties = {};
+        this.myFavoriteContacts = [];
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
         this.__notificationCenter = null;
@@ -220,6 +221,13 @@ class Sylk extends Component {
             }
         });
 
+        storage.get('myFavoriteContacts').then((myFavoriteContacts) => {
+            if (myFavoriteContacts) {
+                this.myFavoriteContacts = myFavoriteContacts;
+                console.log('My myFavorite Contacts', this.myFavoriteContacts);
+            }
+        });
+
     }
 
     async loadContacts() {
@@ -271,10 +279,22 @@ class Sylk extends Component {
                         if (number_stripped) {
                             if (!seen_uris.has(number_stripped)) {
                                 //console.log('   ---->    ', number['label'], number_stripped);
-                                var contact_card = {id: uuid.v4(), displayName: name, remoteParty: number_stripped, type: 'contact', photo: photo, label: number['label']};
+                                var contact_card = {id: uuid.v4(), displayName:
+                                                    name, remoteParty: number_stripped,
+                                                    type: 'contact',
+                                                    photo: photo,
+                                                    label: number['label'],
+                                                    tags: ['contact']};
                                 contact_cards.push(contact_card);
                                 seen_uris.set(number_stripped, true);
-                                var contact_card = {id: uuid.v4(), displayName: name, remoteParty: number_stripped, type: 'contact', photo: photo, label: number['label']};
+                                var contact_card = {id: uuid.v4(),
+                                                    displayName: name,
+                                                    remoteParty: number_stripped,
+                                                    type: 'contact',
+                                                    photo: photo,
+                                                    label: number['label'],
+                                                    tags: ['contact']
+                                                    };
                             }
                         }
                     });
@@ -284,7 +304,14 @@ class Sylk extends Component {
                         if (!seen_uris.has(email_stripped)) {
                             //console.log(name, email['label'], email_stripped);
                             //console.log('   ---->    ', email['label'], email_stripped);
-                            var contact_card = {id: uuid.v4(), displayName: name, remoteParty: email_stripped, type: 'contact', photo: photo, label: email['label']};
+                            var contact_card = {id: uuid.v4(),
+                                                displayName: name,
+                                                remoteParty: email_stripped,
+                                                type: 'contact',
+                                                photo: photo,
+                                                label: email['label'],
+                                                tags: ['contact']
+                                                };
                             contact_cards.push(contact_card);
                             seen_uris.set(email_stripped, true);
                         }
@@ -1574,6 +1601,18 @@ class Sylk extends Component {
         }
     }
 
+    setFavorite(uri) {
+        let idx = this.myFavoriteContacts.indexOf(uri);
+        if (idx === -1) {
+            this.myFavoriteContacts.push(uri);
+        } else {
+            removed = this.myFavoriteContacts.splice(idx,idx);
+        }
+
+        console.log('Save favorites', this.myFavoriteContacts);
+        storage.set('myFavoriteContacts', this.myFavoriteContacts);
+    }
+
     saveParticipant(callUUID, room, uri) {
         //console.log('Save participant', uri, 'for conference', room);
 
@@ -1818,6 +1857,8 @@ class Sylk extends Component {
                     initialHistory = {this.cachedHistory}
                     myDisplayName = {this.state.myDisplayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
+                    setFavorite = {this.setFavorite}
+                    myFavorites = {this.myFavoriteContacts}
                 />
             </Fragment>
         );

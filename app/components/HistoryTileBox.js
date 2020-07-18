@@ -3,6 +3,7 @@ import autoBind from 'auto-bind';
 
 import PropTypes from 'prop-types';
 import { SafeAreaView, ScrollView, View, FlatList, Text } from 'react-native';
+
 import HistoryCard from './HistoryCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -22,6 +23,7 @@ class HistoryTileBox extends Component {
             accountId: this.props.account.id,
             password: this.props.password
         }
+
 
         const echoTest = {
             remoteParty: '4444@sylk.link',
@@ -80,6 +82,10 @@ class HistoryTileBox extends Component {
         }
     }
 
+    setFavorite(uri) {
+        this.props.setFavorite(uri);
+    }
+
     getServerHistory() {
         let history = this.props.localHistory;
         utils.timestampedLog('Requesting call history from server');
@@ -114,6 +120,8 @@ class HistoryTileBox extends Component {
                 const known = [];
                 history = history.filter((elem) => {
                     elem.conference = false;
+                    elem.tags = [];
+
                     if (elem.remoteParty.indexOf('@conference.sip2sip.info') > -1) {
                         return null;
                     }
@@ -152,6 +160,7 @@ class HistoryTileBox extends Component {
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         elem.type = 'history';
                         elem.id = uuid.v4();
+                        elem.tags = ['history'];
 
                         elem.label = elem.direction;
 
@@ -173,6 +182,8 @@ class HistoryTileBox extends Component {
                         }
 
                         known.push(elem.remoteParty);
+                        //console.log(elem);
+
                         return elem;
                     }
                 });
@@ -204,6 +215,11 @@ class HistoryTileBox extends Component {
         }
 
         items = items.concat(matchedContacts);
+        items.forEach((item) => {
+            if (this.props.myFavorites.indexOf(item.remoteParty) > -1) {
+                item.tags.push('favorite');
+            }
+        });
 
         let columns = 1;
 
@@ -224,6 +240,8 @@ class HistoryTileBox extends Component {
                 key={this.props.orientation}
               />
             </SafeAreaView>
+
+
         );
     }
 }
@@ -243,7 +261,9 @@ HistoryTileBox.propTypes = {
     initialHistory  : PropTypes.array,
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
-    myPhoneNumber   : PropTypes.string
+    myPhoneNumber   : PropTypes.string,
+    setFavorite     : PropTypes.func,
+    myFavorites     : PropTypes.array
 };
 
 

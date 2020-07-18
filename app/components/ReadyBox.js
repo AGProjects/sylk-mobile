@@ -206,6 +206,8 @@ class ReadyBox extends Component {
                             initialHistory={this.props.initialHistory}
                             myDisplayName={this.props.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
+                            setFavorite={this.props.setFavorite}
+                            myFavorites={this.props.myFavorites}
                         />
                     </View>
                     {this.props.isTablet ?
@@ -240,7 +242,9 @@ ReadyBox.propTypes = {
     initialHistory  : PropTypes.array,
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
-    myPhoneNumber   : PropTypes.string
+    myPhoneNumber   : PropTypes.string,
+    setFavorite     : PropTypes.func,
+    myFavorites     : PropTypes.array
 };
 
 
