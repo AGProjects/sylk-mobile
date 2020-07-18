@@ -7,13 +7,22 @@
     margin: 0 auto;
 }
 
-.buttonContainer {
+.portraitButtonContainer {
     justify-self: flex-end;
     flex-direction: row;
     margin: 0 auto;
     margin-top:auto;
     bottom: 20;
     margin-bottom: 40px;
+}
+
+.landscapeButtonContainer {
+    justify-self: flex-end;
+    flex-direction: row;
+    margin: 0 auto;
+    margin-top:auto;
+    bottom: 20;
+    margin-bottom: 0px;
 }
 
 .button {

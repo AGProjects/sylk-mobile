@@ -1898,6 +1898,8 @@ class Sylk extends Component {
                 callUUID = {this.state.outgoingCallUUID}
                 contacts = {this.contacts}
                 intercomDtmfTone = {this.intercomDtmfTone}
+                orientation = {this.state.orientation}
+                isTablet = {this.state.isTablet}
             />
         )
     }

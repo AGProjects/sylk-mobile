@@ -151,6 +151,7 @@ class AudioCallBox extends Component {
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
+        let buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
 
         return (
             <View style={styles.container}>
@@ -168,7 +169,7 @@ class AudioCallBox extends Component {
                 <Text style={styles.uri}>{this.props.remoteUri}</Text>
                 : null }
 
-                <View style={styles.buttonContainer}>
+                <View style={buttonContainerClass}>
                     <IconButton
                         size={34}
                         style={buttonClass}
@@ -228,7 +229,9 @@ AudioCallBox.propTypes = {
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,
-    speakerPhoneEnabled     : PropTypes.bool
+    speakerPhoneEnabled     : PropTypes.bool,
+    orientation             : PropTypes.string,
+    isTablet                : PropTypes.bool
 };
 
 export default AudioCallBox;

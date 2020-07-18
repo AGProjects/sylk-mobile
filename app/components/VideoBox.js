@@ -289,6 +289,7 @@ class VideoBox extends Component {
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        let buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
 
         return (
             <View style={styles.container}>
@@ -316,7 +317,7 @@ class VideoBox extends Component {
                 </TouchableOpacity>
                 : null }
                 { this.props.intercomDtmfTone ?
-                 <View style={styles.buttonContainer}>
+                 <View style={buttonContainerClass}>
                     <IconButton
                         size={50}
                         style={buttonClass}
@@ -338,7 +339,7 @@ class VideoBox extends Component {
                     />
                 </View>
                 :
-                <View style={styles.buttonContainer}>
+                <View style={buttonContainerClass}>
                     <IconButton
                         size={34}
                         style={buttonClass}
@@ -402,7 +403,9 @@ VideoBox.propTypes = {
     callKeepToggleMute      : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
-    intercomDtmfTone        : PropTypes.string
+    intercomDtmfTone        : PropTypes.string,
+    orientation             : PropTypes.string,
+    isTablet                : PropTypes.bool
 };
 
 export default VideoBox;

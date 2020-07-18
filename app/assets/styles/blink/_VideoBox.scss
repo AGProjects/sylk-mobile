@@ -32,6 +32,19 @@
     border-radius: 10px;
 }
 
+.portraitButtonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    margin-bottom: 40px;
+}
+
+.landscapeButtonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    margin-bottom: 0px;
+}
+
+
 .buttonContainer {
     flex-direction: row;
     margin: 0 auto;

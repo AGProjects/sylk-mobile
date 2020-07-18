@@ -208,6 +208,8 @@ class Call extends Component {
                         callKeepToggleMute = {this.props.callKeepToggleMute}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
+                        orientation = {this.props.orientation}
+                        isTablet = {this.props.isTablet}
                     />
                 );
             } else {
@@ -227,6 +229,8 @@ class Call extends Component {
                             speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                             toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                             intercomDtmfTone = {this.props.intercomDtmfTone}
+                            orientation = {this.props.orientation}
+                            isTablet = {this.props.isTablet}
                         />
                     );
                 } else {
@@ -267,7 +271,9 @@ Call.propTypes = {
     speakerphoneOff         : PropTypes.func,
     callUUID                : PropTypes.string,
     contacts                : PropTypes.array,
-    intercomDtmfTone        : PropTypes.string
+    intercomDtmfTone        : PropTypes.string,
+    orientation             : PropTypes.string,
+    isTablet                : PropTypes.bool
 };
 
 
