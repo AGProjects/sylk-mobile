@@ -21,9 +21,11 @@ class HistoryTileBox extends Component {
             history: this.props.initialHistory,        // combined local and server history
             localHistory: this.props.localHistory,
             accountId: this.props.account.id,
-            password: this.props.password
+            password: this.props.password,
+            targetUri: this.props.targetUri,
+            favoriteUris: this.props.favoriteUris,
+            blockedUris: this.props.blockedUris
         }
-
 
         const echoTest = {
             remoteParty: '4444@sylk.link',
@@ -48,18 +50,32 @@ class HistoryTileBox extends Component {
         this.initialContacts = initialContacts;
     }
 
-    componentWillUnmount() {
-    }
-
     componentDidMount() {
         this.getServerHistory();
+    }
+
+    setTargetUri(uri, contact) {
+        console.log('Set target uri uri in history list', uri);
+        this.props.setTargetUri(uri, contact);
+        this.setState({targetUri: uri});
+    }
+
+    setFavoriteUri(uri) {
+        return this.props.setFavoriteUri(uri);
+    }
+
+    setBlockedUri(uri) {
+        return this.props.setBlockedUri(uri);
     }
 
     renderItem(item) {
         return(
             <HistoryCard
+            id={item.id}
             contact={item.item}
-            setTargetUri={this.props.setTargetUri}
+            setFavoriteUri={this.setFavoriteUri}
+            setBlockedUri={this.setBlockedUri}
+            setTargetUri={this.setTargetUri}
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
             />);
@@ -80,10 +96,6 @@ class HistoryTileBox extends Component {
         if (props.refreshHistory !== refreshHistory) {
             this.getServerHistory();
         }
-    }
-
-    setFavorite(uri) {
-        this.props.setFavorite(uri);
     }
 
     getServerHistory() {
@@ -202,6 +214,10 @@ class HistoryTileBox extends Component {
     }
 
     render() {
+        //console.log('Render history');
+        //console.log('Favorite Uris:', this.state.favoriteUris);
+        //console.log('Blocked Uris:', this.state.blockedUris);
+
         let items = this.state.history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
         let searchExtraItems = this.props.contacts;
@@ -216,10 +232,31 @@ class HistoryTileBox extends Component {
 
         items = items.concat(matchedContacts);
         items.forEach((item) => {
-            if (this.props.myFavorites.indexOf(item.remoteParty) > -1) {
+            item.showActions = false;
+            if (this.state.favoriteUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('favorite') === -1) {
                 item.tags.push('favorite');
             }
+            if (this.state.blockedUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('blocked') === -1) {
+                item.tags.push('blocked');
+            }
+
+            let idx = item.tags.indexOf('blocked');
+
+            if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && idx > -1) {
+                item.tags.splice(idx, idx);
+            }
+
+            idx = item.tags.indexOf('favorite');
+
+            if (this.state.favoriteUris.indexOf(item.remoteParty) === -1 && idx > -1) {
+                item.tags.splice(idx, idx);
+            }
+
         });
+
+        if (items.length === 1) {
+            items[0].showActions = true;
+        }
 
         let columns = 1;
 
@@ -240,8 +277,6 @@ class HistoryTileBox extends Component {
                 key={this.props.orientation}
               />
             </SafeAreaView>
-
-
         );
     }
 }
@@ -262,8 +297,10 @@ HistoryTileBox.propTypes = {
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
-    setFavorite     : PropTypes.func,
-    myFavorites     : PropTypes.array
+    setFavoriteUri  : PropTypes.func,
+    setBlockedUri   : PropTypes.func,
+    favoriteUris    : PropTypes.array,
+    blockedUris     : PropTypes.array
 };
 
 

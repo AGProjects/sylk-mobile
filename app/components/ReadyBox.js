@@ -25,7 +25,9 @@ class ReadyBox extends Component {
             contacts: this.props.contacts,
             selectedContact: null,
             showConferenceModal: false,
-            sticky: false
+            sticky: false,
+            favoriteUris: this.props.favoriteUris,
+            blockedUris: this.props.blockedUris
         };
 
     }
@@ -205,8 +207,10 @@ class ReadyBox extends Component {
                             initialHistory={this.props.initialHistory}
                             myDisplayName={this.props.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
-                            setFavorite={this.props.setFavorite}
-                            myFavorites={this.props.myFavorites}
+                            setFavoriteUri={this.props.setFavoriteUri}
+                            setBlockedUri={this.props.setBlockedUri}
+                            favoriteUris={this.state.favoriteUris}
+                            blockedUris={this.state.blockedUris}
                         />
                     </View>
                     {this.props.isTablet ?
@@ -242,8 +246,10 @@ ReadyBox.propTypes = {
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
-    setFavorite     : PropTypes.func,
-    myFavorites     : PropTypes.array
+    setFavoriteUri  : PropTypes.func,
+    setBlockedUri   : PropTypes.func,
+    favoriteUris    : PropTypes.array,
+    blockedUris     : PropTypes.array
 };
 
 

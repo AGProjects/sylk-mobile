@@ -149,7 +149,9 @@ class Sylk extends Component {
 
         this.myParticipants = {};
         this.myInvitedParties = {};
-        this.myFavoriteContacts = [];
+        this.favoriteUris = [];
+        this.blockedUris = [];
+
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
         this.__notificationCenter = null;
@@ -221,10 +223,17 @@ class Sylk extends Component {
             }
         });
 
-        storage.get('myFavoriteContacts').then((myFavoriteContacts) => {
-            if (myFavoriteContacts) {
-                this.myFavoriteContacts = myFavoriteContacts;
-                console.log('My myFavorite Contacts', this.myFavoriteContacts);
+        storage.get('favoriteUris').then((favoriteUris) => {
+            if (favoriteUris) {
+                this.favoriteUris = favoriteUris;
+                console.log('My favorite Uris', this.favoriteUris);
+            }
+        });
+
+        storage.get('blockedUris').then((blockedUris) => {
+            if (blockedUris) {
+                this.blockedUris = blockedUris;
+                console.log('My blocked Uris', this.blockedUris);
             }
         });
 
@@ -1601,16 +1610,43 @@ class Sylk extends Component {
         }
     }
 
-    setFavorite(uri) {
-        let idx = this.myFavoriteContacts.indexOf(uri);
+    setFavoriteUri(uri) {
+        let idx = this.favoriteUris.indexOf(uri);
+        let ret;
+
         if (idx === -1) {
-            this.myFavoriteContacts.push(uri);
+            this.favoriteUris.push(uri);
+            ret = true;
+
         } else {
-            removed = this.myFavoriteContacts.splice(idx,idx);
+            this.favoriteUris.splice(idx,idx);
+            ret = false;
         }
 
-        console.log('Save favorites', this.myFavoriteContacts);
-        storage.set('myFavoriteContacts', this.myFavoriteContacts);
+        console.log('Save favorite Uris:', this.favoriteUris);
+        storage.set('favoriteUris', this.favoriteUris);
+        this.forceUpdate()
+        return ret;
+    }
+
+    setBlockedUri(uri) {
+        console.log('setBlockedUri:', uri);
+        let ret;
+        let idx = this.blockedUris.indexOf(uri);
+        console.log(idx);
+        if (idx === -1) {
+            this.blockedUris.push(uri);
+            ret = true;
+        } else {
+            let removed = this.blockedUris.splice(idx,idx);
+            console.log('Removed', removed);
+            ret = false;
+        }
+
+        console.log('Save blocked Uris:', this.blockedUris);
+        storage.set('blockedUris', this.blockedUris);
+        this.forceUpdate()
+        return ret;
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -1857,8 +1893,10 @@ class Sylk extends Component {
                     initialHistory = {this.cachedHistory}
                     myDisplayName = {this.state.myDisplayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
-                    setFavorite = {this.setFavorite}
-                    myFavorites = {this.myFavoriteContacts}
+                    setFavoriteUri = {this.setFavoriteUri}
+                    setBlockedUri = {this.setBlockedUri}
+                    favoriteUris = {this.favoriteUris}
+                    blockedUris = {this.blockedUris}
                 />
             </Fragment>
         );

@@ -4,7 +4,7 @@ import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
-import { Card, IconButton, Caption, Title, Subheading } from 'react-native-paper';
+import { Card, IconButton, Button, Caption, Title, Subheading } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
 import styles from '../assets/styles/blink/_HistoryCard.scss';
@@ -27,6 +27,7 @@ class HistoryCard extends Component {
         autoBind(this);
 
         this.state = {
+            id: this.props.contact.id,
             displayName: this.props.contact.displayName,
             uri: this.props.contact.remoteParty,
             participants: this.props.contact.participants,
@@ -35,17 +36,63 @@ class HistoryCard extends Component {
             photo: this.props.contact.photo,
             label: this.props.contact.label,
             orientation: this.props.orientation,
-            isTablet: this.props.isTablet
+            isTablet: this.props.isTablet,
+            favorite: (this.props.contact.tags.indexOf('favorite') > -1)? true : false,
+            blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false
         }
+    }
+
+    shouldComponentUpdate(nextProps) {
+        //https://medium.com/sanjagh/how-to-optimize-your-react-native-flatlist-946490c8c49b
+        return true;
+    }
+
+    setBlockedUri() {
+        let newBlockedState = this.props.setBlockedUri(this.state.uri);
+        this.setState({blocked: newBlockedState});
+    }
+
+    setFavoriteUri() {
+        let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
+        this.setState({favorite: newFavoriteState});
+    }
+
+    setTargetUri(uri, contact) {
+        this.props.setTargetUri(this.state.uri, this.props.contact);
     }
 
     render () {
         let containerClass = styles.portraitContainer;
+        let cardClass = styles.card;
+        //console.log('Render card', this.state.uri, 'tags=', this.props.contact.tags);
+
+        let buttonMode = 'text';
+        let showBlockButton = true;
+        let showFavoriteButton = true;
+        let blockTextbutton = 'Block';
+        let favoriteTextbutton = 'Add favorite';
+
+        if (this.state.favorite) {
+            favoriteTextbutton = 'Remove favorite';
+            if (!this.state.blocked) {
+                showBlockButton = false;
+            }
+        }
+
+        if (this.state.blocked) {
+            blockTextbutton = 'Unblock';
+            showFavoriteButton = false;
+        }
 
         if (this.state.isTablet) {
             containerClass = (this.state.orientation === 'landscape') ? styles.landscapeTabletContainer : styles.portraitTabletContainer;
         } else {
             containerClass = (this.state.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+        }
+            containerClass = (this.state.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
+
+        if (this.props.contact.showActions) {
+            cardClass = styles.expandedCard;
         }
 
         let color = {};
@@ -99,8 +146,8 @@ class HistoryCard extends Component {
 
             return (
                 <Card
-                    onPress={() => {this.props.setTargetUri(this.state.uri, this.props.contact)}}
-                    style={containerClass}
+                    onPress={() => {this.setTargetUri(this.state.uri, this.props.contact)}}
+                    style={[containerClass, cardClass]}
                     >
                     <Card.Content style={styles.content}>
                         <View style={styles.mainContent}>
@@ -114,6 +161,15 @@ class HistoryCard extends Component {
                             <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
+                    {this.props.contact.showActions ?
+                        <View style={styles.buttonContainer}>
+                        <Card.Actions>
+
+                           {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
+                           {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
+                        </Card.Actions>
+                        </View>
+                        : null}
                 </Card>
             );
 
@@ -122,7 +178,7 @@ class HistoryCard extends Component {
             return (
                 <Card
                     onPress={() => {this.props.setTargetUri(this.state.uri, this.props.contact)}}
-                    style={containerClass}
+                    style={[containerClass, cardClass]}
                 >
                     <Card.Content style={styles.content}>
                         <View style={styles.mainContent}>
@@ -136,16 +192,26 @@ class HistoryCard extends Component {
                             <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
+                    {this.props.contact.showActions ?
+                        <View style={styles.buttonContainer}>
+                        <Card.Actions>
+                           {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
+                           {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>favoriteTextbutton</Button>: null}
+                        </Card.Actions>
+                        </View>
+                        : null}
                 </Card>
             );
         }
     }
-
 }
 
 HistoryCard.propTypes = {
+    id             : PropTypes.string,
     contact        : PropTypes.object,
     setTargetUri   : PropTypes.func,
+    setBlockedUri  : PropTypes.func,
+    setFavoriteUri : PropTypes.func,
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool
 };

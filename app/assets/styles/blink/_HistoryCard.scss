@@ -7,6 +7,14 @@
     width: 100%;
 }
 
+.expandedCard {
+    height: 160px;
+}
+
+.card {
+    height: 110px;
+}
+
 .userAvatarContent {
     margin-top: 7px;
     margin-left: auto;
@@ -14,7 +22,6 @@
 
 .landscapeContainer {
     width: 50%;
-    height: 110px;
     margin-left: 0%;
     margin-top: 0px;
     border-radius: 2px;
@@ -24,7 +31,6 @@
 .portraitContainer {
     width: 100%;
     margin: 0 auto;
-    height: 110px;
     border: 1px;
     margin-top: 0px;
     border-radius: 2px;
@@ -32,7 +38,6 @@
 
 .landscapeTabletContainer {
     width: 33%;
-    height: 110px;
     margin-left: 0%;
     margin-top: 0px;
     border: 1px;
@@ -41,9 +46,24 @@
 
 .portraitTabletContainer {
     width: 50%;
-    height: 110px;
     margin: 0 auto;
     margin-top: 0px;
     border: 1px;
     border-radius: 2px;
 }
+
+.buttonContainer {
+    justify-self: flex-end;
+    flex-direction: row;
+    margin: 0 auto;
+    margin-top:auto;
+}
+
+.button {
+    margin-left: 20px;
+    margin-right: 20px;
+    border-radius: 2px;
+    padding-left: 5px;
+    padding-right: 5px;
+}
+
