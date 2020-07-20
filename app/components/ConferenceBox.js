@@ -672,13 +672,13 @@ class ConferenceBox extends Component {
 
         return (
             <View style={styles.container}>
-                <ConferenceHeader
-                    show={true}
-                    remoteUri={remoteUri}
-                    participants={this.state.participants}
-                    buttons={buttons}
-                />
                 <View style={styles.conferenceContainer}>
+                    <ConferenceHeader
+                        show={true}
+                        remoteUri={remoteUri}
+                        participants={this.state.participants}
+                        buttons={buttons}
+                    />
                     <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
                         {videos}
                     </View>
