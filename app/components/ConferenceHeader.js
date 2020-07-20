@@ -50,7 +50,7 @@ const ConferenceHeader = (props) => {
         const callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
 
         videoHeader = (
-            <Appbar.Header style={{backgroundColor: 'black'}}>
+            <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
                 <Appbar.Content
                     title={`Conference: ${props.remoteUri}`}
                     subtitle={callDetail}
