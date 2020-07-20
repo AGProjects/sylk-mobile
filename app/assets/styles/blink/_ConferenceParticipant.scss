@@ -1,11 +1,17 @@
 .container {
     flex: 1;
+    width: 120px;
+    height: 90px;
+    border-width: 1px;
+    border-radius: 5px;
 }
 
 .videoContainer {
-
+    height: 100%;
+    width: 100%;
 }
 
 .video {
-
+    height: 100%;
+    width: 100%;
 }

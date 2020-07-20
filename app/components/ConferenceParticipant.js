@@ -119,7 +119,7 @@ class ConferenceParticipant extends React.Component {
                 {muteButton}
                 {/* <OverlayTrigger placement="top" overlay={tooltip}> */}
                     <View style={styles.videoContainer}>
-                        <RTCView objectFit="cover" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} poster="assets/images/transparent-1px.png" />
+                        <RTCView objectFit="cover" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} poster="assets/images/transparent-1px.png" style={styles.video}/>
                     </View>
                 {/* </OverlayTrigger> */}
             </View>
