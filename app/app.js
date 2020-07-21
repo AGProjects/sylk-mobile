@@ -135,7 +135,9 @@ class Sylk extends Component {
             refreshHistory: false,
             myDisplayName: null,
             myPhoneNumber: null,
-            localHistory: []
+            localHistory: [],
+            favoriteUris: [],
+            blockedUris: []
         };
 
         this.currentRoute = null;
@@ -149,8 +151,6 @@ class Sylk extends Component {
 
         this.myParticipants = {};
         this.myInvitedParties = {};
-        this.favoriteUris = [];
-        this.blockedUris = [];
 
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
@@ -225,15 +225,15 @@ class Sylk extends Component {
 
         storage.get('favoriteUris').then((favoriteUris) => {
             if (favoriteUris) {
-                this.favoriteUris = favoriteUris;
-                console.log('My favorite Uris', this.favoriteUris);
+                this.setState({favoriteUris: favoriteUris});
+                console.log('My favorite Uris', favoriteUris);
             }
         });
 
         storage.get('blockedUris').then((blockedUris) => {
             if (blockedUris) {
-                this.blockedUris = blockedUris;
-                console.log('My blocked Uris', this.blockedUris);
+                this.setState({blockedUris: blockedUris});
+                console.log('My blocked Uris', blockedUris);
             }
         });
 
@@ -1611,41 +1611,53 @@ class Sylk extends Component {
     }
 
     setFavoriteUri(uri) {
-        let idx = this.favoriteUris.indexOf(uri);
+        console.log('---');
+        console.log('setFavoriteUri:', uri);
+        let favoriteUris = this.state.favoriteUris;
+        console.log('Old favorite Uris:', favoriteUris);
+        let idx = favoriteUris.indexOf(uri);
         let ret;
 
+        console.log('idx', idx);
+
         if (idx === -1) {
-            this.favoriteUris.push(uri);
+            favoriteUris.push(uri);
             ret = true;
 
         } else {
-            this.favoriteUris.splice(idx,idx);
+            let removed = favoriteUris.splice(idx, 1);
             ret = false;
         }
 
-        //console.log('Save favorite Uris:', this.favoriteUris);
-        storage.set('favoriteUris', this.favoriteUris);
-        this.forceUpdate()
+        console.log('New favorite Uris:', favoriteUris);
+        storage.set('favoriteUris', favoriteUris);
+        this.setState({favoriteUris: favoriteUris});
+
         return ret;
     }
 
     setBlockedUri(uri) {
+        console.log('---');
         console.log('setBlockedUri:', uri);
+        let blockedUris = this.state.blockedUris;
+        console.log('Old blocked Uris:', blockedUris);
+
         let ret;
-        let idx = this.blockedUris.indexOf(uri);
-        console.log(idx);
+        let idx = blockedUris.indexOf(uri);
+
+        console.log('idx', idx);
         if (idx === -1) {
-            this.blockedUris.push(uri);
+            blockedUris.push(uri);
             ret = true;
         } else {
-            let removed = this.blockedUris.splice(idx,idx);
+            let removed = blockedUris.splice(idx, 1);
             console.log('Removed', removed);
             ret = false;
         }
 
-        //console.log('Save blocked Uris:', this.blockedUris);
-        storage.set('blockedUris', this.blockedUris);
-        this.forceUpdate()
+        console.log('New blocked Uris:', blockedUris);
+        storage.set('blockedUris', blockedUris);
+        this.setState({blockedUris: blockedUris});
         return ret;
     }
 
@@ -1895,8 +1907,8 @@ class Sylk extends Component {
                     myPhoneNumber = {this.state.myPhoneNumber}
                     setFavoriteUri = {this.setFavoriteUri}
                     setBlockedUri = {this.setBlockedUri}
-                    favoriteUris = {this.favoriteUris}
-                    blockedUris = {this.blockedUris}
+                    favoriteUris = {this.state.favoriteUris}
+                    blockedUris = {this.state.blockedUris}
                 />
             </Fragment>
         );

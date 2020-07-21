@@ -214,6 +214,8 @@ class HistoryTileBox extends Component {
         //console.log('Favorite Uris:', this.state.favoriteUris);
         //console.log('Blocked Uris:', this.state.blockedUris);
 
+        // TODO: render blocked and favorites also when there is no history
+
         let items = this.state.history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
         let searchExtraItems = this.props.contacts;
@@ -251,16 +253,26 @@ class HistoryTileBox extends Component {
             let idx = item.tags.indexOf('blocked');
 
             if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && idx > -1) {
-                item.tags.splice(idx, idx);
+                item.tags.splice(idx, 1);
             }
 
             idx = item.tags.indexOf('favorite');
 
             if (this.state.favoriteUris.indexOf(item.remoteParty) === -1 && idx > -1) {
-                item.tags.splice(idx, idx);
+                item.tags.splice(idx, 1);
             }
 
         });
+
+        if (this.props.filter) {
+            let filteredItems = [];
+            items.forEach((item) => {
+                if (item.tags.indexOf(this.props.filter) > -1) {
+                    filteredItems.push(item);
+                }
+            });
+            items = filteredItems;
+        }
 
         if (items.length === 1) {
             items[0].showActions = true;
@@ -308,7 +320,8 @@ HistoryTileBox.propTypes = {
     setFavoriteUri  : PropTypes.func,
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,
-    blockedUris     : PropTypes.array
+    blockedUris     : PropTypes.array,
+    filter          : PropTypes.string
 };
 
 

@@ -4,7 +4,7 @@ import classNames from 'classnames';
 // import VizSensor     = require('react-visibility-sensor').default;
 import autoBind from 'auto-bind';
 import { View, Platform} from 'react-native';
-import { IconButton, Title } from 'react-native-paper';
+import { IconButton, Title, Button } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
 import HistoryTileBox from './HistoryTileBox';
@@ -27,9 +27,9 @@ class ReadyBox extends Component {
             showConferenceModal: false,
             sticky: false,
             favoriteUris: this.props.favoriteUris,
-            blockedUris: this.props.blockedUris
+            blockedUris: this.props.blockedUris,
+            historyFilter: null
         };
-
     }
 
     getTargetUri() {
@@ -42,6 +42,16 @@ class ReadyBox extends Component {
         if (this.state.targetUri) {
             console.log('We must call', this.state.targetUri);
         }
+    }
+
+    componentWillReceiveProps(props) {
+        this.setState({'filterHistory': null});
+    }
+
+    filterHistory(filter) {
+       //console.log('set historyFilter', filter);
+       this.setState({'historyFilter': filter});
+       this.handleTargetChange('');
     }
 
     handleTargetChange(value, contact) {
@@ -128,6 +138,7 @@ class ReadyBox extends Component {
 
     render() {
         //utils.timestampedLog('Render ready');
+
         const defaultDomain = `${config.defaultDomain}`;
 
         let uriClass = styles.portraitUriInputBox;
@@ -214,8 +225,16 @@ class ReadyBox extends Component {
                             setBlockedUri={this.props.setBlockedUri}
                             favoriteUris={this.state.favoriteUris}
                             blockedUris={this.state.blockedUris}
+                            filter={this.state.historyFilter}
                         />
                     </View>
+                    {(this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0) ?
+                    <View style={styles.historyButtonGroup}>
+                       <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>All</Button>
+                       {this.state.favoriteUris.length > 0  ? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
+                       {this.state.blockedUris.length > 0 ? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
+                    </View>
+                    : null}
                     {this.props.isTablet ?
                     <View style={styles.footer}>
                         <FooterBox />

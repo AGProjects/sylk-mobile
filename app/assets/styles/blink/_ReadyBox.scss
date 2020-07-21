@@ -90,6 +90,16 @@
     margin-left: 3px;
 }
 
+.historyButtonGroup {
+    flex-direction: row;
+    justify-content: center;
+}
+
+.historyButton {
+    width:33%;
+}
+
+
 .buttonGroup {
     flex-direction: row;
     padding-top: 5px;
