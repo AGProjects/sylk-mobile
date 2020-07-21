@@ -119,6 +119,11 @@ def jscFlavor = 'org.webkit:android-jsc:+'
  */
 def enableHermes = project.ext.react.get("enableHermes", false);
 
+// Load keystore
+def keystorePropertiesFile = rootProject.file("keystore.properties");
+def keystoreProperties = new Properties()
+keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+
 android {
     compileSdkVersion rootProject.ext.compileSdkVersion
 
@@ -153,16 +158,10 @@ android {
         }
 
         release {
-            //storeFile file('sylk-upload-key.keystore')
-            //storePassword ''
-            //keyAlias 'sylk-key-alias'
-            //keyPassword ''
-            if (project.hasProperty('SYLK_UPLOAD_STORE_FILE')) {
-                storeFile file(SYLK_UPLOAD_STORE_FILE)
-                storePassword SYLK_UPLOAD_STORE_PASSWORD
-                keyAlias SYLK_UPLOAD_KEY_ALIAS
-                keyPassword SYLK_UPLOAD_KEY_PASSWORD
-            }
+            storeFile file(keystoreProperties['storeFile'])
+            storePassword keystoreProperties['storePassword']
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
         }
     }
     buildTypes {

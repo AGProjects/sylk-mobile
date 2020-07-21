@@ -1,0 +1,26 @@
+http://reactnative.dev/docs/signed-apk-android
+
+Check the generated keystore:
+
+keytool -list -keystore sylk-upload-key.keystore 
+
+List the alias used:
+
+keytool -keystore sylk-upload-key.keystore -list -v 
+
+Export Google upload cert
+
+keytool -export -rfc -keystore sylk-upload-key.keystore -alias sylk-key-alias -file  sylk-upload-cert.pem
+
+
+Hello, We received a request to reset your upload key for Sylk Client
+(com.agprojects.sylk).  The new upload key will become valid on Jul 23, 2020
+at 3:45 AM GMT.  Until the new upload key becomes valid, you can't upload
+any new APKs.
+
+New upload certificate fingerprints:
+MD5:  C9:EC:82:16:2D:70:DA:50:5C:9F:33:BD:45:89:7D:18
+SHA1: 6C:BE:98:A6:6F:D3:B1:89:03:2F:AC:94:3B:C6:BE:2F:0C:13:DF:38
+
+# How to load the password from file
+https://stackoverflow.com/questions/20562189/sign-apk-without-putting-keystore-info-in-build-gradle
