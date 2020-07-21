@@ -688,12 +688,9 @@ class Sylk extends Component {
         if (newState === 'failed') {
             this._callKeepManager.setAvailable(false);
             let reason = data.reason;
-            if (reason.match(/904/)) {
+            if (reason.match(/904|408/)) {
                 // Sofia SIP: WAT
                 reason = 'Wrong account or password';
-
-            } else {
-                reason = 'Connection failed';
             }
 
             logger.debug('Registration error: ' + reason);
