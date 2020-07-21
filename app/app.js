@@ -637,11 +637,11 @@ class Sylk extends Component {
         switch (newState) {
             case 'closed':
                 this.setState({connection: null, loading: null});
-                this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 3000});
+                //this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 3000});
                 break;
             case 'ready':
                 this._notificationCenter.removeNotification();
-                this._notificationCenter.postSystemNotification('Connection OK', {body: '', timeout: 1});
+                //this._notificationCenter.postSystemNotification('Connection OK', {body: '', timeout: 1});
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
                 break;
             case 'disconnected':
@@ -667,7 +667,7 @@ class Sylk extends Component {
                     generatedVideoTrack: false,
                     });
 
-                this._notificationCenter.postSystemNotification('Connection lost', {body: '', timeout: 3000});
+                //this._notificationCenter.postSystemNotification('Connection lost', {body: '', timeout: 3000});
 
                 break;
             default:
@@ -1611,8 +1611,6 @@ class Sylk extends Component {
     }
 
     setFavoriteUri(uri) {
-        console.log('---');
-        console.log('setFavoriteUri:', uri);
         let favoriteUris = this.state.favoriteUris;
         console.log('Old favorite Uris:', favoriteUris);
         let idx = favoriteUris.indexOf(uri);
@@ -1637,8 +1635,6 @@ class Sylk extends Component {
     }
 
     setBlockedUri(uri) {
-        console.log('---');
-        console.log('setBlockedUri:', uri);
         let blockedUris = this.state.blockedUris;
         console.log('Old blocked Uris:', blockedUris);
 
