@@ -729,7 +729,8 @@ ConferenceBox.propTypes = {
     generatedVideoTrack : PropTypes.bool,
     toggleSpeakerPhone  : PropTypes.func,
     speakerPhoneEnabled : PropTypes.bool,
-    isLandscape         : PropTypes.bool
+    isLandscape         : PropTypes.bool,
+    isTablet            : PropTypes.bool
 };
 
 export default ConferenceBox;

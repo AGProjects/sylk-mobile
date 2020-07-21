@@ -80,6 +80,7 @@ class Conference extends React.Component {
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         isLandscape = {this.props.isLandscape}
+                        isTablet = {this.props.isTablet}
                     />
                 );
             } else {
@@ -114,7 +115,8 @@ Conference.propTypes = {
     generatedVideoTrack     : PropTypes.bool,
     callUUID                : PropTypes.string,
     proposedMedia           : PropTypes.object,
-    isLandscape             : PropTypes.bool
+    isLandscape             : PropTypes.bool,
+    isTablet                : PropTypes.bool
 };
 
 

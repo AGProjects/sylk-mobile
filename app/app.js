@@ -2036,6 +2036,7 @@ class Sylk extends Component {
                 callUUID = {this.state.outgoingCallUUID}
                 proposedMedia = {this.state.outgoingMedia}
                 isLandscape = {this.state.orientation === 'landscape'}
+                isTablet = {this.state.isTablet}
             />
         )
     }
