@@ -77,12 +77,10 @@ class ConferenceParticipantSelf extends Component {
         }
 
         return (
-            <Card style={styles.container}>
-                <Card.Content>
-                    {muteIcon}
-                    <RTCView objectFit="cover" style={styles.video} ref="videoElement" poster="assets/images/transparent-1px.png" streamURL={this.props.stream ? this.props.stream.toURL() : null} mirror={true}/>
-                </Card.Content>
-            </Card>
+            <View style={styles.container}>
+                {muteIcon}
+                <RTCView objectFit="cover" style={styles.video} ref="videoElement" poster="assets/images/transparent-1px.png" streamURL={this.props.stream ? this.props.stream.toURL() : null} mirror={true}/>
+            </View>
         );
     }
 }
