@@ -2127,7 +2127,9 @@ class Sylk extends Component {
                        registrationState: null,
                        registrationKeepalive: false,
                        status: null,
-                       history: []
+                       history: [],
+                       localHistory: [],
+                       cachedHistory: []
                        });
         this.changeRoute('/login');
         return null;
