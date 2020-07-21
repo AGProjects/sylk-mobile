@@ -144,6 +144,7 @@ class Sylk extends Component {
         this.pushtoken = null;
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
+        this.registrationFailureTimer = null;
 
         this.cachedHistory = []; // used for caching server history
 
@@ -682,6 +683,18 @@ class Sylk extends Component {
         return this._notificationCenter;
     }
 
+    showRegisterFailure(reason) {
+            logger.debug('Registration error: ' + reason);
+            this.setState({
+                loading     : null,
+                registrationState: 'failed',
+                status      : {
+                    msg   : 'Sign In failed: ' + reason,
+                    level : 'danger'
+                }
+            });
+    }
+
     registrationStateChanged(oldState, newState, data) {
         utils.timestampedLog('Registration state changed:', oldState, '->', newState);
 
@@ -693,15 +706,7 @@ class Sylk extends Component {
                 reason = 'Wrong account or password';
             }
 
-            logger.debug('Registration error: ' + reason);
-            this.setState({
-                loading     : null,
-                registrationState: newState,
-                status      : {
-                    msg   : 'Sign In failed: ' + reason,
-                    level : 'danger'
-                }
-            });
+            this.showRegisterFailure(reason);
 
             if (this.state.registrationKeepalive === true) {
                 if (this.state.connection !== null) {
@@ -716,6 +721,10 @@ class Sylk extends Component {
                 }
             }
         } else if (newState === 'registered') {
+            if (this.registrationFailureTimer) {
+                clearTimeout(this.registrationFailureTimer);
+                this.registrationFailureTimer = null;
+            }
             this._callKeepManager.setAvailable(true);
             this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
 
@@ -1034,6 +1043,8 @@ class Sylk extends Component {
             displayName: displayName
         };
 
+        this.registrationFailureTimer = setTimeout(this.showRegisterFailure, 6000, 'Wrong account or password');
+
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
                 account.on('outgoingCall', this.outgoingCall);
@@ -1079,15 +1090,7 @@ class Sylk extends Component {
                         break;
                 }
             } else {
-                logger.debug('Add account error: ' + error.message);
-                let reason = 'Wrong account or password';
-                this.setState({
-                    loading     : null,
-                    status      : {
-                        msg   : ' Sign In failed: ' + reason,
-                        level : 'danger'
-                    }
-                });
+                this.showRegisterFailure(408);
             }
         });
 
