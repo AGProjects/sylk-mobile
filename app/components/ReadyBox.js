@@ -230,9 +230,9 @@ class ReadyBox extends Component {
                     </View>
                     {(this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0) ?
                     <View style={styles.historyButtonGroup}>
-                       <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>All</Button>
-                       {this.state.favoriteUris.length > 0  ? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
-                       {this.state.blockedUris.length > 0 ? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
+                       <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>
+                       {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
+                       {(this.state.blockedUris.length > 0 && this.state.historyFilter !== 'blocked')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
                     </View>
                     : null}
                     {this.props.isTablet ?
