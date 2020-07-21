@@ -57,8 +57,11 @@ class ReadyBox extends Component {
             new_value = '';
         }
 
-        this.setState({targetUri: new_value,
-                       selectedContact: contact});
+        if (new_value === '') {
+            contact = null;
+        }
+
+        this.setState({targetUri: new_value, selectedContact: contact});
     }
 
     handleTargetSelect() {

@@ -32,22 +32,22 @@ class HistoryTileBox extends Component {
             displayName: 'Echo test',
             type: 'contact',
             label: 'Call to test microphone',
-            id: uuid.v4()
+            id: uuid.v4(),
+            tags: ['test']
             };
+
+        this.echoTest = Object.assign({}, echoTest);
 
         const videoTest = {
             remoteParty: '3333@sylk.link',
             displayName: 'Video test',
             type: 'contact',
             label: 'Call to test video',
-            id: uuid.v4()
+            id: uuid.v4(),
+            tags: ['test']
             };
 
-        const echoTestCard = Object.assign({}, echoTest);
-        const videoTestCard = Object.assign({}, videoTest);
-
-        let initialContacts = [echoTestCard, videoTestCard];
-        this.initialContacts = initialContacts;
+        this.videoTest = Object.assign({}, videoTest);
     }
 
     componentDidMount() {
@@ -55,7 +55,7 @@ class HistoryTileBox extends Component {
     }
 
     setTargetUri(uri, contact) {
-        console.log('Set target uri uri in history list', uri);
+        //console.log('Set target uri uri in history list', uri);
         this.props.setTargetUri(uri, contact);
         this.setState({targetUri: uri});
     }
@@ -200,10 +200,6 @@ class HistoryTileBox extends Component {
                     }
                 });
 
-                if (history.length < 3) {
-                    history = history.concat(this.initialContacts);
-                }
-
                 this.props.cacheHistory(history);
                 this.setState({history: history});
             }
@@ -221,7 +217,15 @@ class HistoryTileBox extends Component {
         let items = this.state.history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
         let searchExtraItems = this.props.contacts;
-        searchExtraItems.concat(this.initialContacts);
+
+        if (!this.props.targetUri) {
+            if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
+                items.push(this.echoTest);
+            }
+            if (!this.findObjectByKey(items, 'remoteParty', this.videoTest.remoteParty)) {
+                items.push(this.videoTest);
+            }
+        }
 
         let matchedContacts = [];
         if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
@@ -231,8 +235,12 @@ class HistoryTileBox extends Component {
         }
 
         items = items.concat(matchedContacts);
+
         items.forEach((item) => {
             item.showActions = false;
+            if (!item.tags) {
+                item.tags = [];
+            }
             if (this.state.favoriteUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('favorite') === -1) {
                 item.tags.push('favorite');
             }

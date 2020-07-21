@@ -1623,7 +1623,7 @@ class Sylk extends Component {
             ret = false;
         }
 
-        console.log('Save favorite Uris:', this.favoriteUris);
+        //console.log('Save favorite Uris:', this.favoriteUris);
         storage.set('favoriteUris', this.favoriteUris);
         this.forceUpdate()
         return ret;
@@ -1643,7 +1643,7 @@ class Sylk extends Component {
             ret = false;
         }
 
-        console.log('Save blocked Uris:', this.blockedUris);
+        //console.log('Save blocked Uris:', this.blockedUris);
         storage.set('blockedUris', this.blockedUris);
         this.forceUpdate()
         return ret;

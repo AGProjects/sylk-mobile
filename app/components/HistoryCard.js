@@ -66,6 +66,8 @@ class HistoryCard extends Component {
         let cardClass = styles.card;
         //console.log('Render card', this.state.uri, 'tags=', this.props.contact.tags);
 
+        let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
+
         let buttonMode = 'text';
         let showBlockButton = true;
         let showFavoriteButton = true;
@@ -91,7 +93,7 @@ class HistoryCard extends Component {
         }
             containerClass = (this.state.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
 
-        if (this.props.contact.showActions) {
+        if (showActions) {
             cardClass = styles.expandedCard;
         }
 
@@ -161,7 +163,7 @@ class HistoryCard extends Component {
                             <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
-                    {this.props.contact.showActions ?
+                    {showActions ?
                         <View style={styles.buttonContainer}>
                         <Card.Actions>
 
@@ -192,11 +194,11 @@ class HistoryCard extends Component {
                             <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
-                    {this.props.contact.showActions ?
+                    {showActions ?
                         <View style={styles.buttonContainer}>
                         <Card.Actions>
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
-                           {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>favoriteTextbutton</Button>: null}
+                           {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
                         </Card.Actions>
                         </View>
                         : null}
