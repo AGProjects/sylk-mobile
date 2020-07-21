@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {Component, Fragment} from 'react';
-import { View, Platform } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'sylkrtc';
 import classNames from 'classnames';
@@ -394,10 +394,10 @@ class ConferenceBox extends Component {
 
     showOverlay() {
         // if (!this.state.shareOverlayVisible && !this.state.showDrawer && !this.state.showFiles) {
-        //     if (!this.state.callOverlayVisible) {
-        //         this.setState({callOverlayVisible: true});
-        //     }
-        //     this.armOverlayTimer();
+        // if (!this.state.callOverlayVisible) {
+                this.setState({callOverlayVisible: !this.state.callOverlayVisible});
+        // }
+        // this.armOverlayTimer();
         // }
     }
 
@@ -674,14 +674,16 @@ class ConferenceBox extends Component {
             <View style={styles.container}>
                 <View style={styles.conferenceContainer}>
                     <ConferenceHeader
-                        show={true}
+                        show={this.state.callOverlayVisible}
                         remoteUri={remoteUri}
                         participants={this.state.participants}
                         buttons={buttons}
                     />
-                    <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
-                        {videos}
-                    </View>
+                    <TouchableWithoutFeedback onPress={this.showOverlay}>
+                        <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
+                            {videos}
+                        </View>
+                    </TouchableWithoutFeedback>
                     <View style={styles.carouselContainer}>
                         <ConferenceCarousel align={'right'}>
                             {participants}
