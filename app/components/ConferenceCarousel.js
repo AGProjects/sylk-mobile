@@ -5,7 +5,6 @@ import Carousel from 'react-native-snap-carousel';
 
 import styles from '../assets/styles/blink/_ConferenceCarousel.scss';
 
-let {height, width} = Dimensions.get('window');
 
 class ConferenceCarousel extends Component {
     constructor(props) {
@@ -13,6 +12,8 @@ class ConferenceCarousel extends Component {
     }
 
     render() {
+        const margin = 20;
+        const width = Dimensions.get('window')['width'] - margin;
         return (
             <Carousel
                 ref={(c) => { this._carousel = c; }}
@@ -21,9 +22,12 @@ class ConferenceCarousel extends Component {
                     //add in some styles on the View
                     return item;
                 }}
+                lockScrollWhileSnapping={true}
                 sliderWidth={width}
-                itemWidth={130}
-                itemHeight={100}
+                activeSlideAlignment={this.props.align === 'right' ? 'start' : 'center'}
+                itemWidth={125}
+                itemHeight={90}
+                inverted={true}
             />
         );
     }
