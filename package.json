@@ -27,6 +27,7 @@
     "react-native-email-link": "1.7.5",
     "react-native-incall-manager": "nimbleape/react-native-incall-manager#start-ringback-method",
     "react-native-keyboard-spacer": "^0.4.1",
+    "react-native-linear-gradient": "^2.5.6",
     "react-native-material-drawer": "^0.0.5",
     "react-native-paper": "^3.4.0",
     "react-native-share": "^3.3.3",

@@ -51,3 +51,22 @@
     font-size: 14px;
     font-weight: 500;
 }
+
+.controls {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1;
+    display: flex;
+    align-items: flex-end;
+    flex-direction: row;
+    max-height: 114px;
+    min-height: 114px;
+    padding-left: 20px;
+}
+
+.lead {
+    color: #fff;
+    margin-bottom: 10px;
+}

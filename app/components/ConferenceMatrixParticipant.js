@@ -4,11 +4,13 @@ import PropTypes from 'prop-types';
 // const hark              = require('hark');
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { Paragraph, Badge } from 'react-native-paper';
+import { Title, Badge } from 'react-native-paper';
+import LinearGradient from 'react-native-linear-gradient';
 import { RTCView } from 'react-native-webrtc';
 import { View } from 'react-native';
 
 import styles from '../assets/styles/blink/_ConferenceMatrixParticipant.scss';
+
 
 class ConferenceMatrixParticipant extends Component {
     constructor(props) {
@@ -105,9 +107,9 @@ class ConferenceMatrixParticipant extends Component {
         // });
 
         const participantInfo = (
-            <View className="controls">
-                <Paragraph className="lead">{this.props.participant.identity.displayName || this.props.participant.identity.uri}</Paragraph>
-            </View>
+            <LinearGradient start={{x: 0, y: .55}}  end={{x: 0, y: 1}} colors={['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, .5)']} style={styles.controls}>
+                <Title style={styles.lead}>{this.props.participant.identity.displayName || this.props.participant.identity.uri}</Title>
+            </LinearGradient>
         );
 
         let activeIcon;
@@ -130,7 +132,7 @@ class ConferenceMatrixParticipant extends Component {
         return (
             <View style={[styles.container, this.props.large ? styles.soloContainer : null, this.props.pauseVideo ? {display: 'none'} : null, style]}>
                 {activeIcon}
-                {/* {participantInfo} */}
+                {participantInfo}
                 <View style={styles.videoContainer}>
                     <RTCView objectFit="cover" style={styles.video} poster="assets/images/transparent-1px.png" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} />
                 </View>
