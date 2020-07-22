@@ -645,7 +645,7 @@ class ConferenceBox extends Component {
                                 participant={p}
                                 selected={() => {}}
                                 pauseVideo={true}
-                                display={true}
+                                display={false}
                             />
                         );
                     }
