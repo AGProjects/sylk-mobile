@@ -1752,7 +1752,8 @@ class Sylk extends Component {
                         startTime: startTime,
                         stopTime: startTime,
                         startTimeObject: current_datetime,
-                        duration: 0
+                        duration: 0,
+                        tags: ['history', 'local']
                         };
 
             const historyItem = Object.assign({}, item);

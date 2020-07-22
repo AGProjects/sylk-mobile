@@ -104,15 +104,17 @@ class HistoryTileBox extends Component {
     }
 
     getLocalHistory() {
+
         let history = this.state.localHistory;
         history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
-        //console.log('Local history items', this.state.localHistory.length);
-
-        const known = [];
+        let known = [];
         history = history.filter((elem) => {
             if (known.indexOf(elem.remoteParty) <= -1) {
                 elem.type = 'history';
+                if (!elem.tags) {
+                    elem.tags = [];
+                }
                 if (elem.tags.indexOf('history') === -1) {
                     elem.tags.push('history');
                 }
@@ -120,12 +122,10 @@ class HistoryTileBox extends Component {
                     elem.tags.push('local');
                 }
                 known.push(elem.remoteParty);
-                //console.log('Local history item', elem.remoteParty);
                 return elem;
             }
         });
 
-        //console.log('Unique local history items', history.length);
         return history;
     }
 
