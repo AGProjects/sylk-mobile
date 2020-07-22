@@ -236,7 +236,7 @@ class ReadyBox extends Component {
                        {(this.state.blockedUris.length > 0 && this.state.historyFilter !== 'blocked')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
                     </View>
                     : null}
-                    {this.props.isTablet ?
+                    {this.props.isTablet && 0?
                     <View style={styles.footer}>
                         <FooterBox />
                     </View>
