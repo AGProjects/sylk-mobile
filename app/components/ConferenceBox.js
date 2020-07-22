@@ -185,6 +185,19 @@ class ConferenceBox extends Component {
         })
     }
 
+    onVideoSelected(item) {
+        const participants = this.state.participants.slice();
+        const idx = participants.indexOf(item);
+        participants.splice(idx, 1);
+        participants.unshift(item);
+        if (item.videoPaused) {
+            item.resumeVideo();
+        }
+        this.setState({
+            participants: participants
+        });
+    }
+
     changeResolution() {
         let stream = this.props.call.getLocalStreams()[0];
         if (this.state.participants.length < 2) {
@@ -630,7 +643,9 @@ class ConferenceBox extends Component {
                             <ConferenceParticipant
                                 key={p.id}
                                 participant={p}
-                                selected={this.onVideoSelected}
+                                selected={() => {}}
+                                pauseVideo={true}
+                                display={true}
                             />
                         );
                     }
@@ -644,15 +659,29 @@ class ConferenceBox extends Component {
                 });
             } else {
 
-                this.state.participants.forEach((p) => {
+                this.state.participants.forEach((p, idx) => {
                     videos.push(
                         <ConferenceMatrixParticipant
                             key = {p.id}
                             participant = {p}
                             large = {this.state.participants.length <= 1}
+                            pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
+                            isLandscape={this.props.isLandscape}
+                            isTablet={this.props.isTablet}
+                            useTwoRows={this.state.participants.length > 2}
                         />
                     );
-
+                    if (idx >= 4 || idx >= 2 && this.props.isTablet === false) {
+                        participants.push(
+                            <ConferenceParticipant
+                                key={p.id}
+                                participant={p}
+                                selected={this.onVideoSelected}
+                                pauseVideo={true}
+                                display={true}
+                            />
+                        );
+                    }
                     drawerParticipants.push(
                         <ConferenceDrawerParticipant
                             key={p.id}

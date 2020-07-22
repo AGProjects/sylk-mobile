@@ -1,11 +1,13 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 // const hark              = require('hark');
-import { View } from 'react-native';
+import { View, TouchableWithoutFeedback } from 'react-native';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { IconButton, Surface } from 'react-native-paper';
 import { RTCView } from 'react-native-webrtc';
+import UserIcon from './UserIcon';
+
 import styles from '../assets/styles/blink/_ConferenceParticipant.scss';
 
 class ConferenceParticipant extends React.Component {
@@ -68,6 +70,9 @@ class ConferenceParticipant extends React.Component {
         const streams = this.props.participant.streams;
         if (streams.length > 0) {
             this.setState({stream: streams[0], hasVideo: streams[0].getVideoTracks().length > 0});
+            if (this.props.pauseVideo) {
+                this.props.participant.pauseVideo();
+            }
             // const options = {
             //     interval: 150,
             //     play: false
@@ -114,11 +119,16 @@ class ConferenceParticipant extends React.Component {
             );
         }
 
+        let icon;
+        if (this.props.pauseVideo && this.props.display) {
+            icon = <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}><View><UserIcon identity={this.props.participant.identity} carousel /></View></TouchableWithoutFeedback>;
+        }
         return (
-            <View style={styles.container}>
+            <View style={[styles.container, this.props.display === 'false' ? {display: 'none'} : null]}>
                 {muteButton}
+                {icon}
                 {/* <OverlayTrigger placement="top" overlay={tooltip}> */}
-                    <Surface style={styles.videoContainer}>
+                    <Surface style={[styles.videoContainer, this.props.pauseVideo ? {display: 'none'} : null]}>
                         <RTCView objectFit="cover" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} poster="assets/images/transparent-1px.png" style={styles.video}/>
                     </Surface>
                 {/* </OverlayTrigger> */}
@@ -128,7 +138,10 @@ class ConferenceParticipant extends React.Component {
 }
 
 ConferenceParticipant.propTypes = {
-    participant: PropTypes.object.isRequired
+    participant: PropTypes.object.isRequired,
+    display: PropTypes.bool,
+    pauseVideo: PropTypes.bool,
+    selected: PropTypes.func
 };
 
 export default ConferenceParticipant;

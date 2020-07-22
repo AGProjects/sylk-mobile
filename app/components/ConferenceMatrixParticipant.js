@@ -33,6 +33,9 @@ class ConferenceMatrixParticipant extends Component {
 
     componentDidMount() {
         this.maybeAttachStream();
+        if (!this.props.pauseVideo && this.props.participant.videoPaused) {
+            this.props.participant.resumeVideo();
+        }
         // this.videoElement.current.oncontextmenu = (e) => {
         //     // disable right click for video elements
         //     e.preventDefault();
@@ -117,8 +120,15 @@ class ConferenceMatrixParticipant extends Component {
             );
         }
 
+        let style = null;
+        if (this.props.isTablet === true && this.props.useTwoRows) {
+            style = styles.portraitTabletContainer;
+            if (this.props.isLandscape) {
+                style = styles.landscapeTabletContainer;
+            }
+        }
         return (
-            <View style={[styles.container, this.props.large ? styles.soloContainer : null]}>
+            <View style={[styles.container, this.props.large ? styles.soloContainer : null, this.props.pauseVideo ? {display: 'none'} : null, style]}>
                 {activeIcon}
                 {/* {participantInfo} */}
                 <View style={styles.videoContainer}>
@@ -132,7 +142,9 @@ class ConferenceMatrixParticipant extends Component {
 ConferenceMatrixParticipant.propTypes = {
     participant: PropTypes.object.isRequired,
     large: PropTypes.bool,
-    isLocal: PropTypes.bool
+    isLocal: PropTypes.bool,
+    isTablet: PropTypes.bool,
+    isLandscape: PropTypes.bool
 };
 
 export default ConferenceMatrixParticipant;

@@ -1,5 +1,16 @@
 .container {
     flex: 1;
+    width: 100%;
+}
+
+.portraitTabletContainer {
+    flex-basis: 50%;
+    width: 50%;
+}
+
+.landscapeTabletContainer {
+    flex-basis: 50%;
+    height: 50%;
 }
 
 .soloContainer {
