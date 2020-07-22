@@ -64,7 +64,7 @@ class HistoryCard extends Component {
     render () {
         let containerClass = styles.portraitContainer;
         let cardClass = styles.card;
-        //console.log('Render card', this.state.uri, 'tags=', this.props.contact.tags);
+        //console.log('Render card', this.state.uri, this.state.orientation);
 
         let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
 
@@ -91,7 +91,6 @@ class HistoryCard extends Component {
         } else {
             containerClass = (this.state.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
         }
-            containerClass = (this.state.orientation === 'landscape') ? styles.landscapeContainer : styles.portraitContainer;
 
         if (showActions) {
             cardClass = styles.expandedCard;
