@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 // const hark              = require('hark');
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { Paragraph } from 'react-native-paper';
+import { Paragraph, Badge } from 'react-native-paper';
 import { RTCView } from 'react-native-webrtc';
 import { View } from 'react-native';
 
@@ -111,8 +111,8 @@ class ConferenceMatrixParticipant extends Component {
 
         if (this.props.isLocal) {
             activeIcon = (
-                <View className="controls-top">
-                    <Paragraph className="lead">Speaker</Paragraph>
+                <View style={styles.controlsTop}>
+                    <Badge style={styles.badge}>Speaker</Badge>
                 </View>
             );
         }
