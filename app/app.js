@@ -1487,7 +1487,6 @@ class Sylk extends Component {
         }
     }
 
-
     startConference(targetUri, options={audio: true, video: true}) {
         utils.timestampedLog('New outgoing conference to room', targetUri);
         this.setState({targetUri: targetUri, isConference: true});
@@ -1724,6 +1723,20 @@ class Sylk extends Component {
         storage.set('myInvitedParties', this.myInvitedParties);
     }
 
+    deleteHistoryEntry(uri) {
+        console.log('Delete local history entries for', uri, this.state.localHistory.length);
+        let history = this.state.localHistory;
+        for (var i = history.length - 1; i >= 0; --i) {
+            if (history[i].remoteParty === uri) {
+                console.log('Delete item', history[i]);
+                history.splice(i,1);
+            }
+        }
+
+        storage.set('history', history);
+        this.setState({localHistory: history, refreshHistory: !this.state.refreshHistory});
+    }
+
     addHistoryEntry(uri, callUUID, direction='placed') {
         if (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE) {
             let current_datetime = new Date();
@@ -1898,9 +1911,10 @@ class Sylk extends Component {
                     localHistory = {this.state.localHistory}
                     refreshHistory = {this.state.refreshHistory}
                     cacheHistory = {this.saveHistoryForLater}
-                    initialHistory = {this.cachedHistory}
+                    serverHistory = {this.cachedHistory}
                     myDisplayName = {this.state.myDisplayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
+                    deleteHistoryEntry = {this.deleteHistoryEntry}
                     setFavoriteUri = {this.setFavoriteUri}
                     setBlockedUri = {this.setBlockedUri}
                     favoriteUris = {this.state.favoriteUris}

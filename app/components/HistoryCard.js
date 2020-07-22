@@ -52,6 +52,10 @@ class HistoryCard extends Component {
         this.setState({blocked: newBlockedState});
     }
 
+    deleteHistoryEntry() {
+        this.props.deleteHistoryEntry(this.state.uri);
+    }
+
     setFavoriteUri() {
         let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
         this.setState({favorite: newFavoriteState});
@@ -69,10 +73,12 @@ class HistoryCard extends Component {
         let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
 
         let buttonMode = 'text';
-        let showBlockButton = true;
+        let showBlockButton = this.state.uri.search('@videoconference.') === -1 ? true : false;
         let showFavoriteButton = true;
+        let showDeleteButton = this.props.contact.tags.indexOf('local') > -1 ? true: false;
         let blockTextbutton = 'Block';
-        let favoriteTextbutton = 'Add favorite';
+        let favoriteTextbutton = 'Favorite';
+        let deleteTextbutton = 'Delete';
 
         if (this.state.favorite) {
             favoriteTextbutton = 'Remove favorite';
@@ -165,7 +171,7 @@ class HistoryCard extends Component {
                     {showActions ?
                         <View style={styles.buttonContainer}>
                         <Card.Actions>
-
+                           {showDeleteButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteHistoryEntry()}}>{deleteTextbutton}</Button>: null}
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
                            {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
                         </Card.Actions>
@@ -213,6 +219,7 @@ HistoryCard.propTypes = {
     setTargetUri   : PropTypes.func,
     setBlockedUri  : PropTypes.func,
     setFavoriteUri : PropTypes.func,
+    deleteHistoryEntry : PropTypes.func,
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool
 };

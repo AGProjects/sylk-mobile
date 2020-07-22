@@ -18,7 +18,7 @@ class HistoryTileBox extends Component {
         autoBind(this);
 
         this.state = {
-            history: this.props.initialHistory,        // combined local and server history
+            serverHistory: this.props.serverHistory,
             localHistory: this.props.localHistory,
             accountId: this.props.account.id,
             password: this.props.password,
@@ -57,7 +57,11 @@ class HistoryTileBox extends Component {
     setTargetUri(uri, contact) {
         //console.log('Set target uri uri in history list', uri);
         this.props.setTargetUri(uri, contact);
-        this.setState({targetUri: uri});
+    }
+
+    deleteHistoryEntry(uri) {
+        this.props.deleteHistoryEntry(uri);
+        this.props.setTargetUri(uri);
     }
 
     setFavoriteUri(uri) {
@@ -75,6 +79,7 @@ class HistoryTileBox extends Component {
             contact={item.item}
             setFavoriteUri={this.setFavoriteUri}
             setBlockedUri={this.setBlockedUri}
+            deleteHistoryEntry={this.deleteHistoryEntry}
             setTargetUri={this.setTargetUri}
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
@@ -98,9 +103,44 @@ class HistoryTileBox extends Component {
         }
     }
 
+    getLocalHistory() {
+        let history = this.state.localHistory;
+        history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
+
+        //console.log('Local history items', this.state.localHistory.length);
+
+        const known = [];
+        history = history.filter((elem) => {
+            if (known.indexOf(elem.remoteParty) <= -1) {
+                elem.type = 'history';
+                if (elem.tags.indexOf('history') === -1) {
+                    elem.tags.push('history');
+                }
+                if (elem.tags.indexOf('local') === -1) {
+                    elem.tags.push('local');
+                }
+                known.push(elem.remoteParty);
+                //console.log('Local history item', elem.remoteParty);
+                return elem;
+            }
+        });
+
+        //console.log('Unique local history items', history.length);
+        return history;
+    }
+
     getServerHistory() {
-        let history = this.props.localHistory;
         utils.timestampedLog('Requesting call history from server');
+        this.props.localHistory.forEach((item) => {
+            if (!item.tags) {
+                item.tags = ['local'];
+            } else if (item.tags.indexOf('local') === -1) {
+                item.tags.push('local');
+            }
+        });
+
+        //let history = this.props.localHistory;
+        let history = [];
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
             `${this.props.config.serverCallHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
@@ -132,7 +172,9 @@ class HistoryTileBox extends Component {
                 const known = [];
                 history = history.filter((elem) => {
                     elem.conference = false;
-                    elem.tags = [];
+                    if (!elem.tags) {
+                        elem.tags = [];
+                    }
 
                     if (elem.remoteParty.indexOf('@conference.sip2sip.info') > -1) {
                         return null;
@@ -172,7 +214,9 @@ class HistoryTileBox extends Component {
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         elem.type = 'history';
                         elem.id = uuid.v4();
-                        elem.tags = ['history'];
+                        if (elem.tags.indexOf('history') === -1) {
+                            elem.tags.push('history');
+                        }
 
                         elem.label = elem.direction;
 
@@ -194,8 +238,6 @@ class HistoryTileBox extends Component {
                         }
 
                         known.push(elem.remoteParty);
-                        //console.log(elem);
-
                         return elem;
                     }
                 });
@@ -210,13 +252,14 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-        //console.log('Render history');
-        //console.log('Favorite Uris:', this.state.favoriteUris);
-        //console.log('Blocked Uris:', this.state.blockedUris);
-
+        console.log('Render history');
         // TODO: render blocked and favorites also when there is no history
 
-        let items = this.state.history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
+        let localHistory = this.getLocalHistory();
+
+        let history = localHistory.concat(this.state.serverHistory);
+
+        let items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
         let searchExtraItems = this.props.contacts;
 
@@ -313,12 +356,13 @@ HistoryTileBox.propTypes = {
     isTablet        : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     cacheHistory    : PropTypes.func,
-    initialHistory  : PropTypes.array,
+    serverHistory   : PropTypes.array,
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
     setFavoriteUri  : PropTypes.func,
     setBlockedUri   : PropTypes.func,
+    deleteHistoryEntry : PropTypes.func,
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     filter          : PropTypes.string

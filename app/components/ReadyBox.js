@@ -218,9 +218,10 @@ class ReadyBox extends Component {
                             refreshHistory={this.props.refreshHistory}
                             localHistory={this.props.localHistory}
                             cacheHistory={this.props.cacheHistory}
-                            initialHistory={this.props.initialHistory}
+                            serverHistory={this.props.serverHistory}
                             myDisplayName={this.props.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
+                            deleteHistoryEntry={this.props.deleteHistoryEntry}
                             setFavoriteUri={this.props.setFavoriteUri}
                             setBlockedUri={this.props.setBlockedUri}
                             favoriteUris={this.state.favoriteUris}
@@ -264,10 +265,11 @@ ReadyBox.propTypes = {
     isTablet        : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     cacheHistory    : PropTypes.func,
-    initialHistory  : PropTypes.array,
+    serverHistory  : PropTypes.array,
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
+    deleteHistoryEntry: PropTypes.func,
     setFavoriteUri  : PropTypes.func,
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,
