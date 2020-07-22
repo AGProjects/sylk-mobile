@@ -1611,7 +1611,6 @@ class Sylk extends Component {
 
     setFavoriteUri(uri) {
         let favoriteUris = this.state.favoriteUris;
-        console.log('Old favorite Uris:', favoriteUris);
         let idx = favoriteUris.indexOf(uri);
         let ret;
 
@@ -1626,10 +1625,8 @@ class Sylk extends Component {
             ret = false;
         }
 
-        console.log('New favorite Uris:', favoriteUris);
         storage.set('favoriteUris', favoriteUris);
-        this.setState({favoriteUris: favoriteUris});
-
+        this.setState({favoriteUris: favoriteUris, refreshHistory: !this.state.refreshHistory});
         return ret;
     }
 
@@ -1652,7 +1649,7 @@ class Sylk extends Component {
 
         console.log('New blocked Uris:', blockedUris);
         storage.set('blockedUris', blockedUris);
-        this.setState({blockedUris: blockedUris});
+        this.setState({blockedUris: blockedUris, refreshHistory: !this.state.refreshHistory});
         return ret;
     }
 
