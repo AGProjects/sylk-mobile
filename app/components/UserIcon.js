@@ -13,7 +13,10 @@ const UserIcon = (props) => {
 
     let initials = name.split(' ', 2).map(x => x[0]).join('');
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
-    const avatarSize = props.large ? 120: 50;
+    let avatarSize = props.large ? 120: 50;
+    if (props.carousel === true) {
+        avatarSize = 80;
+    }
 
 
     if (photo) {
@@ -39,7 +42,8 @@ const UserIcon = (props) => {
 
 UserIcon.propTypes = {
     identity: PropTypes.object.isRequired,
-    large: PropTypes.bool
+    large: PropTypes.bool,
+    carousel: PropTypes.bool
 };
 
 
