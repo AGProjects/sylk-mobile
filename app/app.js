@@ -1724,17 +1724,16 @@ class Sylk extends Component {
     }
 
     deleteHistoryEntry(uri) {
-        console.log('Delete local history entries for', uri, this.state.localHistory.length);
         let history = this.state.localHistory;
         for (var i = history.length - 1; i >= 0; --i) {
             if (history[i].remoteParty === uri) {
-                console.log('Delete item', history[i]);
                 history.splice(i,1);
             }
         }
 
         storage.set('history', history);
-        this.setState({localHistory: history, refreshHistory: !this.state.refreshHistory});
+        this.setState({localHistory: history,
+                       refreshHistory: !this.state.refreshHistory});
     }
 
     addHistoryEntry(uri, callUUID, direction='placed') {

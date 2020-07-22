@@ -87,6 +87,18 @@ class HistoryCard extends Component {
             }
         }
 
+        if (this.state.uri.search('3333@') === -1) {
+            showBlockButton = false;
+        }
+
+        if (this.state.uri.search('4444@') === -1) {
+            showBlockButton = false;
+        }
+
+        if (this.state.displayName === 'Myself') {
+            showBlockButton = false;
+        }
+
         if (this.state.blocked) {
             blockTextbutton = 'Unblock';
             showFavoriteButton = false;
