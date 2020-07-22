@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 //const hark              = require('hark');
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { RTCView } from 'react-native-webrtc';
-import { Card } from 'react-native-paper';
+import { Surface } from 'react-native-paper';
 
 import styles from '../assets/styles/blink/_ConferenceParticipantSelf.scss';
 
@@ -77,10 +77,10 @@ class ConferenceParticipantSelf extends Component {
         }
 
         return (
-            <View style={styles.container}>
+            <Surface style={styles.container}>
                 {muteIcon}
                 <RTCView objectFit="cover" style={styles.video} ref="videoElement" poster="assets/images/transparent-1px.png" streamURL={this.props.stream ? this.props.stream.toURL() : null} mirror={true}/>
-            </View>
+            </Surface>
         );
     }
 }

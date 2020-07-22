@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 import { View } from 'react-native';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { IconButton } from 'react-native-paper';
+import { IconButton, Surface } from 'react-native-paper';
 import { RTCView } from 'react-native-webrtc';
 import styles from '../assets/styles/blink/_ConferenceParticipant.scss';
 
@@ -118,9 +118,9 @@ class ConferenceParticipant extends React.Component {
             <View style={styles.container}>
                 {muteButton}
                 {/* <OverlayTrigger placement="top" overlay={tooltip}> */}
-                    <View style={styles.videoContainer}>
+                    <Surface style={styles.videoContainer}>
                         <RTCView objectFit="cover" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} poster="assets/images/transparent-1px.png" style={styles.video}/>
-                    </View>
+                    </Surface>
                 {/* </OverlayTrigger> */}
             </View>
         );
