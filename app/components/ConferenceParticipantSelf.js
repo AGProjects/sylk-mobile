@@ -72,7 +72,9 @@ class ConferenceParticipantSelf extends Component {
         let muteIcon
         if (this.props.audioMuted) {
             muteIcon = (
-                <Icon name="microphone-off" />
+                <View style={styles.muteIcon}>
+                    <Icon name="microphone-off" size={30} color="#fff" style={styles.icon}/>
+                </View>
             );
         }
 
