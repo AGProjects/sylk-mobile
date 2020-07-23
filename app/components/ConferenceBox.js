@@ -533,6 +533,7 @@ class ConferenceBox extends Component {
                 title="Share link to this conference"
                 icon="account-plus"
                 onPress={this.toggleInviteModal}
+                key="shareButton"
             />
         );
         if (this.haveVideo) {
@@ -543,6 +544,7 @@ class ConferenceBox extends Component {
                     title="Mute/unmute video"
                     onPress={this.muteVideo}
                     icon={muteVideoButtonIcons}
+                    key="muteButton"
                 />
             );
         }
@@ -553,6 +555,7 @@ class ConferenceBox extends Component {
                 title="Mute/unmute audio"
                 onPress={this.muteAudio}
                 icon={muteButtonIcons}
+                key="muteAudioButton"
             />
         );
         if (this.haveVideo) {
@@ -563,6 +566,7 @@ class ConferenceBox extends Component {
                     title="Toggle camera"
                     onPress={this.toggleCamera}
                     icon='video-switch'
+                    key="toggleButton"
                 />
             );
         }
@@ -572,6 +576,7 @@ class ConferenceBox extends Component {
                 style={buttonClass}
                 icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                 onPress={this.props.toggleSpeakerPhone}
+                key="speakerPhoneButton"
             />
         )
         // bottomButtons.push(
@@ -587,6 +592,7 @@ class ConferenceBox extends Component {
                 title="Leave conference"
                 onPress={this.hangup}
                 icon="phone-hangup"
+                key="hangupButton"
             />
         );
         buttons.bottom = bottomButtons;
