@@ -8838,9 +8838,9 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-sylkrtc@nimbleape/sylkrtc.js#52603fc5265a9d6ee6bd956030694b2a90a88fef:
+sylkrtc@AGProjects/react-native-sylkrtc.js#99e4a58b123777a0d3c50927068229ba3565ebfb:
   version "1.4.3"
-  resolved "https://codeload.github.com/nimbleape/sylkrtc.js/tar.gz/52603fc5265a9d6ee6bd956030694b2a90a88fef"
+  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/99e4a58b123777a0d3c50927068229ba3565ebfb"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"
