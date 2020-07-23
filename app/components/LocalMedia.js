@@ -24,7 +24,6 @@ class LocalMedia extends Component {
     }
 
     render() {
-
         let {height, width} = Dimensions.get('window');
         let videoStyle = {
             height,

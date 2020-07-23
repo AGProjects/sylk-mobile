@@ -231,11 +231,12 @@ export default class CallManager extends events.EventEmitter {
             }
 
         } else if (this._calls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: hangup call', callUUID);
             let call = this._calls.get(callUUID);
             if (call.state === 'incoming') {
+                utils.timestampedLog('Callkeep: cancel call', callUUID);
                 this.sylkRejectCall(callUUID);
             } else {
+                utils.timestampedLog('Callkeep: hangup call', callUUID);
                 this.sylkHangupCall(callUUID);
             }
         } else {

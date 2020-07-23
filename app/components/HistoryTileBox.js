@@ -252,7 +252,7 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-        console.log('Render history');
+        //console.log('Render history');
         // TODO: render blocked and favorites also when there is no history
 
         let localHistory = this.getLocalHistory();

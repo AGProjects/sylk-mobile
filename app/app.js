@@ -515,8 +515,9 @@ class Sylk extends Component {
                 await this._sleep(1000);
             } else {
                 //this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
-                //utils.timestampedLog('Web socket is ready');
-                //utils.timestampedLog('Using account', this.state.account.id);
+                utils.timestampedLog('Web socket is ready');
+                utils.timestampedLog('Using account', this.state.account.id);
+
                 if (options.conference) {
                     this.startConference(targetUri, options);
                 } else {
@@ -1564,7 +1565,7 @@ class Sylk extends Component {
             } else {
                 historyItem.participants = [];
             }
-            console.log('Save history', historyItem);
+            //console.log('Save history', historyItem);
             this.setState({localHistory: newHistory});
             storage.set('history', newHistory);
         }
@@ -1615,7 +1616,7 @@ class Sylk extends Component {
     }
 
     saveParticipant(callUUID, room, uri) {
-        //console.log('Save participant', uri, 'for conference', room);
+        console.log('Save participant', uri, 'for conference', room);
 
         if (this._historyConferenceParticipants.has(callUUID)) {
             let old_participants = this._historyConferenceParticipants.get(callUUID);
