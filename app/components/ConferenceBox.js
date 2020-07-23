@@ -108,6 +108,12 @@ class ConferenceBox extends Component {
                 this.selectVideo(item);
             });
         } else {
+            this.state.participants.forEach((p) => {
+                if (p.identity._uri.search('guest.') === -1) {
+                    // used for history item
+                    this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
+                }
+            });
             // this.changeResolution();
         }
 
