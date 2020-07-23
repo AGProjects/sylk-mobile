@@ -182,11 +182,14 @@ class HistoryTileBox extends Component {
 
                     let username = elem.remoteParty.split('@')[0];
                     let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+                    let contact_obj;
 
-                    if (isPhoneNumber) {
-                        var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
-                    } else {
-                        var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
+                    if (this.props.contacts) {
+                        if (isPhoneNumber) {
+                            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
+                        } else {
+                            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', elem.remoteParty);
+                        }
                     }
 
                     if (contact_obj) {
