@@ -42,7 +42,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromOutsideFunc) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -62,7 +62,7 @@ export default class CallManager extends events.EventEmitter {
         this.sylkHangupCall = hangupFunc;
         this.timeoutCall = timeoutFunc;
         this.conferenceCall = conferenceCallFunc;
-        this.startCallFromOutside = startCallFromOutsideFunc;
+        this.startCallFromOutside = startCallFromCallKeeper;
 
         this._boundRnAccept = this._rnAccept.bind(this);
         this._boundRnEnd = this._rnEnd.bind(this);
@@ -202,15 +202,17 @@ export default class CallManager extends events.EventEmitter {
 
             utils.timestampedLog('Will start conference to', room);
             this.conferenceCall(room);
+            // this is app callKeepStartConference()
+
             // start an outgoing conference call
         } else if (this._calls.has(callUUID)) {
             this.sylkAcceptCall();
         } else {
             // We accepted the call before it arrived on web socket
             // from iOS push notifications
-            this.backToForeground();
             this._decideWhenWebSocketInviteArrives.set(callUUID, 'accept');
         }
+        this.backToForeground();
     }
 
     _rnEnd(data) {
@@ -242,7 +244,6 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
             this._decideWhenWebSocketInviteArrives.set(callUUID, 'reject');
             this._rejectedCalls.set(callUUID, true);
-
         }
     }
 
@@ -300,7 +301,7 @@ export default class CallManager extends events.EventEmitter {
         call._callkeepUUID = call.id;
 
         this._calls.set(call._callkeepUUID, call);
-        utils.timestampedLog('Callkeep: start incoming call', call._callkeepUUID);
+        utils.timestampedLog('Callkeep: handle incoming call', call._callkeepUUID);
 
         if (this._timeouts.has(call.id)) {
             clearTimeout(this._timeouts.get(call.id));
@@ -327,9 +328,9 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    handleOutgoingCall(call, callUUID) {
+    handleOutgoingCall(call) {
         // this is an outgoing call
-        call._callkeepUUID = callUUID;
+        call._callkeepUUID = call.id;
         this._calls.set(call._callkeepUUID, call);
         utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
 
@@ -386,8 +387,10 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('Callkeep: show alert panel for call', call._callkeepUUID);
 
+        let hasVideo = call.mediaTypes && call.mediaTypes.video;
+
         if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', call.mediaTypes.video);
+            this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
             this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
         }

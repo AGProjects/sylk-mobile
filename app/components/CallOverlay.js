@@ -70,9 +70,9 @@ class CallOverlay extends React.Component {
 
         if (newState === 'terminated') {
             this.props.call.removeListener('stateChanged', this.callStateChanged);
+        } else {
+            this.setState({callState: newState});
         }
-
-        this.setState({callState: newState});
     }
 
     startTimer() {

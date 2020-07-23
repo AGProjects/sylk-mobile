@@ -26,8 +26,6 @@ class Conference extends React.Component {
     }
 
     start() {
-        console.log('Starting conference call', this.props.proposedMedia);
-
         if (this.props.currentCall === null) {
             const options = {
                 id: this.props.callUUID,
@@ -41,7 +39,7 @@ class Conference extends React.Component {
                 },
                 initialParticipants: this.props.participantsToInvite
             };
-            console.log('Starting conference call', this.props.callUUID, 'to', this.props.targetUri.toLowerCase(), options);
+            //console.log('Sylkrtc.js will start conference call', this.props.callUUID, 'to', this.props.targetUri.toLowerCase(), options);
             const confCall = this.props.account.joinConference(this.props.targetUri.toLowerCase(), options);
             confCall.on('stateChanged', this.confStateChanged);
         } else {
@@ -56,8 +54,6 @@ class Conference extends React.Component {
     mediaPlaying() {
         if (this.props.currentCall === null) {
             this.start();
-        } else {
-            DEBUG('CALL ALREADY STARTED');
         }
     }
 

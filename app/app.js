@@ -410,11 +410,11 @@ class Sylk extends Component {
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
                 if (url) {
-                      utils.timestampedLog('Initial url is: ' + url);
+                      utils.timestampedLog('Initial URL: ' + url);
                       try {
                           var url_parts = url.split("/");
-                          console.log('We will call', url_parts[5], 'when ready');
-                          this.callKeepStartCall(url_parts[5], {audio: true, video: true, callUUID: url_parts[4]});
+                          utils.timestampedLog('We will call', url_parts[5], 'when ready');
+                          this.callKeepStartCall(url_parts[5], {audio: true, video: false, callUUID: url_parts[4]});
                       } catch (err) {
                           utils.timestampedLog('Error parsing url', url, ":", err);
                       }
@@ -501,32 +501,6 @@ class Sylk extends Component {
         }
     }
 
-   _callkeepStartedCall(data) {
-        utils.timestampedLog("_callkeepStartedCall from outside");
-        console.log(data);
-
-        if (!this._tmpCallStartInfo || ! this._tmpCallStartInfo.options) {
-            utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
-            // we dont have options in the tmp var, which means this likely came from the native dialer
-            // for now, we only do audio calls from the native dialer.
-            let callUUID = data.callUUID || uuid.v4();
-            let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
-            if (is_conf) {
-                this.callKeepStartConference(data.handle, {audio: true, video: true, callUUID: callUUID});
-            } else {
-                this.callKeepStartCall(data.handle, {audio: true, video: false, callUUID: callUUID});
-            }
-        } else {
-            utils.timestampedLog("CallKeep started call from the app to", data.handle, this._tmpCallStartInfo);
-            if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
-                this.startConference(data.handle);
-            } else if (this._tmpCallStartInfo.options) {
-                this.startCall(data.handle, this._tmpCallStartInfo.options);
-            }
-        }
-        this._notificationCenter.removeNotification();
-    }
-
     async startCallWhenReady(targetUri, options) {
         utils.timestampedLog('Start call when ready to', targetUri);
         var n = 0;
@@ -611,24 +585,15 @@ class Sylk extends Component {
 
     startCallFromCallKeeper(data) {
         // like from native iOS history
-        if (!this._tmpCallStartInfo || ! this._tmpCallStartInfo.options) {
-            utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
-            // we dont have options in the tmp var, which means this likely came from the native dialer
-            // for now, we only do audio calls from the native dialer.
-            let callUUID = data.callUUID || uuid.v4();
-            let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
-            if (is_conf) {
-                this.callKeepStartConference(data.handle, {audio: true, video: true, callUUID: callUUID});
-            } else {
-                this.callKeepStartCall(data.handle, {audio: true, video: false, callUUID: callUUID});
-            }
+        utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
+        // we dont have options in the tmp var, which means this likely came from the native dialer
+        // for now, we only do audio calls from the native dialer.
+        let callUUID = data.callUUID || uuid.v4();
+        let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
+        if (is_conf) {
+            this.callKeepStartConference(data.handle, {audio: true, video: true, callUUID: callUUID});
         } else {
-            utils.timestampedLog("CallKeep started call from the app to", data.handle, this._tmpCallStartInfo);
-            if (this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.conference) {
-                this.startConference(data.handle);
-            } else if (this._tmpCallStartInfo.options) {
-                this.startCall(data.handle, this._tmpCallStartInfo.options);
-            }
+            this.callKeepStartCall(data.handle, {audio: true, video: false, callUUID: callUUID});
         }
         this._notificationCenter.removeNotification();
     }
@@ -839,9 +804,9 @@ class Sylk extends Component {
                 InCallManager.startRingback('_BUNDLE_');
                 break;
             case 'established':
-                this._callKeepManager.setCurrentCallActive(callUUID);
-                this._callKeepManager.backToForeground();
             case 'accepted':
+                this._callKeepManager.backToForeground();
+                this._callKeepManager.setCurrentCallActive(callUUID);
                 if (this.state.isConference) {
                     // allow ringtone to play once as connection is too fast
                     setTimeout(() => {InCallManager.stopRingback();}, 2000);
@@ -935,6 +900,7 @@ class Sylk extends Component {
                 }
 
                 if (!newCurrentCall && !newInboundCall) {
+                    utils.timestampedLog('We have no more calls');
                     if (play_busy_tone) {
                         InCallManager.stop({busytone: '_BUNDLE_'});
                     } else {
@@ -1216,29 +1182,20 @@ class Sylk extends Component {
     }
 
     callKeepStartConference(targetUri, options={audio: true, video: true}) {
-        utils.timestampedLog('CallKeep will start conference to', targetUri);
-        //this.showCalls('callKeepStartCall');
-        //this._callKeepManager.showUnclosedCalls();
-
-        this._tmpCallStartInfo = {
-                uuid: options.callUUID || uuid.v4()
-            };
-
-        this.addHistoryEntry(targetUri, this._tmpCallStartInfo.uuid);
-        this.setState({outgoingCallUUID: this._tmpCallStartInfo.uuid, outgoingMedia: options});
-        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: this._tmpCallStartInfo.uuid});
+        let callUUID = options.callUUID || uuid.v4();
+        this.addHistoryEntry(targetUri, callUUID);
+        this.setState({outgoingCallUUID: callUUID, outgoingMedia: options});
+        utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri);
+        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: callUUID});
     }
 
     callKeepStartCall(targetUri, options) {
-        utils.timestampedLog('CallKeep will start call to', targetUri);
+        let callUUID = options.callUUID || uuid.v4();
+        this.setState({outgoingCallUUID: callUUID});
 
-        this._tmpCallStartInfo = {
-            uuid: options.callUUID || uuid.v4(),
-            options,
-        };
+        utils.timestampedLog('CallKeep will start call', callUUID, 'to', targetUri);
 
-        this.setState({outgoingCallUUID: this._tmpCallStartInfo .uuid});
-        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, callUUID: this._tmpCallStartInfo.uuid});
+        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, callUUID: callUUID});
     }
 
     startCall(targetUri, options) {
@@ -1246,12 +1203,6 @@ class Sylk extends Component {
         this.setState({targetUri: targetUri});
         //this.addHistoryEntry(targetUri);
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
-    }
-
-    startGuestCall(targetUri, options) {
-        utils.timestampedLog('startGuestCall', targetUri);
-        this.setState({targetUri: targetUri});
-        this.getLocalMedia(Object.assign({audio: true, video: true}, this._tmpCallStartInfo.options));
     }
 
     callKeepAcceptCall(callUUID) {
@@ -1288,7 +1239,7 @@ class Sylk extends Component {
         }
 
         this.setState({localMedia: null});
-        let hasVideo = this.state.inboundCall.mediaTypes.video ? true : false;
+        let hasVideo = (this.state.inboundCall && this.state.inboundCall.mediaTypes && this.state.inboundCall.mediaTypes.video) ? true : false;
         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
     }
 
@@ -1377,13 +1328,23 @@ class Sylk extends Component {
     }
 
     outgoingCall(call) {
-        utils.timestampedLog('New outgoing call to', call.remoteIdentity.uri);
-        this._callKeepManager.handleOutgoingCall(call, this._tmpCallStartInfo.uuid);
-        InCallManager.start({media: this._tmpCallStartInfo.options && this._tmpCallStartInfo.options.video ? 'video' : 'audio'});
-        this._tmpCallStartInfo = {};
+        // called by sylrtc.js when an outgoig call or conference starts
+        const localStreams = call.getLocalStreams();
+        let mediaType = 'audio';
+
+        if (localStreams.length > 0) {
+            const localStream = call.getLocalStreams()[0];
+            mediaType = localStream.getVideoTracks().length > 0 ? 'video' : 'audio';
+        }
+
+        utils.timestampedLog('Outgoing', mediaType, 'call', call.id, 'started to', call.remoteIdentity.uri);
+        this._callKeepManager.handleOutgoingCall(call);
+
+        InCallManager.start({media: mediaType});
+
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
-        //this._callKeepManager.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
+        this._callKeepManager.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
     }
 
     _onLocalNotificationReceivedBackground(notification) {
@@ -1534,15 +1495,15 @@ class Sylk extends Component {
             return;
         }
 
-        let media_type = mediaTypes.video ? 'video' : 'audio';
+        let mediaType = mediaTypes.video ? 'video' : 'audio';
         call.mediaTypes = mediaTypes;
 
-        utils.timestampedLog('New', media_type, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
+        utils.timestampedLog('New', mediaType, 'incoming call from', call.remoteIdentity['_displayName'], call.remoteIdentity['_uri']);
 
         call.on('stateChanged', this.callStateChanged);
         this.setState({inboundCall: call});
 
-        InCallManager.start({media: media_type});
+        InCallManager.start({media: mediaType});
 
         this._callKeepManager.handleIncomingWebSocketCall(call);
 

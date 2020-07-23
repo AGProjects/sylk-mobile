@@ -169,7 +169,6 @@ class Call extends Component {
         assert(this.props.call !== null, 'currentCall is null');
 
         this.lookupContact();
-        console.log('lookup done');
 
         let options = {pcConfig: {iceServers: config.iceServers}};
         options.localStream = this.props.localMedia;
