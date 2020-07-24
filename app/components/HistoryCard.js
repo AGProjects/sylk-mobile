@@ -62,7 +62,19 @@ class HistoryCard extends Component {
     }
 
     setTargetUri(uri, contact) {
+        if (this.isAnonymous(this.state.uri)) {
+            return;
+        }
+
         this.props.setTargetUri(this.state.uri, this.props.contact);
+    }
+
+    isAnonymous(uri) {
+        if (uri.search('@guest.') > -1 || uri.search('@anonymous.') > -1) {
+            return true
+        }
+
+        return false;
     }
 
     render () {
@@ -72,13 +84,22 @@ class HistoryCard extends Component {
 
         let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
 
+        let uri =  this.state.uri;
+        let displayName = this.state.displayName;
+
         let buttonMode = 'text';
-        let showBlockButton = this.state.uri.search('@videoconference.') === -1 ? true : false;
+        let showBlockButton = uri.search('@videoconference.') === -1 ? true : false;
         let showFavoriteButton = true;
         let showDeleteButton = this.props.contact.tags.indexOf('local') > -1 ? true: false;
         let blockTextbutton = 'Block';
         let favoriteTextbutton = 'Favorite';
         let deleteTextbutton = 'Delete';
+
+        if (this.isAnonymous(uri)) {
+            uri = 'anonymous@anonymous.invalid';
+            displayName = displayName + ' - from the Web';
+            let showFavoriteButton = false;
+        }
 
         if (this.state.favorite) {
             favoriteTextbutton = 'Remove favorite';
@@ -87,15 +108,15 @@ class HistoryCard extends Component {
             }
         }
 
-        if (this.state.uri.search('3333@') === -1) {
+        if (uri.search('3333@') === -1) {
             showBlockButton = false;
         }
 
-        if (this.state.uri.search('4444@') === -1) {
+        if (uri.search('4444@') === -1) {
             showBlockButton = false;
         }
 
-        if (this.state.displayName === 'Myself') {
+        if (displayName === 'Myself') {
             showBlockButton = false;
         }
 
@@ -116,12 +137,12 @@ class HistoryCard extends Component {
 
         let color = {};
 
-        let title = this.state.displayName || this.state.uri.split('@')[0];
-        let subtitle = this.state.uri;
+        let title = displayName || uri.split('@')[0];
+        let subtitle = uri;
         let description = this.props.contact.startTime;
 
-        if (this.state.displayName === this.state.uri) {
-            title = toTitleCase(this.state.uri.split('@')[0]);
+        if (displayName === uri) {
+            title = toTitleCase(uri.split('@')[0]);
         }
 
         if (this.state.type === 'history') {
@@ -150,8 +171,8 @@ class HistoryCard extends Component {
                 }
             }
 
-            if (!this.state.displayName) {
-                title = this.state.uri;
+            if (!displayName) {
+                title = uri;
                 if (duration === 'missed') {
                     subtitle = 'Last call missed';
                 } else if (duration === 'cancelled') {
@@ -165,7 +186,7 @@ class HistoryCard extends Component {
 
             return (
                 <Card
-                    onPress={() => {this.setTargetUri(this.state.uri, this.props.contact)}}
+                    onPress={() => {this.setTargetUri(uri, this.props.contact)}}
                     style={[containerClass, cardClass]}
                     >
                     <Card.Content style={styles.content}>
@@ -196,13 +217,13 @@ class HistoryCard extends Component {
 
             return (
                 <Card
-                    onPress={() => {this.props.setTargetUri(this.state.uri, this.props.contact)}}
+                    onPress={() => {this.props.setTargetUri(uri, this.props.contact)}}
                     style={[containerClass, cardClass]}
                 >
                     <Card.Content style={styles.content}>
                         <View style={styles.mainContent}>
                             <Title noWrap style={color}>{title}</Title>
-                            <Subheading noWrap style={color}>{this.state.uri}</Subheading>
+                            <Subheading noWrap style={color}>{uri}</Subheading>
                             <Caption color="textSecondary">
                                 {this.state.label}
                             </Caption>
