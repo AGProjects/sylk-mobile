@@ -18,7 +18,7 @@ import Contacts from 'react-native-contacts';
 
 registerGlobals();
 
-import * as sylkrtc from 'sylkrtc';
+import * as sylkrtc from 'react-native-sylkrtc';
 import InCallManager from 'react-native-incall-manager';
 import RNCallKeep, { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 

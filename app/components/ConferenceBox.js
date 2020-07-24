@@ -3,7 +3,7 @@
 import React, {Component, Fragment} from 'react';
 import { View, Platform, TouchableWithoutFeedback } from 'react-native';
 import PropTypes from 'prop-types';
-import * as sylkrtc from 'sylkrtc';
+import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
 import debug from 'react-native-debug';
 import superagent from 'superagent';
