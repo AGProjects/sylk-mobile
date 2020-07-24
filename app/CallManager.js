@@ -274,7 +274,8 @@ export default class CallManager extends events.EventEmitter {
         })
     }
 
-    handleIncomingPushCall(callUUID, notificationContent) {
+    handleIncomingPushCall(callUUID) {
+        utils.timestampedLog('Callkeep: handle incoming push call', callUUID);
         // call is received by push notification
         if (this._calls.has(callUUID)) {
             utils.timestampedLog('Callkeep: call', callUUID, 'already handled');
@@ -286,7 +287,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('Callkeep: handle later incoming call', callUUID);
+        utils.timestampedLog('Callkeep: handle incoming call later', callUUID);
 
         let reason = this._decideWhenWebSocketInviteArrives.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
 
@@ -380,8 +381,8 @@ export default class CallManager extends events.EventEmitter {
         this._alertedCalls.set(data.callUUID.toLowerCase(), true);
     }
 
-    showAlertPanel(call) {
-        if (this._alertedCalls.has(call._callkeepUUID)) {
+    showAlertPanel(call, force=false) {
+        if (this._alertedCalls.has(call._callkeepUUID) && !force) {
             utils.timestampedLog('Callkeep: alert panel was already shown for call', call._callkeepUUID);
             return;
         }

@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet} from 'react-native';
+import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet} from 'react-native';
 import { DeviceEventEmitter } from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { BreadProvider } from "material-bread";
@@ -396,20 +396,8 @@ class Sylk extends Component {
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
                 if (url) {
-                      utils.timestampedLog('Initial URL: ' + url);
-                      try {
-                          var url_parts = url.split("/");
-                          let callUUID = url_parts[4];
-                          let uri = url_parts[5];
-
-                          if (url_parts[3] === 'conference') {
-                              this.callKeepStartConference(uri, {audio: true, video: true, callUUID: callUUID});
-                          } else {
-                              this.callKeepStartCall(uri, {audio: true, video: false, callUUID: callUUID});
-                          }
-                      } catch (err) {
-                          utils.timestampedLog('Error parsing url', url, ":", err);
-                      }
+                      utils.timestampedLog('Initial Linking URL: ' + url);
+                      this.handleCallFromUrl(url);
                 }
               }).catch(err => {
                 logger.error({ err }, 'Error getting initial URL');
@@ -421,6 +409,9 @@ class Sylk extends Component {
                     this._onPushRegistered(fcmToken);
                 }
             });
+
+            Linking.addEventListener('url', this.updateLinkingURL);
+
         } else if (Platform.OS === 'ios') {
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
@@ -774,12 +765,14 @@ class Sylk extends Component {
         } else if (this.state.inboundCall) {
             if (oldState === 'incoming' && newState === 'terminated') {
                 utils.timestampedLog("Incoming call was cancelled");
+                this.setState({showIncomingModal: false});
                 newInboundCall = null;
                 newCurrentCall = null;
             } else if (oldState === 'incoming' && newState === 'accepted') {
                 utils.timestampedLog("Incoming call is accepted");
                 newCurrentCall = this.state.inboundCall;
                 newInboundCall = this.state.inboundCall;
+                this.setState({showIncomingModal: false});
             } else if (oldState === 'established' && newState === 'terminated') {
                 // old call was hangup to accept a new incoming calls
                 newCurrentCall = null;
@@ -893,7 +886,6 @@ class Sylk extends Component {
                 }
 
                 if (!newCurrentCall && !newInboundCall) {
-                    utils.timestampedLog('We have no more calls');
                     if (play_busy_tone) {
                         InCallManager.stop({busytone: '_BUNDLE_'});
                     } else {
@@ -1197,8 +1189,9 @@ class Sylk extends Component {
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
-    callKeepAcceptCall(callUUID) {
+    callKeepAcceptCall(callUUID, options) {
         // called from user interaction with Old alert panel
+        // options used to be media to accept audio only but native panels do not have this feature
         utils.timestampedLog('CallKeep answer call', callUUID);
         this._callKeepManager.answerIncomingCall(callUUID);
         this.acceptCall();
@@ -1361,12 +1354,7 @@ class Sylk extends Component {
         if (notificationContent['event'] === 'incoming_session') {
             utils.timestampedLog('Incoming call for push mobile notification for call', callUUID);
 
-            if (this.state.account && notificationContent['from_uri'] === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri) {
-                utils.timestampedLog('Reject call to myself', callUUID);
-                this._callKeepManager.rejectCall(callUUID);
-            } else {
-                this._callKeepManager.handleIncomingPushCall(callUUID, notificationContent);
-            }
+            this.incomingPushCall(callUUID, notificationContent['from_uri']);
 
             if (VoipPushNotification.wakeupByPush) {
                 utils.timestampedLog('We wake up by a push notification');
@@ -1399,6 +1387,16 @@ class Sylk extends Component {
         if (VoipPushNotification.wakeupByPush) {
             utils.timestampedLog('We wake up by push notification');
             VoipPushNotification.wakeupByPush = false;
+        }
+    }
+
+    incomingPushCall(callUUID, from) {
+        utils.timestampedLog('Handle incoming push call', callUUID, 'from', from);
+        if (this.state.account && from === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri === from) {
+            utils.timestampedLog('Reject call to myself', callUUID);
+            this._callKeepManager.rejectCall(callUUID);
+        } else {
+            this._callKeepManager.handleIncomingPushCall(callUUID);
         }
     }
 
@@ -1771,14 +1769,13 @@ class Sylk extends Component {
                                 isTablet={this.state.isTablet}
                                 />
 
-                                {/*
-                                {<IncomingCallModal
+                                <IncomingCallModal
                                     call={this.state.inboundCall}
                                     onAccept={this.callKeepAcceptCall}
                                     onReject={this.callKeepRejectCall}
                                     show={this.state.showIncomingModal}
-                                />}
-                                */}
+                                    contacts = {this.contacts}
+                                />
 
                                 {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
                                 <Switch>

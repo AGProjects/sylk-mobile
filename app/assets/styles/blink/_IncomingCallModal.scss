@@ -1,9 +1,8 @@
 .container {
     justifyContent: center;
     alignItems: center;
-    background-color: rgba(#ccc, .9);
-    padding-top: 200px;
-    padding-bottom: 200px;
+    background-color: rgba(#ccc, 1);
+    height: 100%;
 }
 
 .buttonContainer {
@@ -14,21 +13,19 @@
 
 .button {
     background-color: rgba(#6DAA63, .9);
-    margin: 10px;
-    padding-top: 4px;
-    padding-left: 1px;
+    margin: 30px;
+    padding: 10px;
 }
 
 .rejectButton {
     background-color: rgba(#a94442, .9);
-    margin: 10px;
-    padding-top: 4px;
-    padding-left: 1px;
+    margin: 30px;
+
 }
 
 .userIcon {
     margin: 0;
-    padding-bottom: 20px;
+    padding-bottom: 40px;
 }
 
 .remoteCaller {

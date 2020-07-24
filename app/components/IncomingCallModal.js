@@ -6,46 +6,87 @@ import { View } from 'react-native';
 
 import styles from '../assets/styles/blink/_IncomingCallModal.scss';
 
-const IncomingCallModal = (props) => {
-
-    const answerAudioOnly = () => {
-        props.onAnswer({audio: true, video: false});
+function findObjectByKey(array, key, value) {
+        for (var i = 0; i < array.length; i++) {
+            if (array[i][key] === value) {
+                return array[i];
+            }
+        }
+        return null;
     }
 
-    const answer = () => {
-        props.onAnswer({audio: true, video: true});
-    };
+
+const IncomingCallModal = (props) => {
 
     if (props.call == null) {
         return false;
     }
 
+    const answerAudioOnly = () => {
+        props.onAccept(props.call.id, {audio: true, video: false});
+    }
+
+    const answer = () => {
+        props.onAccept(props.call.id, {audio: true, video: true});
+    };
+
+    const reject = () => {
+        props.onReject(props.call.id);
+    };
+
     let answerButtons = [];
 
     answerButtons.push(
-        <IconButton style={styles.button} id="audio"  size={34} onPress={answerAudioOnly} icon="phone" />
+        <IconButton style={styles.button} id="audio"  size={40} onPress={answerAudioOnly} icon="phone" />
     );
 
     let callType = 'audio';
     if (props.call.mediaTypes.video) {
         callType = 'video';
+        /*
         answerButtons.push(
             <IconButton id="accept" style={styles.button}  size={34} onPress={answer} autoFocus icon="video" />
         );
+        */
     }
 
     answerButtons.push(
-        <IconButton id="decline" style={styles.rejectButton}  size={34} onPress={props.onHangup} icon="phone-hangup" />
+        <IconButton id="decline" style={styles.rejectButton}  size={40} onPress={reject} icon="phone-hangup" />
     );
 
-    const remoteIdentityLine = props.call.remoteIdentity.displayName || props.call.remoteIdentity.uri;
+    let remoteUri = props.call.remoteIdentity.uri;
+    let remoteDisplayName = props.call.remoteIdentity.displayName || props.call.remoteIdentity.uri;
+
+    let username = remoteUri.split('@')[0];
+    let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+    if (isPhoneNumber) {
+        var contact_obj = findObjectByKey(props.contacts, 'remoteParty', username);
+    } else {
+        var contact_obj = findObjectByKey(props.contacts, 'remoteParty', remoteUri);
+    }
+
+    if (contact_obj) {
+        remoteDisplayName = contact_obj.displayName;
+        if (isPhoneNumber) {
+            remoteUri = username;
+        }
+    } else {
+        if (isPhoneNumber) {
+            remoteUri = username;
+            remoteDisplayName = username;
+        }
+    }
+
+    let remoteIdentity = {uri: remoteUri,
+                          displayName: remoteDisplayName};
 
     return (
         <Portal>
             <Modal visible={props.show} dismissable={false}>
                 <Surface style={styles.container}>
-                    <UserIcon style={styles.userIcon} identity={props.call.remoteIdentity} />
-                    <Title style={styles.remoteCaller}>{remoteIdentityLine}</Title>
+                    <UserIcon style={styles.userIcon} large={true} identity={remoteIdentity} />
+                    <Title style={styles.remoteCaller}>{remoteDisplayName}</Title>
                     <Headline style={styles.remoteMedia}>is calling with {callType}</Headline>
                     <View style={styles.buttonContainer}>
                         {answerButtons}
@@ -58,10 +99,11 @@ const IncomingCallModal = (props) => {
 
 IncomingCallModal.propTypes = {
     call     : PropTypes.object,
-    onAnswer : PropTypes.func.isRequired,
-    onHangup : PropTypes.func.isRequired,
+    onAccept : PropTypes.func.isRequired,
+    onReject : PropTypes.func.isRequired,
     compact  : PropTypes.bool,
-    show     : PropTypes.bool
+    show     : PropTypes.bool,
+    contacts : PropTypes.array
 };
 
 

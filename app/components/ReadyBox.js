@@ -44,10 +44,6 @@ class ReadyBox extends Component {
         }
     }
 
-    componentWillReceiveProps(props) {
-        this.setState({'filterHistory': null});
-    }
-
     filterHistory(filter) {
        //console.log('set historyFilter', filter);
        this.setState({'historyFilter': filter});
