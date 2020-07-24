@@ -132,7 +132,8 @@ class Sylk extends Component {
             myPhoneNumber: null,
             localHistory: [],
             favoriteUris: [],
-            blockedUris: []
+            blockedUris: [],
+            initialUrl: null
         };
 
         this.currentRoute = null;
@@ -392,15 +393,20 @@ class Sylk extends Component {
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
         this._boundOnPushRegistered = this._onPushRegistered.bind(this);
 
-
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
                 if (url) {
                       utils.timestampedLog('Initial URL: ' + url);
                       try {
                           var url_parts = url.split("/");
-                          utils.timestampedLog('We will call', url_parts[5], 'when ready');
-                          this.callKeepStartCall(url_parts[5], {audio: true, video: false, callUUID: url_parts[4]});
+                          let callUUID = url_parts[4];
+                          let uri = url_parts[5];
+
+                          if (url_parts[3] === 'conference') {
+                              this.callKeepStartConference(uri, {audio: true, video: true, callUUID: callUUID});
+                          } else {
+                              this.callKeepStartCall(uri, {audio: true, video: false, callUUID: callUUID});
+                          }
                       } catch (err) {
                           utils.timestampedLog('Error parsing url', url, ":", err);
                       }

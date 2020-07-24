@@ -5,6 +5,7 @@ import android.app.ActivityManager;
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 
 import android.os.Bundle;
 
@@ -36,15 +37,19 @@ public class SylkNative extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void launchMainActivity() {
+    public void launchMainActivity(String uri) {
         String packageName = reactContext.getPackageName();
         Intent launchIntent = reactContext.getPackageManager().getLaunchIntentForPackage(packageName);
         String className = launchIntent.getComponent().getClassName();
 
         try {
             Class<?> activityClass = Class.forName(className);
-            Intent activityIntent = new Intent(reactContext, activityClass);
-
+            Intent activityIntent;
+            if (uri != null) {
+                activityIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(uri), reactContext, activityClass);
+            } else {
+                activityIntent = new Intent(reactContext, activityClass);
+            }
             activityIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             reactContext.startActivity(activityIntent);
         } catch(Exception e) {
