@@ -11,11 +11,10 @@ import autoBind from 'auto-bind';
 import { firebase } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
-import { getUniqueId, getBundleId, getManufacturer } from 'react-native-device-info';
+import { getUniqueId, getBundleId, isTablet} from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import Contacts from 'react-native-contacts';
-import DeviceInfo from 'react-native-device-info';
 
 registerGlobals();
 
@@ -126,12 +125,8 @@ class Sylk extends Component {
             outgoingCallUUID: null,
             outgoingMedia: null,
             hardware: '',
-            manufacturer: '',
-            brand: '',
-            model: '',
             phoneNumber: '',
-            osVersion: '',
-            isTablet: false,
+            isTablet: isTablet(),
             refreshHistory: false,
             myDisplayName: null,
             myPhoneNumber: null,
@@ -162,15 +157,6 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.muteIncoming = false;
-
-        DeviceInfo.getManufacturer().then(manufacturer => {
-            this.setState({manufacturer: manufacturer,
-                           model: DeviceInfo.getModel(),
-                           brand: DeviceInfo.getBrand(),
-                           osVersion: Platform.Version,
-                           isTablet: DeviceInfo.isTablet()
-                           });
-        });
 
         storage.initialize();
 
@@ -975,8 +961,7 @@ class Sylk extends Component {
         });
 
         if (this.state.connection === null) {
-            let model = this.state.brand + ' ' + this.state.model;
-            let userAgent = 'Sylk Mobile on ' + model + ' (v' + this.state.osVersion + ')';
+            const userAgent = 'Sylk Mobile';
             console.log('User Agent:', userAgent);
             if (this.state.phoneNumber) {
                 console.log('Phone number:', this.state.phoneNumber);
