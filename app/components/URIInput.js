@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { TextInput } from 'react-native-paper';
+import { TextInput, Searchbar  } from 'react-native-paper';
 import autoBind from 'auto-bind';
 
 class URIInput extends React.Component {
@@ -95,10 +95,10 @@ class URIInput extends React.Component {
     }
 
     render() {
-        const placehoder = 'Enter a SIP address like alice@example.com';
+        const placehoder = 'Enter a SIP address';
 
         return (
-            <TextInput
+            <Searchbar
                 mode="flat"
                 label="Enter address"
                 ref={this.uriInput}
