@@ -83,6 +83,7 @@ class HistoryTileBox extends Component {
             setTargetUri={this.setTargetUri}
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
+            contacts={this.props.contacts}
             />);
     }
 

@@ -1,11 +1,12 @@
 ﻿import React, { Component} from 'react';
-import { View } from 'react-native';
+import { View, SafeAreaView, FlatList } from 'react-native';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
-import { Card, IconButton, Button, Caption, Title, Subheading } from 'react-native-paper';
+import { Card, IconButton, Button, Caption, Title, Subheading, List, Text} from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import uuid from 'react-native-uuid';
 
 import styles from '../assets/styles/blink/_HistoryCard.scss';
 
@@ -20,6 +21,23 @@ function toTitleCase(str) {
         }
     );
 }
+
+const Item = ({ nr, uri, displayName }) => (
+  <View style={styles.participantView}>
+    {displayName !==  uri?
+    <Text style={styles.participant}>{nr}. {displayName} ({uri})</Text>
+    :
+    <Text style={styles.participant}>{nr}. {uri}</Text>
+    }
+
+  </View>
+);
+
+const renderItem = ({ item }) => (
+ <Item  nr={item.nr} uri={item.uri} displayName={item.displayName}/>
+);
+
+
 
 class HistoryCard extends Component {
     constructor(props) {
@@ -45,6 +63,18 @@ class HistoryCard extends Component {
     shouldComponentUpdate(nextProps) {
         //https://medium.com/sanjagh/how-to-optimize-your-react-native-flatlist-946490c8c49b
         return true;
+    }
+
+    handleParticipant() {
+    }
+
+    findObjectByKey(array, key, value) {
+        for (var i = 0; i < array.length; i++) {
+            if (array[i][key] === value) {
+                return array[i];
+            }
+        }
+        return null;
     }
 
     setBlockedUri() {
@@ -94,6 +124,7 @@ class HistoryCard extends Component {
         let blockTextbutton = 'Block';
         let favoriteTextbutton = 'Favorite';
         let deleteTextbutton = 'Delete';
+        let participantsData = [];
 
         if (this.isAnonymous(uri)) {
             uri = 'anonymous@anonymous.invalid';
@@ -157,15 +188,20 @@ class HistoryCard extends Component {
 
             if (this.state.conference) {
                 if (this.state.participants && this.state.participants.length) {
-                    subtitle = 'With: ';
-                    let i = 0;
-                    this.state.participants.forEach((participant) => {
-                        if (i > 0) {
-                            subtitle = subtitle + ', ' + participant.split('@')[0];
-                        } else {
-                            subtitle = subtitle + participant.split('@')[0];
-                        }
-                    });
+                    if (!showActions) {
+                        subtitle = 'With ' + this.state.participants.length + ' participants';
+                    } else {
+                        let i = 1;
+                        let contact_obj;
+                        let dn;
+                        this.state.participants.forEach((participant) => {
+                            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
+                            dn = contact_obj ? contact_obj.displayName : participant;
+                            let _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
+                            participantsData.push(_item);
+                            i = i + 1;
+                        });
+                    }
                 } else {
                     subtitle = 'No participants';
                 }
@@ -196,6 +232,18 @@ class HistoryCard extends Component {
                             <Caption color="textSecondary">
                                 <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
                             </Caption>
+                            {this.state.participants && this.state.participants.length ?
+                            <SafeAreaView>
+                            <Title noWrap style={color}>Participants:</Title>
+                              <FlatList
+                                horizontal={false}
+                                data={participantsData}
+                                renderItem={renderItem}
+                                keyExtractor={item => item.id}
+                              />
+                            </SafeAreaView>
+                            : null}
+
                         </View>
                         <View style={styles.userAvatarContent}>
                             <UserIcon style={styles.userIcon} identity={this.state}/>
@@ -254,7 +302,8 @@ HistoryCard.propTypes = {
     setFavoriteUri : PropTypes.func,
     deleteHistoryEntry : PropTypes.func,
     orientation    : PropTypes.string,
-    isTablet       : PropTypes.bool
+    isTablet       : PropTypes.bool,
+    contacts       : PropTypes.array
 };
 
 
