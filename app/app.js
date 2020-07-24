@@ -484,17 +484,52 @@ class Sylk extends Component {
         }
     }
 
+    handleCallFromUrl(url) {
+        try {
+            var url_parts = url.split("/");
+            const direction = url_parts[2];
+            const event     = url_parts[3];
+            const callUUID  = url_parts[4];
+            const from      = url_parts[5];
+            const to        = url_parts[6];
+
+            utils.timestampedLog('Parsed URL:', direction, event, 'from', from, 'to', to);
+            if (direction === 'outgoing' && event === 'conference') {
+                 this.incomingConference(callUUID, from, to);
+            } else if (direction === 'incoming' && event === 'call') {
+                if (Platform.OS === 'android') {
+                    this.setState({showIncomingModal: true});
+                } else {
+                    this.incomingPushCall(callUUID, from);
+                }
+            } else if (direction === 'outgoing' && event === 'call') {
+                 // from native dialer
+                 this.callKeepStartCall(to, {audio: true, video: false, callUUID: callUUID});
+            } else {
+                 utils.timestampedLog('Unclear URL structure');
+            }
+        } catch (err) {
+            utils.timestampedLog('Error parsing url', url, ":", err);
+        }
+    }
+
+    updateLinkingURL = (event) => {
+        // this handles the use case where the app is running in the background and is activated by the listener...
+        console.log('Updated Linking url', event.url);
+        this.handleCallFromUrl(event.url);
+    }
+
     async startCallWhenReady(targetUri, options) {
         utils.timestampedLog('Start call when ready to', targetUri);
         var n = 0;
-        let wait_interval = 15;
+        let wait_interval = 20;
         while (n < wait_interval) {
             if (!this.state.connection) {
                 utils.timestampedLog('Web socket is down');
             }
             if (!this.state.connection || this.state.connection.state !== 'ready' || this.state.account === null) {
                 utils.timestampedLog('Waiting for connection...');
-                this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 1});
+                this._notificationCenter.postSystemNotification('Waiting for connection...', {timeout: 2});
                 await this._sleep(1000);
             } else {
                 //this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
