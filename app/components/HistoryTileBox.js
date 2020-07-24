@@ -418,7 +418,7 @@ class HistoryTileBox extends Component {
                 numColumns={columns}
                 data={items}
                 renderItem={this.renderItem}
-                keyExtractor={item => item.id}
+                listKey={item => item.id}
                 key={this.props.orientation}
               />
             </SafeAreaView>
