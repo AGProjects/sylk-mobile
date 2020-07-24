@@ -34,7 +34,7 @@ const Item = ({ nr, uri, displayName }) => (
 );
 
 const renderItem = ({ item }) => (
- <Item  nr={item.nr} uri={item.uri} displayName={item.displayName}/>
+ <Item nr={item.nr} uri={item.uri} displayName={item.displayName}/>
 );
 
 
@@ -56,7 +56,8 @@ class HistoryCard extends Component {
             orientation: this.props.orientation,
             isTablet: this.props.isTablet,
             favorite: (this.props.contact.tags.indexOf('favorite') > -1)? true : false,
-            blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false
+            blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false,
+            confirmed: false
         }
     }
 
@@ -86,9 +87,23 @@ class HistoryCard extends Component {
         this.props.deleteHistoryEntry(this.state.uri);
     }
 
+    undo() {
+        this.setState({confirmed: false, action: null});
+    }
+
     setFavoriteUri() {
-        let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
-        this.setState({favorite: newFavoriteState});
+        if (this.state.favorite) {
+            if (this.state.confirmed) {
+                let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
+                this.setState({favorite: newFavoriteState, action: null, confirmed: false});
+                this.props.setTargetUri(this.state.uri);
+            } else {
+                this.setState({confirmed: true});
+            }
+        } else {
+            let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
+            this.setState({favorite: newFavoriteState});
+        }
     }
 
     setTargetUri(uri, contact) {
@@ -96,7 +111,7 @@ class HistoryCard extends Component {
             return;
         }
 
-        this.props.setTargetUri(this.state.uri, this.props.contact);
+        this.props.setTargetUri(uri, this.contact);
     }
 
     isAnonymous(uri) {
@@ -106,6 +121,7 @@ class HistoryCard extends Component {
 
         return false;
     }
+
 
     render () {
         let containerClass = styles.portraitContainer;
@@ -120,9 +136,11 @@ class HistoryCard extends Component {
         let buttonMode = 'text';
         let showBlockButton = uri.search('@videoconference.') === -1 ? true : false;
         let showFavoriteButton = true;
+        let showUndoButton = this.state.confirmed ? true : false;
         let showDeleteButton = this.props.contact.tags.indexOf('local') > -1 ? true: false;
         let blockTextbutton = 'Block';
         let favoriteTextbutton = 'Favorite';
+        let undoTextbutton = 'Abort';
         let deleteTextbutton = 'Delete';
         let participantsData = [];
 
@@ -133,7 +151,7 @@ class HistoryCard extends Component {
         }
 
         if (this.state.favorite) {
-            favoriteTextbutton = 'Remove favorite';
+            favoriteTextbutton = this.state.confirmed ? 'Confirm' : 'Remove favorite';
             if (!this.state.blocked) {
                 showBlockButton = false;
             }
@@ -186,6 +204,7 @@ class HistoryCard extends Component {
                 duration = 'cancelled';
             }
 
+
             if (this.state.conference) {
                 if (this.state.participants && this.state.participants.length) {
                     if (!showActions) {
@@ -233,7 +252,7 @@ class HistoryCard extends Component {
                             <Caption color="textSecondary">
                                 <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
                             </Caption>
-                            {this.state.participants && this.state.participants.length ?
+                            {this.state.participants && this.state.participants.length && showActions ?
                             <SafeAreaView>
                             <Title noWrap style={color}>Participants:</Title>
                               <FlatList
@@ -241,6 +260,7 @@ class HistoryCard extends Component {
                                 data={participantsData}
                                 renderItem={renderItem}
                                 keyExtractor={item => item.id}
+                                key={item => item.id}
                               />
                             </SafeAreaView>
                             : null}
@@ -256,6 +276,7 @@ class HistoryCard extends Component {
                            {showDeleteButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteHistoryEntry()}}>{deleteTextbutton}</Button>: null}
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
                            {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
+                           {showUndoButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.undo()}}>{undoTextbutton}</Button>: null}
                         </Card.Actions>
                         </View>
                         : null}
@@ -286,6 +307,7 @@ class HistoryCard extends Component {
                         <Card.Actions>
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
                            {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
+                           {showUndoButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.undo()}}>{undoTextbutton}</Button>: null}
                         </Card.Actions>
                         </View>
                         : null}
