@@ -1496,6 +1496,15 @@ class Sylk extends Component {
             return;
         }
 
+        if (this.state.blockedUris && this.state.blockedUris.indexOf(call.remoteIdentity.uri) > -1) {
+            utils.timestampedLog('Reject call from blocked URI', call.remoteIdentity.uri);
+            this._callKeepManager.rejectCall(call.id);
+            call.terminate();
+            let from = call.remoteIdentity.displayName || call.remoteIdentity.uri;
+            this._notificationCenter.postSystemNotification('Call rejected', {body: `from ${from}`, timeout: 5000, silent: true});
+            return;
+        }
+
         let mediaType = mediaTypes.video ? 'video' : 'audio';
         call.mediaTypes = mediaTypes;
 

@@ -328,7 +328,7 @@ class HistoryTileBox extends Component {
 
         let history = [];
         let searchExtraItems = [];
-        let items= []
+        let items = [];
 
         if (this.props.filter === 'favorite') {
             let favoriteContacts = this.getFavoriteContacts();
@@ -389,15 +389,15 @@ class HistoryTileBox extends Component {
 
         });
 
-        if (this.props.filter) {
-            let filteredItems = [];
-            items.forEach((item) => {
-                if (item.tags.indexOf(this.props.filter) > -1) {
-                    filteredItems.push(item);
-                }
-            });
-            items = filteredItems;
-        }
+        let filteredItems = [];
+        items.forEach((item) => {
+            if (this.props.filter && item.tags.indexOf(this.props.filter) > -1) {
+                filteredItems.push(item);
+            } else if (this.state.blockedUris.indexOf(item.remoteParty) === -1) {
+                filteredItems.push(item);
+            }
+        });
+        items = filteredItems;
 
         if (items.length === 1) {
             items[0].showActions = true;
