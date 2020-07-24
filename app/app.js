@@ -11,7 +11,7 @@ import autoBind from 'auto-bind';
 import { firebase } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
-import { getUniqueId, getBundleId, isTablet} from 'react-native-device-info';
+import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import Contacts from 'react-native-contacts';
@@ -464,7 +464,7 @@ class Sylk extends Component {
 
         this._detectOrientation();
 
-        DeviceInfo.getPhoneNumber().then(phoneNumber => {
+        getPhoneNumber().then(phoneNumber => {
             this.setState({myPhoneNumber: phoneNumber});
             this.loadContacts();
         });
