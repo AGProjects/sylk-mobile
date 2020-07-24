@@ -194,10 +194,11 @@ class HistoryCard extends Component {
                         let i = 1;
                         let contact_obj;
                         let dn;
+                        let _item;
                         this.state.participants.forEach((participant) => {
                             contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
                             dn = contact_obj ? contact_obj.displayName : participant;
-                            let _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
+                            _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
                             participantsData.push(_item);
                             i = i + 1;
                         });

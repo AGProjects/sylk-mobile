@@ -66,6 +66,7 @@ class HistoryTileBox extends Component {
 
     setFavoriteUri(uri) {
         return this.props.setFavoriteUri(uri);
+        this.props.setTargetUri();
     }
 
     setBlockedUri(uri) {
@@ -128,6 +129,44 @@ class HistoryTileBox extends Component {
         });
 
         return history;
+    }
+
+    getFavoriteContacts() {
+        let favoriteContacts = [];
+        let contact_obj;
+        let displayName;
+        let label;
+        let media;
+        let conference;
+
+        this.state.favoriteUris.forEach((uri) => {
+            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', uri);
+            displayName = contact_obj ? contact_obj.displayName : uri;
+            label = contact_obj ? contact_obj.label: null;
+            media = ['audio'];
+            conference = false;
+
+            if (uri.indexOf('@videoconference.') > -1) {
+                displayName = 'Conference ' + uri.split('@')[0];
+                uri = uri.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
+                conference = true;
+                media = ['audio', 'video', 'chat'];
+            }
+
+            const item = {
+                remoteParty: uri,
+                displayName: displayName,
+                conference: conference,
+                media: media,
+                type: 'contact',
+                label: label,
+                id: uuid.v4(),
+                tags: ['favorite']
+                };
+            favoriteContacts.push(item);
+        });
+
+        return favoriteContacts;
     }
 
     getServerHistory() {
@@ -256,37 +295,47 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-        //console.log('Render history');
+        console.log('Render history');
         // TODO: render blocked and favorites also when there is no history
 
-        let localHistory = this.getLocalHistory();
+        console.log('Favorite URIs', this.state.favoriteUris);
 
-        let history = localHistory.concat(this.state.serverHistory);
+        let history = [];
+        let searchExtraItems = [];
+        let items= []
 
-        let items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
+        if (this.props.filter === 'favorite') {
+            let favoriteContact = this.getFavoriteContacts();
+            items = favoriteContact.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
-        let searchExtraItems = this.props.contacts;
+        } else {
+            let localHistory = this.getLocalHistory();
+            history = localHistory.concat(this.state.serverHistory);
+            searchExtraItems = this.props.contacts;
+            items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
-        if (!this.props.targetUri) {
-            if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
-                items.push(this.echoTest);
+            if (!this.props.targetUri && !this.props.filter) {
+                if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
+                    items.push(this.echoTest);
+                }
+                if (!this.findObjectByKey(items, 'remoteParty', this.videoTest.remoteParty)) {
+                    items.push(this.videoTest);
+                }
             }
-            if (!this.findObjectByKey(items, 'remoteParty', this.videoTest.remoteParty)) {
-                items.push(this.videoTest);
+
+            let matchedContacts = [];
+            if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
+                matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().search(this.props.targetUri) > -1 || contact.displayName.toLowerCase().search(this.props.targetUri) > -1));
+            } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
+                matchedContacts.push(this.props.selectedContact);
             }
-        }
 
-        let matchedContacts = [];
-        if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
-            matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().search(this.props.targetUri) > -1 || contact.displayName.toLowerCase().search(this.props.targetUri) > -1));
-        } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
-            matchedContacts.push(this.props.selectedContact);
+            items = items.concat(matchedContacts);
         }
-
-        items = items.concat(matchedContacts);
 
         items.forEach((item) => {
             item.showActions = false;
+
             if (!item.tags) {
                 item.tags = [];
             }

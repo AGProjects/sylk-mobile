@@ -229,7 +229,7 @@ class ReadyBox extends Component {
                             filter={this.state.historyFilter}
                         />
                     </View>
-                    {(this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0) ?
+                    {((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 )|| (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite')) ?
                     <View style={styles.historyButtonGroup}>
                        <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>
                        {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
