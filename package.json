@@ -81,7 +81,7 @@
     "react-visibility-sensor": "^5.1.1",
     "sass-lint": "^1.13.1",
     "superagent": "^3.8.3",
-    "react-native-sylkrtc": "AGProjects/react-native-sylkrtc.js#836f0bc959baabf87cbce814420f2498486a05c1",
+    "react-native-sylkrtc": "AGProjects/react-native-sylkrtc.js#15c64a67f79727196fbf4f2051a90434e0ee36bd",
     "through2": "^3.0.1",
     "underscore": "^1.9.1",
     "uuid": "^7.0.2",
