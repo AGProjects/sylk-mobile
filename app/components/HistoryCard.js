@@ -139,11 +139,11 @@ class HistoryCard extends Component {
             }
         }
 
-        if (uri.search('3333@') === -1) {
+        if (uri.search('3333@') > -1) {
             showBlockButton = false;
         }
 
-        if (uri.search('4444@') === -1) {
+        if (uri.search('4444@') > -1) {
             showBlockButton = false;
         }
 

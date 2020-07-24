@@ -169,6 +169,32 @@ class HistoryTileBox extends Component {
         return favoriteContacts;
     }
 
+    getBlockedContacts() {
+        let blockedContacts = [];
+        let contact_obj;
+        let displayName;
+        let label;
+
+        this.state.blockedUris.forEach((uri) => {
+            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', uri);
+            displayName = contact_obj ? contact_obj.displayName : uri;
+            label = contact_obj ? contact_obj.label: null;
+
+            const item = {
+                remoteParty: uri,
+                displayName: displayName,
+                conference: false,
+                type: 'contact',
+                label: label,
+                id: uuid.v4(),
+                tags: ['blocked']
+                };
+            blockedContacts.push(item);
+        });
+
+        return blockedContacts;
+    }
+
     getServerHistory() {
         utils.timestampedLog('Requesting call history from server');
         this.props.localHistory.forEach((item) => {
@@ -291,22 +317,25 @@ class HistoryTileBox extends Component {
         }, (errorCode) => {
             console.log('Error getting call history from server', errorCode);
         });
-
     }
 
     render() {
         console.log('Render history');
         // TODO: render blocked and favorites also when there is no history
 
-        console.log('Favorite URIs', this.state.favoriteUris);
+        //console.log('Favorite URIs', this.state.favoriteUris);
+        //console.log('blockedUris URIs', this.state.blockedUris);
 
         let history = [];
         let searchExtraItems = [];
         let items= []
 
         if (this.props.filter === 'favorite') {
-            let favoriteContact = this.getFavoriteContacts();
-            items = favoriteContact.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
+            let favoriteContacts = this.getFavoriteContacts();
+            items = favoriteContacts.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
+        } else if (this.props.filter === 'blocked') {
+            let blockedContacts = this.getBlockedContacts();
+            items = blockedContacts.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
         } else {
             let localHistory = this.getLocalHistory();
