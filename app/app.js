@@ -1411,18 +1411,6 @@ class Sylk extends Component {
         }
     }
 
-    incomingConferenceOld(callUUID, to_uri, from_uri) {
-        utils.timestampedLog('Incoming conference', callUUID);
-        // this does not work for Android when is in the background
-        // this does not work for iOS when app is in the foreground
-
-        // TODO: for Android we need to handle background notifications
-
-        this.setFocusEvents(true);
-
-        // when call is accepted this.callKeepStartConference is called
-    }
-
     async incomingConference(callUUID, to_uri, from_uri) {
         utils.timestampedLog('Handle incoming conference', callUUID, 'when ready');
         var n = 0;
