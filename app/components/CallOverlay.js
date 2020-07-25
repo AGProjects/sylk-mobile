@@ -7,6 +7,10 @@ import momentFormat from 'moment-duration-format';
 import autoBind from 'auto-bind';
 import { Appbar } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import { ActivityIndicator, Colors } from 'react-native-paper';
+
+import styles from '../assets/styles/blink/_AudioCallBox.scss';
+
 
 function toTitleCase(str) {
     return str.replace(
@@ -23,12 +27,15 @@ class CallOverlay extends React.Component {
         autoBind(this);
 
         this.state = {
-            callState: null
+            callState: null,
+            direction: this.props.call ? this.props.call.direction : 'outgoing'
         }
 
         this.duration = null;
+        this.finalDuration = null;
         this.timer = null;
         this._isMounted = true;
+        this.reconnecting = false;
 
         if (this.props.call) {
             this.props.call.on('stateChanged', this.callStateChanged);
@@ -63,16 +70,23 @@ class CallOverlay extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        // Prevent starting timer when we are unmounted
+        //console.log('Overlay: callStateChanged', newState, '->', newState);
         if (newState === 'established' && this._isMounted) {
             this.startTimer();
         }
 
         if (newState === 'terminated') {
-            this.props.call.removeListener('stateChanged', this.callStateChanged);
-        } else {
-            this.setState({callState: newState});
+            if (this.props.call) {
+                this.props.call.removeListener('stateChanged', this.callStateChanged);
+            }
+
+            clearTimeout(this.timer);
+            this.finalDuration = this.duration;
+            this.duration = null;
+            this.timer = null;
         }
+
+        this.setState({callState: newState});
     }
 
     startTimer() {
@@ -93,6 +107,7 @@ class CallOverlay extends React.Component {
     }
 
     render() {
+        //console.log('Render call overlay');
         let header = null;
 
         let displayName = this.props.remoteUri;
@@ -103,11 +118,25 @@ class CallOverlay extends React.Component {
 
         if (this.props.show) {
             let callDetail;
-            if (this.duration !== null) {
+
+            if (this.duration) {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
                 callDetail = 'Duration:' + this.duration;
             } else {
-                callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
+                if (!this.props.connection || this.props.connection.state !== 'ready' || !this.props.accountId) {
+                    if (this.state.callState || this.state.callState === 'terminated') {
+                        callDetail = 'Restoring the conversation...';
+                        this.reconnecting = true;
+                    } else {
+                        callDetail = 'Waiting for connection...';
+                    }
+                } else {
+                    if (this.state.callState === 'terminated' && this.finalDuration) {
+                        callDetail = 'Call ended after ' +  this.finalDuration;
+                    } else {
+                        callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
+                    }
+                }
             }
 
             if (this.props.remoteUri.search('videoconference') > -1) {
@@ -120,7 +149,7 @@ class CallOverlay extends React.Component {
                 );
             } else {
                 header = (
-                    <Appbar.Header style={{backgroundColor: 'black'}}>
+                    <Appbar.Header style={styles.appbarContainer}>
                         <Appbar.Content
                             title={`Call with ${displayName}`} subtitle={callDetail}
                         />
@@ -137,7 +166,9 @@ CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string.isRequired,
     remoteDisplayName: PropTypes.string,
-    call: PropTypes.object
+    accountId: PropTypes.string,
+    call: PropTypes.object,
+    connection: PropTypes.object
 };
 
 

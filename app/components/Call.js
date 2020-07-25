@@ -4,12 +4,14 @@ import PropTypes from 'prop-types';
 import assert from 'assert';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
+import uuid from 'react-native-uuid';
 
 import Logger from "../../Logger";
 import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
 import config from '../config';
+import utils from '../utils';
 
 const logger = new Logger("Call");
 
@@ -19,6 +21,9 @@ class Call extends Component {
         super(props);
         autoBind(this);
 
+        this.waitCounter = 0;
+        this.waitInterval = 20;
+
         let audioOnly = false;
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
             //logger.debug('Will send audio only');
@@ -27,23 +32,38 @@ class Call extends Component {
 
         let remoteUri = '';
         let remoteDisplayName = '';
+        let callState = null;
+        let direction = 'outgoing';
+        let callUUID;
 
         if (this.props.call !== null) {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
+            callState = this.props.call.state;
             remoteUri = this.props.call.remoteIdentity.uri;
+            direction = this.props.call.direction;
+            callUUID = this.props.call.id;
             remoteDisplayName = this.props.call.remoteIdentity.displayName;
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
+            callUUID = this.props.callUUID;
+        }
+
+        if (this.props.connection) {
+            this.props.connection.on('stateChanged', this.connectionStateChanged);
         }
 
         this.state = {
                       audioOnly: audioOnly,
                       remoteUri: remoteUri,
-                      remoteDisplayName: remoteDisplayName
+                      remoteDisplayName: remoteDisplayName,
+                      connection: this.props.connection,
+                      accountId: this.props.account.id,
+                      callState: callState,
+                      direction: direction,
+                      callUUID: callUUID
                       }
-
     }
 
     lookupContact() {
@@ -54,8 +74,8 @@ class Call extends Component {
         if (this.props.call !== null) {
             remoteUri = this.props.call.remoteIdentity.uri;
             remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
-            console.log('Incoming call remoteUri', remoteUri);
-            console.log('Incoming call remoteDisplayName', remoteDisplayName);
+            //console.log('Incoming call remoteUri', remoteUri);
+            //console.log('Incoming call remoteDisplayName', remoteDisplayName);
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
@@ -105,7 +125,7 @@ class Call extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        // console.log('Call: callStateChanged', newState, '->', newState);
+        //console.log('Call: callStateChanged', oldState, '->', newState);
         if (newState === 'established') {
             // Check the media type again, remote can choose to not accept all offered media types
             const currentCall = this.props.call;
@@ -115,7 +135,7 @@ class Call extends Component {
             const remoteIsInactive = currentCall.remoteMediaDirections.video[0] === 'inactive';
 
             if (remoteHasStreams && (remoteHasNoVideoTracks || remoteIsRecvOnly || remoteIsInactive) && !this.state.audioOnly) {
-                console.log('Media type changed to audio');
+                //console.log('Media type changed to audio');
                 // Stop local video
                 if (this.props.localMedia.getVideoTracks().length !== 0) {
                     currentCall.getLocalStreams()[0].getVideoTracks()[0].stop();
@@ -135,12 +155,34 @@ class Call extends Component {
             // the call object switched and we are transitioning to an
             // incoming call.
             if (this.state.audioOnly &&  this.props.localMedia && this.props.localMedia.getVideoTracks().length !== 0) {
-                console.log('Media type changed to video on accepted');
+                //console.log('Media type changed to video on accepted');
                 this.setState({audioOnly: false});
                 this.props.speakerphoneOn();
             }
         }
+
         this.forceUpdate();
+    }
+
+    connectionStateChanged(oldState, newState) {
+        utils.timestampedLog('Call: connection state changed:', oldState, '->' , newState);
+        switch (newState) {
+            case 'closed':
+                break;
+            case 'ready':
+                break;
+            case 'disconnected':
+                let callUUID = uuid.v4();
+                this.setState({callUUID: callUUID});
+                if (oldState === 'ready' && this.state.direction === 'outgoing') {
+                    utils.timestampedLog('Call: reconnecting the call using new UUID', callUUID);
+                    this.waitInterval = 20;
+                    this.startCallWhenReady();
+                }
+                break;
+            default:
+                break;
+        }
     }
 
     findObjectByKey(array, key, value) {
@@ -152,15 +194,52 @@ class Call extends Component {
         return null;
     }
 
+    async startCallWhenReady() {
+        utils.timestampedLog('Call: start call', this.props.callUUID, 'when ready to', this.props.targetUri);
+        this.waitCounter = 0;
+
+        utils.timestampedLog('Call: waiting for establishing call', this.waitInterval, 'seconds');
+
+        let diff = 0;
+
+        while (this.waitCounter < this.waitInterval) {
+            //console.log('Call: connection', this.props.connection);
+            //console.log('Call: account', this.props.account);
+
+            if (!this.props.connection || this.props.connection.state !== 'ready' || this.props.account === null) {
+                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                await this._sleep(1000);
+            } else {
+                //this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
+                this.waitCounter = 0;
+                this.call();
+                return;
+            }
+
+            if (this.waitCounter >= this.waitInterval - 1) {
+                utils.timestampedLog('Call: terminating call', this.props.callUUID, 'that did not start yet');
+                this.hangupCall('timeout');
+            }
+
+            this.waitCounter++;
+        }
+    }
+
+    _sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     call() {
-        //console.log('Call: Make new call');
+        //console.log('Call: creating new call', this.props.callUUID);
         assert(this.props.call === null, 'currentCall is not null');
 
         this.lookupContact();
 
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
         options.localStream = this.props.localMedia;
+
         let call = this.props.account.call(this.props.targetUri, options);
+        console.log('Call: call initiated', call.id);
         call.on('stateChanged', this.callStateChanged);
     }
 
@@ -175,22 +254,39 @@ class Call extends Component {
         this.props.call.answer(options);
     }
 
-    hangupCall() {
-        let callUUID = this.props.call._callkeepUUID;
-        this.props.call.removeListener('stateChanged', this.callStateChanged);
-        this.props.hangupCall(callUUID);
+    hangupCall(reason) {
+        let callUUID = this.props.call ? this.props.call._callkeepUUID : this.state.callUUID;
+        this.waitInterval = 20;
+
+        this.props.callUUID || this.props.call._callkeepUUID;
+        console.log('Call: hangup call', callUUID, 'reason', reason);
+
+        if (this.props.call) {
+            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        }
+
+        if (this.props.connection) {
+            this.props.connection.removeListener('stateChanged', this.connectionStateChanged);
+        }
+
+        if (this.waitCounter > 0) {
+            this.waitCounter = this.waitInterval;
+        }
+
+        this.props.hangupCall(callUUID, reason);
     }
 
     mediaPlaying() {
         if (this.props.call === null) {
-            this.call();
+            this.startCallWhenReady();
         } else {
             this.answerCall();
         }
     }
 
     render() {
-        //console.log('Call: render call to', this.state.remoteUri);
+        //console.log('Call: render', this.state.direction, 'call', this.props.callUUID, 'to', this.state.remoteUri);
+
         let box = null;
 
         if (this.props.localMedia !== null) {
@@ -201,6 +297,8 @@ class Call extends Component {
                         remoteDisplayName = {this.state.remoteDisplayName}
                         hangupCall = {this.hangupCall}
                         call = {this.props.call}
+                        accountId={this.state.accountId}
+                        connection = {this.props.connection}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
@@ -215,12 +313,14 @@ class Call extends Component {
                 if (this.props.call != null && this.props.call.state === 'established') {
                     box = (
                         <VideoBox
-                            call = {this.props.call}
                             remoteUri = {this.state.remoteUri}
                             remoteDisplayName = {this.state.remoteDisplayName}
+                            hangupCall = {this.hangupCall}
+                            call = {this.props.call}
+                            accountId={this.state.accountId}
+                            connection = {this.props.connection}
                             localMedia = {this.props.localMedia}
                             shareScreen = {this.props.shareScreen}
-                            hangupCall = {this.hangupCall}
                             escalateToConference = {this.props.escalateToConference}
                             generatedVideoTrack = {this.props.generatedVideoTrack}
                             callKeepSendDtmf = {this.props.callKeepSendDtmf}
@@ -233,7 +333,6 @@ class Call extends Component {
                         />
                     );
                 } else {
-                    //console.log('Will render local media');
                     if (this.props.call && this.props.call.state && this.props.call.state === 'terminated') {
                         // do not render
                     } else {
@@ -257,8 +356,9 @@ class Call extends Component {
 
 Call.propTypes = {
     targetUri               : PropTypes.string.isRequired,
-    account                 : PropTypes.object.isRequired,
-    hangupCall              : PropTypes.func.isRequired,
+    account                 : PropTypes.object,
+    hangupCall              : PropTypes.func,
+    connection              : PropTypes.object,
     call                    : PropTypes.object,
     localMedia              : PropTypes.object,
     shareScreen             : PropTypes.func,

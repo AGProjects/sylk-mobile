@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import { View, Platform } from 'react-native';
-import { IconButton, Dialog, Text } from 'react-native-paper';
+import { IconButton, Dialog, Text, ActivityIndicator, Colors } from 'react-native-paper';
+
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
@@ -14,7 +15,6 @@ import utils from '../utils';
 
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
 
-
 const logger = new Logger("AudioCallBox");
 
 
@@ -22,6 +22,9 @@ class AudioCallBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
+        this.userHangup = false;
+
         this.state = {
             active                      : false,
             audioMuted                  : false,
@@ -110,7 +113,13 @@ class AudioCallBox extends Component {
 
     hangupCall(event) {
         event.preventDefault();
-        this.props.hangupCall();
+        this.props.hangupCall('user_press_hangup');
+        this.userHangup = true;
+    }
+
+    cancelCall(event) {
+        event.preventDefault();
+        this.props.hangupCall('user_cancelled');
     }
 
     muteAudio(event) {
@@ -160,16 +169,26 @@ class AudioCallBox extends Component {
                     remoteUri={this.props.remoteUri}
                     remoteDisplayName={this.props.remoteDisplayName}
                     call={this.props.call}
+                    connection={this.props.connection}
+                    accountId={this.props.accountId}
                 />
                 <View style={styles.userIconContainer}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
                 <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
                 { (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ?
+
                 <Text style={styles.uri}>{this.props.remoteUri}</Text>
                 : null }
 
-                <View style={buttonContainerClass}>
+                {this.props.orientation !== 'landscape' && !this.userHangup && (!this.props.call || (this.props.call && this.props.call.state !== 'established')) ?
+                <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
+                :
+                null
+                }
+
+                {this.props.call && this.props.call.state === 'established' ?
+                    <View style={buttonContainerClass}>
                     <IconButton
                         size={34}
                         style={buttonClass}
@@ -201,7 +220,18 @@ class AudioCallBox extends Component {
                         icon="phone-hangup"
                         onPress={this.hangupCall}
                     />
-                </View>
+                    </View>
+                    :
+                    <View style={buttonContainerClass}>
+                    <IconButton
+                        size={34}
+                        style={[buttonClass, styles.hangupButton]}
+                        icon="phone-hangup"
+                        onPress={this.cancelCall}
+                    />
+                    </View>
+                }
+
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
@@ -223,6 +253,8 @@ AudioCallBox.propTypes = {
     remoteUri               : PropTypes.string.isRequired,
     remoteDisplayName       : PropTypes.string,
     call                    : PropTypes.object,
+    connection              : PropTypes.object,
+    accountId               : PropTypes.string,
     escalateToConference    : PropTypes.func,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,

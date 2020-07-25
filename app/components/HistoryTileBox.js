@@ -106,7 +106,6 @@ class HistoryTileBox extends Component {
     }
 
     getLocalHistory() {
-
         let history = this.state.localHistory;
         history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 

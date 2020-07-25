@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
-import { IconButton } from 'react-native-paper';
+import { IconButton, ActivityIndicator, Colors } from 'react-native-paper';
 import { View, Dimensions, TouchableOpacity, Platform  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 
@@ -23,6 +23,7 @@ class VideoBox extends Component {
         super(props);
         autoBind(this);
 
+        this.userHangup = false;
         this.state = {
             callOverlayVisible: true,
             audioMuted: false,
@@ -65,11 +66,13 @@ class VideoBox extends Component {
     }
 
     componentDidMount() {
-
         console.log('localStreams', this.props.call.getLocalStreams());
         console.log('remoteStreams', this.props.call.getRemoteStreams());
 
-        this.setState({localStream: this.props.call.getLocalStreams()[0], localVideoShow: true, remoteStream: this.props.call.getRemoteStreams()[0], remoteVideoShow: true});
+        this.setState({localStream: this.props.call.getLocalStreams()[0],
+                       localVideoShow: true,
+                       remoteStream: this.props.call.getRemoteStreams()[0],
+                       remoteVideoShow: true});
 
         this.props.call.on('stateChanged', this.callStateChanged);
 
@@ -182,7 +185,13 @@ class VideoBox extends Component {
 
     hangupCall(event) {
         event.preventDefault();
-        this.props.hangupCall();
+        this.props.hangupCall('user_press_hangup');
+        this.userHangup = true;
+    }
+
+    cancelCall(event) {
+        event.preventDefault();
+        this.props.hangupCall('user_cancelled');
     }
 
     escalateToConference(participants) {
@@ -293,16 +302,22 @@ class VideoBox extends Component {
 
         return (
             <View style={styles.container}>
-                {/*onMouseMove={this.showCallOverlay}*/}
                 <CallOverlay
                     show = {true}
                     remoteUri={this.props.remoteUri}
                     remoteDisplayName={this.props.remoteDisplayName}
                     call = {this.props.call}
+                    connection={this.props.connection}
+                    accountId={this.props.accountId}
                 />
                 {/* <TransitionGroup> */}
                     {/* {watermark} */}
                 {/* </TransitionGroup> */}
+                {this.props.orientation !== 'landscape' && !this.userHangup && (!this.props.call || (this.props.call && this.props.call.state !== 'established')) ?
+                <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
+                :
+                null
+                }
                 {this.state.remoteVideoShow ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
                         <RTCView objectFit='cover' style={[styles.video, styles.remoteVideo]} poster="assets/images/transparent-1px.png" ref={this.remoteVideo} streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null} />
@@ -392,6 +407,8 @@ class VideoBox extends Component {
 
 VideoBox.propTypes = {
     call                    : PropTypes.object,
+    connection              : PropTypes.object,
+    accountId               : PropTypes.string,
     remoteUri               : PropTypes.string,
     remoteDisplayName       : PropTypes.string,
     localMedia              : PropTypes.object,

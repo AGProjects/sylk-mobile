@@ -7,6 +7,10 @@
     margin: 0 auto;
 }
 
+.appbarContainer {
+    backgroundColor: black;
+}
+
 .portraitButtonContainer {
     justify-self: flex-end;
     flex-direction: row;
@@ -21,8 +25,12 @@
     flex-direction: row;
     margin: 0 auto;
     margin-top:auto;
-    bottom: 20;
+    bottom: 10;
     margin-bottom: 0px;
+}
+
+.activity {
+    margin-top: 30px;
 }
 
 .button {
