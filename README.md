@@ -1,10 +1,87 @@
-# Sylk React Native Client
+# Sylk Mobile
 
-This repo is based off of Sylk-WebRTC - a repo housing a web app and the Electron app for Desktop.
+Sylk Mobile is part of Sylk Suite, a set of real-time communications
+applications using IETF SIP protocol and WebRTC specifications.  
+
+Sylk Suite consists of:
+
+* SIP/WebRTC application server
+* Mobile push notifications server
+* Desktop clients for Windows, Linux and MacOS
+* Mobile clients for Apple iOS and Google Android
+* Web page for WebRTC enabled browsers
+* Mobile client development SDK
+* Desktop client development SDK
+
+[Home page] (https://sylkserver.com)
+
+
+## License
+
+Sylk mobile licensed under GNU General Public License version 3.  A copy of
+the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
+
+Copyright 2020 [AG Projects] (https://ag-projects.com)
+
+
+## Availability
+
+* Google Play
+* Apple Store
+* Source code
+
+
+## Features
+
+* 1-to-1 audio and video calls
+* Multiparty video conferencing
+* Call history entries management
+* Native address book lookup
+* Wake up from sleep
+* Native OS telephony integration
+* Deep links OS integration
+* Support for multiple cameras
+* Support for landscape and portrait modes
+* Support for tablet and phone sizes
+* Supports CallKeep for iOS >=13
+* Supports Telecom connection service for Android
+* Interoperable with SIP clients
+
+
+## Credits
+
+### Financial support
+
+* [NLnet] (http://nlnet.nl)
+* [Project description] (https://nlnet.nl/project/SylkMobile/)
+
+### People
+
+* Saúl Ibarra Corretgé - Inception architect / original idea
+* Tijmen de Mes - API, Conference and desktop
+* Dan Jenkins - WebRTC and React Native mechanic
+* Adrian Georgescu - Janitor
+* Bibiana Rivadeneira - Push notifications
+* Michiel Leenaars - Strategic guidance
+
+
+## Running dependencies
+
+* Sylk Server
+* Sylk Pushserver
+* SIP infra with push notifications support
+
+## Demo client
+
+
+* [OpenSIPS](https://opensips.org) server software 
+* [SIP2SIP] (https://sip2sip.info) public infrastructure
+* [Janus] (https://github.com/meetecho/janus-gateway) Gateway
+
 
 ## Getting Started
 
-### Dependencies
+### Building ependencies
 
 * Node.js version 12
 * Yarn (for package management)
@@ -17,13 +94,17 @@ This repo is based off of Sylk-WebRTC - a repo housing a web app and the Electro
 * Cocoapods (for handling iOS Pods)
 * watchman (for helping watch files during development)
 
+
 ### Install
 
-Follow the [Getting Started guide](https://facebook.github.io/react-native/docs/getting-started) as much as you can but not everything will be explained. No install docs will be listed here for each tool as they'll change, go and check them out yourself.
+Follow the [Getting Started
+guide](https://facebook.github.io/react-native/docs/getting-started) as much
+as you can but not everything will be explained.  No install docs will be
+listed here for each tool as they'll change, go and check them out yourself.
 
 ### Updating the app
 
-Yarn can be a bit of a pain, especially when a git dependency changes
+Yarn can be a bit of a pain, especially when a git dependency changes.
 
 To be sure you're running the lastest code run:
 
@@ -39,7 +120,7 @@ cd ios; pod install; cd ..
 
 Run `git-crypt unlock` to check that you can decrypt the files in the repo. If you can't you'll need to generate a GPG key and pass it to someone with access to the repo. A good guide is located at https://medium.com/@sumitkum/securing-your-secret-keys-with-git-crypt-b2fa6ffed1a6
 
-## Running the app
+### Running the app
 
 Use `react-native run-ios --help` and `react-native run-android --help` to give you all you need to know. You shouldn't ever have to build from Xcode or Android Studio.
 
@@ -96,8 +177,7 @@ Select menu Product -> Scheme -> Edit scheme andselect for Run Build Configurati
 Beware that iOS push tokens are still meant for sandbox unless the app is
 released through Apple Store.
 
-
-## Clean the project
+### Clean the project
 
 You might want to bring the project back to a clean repo if you're hitting any issues.
 
@@ -111,7 +191,7 @@ git clean -d -x --dry-run
 git clean -d -x -f
 ```
 
-## Building the app for deployment
+### Building the app for deployment
 
 We use `fastlane` for building production versions of the app.
 
