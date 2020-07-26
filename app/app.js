@@ -1206,23 +1206,21 @@ class Sylk extends Component {
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
-    callKeepAcceptCall(callUUID, options) {
+    callKeepAcceptCall(callUUID) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
-        utils.timestampedLog('CallKeep answer call', callUUID);
-        this._callKeepManager.answerIncomingCall(callUUID);
-        this.acceptCall();
+        utils.timestampedLog('CallKeep will answer call', callUUID);
+        this._callKeepManager.acceptCall(callUUID);
     }
 
     callKeepRejectCall(callUUID) {
         // called from user interaction with Old alert panel
-        utils.timestampedLog('CallKeep must reject call', callUUID);
+        utils.timestampedLog('CallKeep will reject call', callUUID);
         this._callKeepManager.rejectCall(callUUID);
-        this.rejectCall(callUUID);
     }
 
     acceptCall() {
-        utils.timestampedLog('Alert panel answer call');
+        utils.timestampedLog('User accepted call');
 
         //this.showCalls('acceptCall')
 
@@ -1247,7 +1245,7 @@ class Sylk extends Component {
 
     rejectCall(callUUID) {
         // called by Call Keep when user rejects call
-        utils.timestampedLog('Alert panel reject call', callUUID);
+        utils.timestampedLog('User rejected call', callUUID);
         if (!this.state.currentCall) {
             this.changeRoute('/ready');
         }
@@ -1505,7 +1503,7 @@ class Sylk extends Component {
             utils.timestampedLog('Reject call to myself', callUUID);
             this._callKeepManager.rejectCall(callUUID);
         } else {
-            this._callKeepManager.incomingCallFromPush(callUUID);
+            this._callKeepManager.incomingCallFromPush(callUUID, from);
         }
     }
 
@@ -1522,11 +1520,8 @@ class Sylk extends Component {
             if (direction === 'outgoing' && event === 'conference' && uri && to) {
                  this.incomingConference(callUUID, uri, to);
             } else if (direction === 'incoming' && event === 'call' && uri) {
-                if (Platform.OS === 'android') {
-                    this.setState({showIncomingModal: true});
-                } else {
-                    this.incomingCallFromPush(callUUID, uri);
-                }
+                //this.setState({showIncomingModal: true});
+                this.incomingCallFromPush(callUUID, uri);
             } else if (direction === 'outgoing' && event === 'call' && uri) {
                  // from native dialer
                  this.callKeepStartCall(uri, {audio: true, video: false, callUUID: callUUID});
@@ -1539,6 +1534,7 @@ class Sylk extends Component {
     }
 
     incomingCallFromWebSocket(call, mediaTypes) {
+        utils.timestampedLog('New incoming call from WebSocket', call.id);
         // this is called by the websocket invite
 
         // because of limitation in Sofia stack, we cannot have more then two calls at a time

@@ -187,8 +187,13 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnAccept(data) {
-        let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('Callkeep: accept callback', callUUID);
+        let callUUID = data.callUUID.toLowerCase();
+        this.acceptCall(callUUID);
+    }
+
+    acceptCall(callUUID) {
+        utils.timestampedLog('Callkeep: accept call', callUUID);
         if (this._conferences.has(callUUID)) {
             let room = this._conferences.get(callUUID);
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
@@ -213,12 +218,18 @@ export default class CallManager extends events.EventEmitter {
             this._decideWhenWebSocketInviteArrives.set(callUUID, 'accept');
         }
         this.backToForeground();
+
     }
 
     _rnEnd(data) {
-        //get the uuid, find the call with that uuid and ccept it
-        let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('Callkeep: end callback', callUUID);
+        let callUUID = data.callUUID.toLowerCase();
+        this.rejectCall(callUUID);
+
+    }
+
+    rejectCall(callUUID) {
+        utils.timestampedLog('Callkeep: reject call', callUUID);
         if (this._conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: reject conference invite', callUUID);
             let room = this._conferences.get(callUUID);
@@ -274,20 +285,22 @@ export default class CallManager extends events.EventEmitter {
         })
     }
 
-    incomingCallFromPush(callUUID) {
+    incomingCallFromPush(callUUID, from) {
         utils.timestampedLog('Callkeep: handle incoming push call', callUUID);
         // call is received by push notification
-        if (this._calls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: call', callUUID, 'already handled');
-            return;
+        if (Platform.OS === 'ios') {
+            if (this._calls.has(callUUID)) {
+                utils.timestampedLog('Callkeep: call', callUUID, 'already handled');
+                return;
+            }
+        } else {
+            this.showAlertPanelforPush(callUUID, from);
         }
 
         if (this._rejectedCalls.has(callUUID)) {
             this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
             return;
         }
-
-        utils.timestampedLog('Callkeep: handle incoming call later', callUUID);
 
         let reason = this._decideWhenWebSocketInviteArrives.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
 
@@ -323,7 +336,9 @@ export default class CallManager extends events.EventEmitter {
         } else if (this._rejectedCalls.has(call._callkeepUUID)) {
             this.sylkRejectCall(call.id);
         } else {
-            this.showAlertPanel(call);
+            if (Platform.OS === 'ios') {
+                this.showAlertPanelforCall(call);
+            }
         }
 
         // Emit event.
@@ -347,7 +362,7 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
         this._conferences.set(callUUID, room);
-        this.showConferenceAlertPanel(callUUID, from_uri);
+        this.showAlertPanelforPush(callUUID, from_uri);
 
         // there is no cancel, so we add a timer
         this._timeouts.set(callUUID, setTimeout(() => {
@@ -360,8 +375,8 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    showConferenceAlertPanel(callUUID, uri) {
-        utils.timestampedLog('Callkeep: show alert panel for conference', callUUID, 'from', uri);
+    showAlertPanelforPush(callUUID, uri) {
+        utils.timestampedLog('Callkeep: show alert panel for push', callUUID, 'from', uri);
 
         if (Platform.OS === 'ios') {
             this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', true);
@@ -381,7 +396,7 @@ export default class CallManager extends events.EventEmitter {
         this._alertedCalls.set(data.callUUID.toLowerCase(), true);
     }
 
-    showAlertPanel(call, force=false) {
+    showAlertPanelforCall(call, force=false) {
         if (this._alertedCalls.has(call._callkeepUUID) && !force) {
             utils.timestampedLog('Callkeep: alert panel was already shown for call', call._callkeepUUID);
             return;
