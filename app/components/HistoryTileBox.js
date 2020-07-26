@@ -315,7 +315,6 @@ class HistoryTileBox extends Component {
                     }
 
                     if (known.indexOf(elem.remoteParty) <= -1) {
-                        console.log('SH', elem.remoteParty, elem.startTime);
                         known.push(elem.remoteParty);
                         return elem;
                     }
@@ -381,8 +380,6 @@ class HistoryTileBox extends Component {
 
         const known = [];
         items = items.filter((elem) => {
-            console.log('H', elem.remoteParty, elem.startTime);
-
             if (known.indexOf(elem.remoteParty) <= -1) {
                     known.push(elem.remoteParty);
                     return elem;

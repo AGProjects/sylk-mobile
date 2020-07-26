@@ -154,9 +154,10 @@ class AudioCallBox extends Component {
         });
     }
 
+//  {this.props.orientation !== 'landscape' && !this.userHangup && (!this.props.call || (this.props.call && this.props.call.state !== 'established')) ?
+
     render() {
-        let remoteIdentity = {uri: this.props.remoteUri,
-                              displayName: this.props.remoteDisplayName};
+        let remoteIdentity = {uri: this.props.remoteUri, displayName: this.props.remoteDisplayName};
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
@@ -181,7 +182,7 @@ class AudioCallBox extends Component {
                 <Text style={styles.uri}>{this.props.remoteUri}</Text>
                 : null }
 
-                {this.props.orientation !== 'landscape' && !this.userHangup && (!this.props.call || (this.props.call && this.props.call.state !== 'established')) ?
+                {this.props.orientation !== 'landscape' && !this.userHangup && this.props.reconnectingCall ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
                 :
                 null
@@ -263,7 +264,8 @@ AudioCallBox.propTypes = {
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     orientation             : PropTypes.string,
-    isTablet                : PropTypes.bool
+    isTablet                : PropTypes.bool,
+    reconnectingCall        : PropTypes.bool
 };
 
 export default AudioCallBox;

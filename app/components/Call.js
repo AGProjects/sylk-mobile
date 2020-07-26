@@ -67,7 +67,6 @@ class Call extends Component {
     }
 
     lookupContact() {
-        // console.log('Lookup contact');
         let remoteUri = '';
         let remoteDisplayName = '';
 
@@ -110,7 +109,8 @@ class Call extends Component {
         }
 
         this.setState({remoteDisplayName: remoteDisplayName,
-                       remoteUri: remoteUri
+                       remoteUri: remoteUri,
+                       reconnectingCall: false
                        });
     }
 
@@ -122,6 +122,8 @@ class Call extends Component {
                 nextProps.currentCall.on('stateChanged', this.callStateChanged);
             }
         }
+
+        this.setState({reconnectingCall: nextProps.reconnectingCall});
     }
 
     callStateChanged(oldState, newState, data) {
@@ -203,16 +205,14 @@ class Call extends Component {
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
-            //console.log('Call: connection', this.props.connection);
-            //console.log('Call: account', this.props.account);
-
             if (!this.props.connection || this.props.connection.state !== 'ready' || this.props.account === null) {
                 utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 await this._sleep(1000);
             } else {
-                //this._notificationCenter.postSystemNotification('Server is ready', {timeout: 1});
                 this.waitCounter = 0;
+
                 this.call();
+
                 return;
             }
 
@@ -226,7 +226,7 @@ class Call extends Component {
     }
 
     _sleep(ms) {
-      return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     call() {
@@ -285,7 +285,7 @@ class Call extends Component {
     }
 
     render() {
-        //console.log('Call: render', this.state.direction, 'call', this.props.callUUID, 'to', this.state.remoteUri);
+        //console.log('Call: render', this.state.direction, 'call', this.props.callUUID, 'reconnect=', this.state.reconnectingCall);
 
         let box = null;
 
@@ -307,6 +307,7 @@ class Call extends Component {
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         orientation = {this.props.orientation}
                         isTablet = {this.props.isTablet}
+                        reconnectingCall = {this.props.reconnectingCall}
                     />
                 );
             } else {
@@ -330,6 +331,7 @@ class Call extends Component {
                             intercomDtmfTone = {this.props.intercomDtmfTone}
                             orientation = {this.props.orientation}
                             isTablet = {this.props.isTablet}
+                            reconnectingCall = {this.props.reconnectingCall}
                         />
                     );
                 } else {
@@ -372,7 +374,8 @@ Call.propTypes = {
     contacts                : PropTypes.array,
     intercomDtmfTone        : PropTypes.string,
     orientation             : PropTypes.string,
-    isTablet                : PropTypes.bool
+    isTablet                : PropTypes.bool,
+    reconnectingCall        : PropTypes.bool
 };
 
 

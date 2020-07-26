@@ -124,7 +124,7 @@ class CallOverlay extends React.Component {
                 callDetail = 'Duration:' + this.duration;
             } else {
                 if (!this.props.connection || this.props.connection.state !== 'ready' || !this.props.accountId) {
-                    if (this.state.callState || this.state.callState === 'terminated') {
+                    if (this.state.callState || this.state.callState === 'terminated' && this.duration) {
                         callDetail = 'Restoring the conversation...';
                         this.reconnecting = true;
                     } else {

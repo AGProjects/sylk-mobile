@@ -133,7 +133,8 @@ class Sylk extends Component {
             localHistory: [],
             favoriteUris: [],
             blockedUris: [],
-            initialUrl: null
+            initialUrl: null,
+            reconnectingCall: false
         };
 
         this.currentRoute = null;
@@ -614,13 +615,8 @@ class Sylk extends Component {
                     this.hangupCall(this.state.inboundCall._callkeepUUID, 'connection_failed');
                 }
 
-                //this.changeRoute('/ready');
-
                 this.setState({
                     registrationState: 'failed',
-                    currentCall: null,
-                    inboundCall: null,
-                    account: null,
                     generatedVideoTrack: false,
                     });
 
@@ -729,6 +725,7 @@ class Sylk extends Component {
         let newCurrentCall;
         let newInboundCall;
         let direction = call.direction;
+        let goToReady = call.direction.direction === 'incoming' ? true : false;
 
         if (this.state.inboundCall && this.state.currentCall) {
             if (this.state.inboundCall != this.state.currentCall) {
@@ -796,6 +793,7 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
+                utils.timestampedLog('Play ringback tone');
                 InCallManager.startRingback('_BUNDLE_');
                 break;
             case 'established':
@@ -804,8 +802,9 @@ class Sylk extends Component {
                 this._callKeepManager.setCurrentCallActive(callUUID);
                 if (this.state.isConference) {
                     // allow ringtone to play once as connection is too fast
-                    setTimeout(() => {InCallManager.stopRingback();}, 2000);
+                    setTimeout(() => {InCallManager.stopRingback();}, 1500);
                 } else {
+                    utils.timestampedLog('Stop ringback tone');
                     InCallManager.stopRingback();
                 }
 
@@ -841,35 +840,45 @@ class Sylk extends Component {
                         callSuccesfull = true;
                         CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                     }
+                    goToReady = true;
                 } else if (reason.match(/403/)) {
                     reason = 'This domain is not served here';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else if (reason.match(/404/)) {
                     reason = 'User not found';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else if (reason.match(/408/)) {
                     reason = 'Timeout';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else if (reason.match(/480/)) {
                     reason = 'User not online';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
+                    goToReady = true;
                 } else if (reason.match(/486/) || reason.match(/60[036]/)) {
                     reason = 'Busy';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
+                    goToReady = true;
                 } else if (reason.match(/487/)) {
                     reason = 'Cancelled';
                     play_busy_tone = false;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.MISSED;
+                    goToReady = true;
                 } else if (reason.match(/488/)) {
                     reason = 'Unacceptable media';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else if (reason.match(/5\d\d/)) {
                     reason = 'Server failure';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else if (reason.match(/904/)) {
                     // Sofia SIP: WAT
                     reason = 'Wrong account or password';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else {
                     reason = 'Connection failed';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
@@ -896,14 +905,15 @@ class Sylk extends Component {
 
                 if (!newCurrentCall && !newInboundCall) {
                     if (play_busy_tone) {
-                        InCallManager.stop({busytone: '_BUNDLE_'});
+                        this.playBusyTone();
                     } else {
+                        utils.timestampedLog('Stop InCall manager');
                         InCallManager.stop();
                     }
 
                     this.participantsToInvite = null;
 
-                    if (direction === 'incoming' || (direction === 'outgoing' && reason === 'Hangup')) {
+                    if (goToReady) {
                         setTimeout(() => {
                             this.changeRoute('/ready');
                         }, 4000);
@@ -1179,15 +1189,17 @@ class Sylk extends Component {
     callKeepStartConference(targetUri, options={audio: true, video: true}) {
         let callUUID = options.callUUID || uuid.v4();
         this.addHistoryEntry(targetUri, callUUID);
-        this.setState({outgoingCallUUID: callUUID, outgoingMedia: options});
+        this.setState({outgoingCallUUID: callUUID, outgoingMedia: options, reconnectingCall: false});
         utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri);
+        this._callKeepManager.backToForeground();
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: callUUID});
     }
 
     callKeepStartCall(targetUri, options) {
         let callUUID = options.callUUID || uuid.v4();
-        this.setState({outgoingCallUUID: callUUID});
+        this.setState({outgoingCallUUID: callUUID, reconnectingCall: false});
         utils.timestampedLog('CallKeep will start call', callUUID, 'to', targetUri);
+        this._callKeepManager.backToForeground();
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, callUUID: callUUID});
     }
 
@@ -1260,6 +1272,9 @@ class Sylk extends Component {
     hangupCall(callUUID, reason) {
         utils.timestampedLog('Hangup call', callUUID, 'reason:', reason);
 
+        utils.timestampedLog('Stop ringback tone');
+        InCallManager.stopRingback();
+
         let call = this._callKeepManager._calls.get(callUUID);
         let direction = null;
         let targetUri = null;
@@ -1275,21 +1290,35 @@ class Sylk extends Component {
             }
         }
 
+        if (this.busyToneInterval) {
+            clearInterval(this.busyToneInterval);
+            this.busyToneInterval = null;
+        }
+
         if (reason !== 'connection_failed') {
-            if (reason === 'user_cancelled' || reason === 'timeout') {
+             this.setState({reconnectingCall: false});
+             if (reason === 'user_cancelled' || reason === 'timeout') {
                 this.changeRoute('/ready');
-                setTimeout(() => {
-                    this.setState({refreshHistory: !this.state.refreshHistory});
-                }, 200);
-            } else {
+                this.setState({
+                                refreshHistory: !this.state.refreshHistory,
+                                currentCall: null,
+                                localMedia: null
+                                });
+             } else {
                 setTimeout(() => {
                     this.setState({localMedia: null});
                     this.changeRoute('/ready');
-                }, 5000);
-            }
+                }, 4000);
+             }
          } else {
+             this.setState({reconnectingCall: true});
              utils.timestampedLog('Call', callUUID, 'failed due to connection');
         }
+    }
+
+    playBusyTone() {
+        utils.timestampedLog('Play busy tone');
+        InCallManager.stop({busytone: '_BUNDLE_'});
     }
 
     callKeepSendDtmf(digits) {
@@ -1348,10 +1377,12 @@ class Sylk extends Component {
         utils.timestampedLog('Outgoing', mediaType, 'call', call.id, 'started to', call.remoteIdentity.uri);
         this._callKeepManager.handleOutgoingCall(call);
 
+        utils.timestampedLog('Start InCall manager:', mediaType);
         InCallManager.start({media: mediaType});
 
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
+
         //this._callKeepManager.updateDisplay(call._callkeepUUID, call.remoteIdentity.displayName, call.remoteIdentity.uri);
     }
 
@@ -1849,10 +1880,6 @@ class Sylk extends Component {
     }
 
     ready() {
-        if (!this.state.account) {
-            return null;
-        }
-
         return (
             <Fragment>
                 <NavigationBar
@@ -1914,7 +1941,6 @@ class Sylk extends Component {
                 localMedia = {this.state.localMedia}
                 escalateToConference = {this.escalateToConference}
                 hangupCall = {this.hangupCall}
-                // shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
                 callKeepSendDtmf = {this.callKeepSendDtmf}
                 callKeepToggleMute = {this.callKeepToggleMute}
@@ -1928,6 +1954,7 @@ class Sylk extends Component {
                 intercomDtmfTone = {this.intercomDtmfTone}
                 orientation = {this.state.orientation}
                 isTablet = {this.state.isTablet}
+                reconnectingCall = {this.state.reconnectingCall}
             />
         )
     }
