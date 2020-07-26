@@ -149,7 +149,6 @@ class HistoryTileBox extends Component {
 
 
             const history_obj = this.findObjectByKey(this.state.serverHistory, 'remoteParty', uri);
-            console.log('Found history obj', history_obj);
             const startTime = history_obj? history_obj.startTime : null;
             const stopTime = history_obj? history_obj.stopTime : null;
             const duration = history_obj? history_obj.duration : 0;
