@@ -274,7 +274,7 @@ export default class CallManager extends events.EventEmitter {
         })
     }
 
-    handleIncomingPushCall(callUUID) {
+    incomingCallFromPush(callUUID) {
         utils.timestampedLog('Callkeep: handle incoming push call', callUUID);
         // call is received by push notification
         if (this._calls.has(callUUID)) {
@@ -299,7 +299,7 @@ export default class CallManager extends events.EventEmitter {
         }, 45000));
     }
 
-    handleIncomingWebSocketCall(call) {
+    incomingCallFromWebSocket(call) {
         call._callkeepUUID = call.id;
 
         this._calls.set(call._callkeepUUID, call);

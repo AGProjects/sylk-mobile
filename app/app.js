@@ -395,7 +395,7 @@ class Sylk extends Component {
             Linking.getInitialURL().then((url) => {
                 if (url) {
                       utils.timestampedLog('Initial Linking URL: ' + url);
-                      this.handleCallFromUrl(url);
+                      this.incomingCallFromUrl(url);
                 }
               }).catch(err => {
                 logger.error({ err }, 'Error getting initial URL');
@@ -452,11 +452,15 @@ class Sylk extends Component {
                     // the web-socket invite handled by this.incomingCall()
                     let event = message.data.event;
                     utils.timestampedLog('Handle Firebase', event, 'push notification for', message.data['session-id']);
+
                     if (event === 'incoming_conference_request') {
                         this.incomingConference(message.data['session-id'], message.data['to_uri'], message.data['from_uri']);
+                    } else if (event === 'incoming_session') {
+                        this.incomingCallFromPush(message.data['session-id'], message.data['from_uri']);
                     } else if (event === 'cancel') {
                         this.cancelIncomingCall(message.data['session-id']);
                     }
+
                 });
         }
 
@@ -482,39 +486,10 @@ class Sylk extends Component {
         }
     }
 
-    handleCallFromUrl(url) {
-        try {
-            var url_parts = url.split("/");
-            const direction = url_parts[2];
-            const event     = url_parts[3];
-            const callUUID  = url_parts[4];
-            const from      = url_parts[5];
-            const to        = url_parts[6];
-
-            utils.timestampedLog('Parsed URL:', direction, event, 'from', from, 'to', to);
-            if (direction === 'outgoing' && event === 'conference') {
-                 this.incomingConference(callUUID, from, to);
-            } else if (direction === 'incoming' && event === 'call') {
-                if (Platform.OS === 'android') {
-                    this.setState({showIncomingModal: true});
-                } else {
-                    this.incomingPushCall(callUUID, from);
-                }
-            } else if (direction === 'outgoing' && event === 'call') {
-                 // from native dialer
-                 this.callKeepStartCall(to, {audio: true, video: false, callUUID: callUUID});
-            } else {
-                 utils.timestampedLog('Unclear URL structure');
-            }
-        } catch (err) {
-            utils.timestampedLog('Error parsing url', url, ":", err);
-        }
-    }
-
     updateLinkingURL = (event) => {
         // this handles the use case where the app is running in the background and is activated by the listener...
         console.log('Updated Linking url', event.url);
-        this.handleCallFromUrl(event.url);
+        this.incomingCallFromUrl(event.url);
     }
 
     startCallWhenReady(targetUri, options) {
@@ -1024,9 +999,9 @@ class Sylk extends Component {
                     case MODE_PRIVATE:
                     case MODE_NORMAL:
                         account.on('registrationStateChanged', this.registrationStateChanged);
-                        account.on('incomingCall', this.incomingCall);
+                        account.on('incomingCall', this.incomingCallFromWebSocket);
                         account.on('missedCall', this.missedCall);
-                        account.on('conferenceInvite', this.conferenceInvite);
+                        account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
                         this.setState({account: account});
                         this._sendPushToken();
                         account.register();
@@ -1408,7 +1383,7 @@ class Sylk extends Component {
         if (notificationContent['event'] === 'incoming_session') {
             utils.timestampedLog('Incoming call for push mobile notification for call', callUUID);
 
-            this.incomingPushCall(callUUID, notificationContent['from_uri']);
+            this.incomingCallFromPush(callUUID, notificationContent['from_uri']);
 
             if (VoipPushNotification.wakeupByPush) {
                 utils.timestampedLog('We wake up by a push notification');
@@ -1441,16 +1416,6 @@ class Sylk extends Component {
         if (VoipPushNotification.wakeupByPush) {
             utils.timestampedLog('We wake up by push notification');
             VoipPushNotification.wakeupByPush = false;
-        }
-    }
-
-    incomingPushCall(callUUID, from) {
-        utils.timestampedLog('Handle incoming push call', callUUID, 'from', from);
-        if (this.state.account && from === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri === from) {
-            utils.timestampedLog('Reject call to myself', callUUID);
-            this._callKeepManager.rejectCall(callUUID);
-        } else {
-            this._callKeepManager.handleIncomingPushCall(callUUID);
         }
     }
 
@@ -1504,7 +1469,7 @@ class Sylk extends Component {
         this.callKeepStartConference(uri);
     }
 
-    conferenceInvite(data) {
+    conferenceInviteFromWebSocket(data) {
         // comes from web socket
         utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
         //this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
@@ -1513,7 +1478,46 @@ class Sylk extends Component {
         }
     }
 
-    incomingCall(call, mediaTypes) {
+    incomingCallFromPush(callUUID, from) {
+        utils.timestampedLog('Handle incoming push call', callUUID, 'from', from);
+        if (this.state.account && from === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri === from) {
+            utils.timestampedLog('Reject call to myself', callUUID);
+            this._callKeepManager.rejectCall(callUUID);
+        } else {
+            this._callKeepManager.incomingCallFromPush(callUUID);
+        }
+    }
+
+    incomingCallFromUrl(url) {
+        try {
+            var url_parts = url.split("/");
+            const direction = url_parts[2];
+            const event     = url_parts[3];
+            const callUUID  = url_parts[4];
+            const from      = url_parts[5];
+            const to        = url_parts[6];
+
+            utils.timestampedLog('Parsed URL:', direction, event, 'from', from, 'to', to);
+            if (direction === 'outgoing' && event === 'conference') {
+                 this.incomingConference(callUUID, from, to);
+            } else if (direction === 'incoming' && event === 'call') {
+                if (Platform.OS === 'android') {
+                    this.setState({showIncomingModal: true});
+                } else {
+                    this.incomingCallFromPush(callUUID, from);
+                }
+            } else if (direction === 'outgoing' && event === 'call') {
+                 // from native dialer
+                 this.callKeepStartCall(to, {audio: true, video: false, callUUID: callUUID});
+            } else {
+                 utils.timestampedLog('Unclear URL structure');
+            }
+        } catch (err) {
+            utils.timestampedLog('Error parsing url', url, ":", err);
+        }
+    }
+
+    incomingCallFromWebSocket(call, mediaTypes) {
         // this is called by the websocket invite
 
         // because of limitation in Sofia stack, we cannot have more then two calls at a time
@@ -1544,9 +1548,10 @@ class Sylk extends Component {
         call.on('stateChanged', this.callStateChanged);
         this.setState({inboundCall: call});
 
+        utils.timestampedLog('Start InCall manager:', mediaType);
         InCallManager.start({media: mediaType});
 
-        this._callKeepManager.handleIncomingWebSocketCall(call);
+        this._callKeepManager.incomingCallFromWebSocket(call);
 
         this.setFocusEvents(true);
 
