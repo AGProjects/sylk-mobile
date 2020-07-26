@@ -59,7 +59,7 @@ class Call extends Component {
                       remoteUri: remoteUri,
                       remoteDisplayName: remoteDisplayName,
                       connection: this.props.connection,
-                      accountId: this.props.account.id,
+                      accountId: this.props.account ? this.props.account.id : null,
                       callState: callState,
                       direction: direction,
                       callUUID: callUUID
@@ -197,6 +197,9 @@ class Call extends Component {
     }
 
     async startCallWhenReady() {
+        if (!this.props.callUUID || !this.props.targetUri) {
+            return;
+        }
         utils.timestampedLog('Call: start call', this.props.callUUID, 'when ready to', this.props.targetUri);
         this.waitCounter = 0;
 
@@ -245,13 +248,12 @@ class Call extends Component {
 
     answerCall() {
         //console.log('Call: Answer call');
-        assert(this.props.call !== null, 'currentCall is null');
-
-        this.lookupContact();
-
-        let options = {pcConfig: {iceServers: config.iceServers}};
-        options.localStream = this.props.localMedia;
-        this.props.call.answer(options);
+        if (this.props.call && this.props.call.state === 'incoming') {
+            this.lookupContact();
+            let options = {pcConfig: {iceServers: config.iceServers}};
+            options.localStream = this.props.localMedia;
+            this.props.call.answer(options);
+        }
     }
 
     hangupCall(reason) {
@@ -277,7 +279,7 @@ class Call extends Component {
     }
 
     mediaPlaying() {
-        if (this.props.call === null) {
+        if (this.props.call === null && this.props.callUUID) {
             this.startCallWhenReady();
         } else {
             this.answerCall();
@@ -285,7 +287,14 @@ class Call extends Component {
     }
 
     render() {
-        //console.log('Call: render', this.state.direction, 'call', this.props.callUUID, 'reconnect=', this.state.reconnectingCall);
+        /*
+        console.log('Call: render', this.state.direction, 'call', this.props.callUUID);
+        if (this.props.call) {
+            console.log('Call state', this.props.call.state);
+        } else {
+            console.log('Call is null');
+        }
+        */
 
         let box = null;
 
@@ -311,7 +320,7 @@ class Call extends Component {
                     />
                 );
             } else {
-                if (this.props.call != null && this.props.call.state === 'established') {
+                if (this.props.call != null && (this.props.call.state === 'established' || this.props.call.state === 'terminated')) {
                     box = (
                         <VideoBox
                             remoteUri = {this.state.remoteUri}
@@ -335,17 +344,21 @@ class Call extends Component {
                         />
                     );
                 } else {
-                    if (this.props.call && this.props.call.state && this.props.call.state === 'terminated') {
+                    if (this.props.call && this.props.call.state === 'terminated') {
                         // do not render
                     } else {
+                        console.log('Render local media');
                         box = (
                             <LocalMedia
+                                call = {this.props.call}
                                 remoteUri = {this.state.remoteUri}
                                 remoteDisplayName = {this.state.remoteDisplayName}
                                 localMedia = {this.props.localMedia}
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}
                                 generatedVideoTrack = {this.props.generatedVideoTrack}
+                                accountId={this.state.accountId}
+                                connection = {this.props.connection}
                             />
                         );
                     }

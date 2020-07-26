@@ -140,9 +140,9 @@ class NavigationBar extends Component {
 
 NavigationBar.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
-    account            : PropTypes.object.isRequired,
     logout             : PropTypes.func.isRequired,
     preview            : PropTypes.func.isRequired,
+    account            : PropTypes.object,
     toggleMute         : PropTypes.func,
     orientation        : PropTypes.string,
     isTablet           : PropTypes.bool

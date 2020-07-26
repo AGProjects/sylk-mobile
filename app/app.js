@@ -700,7 +700,7 @@ class Sylk extends Component {
         let newCurrentCall;
         let newInboundCall;
         let direction = call.direction;
-        let goToReady = call.direction.direction === 'incoming' ? true : false;
+        let goToReady = direction === 'incoming' ? true : false;
 
         if (this.state.inboundCall && this.state.currentCall) {
             if (this.state.inboundCall != this.state.currentCall) {
@@ -768,10 +768,18 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
-                utils.timestampedLog('Play ringback tone');
+                //utils.timestampedLog('Play ringback tone');
                 InCallManager.startRingback('_BUNDLE_');
+                this.setState({
+                                currentCall: newCurrentCall,
+                                inboundCall: newInboundCall
+                                });
                 break;
             case 'established':
+                this.setState({
+                                currentCall: newCurrentCall,
+                                inboundCall: newInboundCall
+                                });
             case 'accepted':
                 this._callKeepManager.backToForeground();
                 this._callKeepManager.setCurrentCallActive(callUUID);
@@ -796,6 +804,10 @@ class Sylk extends Component {
                 } else {
                     this.speakerphoneOff();
                 }
+                this.setState({
+                                currentCall: newCurrentCall,
+                                inboundCall: newInboundCall
+                                });
                 break;
             case 'terminated':
                 let callSuccesfull = false;
@@ -890,6 +902,11 @@ class Sylk extends Component {
 
                     if (goToReady) {
                         setTimeout(() => {
+                            this.setState({
+                                            localMedia: null,
+                                            currentCall: newCurrentCall,
+                                            inboundCall: newInboundCall
+                                            });
                             this.changeRoute('/ready');
                         }, 4000);
                     }
@@ -906,10 +923,14 @@ class Sylk extends Component {
                 break;
         }
 
+//        console.log('newCurrentCall', newCurrentCall);
+//        console.log('inboundCall', newInboundCall);
+/*
         this.setState({
                     currentCall: newCurrentCall,
                     inboundCall: newInboundCall
                 });
+*/
 
     }
 
@@ -1494,21 +1515,21 @@ class Sylk extends Component {
             const direction = url_parts[2];
             const event     = url_parts[3];
             const callUUID  = url_parts[4];
-            const from      = url_parts[5];
+            const uri       = url_parts[5];
             const to        = url_parts[6];
 
-            utils.timestampedLog('Parsed URL:', direction, event, 'from', from, 'to', to);
-            if (direction === 'outgoing' && event === 'conference') {
-                 this.incomingConference(callUUID, from, to);
-            } else if (direction === 'incoming' && event === 'call') {
+            utils.timestampedLog('Parsed URL:', direction, event, 'from', uri, 'to', to);
+            if (direction === 'outgoing' && event === 'conference' && uri && to) {
+                 this.incomingConference(callUUID, uri, to);
+            } else if (direction === 'incoming' && event === 'call' && uri) {
                 if (Platform.OS === 'android') {
                     this.setState({showIncomingModal: true});
                 } else {
-                    this.incomingCallFromPush(callUUID, from);
+                    this.incomingCallFromPush(callUUID, uri);
                 }
-            } else if (direction === 'outgoing' && event === 'call') {
+            } else if (direction === 'outgoing' && event === 'call' && uri) {
                  // from native dialer
-                 this.callKeepStartCall(to, {audio: true, video: false, callUUID: callUUID});
+                 this.callKeepStartCall(uri, {audio: true, video: false, callUUID: callUUID});
             } else {
                  utils.timestampedLog('Unclear URL structure');
             }
@@ -1938,6 +1959,7 @@ class Sylk extends Component {
 
     call() {
         return (
+
             <Call
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}

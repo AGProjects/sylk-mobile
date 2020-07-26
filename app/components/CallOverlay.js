@@ -28,6 +28,7 @@ class CallOverlay extends React.Component {
 
         this.state = {
             callState: null,
+            call: this.props.call,
             direction: this.props.call ? this.props.call.direction : 'outgoing'
         }
 
@@ -36,48 +37,45 @@ class CallOverlay extends React.Component {
         this.timer = null;
         this._isMounted = true;
         this.reconnecting = false;
-
-        if (this.props.call) {
-            this.props.call.on('stateChanged', this.callStateChanged);
-        }
     }
 
     componentDidMount() {
-        if (this.props.call) {
-            if (this.props.call.state === 'established') {
+        if (this.state.call) {
+            if (this.state.call.state === 'established') {
                 this.startTimer();
-            } else if (this.props.call.state !== 'terminated') {
-                this.props.call.on('stateChanged', this.callStateChanged);
             }
+            this.state.call.on('stateChanged', this.callStateChanged);
+            this.setState({callState: this.state.call.state});
         }
     }
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        if (this.props.call == null && nextProps.call) {
-            if (nextProps.call.state !== 'terminated') {
-                nextProps.call.on('stateChanged', this.callStateChanged);
+        if (nextProps.call && nextProps.call !== this.state.call) {
+            nextProps.call.on('stateChanged', this.callStateChanged);
+            if (this.state.call !== null) {
+                this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
+            this.setState({call: nextProps.call});
         }
     }
 
     componentWillUnmount() {
-        if (this.props.call) {
-            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        if (this.state.call) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
         this._isMounted = false;
         clearTimeout(this.timer);
     }
 
     callStateChanged(oldState, newState, data) {
-        //console.log('Overlay: callStateChanged', newState, '->', newState);
         if (newState === 'established' && this._isMounted) {
             this.startTimer();
         }
 
         if (newState === 'terminated') {
-            if (this.props.call) {
-                this.props.call.removeListener('stateChanged', this.callStateChanged);
+            if (this.state.call) {
+                this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
 
             clearTimeout(this.timer);
@@ -107,7 +105,10 @@ class CallOverlay extends React.Component {
     }
 
     render() {
-        //console.log('Render call overlay');
+        if (!this._isMounted) {
+            return null;
+        }
+
         let header = null;
 
         let displayName = this.props.remoteUri;
@@ -123,8 +124,8 @@ class CallOverlay extends React.Component {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
                 callDetail = 'Duration:' + this.duration;
             } else {
-                if (!this.props.connection || this.props.connection.state !== 'ready' || !this.props.accountId) {
-                    if (this.state.callState || this.state.callState === 'terminated' && this.duration) {
+                if (this.finalDuration && (!this.props.connection || this.props.connection.state !== 'ready' || !this.props.accountId)) {
+                    if (this.state.callState && this.state.callState === 'terminated') {
                         callDetail = 'Restoring the conversation...';
                         this.reconnecting = true;
                     } else {

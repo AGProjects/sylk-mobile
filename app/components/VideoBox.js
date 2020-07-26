@@ -44,10 +44,7 @@ class VideoBox extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        DEBUG(`Call state changed ${oldState} -> ${newState}`);
-        if (newState === 'established') {
-            this.forceUpdate();
-        }
+        this.forceUpdate();
     }
 
     openDoor() {
@@ -66,8 +63,12 @@ class VideoBox extends Component {
     }
 
     componentDidMount() {
+        /*
+        console.log('VideoBox: did mount');
+        console.log('Call is', this.props.call);
         console.log('localStreams', this.props.call.getLocalStreams());
         console.log('remoteStreams', this.props.call.getRemoteStreams());
+        */
 
         this.setState({localStream: this.props.call.getLocalStreams()[0],
                        localVideoShow: true,
@@ -224,6 +225,8 @@ class VideoBox extends Component {
             return null;
         }
 
+        //console.log('Render Video Box in state', this.props.call.state);
+
         const localVideoClasses = classNames({
             'video-thumbnail' : true,
             'mirror'          : !this.props.call.sharingScreen && !this.props.generatedVideoTrack,
@@ -304,11 +307,11 @@ class VideoBox extends Component {
             <View style={styles.container}>
                 <CallOverlay
                     show = {true}
-                    remoteUri={this.props.remoteUri}
-                    remoteDisplayName={this.props.remoteDisplayName}
+                    remoteUri = {this.props.remoteUri}
+                    remoteDisplayName = {this.props.remoteDisplayName}
                     call = {this.props.call}
-                    connection={this.props.connection}
-                    accountId={this.props.accountId}
+                    connection = {this.props.connection}
+                    accountId = {this.props.accountId}
                 />
                 {/* <TransitionGroup> */}
                     {/* {watermark} */}

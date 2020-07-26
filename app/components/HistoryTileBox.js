@@ -20,7 +20,7 @@ class HistoryTileBox extends Component {
         this.state = {
             serverHistory: this.props.serverHistory,
             localHistory: this.props.localHistory,
-            accountId: this.props.account.id,
+            accountId: this.props.account ? this.props.account.id : '',
             password: this.props.password,
             targetUri: this.props.targetUri,
             favoriteUris: this.props.favoriteUris,
@@ -330,6 +330,10 @@ class HistoryTileBox extends Component {
 
     render() {
         console.log('Render history');
+
+        if (!this.state.accountId) {
+            return null;
+        }
         // TODO: render blocked and favorites also when there is no history
 
         //console.log('Favorite URIs', this.state.favoriteUris);
