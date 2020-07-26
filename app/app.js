@@ -902,15 +902,16 @@ class Sylk extends Component {
                     }
 
                     this.participantsToInvite = null;
+
                     if (direction === 'incoming' || (direction === 'outgoing' && reason === 'Hangup')) {
                         setTimeout(() => {
                             this.changeRoute('/ready');
-                        }, 5000);
+                        }, 4000);
                     }
 
                     setTimeout(() => {
                         this.setState({refreshHistory: !this.state.refreshHistory});
-                    }, 1500);
+                    }, 2000);
                 }
 
                 this.updateHistoryEntry(callUUID);

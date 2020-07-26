@@ -194,7 +194,7 @@ class HistoryCard extends Component {
             title = toTitleCase(uri.split('@')[0]);
         }
 
-        if (this.state.type === 'history') {
+        if (this.props.contact.tags.indexOf('history') > -1) {
             let duration = moment.duration(this.props.contact.duration, 'seconds').format('hh:mm:ss', {trim: false});
 
             if (this.props.contact.direction === 'received' && this.props.contact.duration === 0) {
@@ -203,7 +203,6 @@ class HistoryCard extends Component {
             } else if (this.props.contact.direction === 'placed' && this.props.contact.duration === 0) {
                 duration = 'cancelled';
             }
-
 
             if (this.state.conference) {
                 if (this.state.participants && this.state.participants.length) {

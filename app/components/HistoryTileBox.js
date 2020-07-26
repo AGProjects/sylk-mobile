@@ -132,18 +132,29 @@ class HistoryTileBox extends Component {
 
     getFavoriteContacts() {
         let favoriteContacts = [];
-        let contact_obj;
         let displayName;
         let label;
-        let media;
         let conference;
 
+        let contacts= this.props.contacts
+        contacts = contacts.concat(this.videoTest);
+        contacts = contacts.concat(this.echoTest);
+
         this.state.favoriteUris.forEach((uri) => {
-            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', uri);
+            const contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
             displayName = contact_obj ? contact_obj.displayName : uri;
             label = contact_obj ? contact_obj.label: null;
-            media = ['audio'];
             conference = false;
+            let tags = ['favorite'];
+
+
+            const history_obj = this.findObjectByKey(this.state.serverHistory, 'remoteParty', uri);
+            console.log('Found history obj', history_obj);
+            const startTime = history_obj? history_obj.startTime : null;
+            const stopTime = history_obj? history_obj.stopTime : null;
+            const duration = history_obj? history_obj.duration : 0;
+            const media = history_obj? history_obj.media : 'audio';
+            tags.push('history');
 
             if (uri.indexOf('@videoconference.') > -1) {
                 displayName = 'Conference ' + uri.split('@')[0];
@@ -158,9 +169,12 @@ class HistoryTileBox extends Component {
                 conference: conference,
                 media: media,
                 type: 'contact',
+                startTime: startTime,
+                startTime: startTime,
+                duration: duration,
                 label: label,
                 id: uuid.v4(),
-                tags: ['favorite']
+                tags: tags
                 };
             favoriteContacts.push(item);
         });
@@ -174,8 +188,12 @@ class HistoryTileBox extends Component {
         let displayName;
         let label;
 
+        let contacts= this.props.contacts
+        contacts = contacts.concat(this.videoTest);
+        contacts = contacts.concat(this.echoTest);
+
         this.state.blockedUris.forEach((uri) => {
-            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', uri);
+            contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
             displayName = contact_obj ? contact_obj.displayName : uri;
             label = contact_obj ? contact_obj.label: null;
 
@@ -196,15 +214,7 @@ class HistoryTileBox extends Component {
 
     getServerHistory() {
         utils.timestampedLog('Requesting call history from server');
-        this.props.localHistory.forEach((item) => {
-            if (!item.tags) {
-                item.tags = ['local'];
-            } else if (item.tags.indexOf('local') === -1) {
-                item.tags.push('local');
-            }
-        });
 
-        //let history = this.props.localHistory;
         let history = [];
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
@@ -232,11 +242,10 @@ class HistoryTileBox extends Component {
             }
 
             if (history) {
-                history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
-
                 const known = [];
                 history = history.filter((elem) => {
                     elem.conference = false;
+
                     if (!elem.tags) {
                         elem.tags = [];
                     }
@@ -279,39 +288,41 @@ class HistoryTileBox extends Component {
                         elem.displayName = this.props.myDisplayName || 'Myself';
                     }
 
+                    elem.type = 'history';
+                    elem.id = uuid.v4();
+
+                    if (elem.tags.indexOf('history') === -1) {
+                        elem.tags.push('history');
+                    }
+
+                    elem.label = elem.direction;
+
+                    if (!elem.displayName) {
+                        elem.displayName = elem.remoteParty;
+                    }
+
+                    if (!elem.media || !Array.isArray(elem.media)) {
+                        elem.media = ['audio'];
+                    }
+
+                    if (elem.remoteParty.indexOf('3333@') > -1) {
+                        // see Call.js as well if we change this
+                        elem.displayName = 'Video Test';
+                    }
+                    if (elem.remoteParty.indexOf('4444@') > -1) {
+                        // see Call.js as well if we change this
+                        elem.displayName = 'Echo Test';
+                    }
+
                     if (known.indexOf(elem.remoteParty) <= -1) {
-                        elem.type = 'history';
-                        elem.id = uuid.v4();
-                        if (elem.tags.indexOf('history') === -1) {
-                            elem.tags.push('history');
-                        }
-
-                        elem.label = elem.direction;
-
-                        if (!elem.displayName) {
-                            elem.displayName = elem.remoteParty;
-                        }
-
-                        if (!elem.media || !Array.isArray(elem.media)) {
-                            elem.media = ['audio'];
-                        }
-
-                        if (elem.remoteParty.indexOf('3333@') > -1) {
-                            // see Call.js as well if we change this
-                            elem.displayName = 'Video Test';
-                        }
-                        if (elem.remoteParty.indexOf('4444@') > -1) {
-                            // see Call.js as well if we change this
-                            elem.displayName = 'Echo Test';
-                        }
-
+                        console.log('SH', elem.remoteParty, elem.startTime);
                         known.push(elem.remoteParty);
                         return elem;
                     }
                 });
 
                 this.props.cacheHistory(history);
-                this.setState({history: history});
+                this.setState({serverHistory: history});
             }
         }, (errorCode) => {
             console.log('Error getting call history from server', errorCode);
@@ -335,13 +346,17 @@ class HistoryTileBox extends Component {
         } else if (this.props.filter === 'blocked') {
             let blockedContacts = this.getBlockedContacts();
             items = blockedContacts.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
-
         } else {
-            let localHistory = this.getLocalHistory();
-            history = localHistory.concat(this.state.serverHistory);
+            history = this.getLocalHistory();
+            history = history.concat(this.state.serverHistory);
+
             searchExtraItems = this.props.contacts;
+            searchExtraItems.concat(this.videoTest);
+            searchExtraItems.concat(this.echoTest);
+
             items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
+            /*
             if (!this.props.targetUri && !this.props.filter) {
                 if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
                     items.push(this.echoTest);
@@ -350,6 +365,7 @@ class HistoryTileBox extends Component {
                     items.push(this.videoTest);
                 }
             }
+            */
 
             let matchedContacts = [];
             if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
@@ -360,6 +376,18 @@ class HistoryTileBox extends Component {
 
             items = items.concat(matchedContacts);
         }
+
+        items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
+
+        const known = [];
+        items = items.filter((elem) => {
+            console.log('H', elem.remoteParty, elem.startTime);
+
+            if (known.indexOf(elem.remoteParty) <= -1) {
+                    known.push(elem.remoteParty);
+                    return elem;
+            }
+        });
 
         items.forEach((item) => {
             item.showActions = false;
@@ -396,6 +424,7 @@ class HistoryTileBox extends Component {
                 filteredItems.push(item);
             }
         });
+
         items = filteredItems;
 
         if (items.length === 1) {
