@@ -53,6 +53,7 @@ class CallOverlay extends React.Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.call && nextProps.call !== this.state.call) {
             nextProps.call.on('stateChanged', this.callStateChanged);
+
             if (this.state.call !== null) {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
@@ -105,9 +106,13 @@ class CallOverlay extends React.Component {
     }
 
     render() {
-        if (!this._isMounted) {
-            return null;
+        /*
+        console.log('Render call overlay with call state', this.state.callState);
+        if (this.props.connection) {
+            console.log('Connection state', this.props.connection.state);
         }
+        */
+
 
         let header = null;
 
@@ -141,6 +146,8 @@ class CallOverlay extends React.Component {
             }
 
             if (this.props.remoteUri.search('videoconference') > -1) {
+                displayName = this.props.remoteUri.split('@')[0];
+
                 header = (
                     <Appbar.Header style={{backgroundColor: 'black'}}>
                         <Appbar.Content

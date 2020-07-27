@@ -762,6 +762,7 @@ class ConferenceBox extends Component {
 ConferenceBox.propTypes = {
     notificationCenter  : PropTypes.func.isRequired,
     call                : PropTypes.object,
+    connection          : PropTypes.object,
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
     saveInvitedParties  : PropTypes.func,

@@ -29,7 +29,9 @@ class AudioCallBox extends Component {
             active                      : false,
             audioMuted                  : false,
             showDtmfModal               : false,
-            showEscalateConferenceModal : false
+            showEscalateConferenceModal : false,
+            call                        : this.props.call,
+            reconnectingCall            : this.props.reconnectingCall
         };
         // this.speechEvents = null;
 
@@ -41,16 +43,16 @@ class AudioCallBox extends Component {
         // Thus, if the call is not null it means we are beyond the 'local media' phase
         // so don't call the mediaPlaying prop.
 
-        if (this.props.call != null) {
-            switch (this.props.call.state) {
+        if (this.state.call != null) {
+            switch (this.state.call.state) {
                 case 'established':
-                    this.attachStream(this.props.call);
+                    this.attachStream(this.state.call);
                     break;
                 case 'incoming':
                     this.props.mediaPlaying();
                     // fall through
                 default:
-                    this.props.call.on('stateChanged', this.callStateChanged);
+                    this.state.call.on('stateChanged', this.callStateChanged);
                     break;
             }
         } else {
@@ -59,36 +61,44 @@ class AudioCallBox extends Component {
     }
 
     componentWillUnmount() {
-        if (this.props.call != null) {
-            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        if (this.state.call != null) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
     }
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        if (this.props.call == null && nextProps.call) {
+        if (nextProps.call && nextProps.call !== this.state.call) {
             if (nextProps.call.state === 'established') {
                 this.attachStream(nextProps.call);
-            } else {
-                nextProps.call.on('stateChanged', this.callStateChanged);
+                this.setState({reconnectingCall: false});
             }
+
+            nextProps.call.on('stateChanged', this.callStateChanged);
+
+            if (this.state.call !== null) {
+                this.state.call.removeListener('stateChanged', this.callStateChanged);
+            }
+            this.setState({call: nextProps.call});
+        }
+
+        if (nextProps.reconnectingCall != this.state.reconnectingCall) {
+            console.log('Audio box got prop reconnecting', nextProps.reconnectingCall);
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
     }
 
     componentWillUnmount() {
-        if (this.props.call != null) {
-            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        if (this.state.call != null) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
-                clearTimeout(this.callTimer);
-        // if (this.speechEvents !== null) {
-        //     this.speechEvents.stop();
-        //     this.speechEvents = null;
-        // }
+        clearTimeout(this.callTimer);
     }
 
     callStateChanged(oldState, newState, data) {
         if (newState === 'established') {
-            this.attachStream(this.props.call);
+            this.attachStream(this.state.call);
+            this.setState({reconnectingCall: false});
         }
     }
 
@@ -124,18 +134,18 @@ class AudioCallBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        const localStream = this.props.call.getLocalStreams()[0];
+        const localStream = this.state.call.getLocalStreams()[0];
         const track = localStream.getAudioTracks()[0];
 
         if(this.state.audioMuted) {
             //console.log('Unmute microphone');
-            this.props.callKeepToggleMute(false);
+            this.state.callKeepToggleMute(false);
             track.enabled = true;
             this.setState({audioMuted: false});
         } else {
             //console.log('Mute microphone');
             track.enabled = false;
-            this.props.callKeepToggleMute(true);
+            this.state.callKeepToggleMute(true);
             this.setState({audioMuted: true});
         }
     }
@@ -154,7 +164,7 @@ class AudioCallBox extends Component {
         });
     }
 
-//  {this.props.orientation !== 'landscape' && !this.userHangup && (!this.props.call || (this.props.call && this.props.call.state !== 'established')) ?
+//  {this.props.orientation !== 'landscape' && !this.userHangup && (!this.state.call || (this.state.call && this.state.call.state !== 'established')) ?
 
     render() {
         let remoteIdentity = {uri: this.props.remoteUri, displayName: this.props.remoteDisplayName};
@@ -169,7 +179,7 @@ class AudioCallBox extends Component {
                     show={true}
                     remoteUri={this.props.remoteUri}
                     remoteDisplayName={this.props.remoteDisplayName}
-                    call={this.props.call}
+                    call={this.state.call}
                     connection={this.props.connection}
                     accountId={this.props.accountId}
                 />
@@ -182,13 +192,13 @@ class AudioCallBox extends Component {
                 <Text style={styles.uri}>{this.props.remoteUri}</Text>
                 : null }
 
-                {this.props.orientation !== 'landscape' && !this.userHangup && this.props.reconnectingCall ?
+                {this.props.orientation !== 'landscape' && !this.userHangup && this.state.reconnectingCall ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
                 :
                 null
                 }
 
-                {this.props.call && this.props.call.state === 'established' ?
+                {this.state.call && this.state.call.state === 'established' ?
                     <View style={buttonContainerClass}>
                     <IconButton
                         size={34}
@@ -213,7 +223,7 @@ class AudioCallBox extends Component {
                         style={buttonClass}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
-                        disabled={!(this.props.call && this.props.call.state === 'established')}
+                        disabled={!(this.state.call && this.state.call.state === 'established')}
                     />
                     <IconButton
                         size={34}
@@ -236,12 +246,12 @@ class AudioCallBox extends Component {
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
-                    call={this.props.call}
+                    call={this.state.call}
                     callKeepSendDtmf={this.props.callKeepSendDtmf}
                 />
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
-                    call={this.props.call}
+                    call={this.state.call}
                     close={this.toggleEscalateConferenceModal}
                     escalateToConference={this.escalateToConference}
                 />

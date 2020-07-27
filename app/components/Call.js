@@ -21,8 +21,9 @@ class Call extends Component {
         super(props);
         autoBind(this);
 
+        this.defaultWaitInterval = 20; // until we can reconnect
         this.waitCounter = 0;
-        this.waitInterval = 60;
+        this.waitInterval = this.defaultWaitInterval;
 
         let audioOnly = false;
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
@@ -62,7 +63,8 @@ class Call extends Component {
                       accountId: this.props.account ? this.props.account.id : null,
                       callState: callState,
                       direction: direction,
-                      callUUID: callUUID
+                      callUUID: callUUID,
+                      reconnectingCall: this.props.reconnectingCall
                       }
     }
 
@@ -109,13 +111,13 @@ class Call extends Component {
         }
 
         this.setState({remoteDisplayName: remoteDisplayName,
-                       remoteUri: remoteUri,
-                       reconnectingCall: false
+                       remoteUri: remoteUri
                        });
     }
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
+        //console.log('Call: received props');
         // Needed for switching to incoming call while in a call
         if (this.props.call != null && this.props.call != nextProps.currentCall) {
             if (nextProps.currentCall != null) {
@@ -123,12 +125,15 @@ class Call extends Component {
             }
         }
 
-        this.setState({reconnectingCall: nextProps.reconnectingCall});
+        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
+        }
     }
 
     callStateChanged(oldState, newState, data) {
         //console.log('Call: callStateChanged', oldState, '->', newState);
         if (newState === 'established') {
+            this.setState({reconnectingCall: false});
             // Check the media type again, remote can choose to not accept all offered media types
             const currentCall = this.props.call;
             const remoteHasStreams = currentCall.getRemoteStreams().length > 0;
@@ -174,11 +179,9 @@ class Call extends Component {
             case 'ready':
                 break;
             case 'disconnected':
-                let callUUID = uuid.v4();
-                this.setState({callUUID: callUUID});
                 if (oldState === 'ready' && this.state.direction === 'outgoing') {
-                    utils.timestampedLog('Call: reconnecting the call using new UUID', callUUID);
-                    this.waitInterval = 20;
+                    utils.timestampedLog('Call: reconnecting the call');
+                    this.waitInterval = this.defaultWaitInterval;
                     this.startCallWhenReady();
                 }
                 break;
@@ -208,8 +211,12 @@ class Call extends Component {
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
-            if (!this.props.connection || this.props.connection.state !== 'ready' || this.props.account === null) {
-                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+            if (!this.props.connection ||
+                 this.props.connection.state !== 'ready' ||
+                 this.props.account === null ||
+                 this.props.account.registrationState !== 'registered'
+                 ) {
+                //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;
@@ -234,7 +241,11 @@ class Call extends Component {
 
     call() {
         //console.log('Call: creating new call', this.props.callUUID);
-        assert(this.props.call === null, 'currentCall is not null');
+
+        if (this.props.localMedia === null)  {
+            console.log('Call: cannot create new call without local media');
+            return;
+        }
 
         this.lookupContact();
 
@@ -242,7 +253,6 @@ class Call extends Component {
         options.localStream = this.props.localMedia;
 
         let call = this.props.account.call(this.props.targetUri, options);
-        console.log('Call: call initiated', call.id);
         call.on('stateChanged', this.callStateChanged);
     }
 
@@ -257,11 +267,11 @@ class Call extends Component {
     }
 
     hangupCall(reason) {
-        let callUUID = this.props.call ? this.props.call._callkeepUUID : this.state.callUUID;
-        this.waitInterval = 20;
+        let callUUID = this.props.call ? this.props.call._callkeepUUID : this.props.callUUID;
+        this.waitInterval = this.defaultWaitInterval;
 
         this.props.callUUID || this.props.call._callkeepUUID;
-        console.log('Call: hangup call', callUUID, 'reason', reason);
+        //console.log('Call: hangup call', callUUID, 'reason', reason);
 
         if (this.props.call) {
             this.props.call.removeListener('stateChanged', this.callStateChanged);
@@ -288,7 +298,7 @@ class Call extends Component {
 
     render() {
         /*
-        console.log('Call: render', this.state.direction, 'call', this.props.callUUID);
+        console.log('Call: render', this.state.direction, 'call', this.props.callUUID, 'reconnecting=', this.state.reconnectingCall);
         if (this.props.call) {
             console.log('Call state', this.props.call.state);
         } else {
@@ -316,7 +326,7 @@ class Call extends Component {
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         orientation = {this.props.orientation}
                         isTablet = {this.props.isTablet}
-                        reconnectingCall = {this.props.reconnectingCall}
+                        reconnectingCall = {this.state.reconnectingCall}
                     />
                 );
             } else {
@@ -340,14 +350,14 @@ class Call extends Component {
                             intercomDtmfTone = {this.props.intercomDtmfTone}
                             orientation = {this.props.orientation}
                             isTablet = {this.props.isTablet}
-                            reconnectingCall = {this.props.reconnectingCall}
+                            reconnectingCall = {this.state.reconnectingCall}
                         />
                     );
                 } else {
                     if (this.props.call && this.props.call.state === 'terminated') {
                         // do not render
                     } else {
-                        console.log('Render local media');
+                        //console.log('Render local media');
                         box = (
                             <LocalMedia
                                 call = {this.props.call}

@@ -47,12 +47,15 @@ const ConferenceHeader = (props) => {
         //         <Icon name="clock-outline" />{duration} - <Icon name="account-group" />{participantCount} participant{participantCount > 1 ? 's' : ''}
         //     </View>
         // );
+
+        const room = props.remoteUri.split('@')[0];
+
         const callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
 
         videoHeader = (
             <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
                 <Appbar.Content
-                    title={`Conference: ${props.remoteUri}`}
+                    title={`Conference: ${room}`}
                     subtitle={callDetail}
                 />
                 {props.buttons.top.right}

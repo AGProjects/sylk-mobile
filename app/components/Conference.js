@@ -102,6 +102,7 @@ class Conference extends React.Component {
 
         if (this.props.localMedia !== null) {
             if (this.props.currentCall != null && this.props.currentCall.state === 'established') {
+                console.log('Render conference in call state', this.props.currentCall.state);
                 box = (
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
@@ -123,6 +124,8 @@ class Conference extends React.Component {
             } else {
                 box = (
                     <LocalMedia
+                        call = {this.props.currentCall}
+                        connection = {this.props.connection}
                         remoteUri = {this.props.targetUri}
                         remoteDisplayName = {this.props.targetUri}
                         localMedia = {this.props.localMedia}
