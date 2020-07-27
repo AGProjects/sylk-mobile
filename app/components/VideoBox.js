@@ -326,8 +326,14 @@ class VideoBox extends Component {
                 }
                 {this.state.remoteVideoShow ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
-                <TouchableWithoutFeedback onPress={this.showCallOverlay}>
-                            <RTCView objectFit='cover' style={[styles.video, styles.remoteVideo]} poster="assets/images/transparent-1px.png" ref={this.remoteVideo} streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null} />
+                        <TouchableWithoutFeedback onPress={this.showCallOverlay}>
+                            <RTCView
+                                objectFit='cover'
+                                style={[styles.video, styles.remoteVideo]}
+                                poster="assets/images/transparent-1px.png"
+                                ref={this.remoteVideo}
+                                streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null}
+                            />
                         </TouchableWithoutFeedback>
                     </View>
                 : null }
@@ -340,62 +346,62 @@ class VideoBox extends Component {
                 </View>
                 : null }
                 <View style={[styles.buttonContainer, !this.state.callOverlayVisible && styles.hidden]} >
-                { this.props.intercomDtmfTone ?
-                 <View style={buttonContainerClass}>
-                    <IconButton
-                        size={50}
-                        style={buttonClass}
-                        icon={this.state.doorOpened ? "door-open": "door" }
-                        onPress={this.openDoor}
-                        disabled={!(this.props.call && this.props.call.state === 'established')}
-                    />
-                    <IconButton
-                        size={34}
-                        style={[buttonClass]}
-                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                        onPress={this.props.toggleSpeakerPhone}
-                    />
-                    <IconButton
-                        size={50}
-                        style={[styles.button, styles.hangupButton]}
-                        onPress={this.hangupCall}
-                        icon="phone-hangup"
-                    />
-                </View>
-                :
-                <View style={buttonContainerClass}>
-                    <IconButton
-                        size={34}
-                        style={buttonClass}
-                        onPress={this.toggleEscalateConferenceModal}
-                        icon="account-plus"
-                    />
-                    <IconButton
-                        size={34}
-                        style={buttonClass}
-                        onPress={this.muteAudio}
-                        icon={muteButtonIcons}
-                    />
-                    <IconButton
-                        size={34}
-                        style={buttonClass}
-                        onPress={this.muteVideo}
-                        icon={muteVideoButtonIcons}
-                    />
-                    <IconButton
-                        size={34}
-                        style={[buttonClass]}
-                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                        onPress={this.props.toggleSpeakerPhone}
-                    />
-                    <IconButton
-                        size={34}
-                        style={[buttonClass, styles.hangupButton]}
-                        onPress={this.hangupCall}
-                        icon="phone-hangup"
-                    />
-                </View>
-                }
+                    { this.props.intercomDtmfTone ?
+                        <View style={buttonContainerClass}>
+                            <IconButton
+                                size={50}
+                                style={buttonClass}
+                                icon={this.state.doorOpened ? "door-open": "door" }
+                                onPress={this.openDoor}
+                                disabled={!(this.props.call && this.props.call.state === 'established')}
+                            />
+                            <IconButton
+                                size={34}
+                                style={[buttonClass]}
+                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                                onPress={this.props.toggleSpeakerPhone}
+                            />
+                            <IconButton
+                                size={50}
+                                style={[styles.button, styles.hangupButton]}
+                                onPress={this.hangupCall}
+                                icon="phone-hangup"
+                            />
+                        </View>
+                        :
+                        <View style={buttonContainerClass}>
+                            <IconButton
+                                size={34}
+                                style={buttonClass}
+                                onPress={this.toggleEscalateConferenceModal}
+                                icon="account-plus"
+                            />
+                            <IconButton
+                                size={34}
+                                style={buttonClass}
+                                onPress={this.muteAudio}
+                                icon={muteButtonIcons}
+                            />
+                            <IconButton
+                                size={34}
+                                style={buttonClass}
+                                onPress={this.muteVideo}
+                                icon={muteVideoButtonIcons}
+                            />
+                            <IconButton
+                                size={34}
+                                style={[buttonClass]}
+                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                                onPress={this.props.toggleSpeakerPhone}
+                            />
+                            <IconButton
+                                size={34}
+                                style={[buttonClass, styles.hangupButton]}
+                                onPress={this.hangupCall}
+                                icon="phone-hangup"
+                            />
+                        </View>
+                    }
                 </View>
                 <DTMFModal
                     show={this.state.showDtmfModal}
