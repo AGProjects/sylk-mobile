@@ -21,7 +21,7 @@ class Call extends Component {
         super(props);
         autoBind(this);
 
-        this.defaultWaitInterval = 20; // until we can reconnect
+        this.defaultWaitInterval = 40; // until we can reconnect
         this.waitCounter = 0;
         this.waitInterval = this.defaultWaitInterval;
 
@@ -213,8 +213,7 @@ class Call extends Component {
         while (this.waitCounter < this.waitInterval) {
             if (!this.props.connection ||
                  this.props.connection.state !== 'ready' ||
-                 this.props.account === null ||
-                 this.props.account.registrationState !== 'registered'
+                 this.props.registrationState !== 'registered'
                  ) {
                 //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 await this._sleep(1000);
@@ -384,6 +383,7 @@ Call.propTypes = {
     account                 : PropTypes.object,
     hangupCall              : PropTypes.func,
     connection              : PropTypes.object,
+    registrationState       : PropTypes.string,
     call                    : PropTypes.object,
     localMedia              : PropTypes.object,
     shareScreen             : PropTypes.func,

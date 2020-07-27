@@ -1968,6 +1968,7 @@ class Sylk extends Component {
                 targetUri = {this.state.targetUri}
                 call = {this.state.currentCall || this.state.inboundCall}
                 connection = {this.state.connection}
+                registrationState = {this.state.registrationState}
                 localMedia = {this.state.localMedia}
                 escalateToConference = {this.escalateToConference}
                 hangupCall = {this.hangupCall}

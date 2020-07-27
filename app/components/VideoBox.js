@@ -79,7 +79,6 @@ class VideoBox extends Component {
 
         this.props.call.on('stateChanged', this.callStateChanged);
 
-
         // sylkrtc.utils.attachMediaStream(, this.localVideo.current, {disableContextMenu: true});
         // let promise =  this.localVideo.current.play()
         // if (promise !== undefined) {
@@ -306,7 +305,7 @@ class VideoBox extends Component {
         return (
             <View style={styles.container}>
                 <CallOverlay
-                    show = {this.state.callOverlayVisible}
+                    show = {this.state.callOverlayVisible || this.props.reconnectingCall}
                     remoteUri = {this.props.remoteUri}
                     remoteDisplayName = {this.props.remoteDisplayName}
                     call = {this.props.call}
@@ -316,12 +315,7 @@ class VideoBox extends Component {
                 {/* <TransitionGroup> */}
                     {/* {watermark} */}
                 {/* </TransitionGroup> */}
-                {this.props.orientation !== 'landscape' && !this.userHangup && (!this.props.call || (this.props.call && this.props.call.state !== 'established')) ?
-                <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
-                :
-                null
-                }
-                {this.state.remoteVideoShow ?
+                {this.state.remoteVideoShow && !this.props.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
                         <TouchableWithoutFeedback onPress={this.toggleCallOverlay}>
                             <RTCView
@@ -342,6 +336,13 @@ class VideoBox extends Component {
                     </TouchableWithoutFeedback>
                 </View>
                 : null }
+
+                {this.props.reconnectingCall ?
+                <ActivityIndicator style={styles.reconnectContainer} animating={true} size={'large'} color={Colors.red800} />
+                :
+                null
+                }
+
                 <View style={[styles.buttonContainer, !this.state.callOverlayVisible && styles.hidden]} >
                     { this.props.intercomDtmfTone ?
                         <View style={buttonContainerClass}>
@@ -434,7 +435,8 @@ VideoBox.propTypes = {
     speakerPhoneEnabled     : PropTypes.bool,
     intercomDtmfTone        : PropTypes.string,
     orientation             : PropTypes.string,
-    isTablet                : PropTypes.bool
+    isTablet                : PropTypes.bool,
+    reconnectingCall        : PropTypes.bool
 };
 
 export default VideoBox;

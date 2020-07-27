@@ -172,6 +172,7 @@ class AudioCallBox extends Component {
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
         let buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
+        //console.log('Audio box reconnecting', this.state.reconnectingCall);
 
         return (
             <View style={styles.container}>

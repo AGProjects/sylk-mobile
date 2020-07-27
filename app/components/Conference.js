@@ -41,7 +41,9 @@ class Conference extends React.Component {
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
-            if (!this.props.connection || this.props.connection.state !== 'ready' || this.props.account === null) {
+            if (!this.props.connection ||
+                this.props.connection.state !== 'ready' ||
+                this.props.registrationState !== 'registered') {
                 utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 await this._sleep(1000);
             } else {
@@ -145,6 +147,7 @@ Conference.propTypes = {
     notificationCenter      : PropTypes.func.isRequired,
     account                 : PropTypes.object.isRequired,
     connection              : PropTypes.object,
+    registrationState       : PropTypes.string,
     hangupCall              : PropTypes.func.isRequired,
     saveParticipant         : PropTypes.func,
     saveInvitedParties      : PropTypes.func,
