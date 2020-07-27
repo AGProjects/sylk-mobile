@@ -9,6 +9,9 @@ import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
 
+import moment from 'moment';
+import momenttz from 'moment-timezone';
+
 import styles from '../assets/styles/blink/_HistoryTileBox.scss';
 
 
@@ -215,6 +218,8 @@ class HistoryTileBox extends Component {
         //utils.timestampedLog('Requesting call history from server');
 
         let history = [];
+        let localTime;
+
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
             `${this.props.config.serverCallHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
@@ -311,6 +316,13 @@ class HistoryTileBox extends Component {
                     if (elem.remoteParty.indexOf('4444@') > -1) {
                         // see Call.js as well if we change this
                         elem.displayName = 'Echo Test';
+                    }
+
+                    if (elem.timezone !== undefined) {
+                        localTime = momenttz.tz(elem.startTime, elem.timezone).toDate();
+                        elem.startTime = moment(localTime).format('YYYY-MM-DD hh:mm:ss');
+                        localTime = momenttz.tz(elem.stopTime, elem.timezone).toDate();
+                        elem.stopTime = moment(localTime).format('YYYY-MM-DD hh:mm:ss');
                     }
 
                     if (known.indexOf(elem.remoteParty) <= -1) {
