@@ -209,11 +209,8 @@ class VideoBox extends Component {
         }, 4000);
     }
 
-    showCallOverlay() {
-        if (this.state.remoteVideoShow) {
-            this.setState({callOverlayVisible: true});
-            this.armOverlayTimer();
-        }
+    toggleCallOverlay() {
+        this.setState({callOverlayVisible: !this.state.callOverlayVisible});
     }
 
     toggleEscalateConferenceModal() {
@@ -326,7 +323,7 @@ class VideoBox extends Component {
                 }
                 {this.state.remoteVideoShow ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
-                        <TouchableWithoutFeedback onPress={this.showCallOverlay}>
+                        <TouchableWithoutFeedback onPress={this.toggleCallOverlay}>
                             <RTCView
                                 objectFit='cover'
                                 style={[styles.video, styles.remoteVideo]}
