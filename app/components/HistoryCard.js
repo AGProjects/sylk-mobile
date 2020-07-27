@@ -3,6 +3,7 @@ import { View, SafeAreaView, FlatList } from 'react-native';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
+import momentFormat from 'moment-duration-format';
 import { Card, IconButton, Button, Caption, Title, Subheading, List, Text} from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
