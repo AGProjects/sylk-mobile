@@ -2067,6 +2067,7 @@ class Sylk extends Component {
                 localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
+                connection = {this.state.connection}
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
                 saveInvitedParties = {this.saveInvitedParties}

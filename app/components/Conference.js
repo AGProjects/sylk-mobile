@@ -8,6 +8,7 @@ import autoBind from 'auto-bind';
 import ConferenceBox from './ConferenceBox';
 import LocalMedia from './LocalMedia';
 import config from '../config';
+import utils from '../utils';
 
 const DEBUG = debug('blinkrtc:Conference');
 debug.enable('*');
@@ -16,6 +17,9 @@ class Conference extends React.Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
+        this.waitCounter = 0;
+        this.waitInterval = 180;
     }
 
     confStateChanged(oldState, newState, data) {
@@ -23,6 +27,42 @@ class Conference extends React.Component {
         if (newState === 'established') {
             this.forceUpdate();
         }
+    }
+
+    async startConferenceWhenReady() {
+        if (!this.props.callUUID || !this.props.targetUri) {
+            return;
+        }
+        utils.timestampedLog('Call: start conference', this.props.callUUID, 'when ready to', this.props.targetUri);
+        this.waitCounter = 0;
+
+        utils.timestampedLog('Call: waiting for connecting to the conference', this.waitInterval, 'seconds');
+
+        let diff = 0;
+
+        while (this.waitCounter < this.waitInterval) {
+            if (!this.props.connection || this.props.connection.state !== 'ready' || this.props.account === null) {
+                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                await this._sleep(1000);
+            } else {
+                this.waitCounter = 0;
+
+                this.start();
+
+                return;
+            }
+
+            if (this.waitCounter >= this.waitInterval - 1) {
+                utils.timestampedLog('Call: terminating conference', this.props.callUUID, 'that did not start yet');
+                this.hangup('timeout');
+            }
+
+            this.waitCounter++;
+        }
+    }
+
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     start() {
@@ -53,7 +93,7 @@ class Conference extends React.Component {
 
     mediaPlaying() {
         if (this.props.currentCall === null) {
-            this.start();
+            this.startConferenceWhenReady();
         }
     }
 
@@ -66,6 +106,7 @@ class Conference extends React.Component {
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
                         call = {this.props.currentCall}
+                        connection = {this.props.connection}
                         hangup = {this.hangup}
                         saveParticipant = {this.props.saveParticipant}
                         saveInvitedParties = {this.props.saveInvitedParties}
@@ -100,6 +141,7 @@ class Conference extends React.Component {
 Conference.propTypes = {
     notificationCenter      : PropTypes.func.isRequired,
     account                 : PropTypes.object.isRequired,
+    connection              : PropTypes.object,
     hangupCall              : PropTypes.func.isRequired,
     saveParticipant         : PropTypes.func,
     saveInvitedParties      : PropTypes.func,
