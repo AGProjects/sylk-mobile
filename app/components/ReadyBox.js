@@ -84,31 +84,31 @@ class ReadyBox extends Component {
     }
 
     showConferenceModal(event) {
+        event.preventDefault();
         if (this.state.targetUri.length !== 0) {
             const uri = `${this.state.targetUri.split('@')[0].replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
             this.handleConferenceCall(uri.toLowerCase());
         } else {
             this.setState({showConferenceModal: true});
         }
-        event.preventDefault();
     }
 
     handleAudioCall(event) {
+        event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {audio: true, video: false});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: false});
         }
-        event.preventDefault();
     }
 
     handleVideoCall(event) {
+        event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {audio: true, video: false});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: true});
         }
-        event.preventDefault();
     }
 
     handleConferenceCall(targetUri, options={audio: true, video: true, conference: true}) {
