@@ -212,7 +212,8 @@ class HistoryCard extends Component {
             if (this.state.conference) {
                 if (this.state.participants && this.state.participants.length) {
                     if (!showActions) {
-                        subtitle = 'With ' + this.state.participants.length + ' participants';
+                        const p_text = this.state.participants.length > 1 ? 'participants' : 'participant';
+                        subtitle = 'With ' + this.state.participants.length + ' ' + p_text;
                     } else {
                         let i = 1;
                         let contact_obj;
