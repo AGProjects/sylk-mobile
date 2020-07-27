@@ -212,7 +212,7 @@ class HistoryTileBox extends Component {
     }
 
     getServerHistory() {
-        utils.timestampedLog('Requesting call history from server');
+        //utils.timestampedLog('Requesting call history from server');
 
         let history = [];
         let getServerCallHistory = new DigestAuthRequest(
@@ -328,8 +328,6 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-        console.log('Render history');
-
         if (!this.state.accountId) {
             return null;
         }

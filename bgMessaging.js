@@ -22,7 +22,7 @@ export default async (remoteMessage) => {
         }
 
         if (url) {
-            console.log('Wake up from push with URL', url);
+            //console.log('Wake up from push with URL', url);
             SylkNative.launchMainActivity(url);
         }
     }

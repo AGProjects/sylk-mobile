@@ -35,13 +35,13 @@ class ConferenceModal extends Component {
     joinAudio(event) {
         event.preventDefault();
         const uri = `${this.state.conferenceTargetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
-        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: false});
+        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: false, conference: true});
     }
 
     joinVideo(event) {
         event.preventDefault();
         const uri = `${this.state.conferenceTargetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
-        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: true});
+        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: true, conference: true});
     }
 
     onHide() {

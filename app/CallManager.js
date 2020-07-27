@@ -52,9 +52,10 @@ export default class CallManager extends events.EventEmitter {
         this._calls = new Map();
         this._conferences = new Map();
         this._rejectedCalls = new Map();
+        this._acceptedCalls = new Map();
         this._alertedCalls = new Map();
 
-        this._decideWhenWebSocketInviteArrives = new Map();
+        this.webSocketActions = new Map();
         this._timeouts = new Map();
 
         this.sylkAcceptCall = acceptFunc;
@@ -124,7 +125,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       utils.timestampedLog('Callkeep: bring app to the foreground');
+       //utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
     }
 
@@ -133,13 +134,14 @@ export default class CallManager extends events.EventEmitter {
         this.callKeep.setMutedCall(callUUID, mute);
     }
 
-    startCall(callUUID, targetUri, targetName, hasVideo) {
+    startCall(callUUID, targetUri, hasVideo) {
         utils.timestampedLog('Callkeep: start outgoing call', callUUID);
         if (Platform.OS === 'ios') {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
             this.callKeep.startCall(callUUID, targetUri, targetUri);
         }
+        this.backToForeground();
     }
 
     updateDisplay(callUUID, displayName, uri) {
@@ -153,14 +155,8 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setCurrentCallActive(callUUID) {
-        utils.timestampedLog('Callkeep: set call active', callUUID);
+        //utils.timestampedLog('Callkeep: set call active', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
-    }
-
-    rejectCall(callUUID) {
-        utils.timestampedLog('Callkeep: reject call', callUUID);
-        this.callKeep.rejectCall(callUUID);
-        this._rejectedCalls.set(callUUID, true);
     }
 
     endCalls() {
@@ -169,7 +165,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
-        utils.timestampedLog('Callkeep: end call', callUUID, ' with reason', reason);
+        utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
         } else {
@@ -179,72 +175,80 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnActiveAudioSession() {
-        utils.timestampedLog('Callkeep: activated audio call');
+        //utils.timestampedLog('Callkeep: activated call');
     }
 
     _rnDeactiveAudioSession() {
-        utils.timestampedLog('Callkeep: deactivated audio call');
+        //utils.timestampedLog('Callkeep: deactivated call');
     }
 
     _rnAccept(data) {
         utils.timestampedLog('Callkeep: accept callback', callUUID);
         let callUUID = data.callUUID.toLowerCase();
-        this.acceptCall(callUUID);
+        if (!this._acceptedCalls.has(callUUID)) {
+            this.acceptCall(callUUID);
+        } else {
+            utils.timestampedLog('Callkeep: already accepted callback', callUUID);
+        }
     }
 
     acceptCall(callUUID) {
         utils.timestampedLog('Callkeep: accept call', callUUID);
+        this._acceptedCalls.set(callUUID, true);
+
+        if (this._timeouts.has(callUUID)) {
+            clearTimeout(this._timeouts.get(callUUID));
+            this._timeouts.delete(callUUID);
+        }
+
         if (this._conferences.has(callUUID)) {
             let room = this._conferences.get(callUUID);
+
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
             this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
 
-            if (this._timeouts.has(callUUID)) {
-                clearTimeout(this._timeouts.get(callUUID));
-                this._timeouts.delete(callUUID);
-            }
-
             utils.timestampedLog('Will start conference to', room);
-            this.conferenceCall(room);
-            // this is app callKeepStartConference()
+            this.conferenceCall(room); // this is app callKeepStartConference()
 
-            // start an outgoing conference call
         } else if (this._calls.has(callUUID)) {
             this.sylkAcceptCall();
+
         } else {
             // We accepted the call before it arrived on web socket
-            // from iOS push notifications
-            this._decideWhenWebSocketInviteArrives.set(callUUID, 'accept');
+            this.webSocketActions.set(callUUID, 'accept');
         }
-        this.backToForeground();
 
+        this.backToForeground();
     }
 
     _rnEnd(data) {
         utils.timestampedLog('Callkeep: end callback', callUUID);
         let callUUID = data.callUUID.toLowerCase();
         this.rejectCall(callUUID);
-
     }
 
     rejectCall(callUUID) {
         utils.timestampedLog('Callkeep: reject call', callUUID);
+
+        this.callKeep.rejectCall(callUUID);
+
+        this._rejectedCalls.set(callUUID, true);
+
+        if (this._timeouts.has(callUUID)) {
+            clearTimeout(this._timeouts.get(callUUID));
+            this._timeouts.delete(callUUID);
+        }
+
         if (this._conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: reject conference invite', callUUID);
             let room = this._conferences.get(callUUID);
-            this.callKeep.endCall(callUUID);
             this._conferences.delete(callUUID);
-
-            if (this._timeouts.has(callUUID)) {
-                clearTimeout(this._timeouts.get(callUUID));
-                this._timeouts.delete(callUUID);
-            }
 
         } else if (this._calls.has(callUUID)) {
             let call = this._calls.get(callUUID);
             if (call.state === 'incoming') {
-                utils.timestampedLog('Callkeep: cancel call', callUUID);
+                utils.timestampedLog('Callkeep: reject call', callUUID);
                 this.sylkRejectCall(callUUID);
             } else {
                 utils.timestampedLog('Callkeep: hangup call', callUUID);
@@ -254,8 +258,7 @@ export default class CallManager extends events.EventEmitter {
             // We rejected the call before it arrived on web socket
             // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
-            this._decideWhenWebSocketInviteArrives.set(callUUID, 'reject');
-            this._rejectedCalls.set(callUUID, true);
+            this.webSocketActions.set(callUUID, 'reject');
         }
     }
 
@@ -288,25 +291,25 @@ export default class CallManager extends events.EventEmitter {
     incomingCallFromPush(callUUID, from) {
         utils.timestampedLog('Callkeep: handle incoming push call', callUUID);
         // call is received by push notification
-        if (Platform.OS === 'ios') {
-            if (this._calls.has(callUUID)) {
-                utils.timestampedLog('Callkeep: call', callUUID, 'already handled');
-                return;
-            }
-        } else {
-            this.showAlertPanelforPush(callUUID, from);
-        }
 
         if (this._rejectedCalls.has(callUUID)) {
             this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
             return;
         }
 
-        let reason = this._decideWhenWebSocketInviteArrives.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
+        if (Platform.OS === 'ios') {
+            if (this._calls.has(callUUID)) {
+                utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
+            }
+        } else {
+            this.showAlertPanelforPush(callUUID, from);
+        }
+
+        let reason = this.webSocketActions.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
 
         // if user does not decide anything this will be handled later
         this._timeouts.set(callUUID, setTimeout(() => {
-            utils.timestampedLog('Callkeep: end call later', callUUID);
+            utils.timestampedLog('Callkeep: end call because user did not react', callUUID);
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
@@ -316,28 +319,36 @@ export default class CallManager extends events.EventEmitter {
         call._callkeepUUID = call.id;
 
         this._calls.set(call._callkeepUUID, call);
-        utils.timestampedLog('Callkeep: handle incoming call', call._callkeepUUID);
-
-        if (this._timeouts.has(call.id)) {
-            clearTimeout(this._timeouts.get(call.id));
-            this._timeouts.delete(call.id);
-        }
+        utils.timestampedLog('Callkeep: handle incoming websocket call', call._callkeepUUID);
 
         // if the call came via push and was already accepted or rejected
-        if (this._decideWhenWebSocketInviteArrives.get(call._callkeepUUID)) {
-            let action = this._decideWhenWebSocketInviteArrives.get(call._callkeepUUID);
-            utils.timestampedLog('Callkeep: execute action', action);
+        if (this.webSocketActions.get(call._callkeepUUID)) {
+            let action = this.webSocketActions.get(call._callkeepUUID);
+            utils.timestampedLog('Callkeep: execute action decided earlier', action);
+
             if (action === 'accept') {
                 this.sylkAcceptCall(call.id);
             } else {
                 this.sylkRejectCall(call.id);
             }
-            this._decideWhenWebSocketInviteArrives.delete(call._callkeepUUID);
-        } else if (this._rejectedCalls.has(call._callkeepUUID)) {
-            this.sylkRejectCall(call.id);
+
+            this.webSocketActions.delete(call._callkeepUUID);
+
+            if (this._timeouts.has(call.id)) {
+                clearTimeout(this._timeouts.get(call.id));
+                this._timeouts.delete(call.id);
+            }
+
         } else {
+            // iOS invite push does not arrive if app is in the foreground
+            // If the push arrived, we would be above this else
             if (Platform.OS === 'ios') {
                 this.showAlertPanelforCall(call);
+            } else {
+                // Andoid always receives the invite push and we must show the alert
+                // at that time, if we do it here, the previously shown alert panel
+                // will vanish and the app will go to the foregound leaving the user confused
+                // the alert panel is hidden somewhere in the notifications bar
             }
         }
 
@@ -360,8 +371,9 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
         this._conferences.set(callUUID, room);
+        utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
+
         this.showAlertPanelforPush(callUUID, from_uri);
 
         // there is no cancel, so we add a timer
@@ -386,7 +398,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
-        utils.timestampedLog("Callkeep: started call from outside");
+        utils.timestampedLog("Callkeep: started call from native dialer");
         console.log(data);
         this.startCallFromOutside(data);
     }

@@ -84,51 +84,37 @@ class ReadyBox extends Component {
     }
 
     showConferenceModal(event) {
-        event.preventDefault();
         if (this.state.targetUri.length !== 0) {
             const uri = `${this.state.targetUri.split('@')[0].replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
             this.handleConferenceCall(uri.toLowerCase());
         } else {
             this.setState({showConferenceModal: true});
         }
+        event.preventDefault();
     }
 
     handleAudioCall(event) {
-        if (this.props.connection === null) {
-            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
-            return;
-        }
-        event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {audio: true, video: false});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: false});
         }
+        event.preventDefault();
     }
 
     handleVideoCall(event) {
-        if (this.props.connection === null) {
-            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
-            return;
-        }
-        event.preventDefault();
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
             this.props.startConference(this.state.targetUri, {audio: true, video: false});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: true});
         }
+        event.preventDefault();
     }
 
-    handleConferenceCall(targetUri, options={audio: true, video: true}) {
+    handleConferenceCall(targetUri, options={audio: true, video: true, conference: true}) {
         if (targetUri) {
-            if (!options.video) {
-                console.log('ReadyBox: Handle audio only conference call to',targetUri);
-            } else {
-                console.log('ReadyBox: Handle video conference call to',targetUri);
-            }
             this.props.startConference(targetUri, options);
         }
-
         this.setState({showConferenceModal: false});
     }
 
