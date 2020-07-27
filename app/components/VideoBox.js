@@ -4,7 +4,7 @@ import classNames from 'classnames';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors } from 'react-native-paper';
-import { View, Dimensions, TouchableOpacity, Platform  } from 'react-native';
+import { View, Dimensions, TouchableWithoutFeedback, Platform  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 
 import CallOverlay from './CallOverlay';
@@ -70,10 +70,12 @@ class VideoBox extends Component {
         console.log('remoteStreams', this.props.call.getRemoteStreams());
         */
 
-        this.setState({localStream: this.props.call.getLocalStreams()[0],
-                       localVideoShow: true,
-                       remoteStream: this.props.call.getRemoteStreams()[0],
-                       remoteVideoShow: true});
+        this.setState({
+            localStream: this.props.call.getLocalStreams()[0],
+            localVideoShow: true,
+            remoteStream: this.props.call.getRemoteStreams()[0],
+            remoteVideoShow: true
+        });
 
         this.props.call.on('stateChanged', this.callStateChanged);
 
@@ -96,6 +98,7 @@ class VideoBox extends Component {
 
         // this.remoteVideo.current.addEventListener('playing', this.handleRemoteVideoPlaying);
         // sylkrtc.utils.attachMediaStream(this.props.call.getRemoteStreams()[0], this.remoteVideo.current, {disableContextMenu: true});
+        this.armOverlayTimer();
     }
 
     componentWillUnmount() {
@@ -306,7 +309,7 @@ class VideoBox extends Component {
         return (
             <View style={styles.container}>
                 <CallOverlay
-                    show = {true}
+                    show = {this.state.callOverlayVisible}
                     remoteUri = {this.props.remoteUri}
                     remoteDisplayName = {this.props.remoteDisplayName}
                     call = {this.props.call}
@@ -323,17 +326,20 @@ class VideoBox extends Component {
                 }
                 {this.state.remoteVideoShow ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
-                        <RTCView objectFit='cover' style={[styles.video, styles.remoteVideo]} poster="assets/images/transparent-1px.png" ref={this.remoteVideo} streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null} />
+                <TouchableWithoutFeedback onPress={this.showCallOverlay}>
+                            <RTCView objectFit='cover' style={[styles.video, styles.remoteVideo]} poster="assets/images/transparent-1px.png" ref={this.remoteVideo} streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null} />
+                        </TouchableWithoutFeedback>
                     </View>
                 : null }
                 { this.state.localVideoShow ?
-                <TouchableOpacity style={[styles.container, styles.localVideoContainer]} onPress={this.toggleCamera}>
-                    <View style={[styles.container, styles.localVideoContainer]}>
+                <View style={[styles.localVideoContainer]}>
+                    <TouchableWithoutFeedback onPress={this.toggleCamera}>
                         <RTCView objectFit='cover' style={[styles.video, styles.localVideo]} ref={this.localVideo}
                         streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
-                    </View>
-                </TouchableOpacity>
+                    </TouchableWithoutFeedback>
+                </View>
                 : null }
+                <View style={[styles.buttonContainer, !this.state.callOverlayVisible && styles.hidden]} >
                 { this.props.intercomDtmfTone ?
                  <View style={buttonContainerClass}>
                     <IconButton
@@ -389,8 +395,8 @@ class VideoBox extends Component {
                         icon="phone-hangup"
                     />
                 </View>
-
                 }
+                </View>
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}

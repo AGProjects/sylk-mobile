@@ -6,7 +6,7 @@
     position: absolute;
     left: 0;
     right: 0;
-    top: 50;
+    top: 0;
     bottom: 0;
 }
 
@@ -44,11 +44,11 @@
     margin-bottom: 0px;
 }
 
-
 .buttonContainer {
-    flex-direction: row;
-    margin: 0 auto;
-    margin-bottom: 40px;
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    right: 0;
 }
 
 .button {
@@ -71,4 +71,8 @@
 
 .hangupButton {
     background-color: rgba(#a94442, .5);
+}
+
+.hidden {
+    display: none;
 }
