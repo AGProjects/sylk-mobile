@@ -4,6 +4,7 @@ import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
+import momenttz from 'moment-timezone';
 import { Card, IconButton, Button, Caption, Title, Subheading, List, Text} from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
@@ -189,6 +190,10 @@ class HistoryCard extends Component {
         let title = displayName || uri.split('@')[0];
         let subtitle = uri;
         let description = this.props.contact.startTime;
+        if (this.props.contact.timezone !== undefined) {
+            const timeZonedDate = momenttz.tz(this.props.contact.startTime, this.props.contact.timezone).toDate();
+            description = moment(timeZonedDate).format('YYYY-MM-DD hh:mm:ss');
+        }
 
         if (displayName === uri) {
             title = toTitleCase(uri.split('@')[0]);

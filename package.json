@@ -67,6 +67,7 @@
     "minimist": "^1.2.0",
     "moment": "^2.24.0",
     "moment-duration-format": "^2.3.2",
+    "moment-timezone": "^0.5.31",
     "murmurhash-js": "^1.0.0",
     "node-sass": "^4.13.0",
     "notifyjs": "^3.0.0",
