@@ -36,6 +36,8 @@ class Call extends Component {
         let callState = null;
         let direction = 'outgoing';
         let callUUID;
+        let callEnded = false;
+        this.mediaIsPlaying = false;
 
         if (this.props.call !== null) {
             // If current call is available on mount we must have incoming
@@ -66,6 +68,23 @@ class Call extends Component {
                       callUUID: callUUID,
                       reconnectingCall: this.props.reconnectingCall
                       }
+    }
+
+    mediaPlaying() {
+        this.mediaIsPlaying = true;
+        if (this.state.direction === 'incoming') {
+            this.answerCall();
+        }
+    }
+
+    componentDidMount() {
+        if (this.state.direction === 'outgoing') {
+            this.startCallWhenReady();
+        }
+    }
+
+    componentWillUnmount() {
+        //console.log('Call: will unmount');
     }
 
     lookupContact() {
@@ -211,11 +230,22 @@ class Call extends Component {
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
+            if (this.userHangup) {
+                this.hangupCall('user_cancelled');
+                return;
+            }
+
+            if (this.waitCounter >= this.waitInterval - 1) {
+                utils.timestampedLog('Call: terminating conference', this.props.callUUID, 'that did not start yet');
+                this.hangupCall('timeout');
+            }
+
             if (!this.props.connection ||
                  this.props.connection.state !== 'ready' ||
-                 this.props.registrationState !== 'registered'
+                 this.props.registrationState !== 'registered' ||
+                 !this.mediaIsPlaying
                  ) {
-                //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;
@@ -223,11 +253,6 @@ class Call extends Component {
                 this.call();
 
                 return;
-            }
-
-            if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Call: terminating call', this.props.callUUID, 'that did not start yet');
-                this.hangupCall('timeout');
             }
 
             this.waitCounter++;
@@ -287,13 +312,6 @@ class Call extends Component {
         this.props.hangupCall(callUUID, reason);
     }
 
-    mediaPlaying() {
-        if (this.props.call === null && this.props.callUUID) {
-            this.startCallWhenReady();
-        } else {
-            this.answerCall();
-        }
-    }
 
     render() {
         /*

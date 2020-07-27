@@ -20,6 +20,7 @@ class Conference extends React.Component {
 
         this.waitCounter = 0;
         this.waitInterval = 180;
+        this.userHangup = false;
     }
 
     confStateChanged(oldState, newState, data) {
@@ -29,6 +30,11 @@ class Conference extends React.Component {
         }
     }
 
+    hangup() {
+        this.props.hangupCall(this.props.callUUID, 'user_press_hangup');
+        this.userHangup = true;
+    }
+
     async startConferenceWhenReady() {
         if (!this.props.callUUID || !this.props.targetUri) {
             return;
@@ -36,11 +42,23 @@ class Conference extends React.Component {
         utils.timestampedLog('Call: start conference', this.props.callUUID, 'when ready to', this.props.targetUri);
         this.waitCounter = 0;
 
-        utils.timestampedLog('Call: waiting for connecting to the conference', this.waitInterval, 'seconds');
+        //utils.timestampedLog('Call: waiting for connecting to the conference', this.waitInterval, 'seconds');
 
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
+            if (this.userHangup) {
+                this.props.hangupCall(this.props.callUUID, 'user_cancelled');
+                return;
+            }
+
+            if (this.waitCounter >= this.waitInterval - 1) {
+                utils.timestampedLog('Call: terminating conference', this.props.callUUID, 'that did not start yet');
+                this.props.hangupCall(this.props.callUUID, 'timeout');
+            }
+
+            this.waitCounter++;
+
             if (!this.props.connection ||
                 this.props.connection.state !== 'ready' ||
                 this.props.registrationState !== 'registered') {
@@ -53,13 +71,6 @@ class Conference extends React.Component {
 
                 return;
             }
-
-            if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Call: terminating conference', this.props.callUUID, 'that did not start yet');
-                this.hangup('timeout');
-            }
-
-            this.waitCounter++;
         }
     }
 
@@ -89,10 +100,6 @@ class Conference extends React.Component {
         }
     }
 
-    hangup() {
-        this.props.hangupCall(this.props.callUUID);
-    }
-
     mediaPlaying() {
         if (this.props.currentCall === null) {
             this.startConferenceWhenReady();
@@ -104,7 +111,7 @@ class Conference extends React.Component {
 
         if (this.props.localMedia !== null) {
             if (this.props.currentCall != null && this.props.currentCall.state === 'established') {
-                console.log('Render conference in call state', this.props.currentCall.state);
+                //console.log('Render conference in call state', this.props.currentCall.state);
                 box = (
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}

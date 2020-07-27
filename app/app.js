@@ -2064,6 +2064,7 @@ class Sylk extends Component {
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
                 connection = {this.state.connection}
+                registrationState = {this.state.registrationState}
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
                 saveInvitedParties = {this.saveInvitedParties}
