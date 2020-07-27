@@ -22,7 +22,7 @@ class Call extends Component {
         autoBind(this);
 
         this.waitCounter = 0;
-        this.waitInterval = 20;
+        this.waitInterval = 60;
 
         let audioOnly = false;
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
