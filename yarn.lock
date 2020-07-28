@@ -7513,7 +7513,7 @@ react-native-svg@^10.0.0:
     css-select "^2.1.0"
     css-tree "^1.0.0-alpha.39"
 
-react-native-sylkrtc@AGProjects/react-native-sylkrtc.js, react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#15c64a67f79727196fbf4f2051a90434e0ee36bd:
+react-native-sylkrtc@AGProjects/react-native-sylkrtc.js:
   version "1.4.3"
   resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/15c64a67f79727196fbf4f2051a90434e0ee36bd"
   dependencies:
@@ -7523,7 +7523,6 @@ react-native-sylkrtc@AGProjects/react-native-sylkrtc.js, react-native-sylkrtc@AG
     bowser "^2.7.0"
     debug "^4.1.1"
     dompurify "^2.0.10"
-    react-native-device-info "^5.5.4"
     react-native-get-random-values "^1.4.0"
     react-native-uuid "^1.4.9"
     sdp-transform "^2.3.0"
