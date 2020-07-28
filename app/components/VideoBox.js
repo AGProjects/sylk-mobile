@@ -252,6 +252,7 @@ class VideoBox extends Component {
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         const buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
+
         if (this.state.callOverlayVisible) {
             // const screenSharingButtonIcons = classNames({
             //     'fa'                    : true,
@@ -343,7 +344,7 @@ class VideoBox extends Component {
                     />
                 </View>);
             }
-            buttons = (<View style={styles.buttonContainer} >{content}</View>);
+            buttons = (<View style={styles.buttonContainer}>{content}</View>);
         } else {
             // watermark = (
             //     <CSSTransition
@@ -387,12 +388,12 @@ class VideoBox extends Component {
                 { this.state.localVideoShow ?
                     <View style={[styles.localVideoContainer]}>
                         <TouchableWithoutFeedback onPress={this.toggleCamera}>
-                            <RTCView 
-                                objectFit='cover' 
-                                style={[styles.video, styles.localVideo]} 
+                            <RTCView
+                                objectFit='cover'
+                                style={[styles.video, styles.localVideo]}
                                 ref={this.localVideo}
-                                streamURL={this.state.localStream ? this.state.localStream.toURL() : null} 
-                                mirror={true} 
+                                streamURL={this.state.localStream ? this.state.localStream.toURL() : null}
+                                mirror={true}
                             />
                         </TouchableWithoutFeedback>
                     </View>
