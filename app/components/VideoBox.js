@@ -244,9 +244,14 @@ class VideoBox extends Component {
             'fit'           : this.state.remoteSharesScreen
         });
 
-        let callButtons;
-        let watermark;
+        // let callButtons;
+        // let watermark;
 
+        let buttons;
+        const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
+        const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        const buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
         if (this.state.callOverlayVisible) {
             // const screenSharingButtonIcons = classNames({
             //     'fa'                    : true,
@@ -266,7 +271,7 @@ class VideoBox extends Component {
             //     'btn-round'     : true,
             //     'btn-default'   : true
             // });
-            const buttons = [];
+            // const buttons = [];
 
             // buttons.push(<Button key="shareScreen" type="button" title="Share screen" className={commonButtonClasses} onPress={this.props.shareScreen}><i className={screenSharingButtonIcons}></i></button>);
             // if (this.isFullscreenSupported()) {
@@ -283,6 +288,62 @@ class VideoBox extends Component {
 
             //     // </CSSTransition>
             // );
+            let content = (<View style={buttonContainerClass}>
+                <IconButton
+                    size={34}
+                    style={buttonClass}
+                    onPress={this.toggleEscalateConferenceModal}
+                    icon="account-plus"
+                />
+                <IconButton
+                    size={34}
+                    style={buttonClass}
+                    onPress={this.muteAudio}
+                    icon={muteButtonIcons}
+                />
+                <IconButton
+                    size={34}
+                    style={buttonClass}
+                    onPress={this.muteVideo}
+                    icon={muteVideoButtonIcons}
+                />
+                <IconButton
+                    size={34}
+                    style={[buttonClass]}
+                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                    onPress={this.props.toggleSpeakerPhone}
+                />
+                <IconButton
+                    size={34}
+                    style={[buttonClass, styles.hangupButton]}
+                    onPress={this.hangupCall}
+                    icon="phone-hangup"
+                />
+            </View>);
+            if (this.props.intercomDtmfTone) {
+                content = (<View style={buttonContainerClass}>
+                    <IconButton
+                        size={50}
+                        style={buttonClass}
+                        icon={this.state.doorOpened ? "door-open": "door" }
+                        onPress={this.openDoor}
+                        disabled={!(this.props.call && this.props.call.state === 'established')}
+                    />
+                    <IconButton
+                        size={34}
+                        style={[buttonClass]}
+                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                        onPress={this.props.toggleSpeakerPhone}
+                    />
+                    <IconButton
+                        size={50}
+                        style={[styles.button, styles.hangupButton]}
+                        onPress={this.hangupCall}
+                        icon="phone-hangup"
+                    />
+                </View>);
+            }
+            buttons = (<View style={styles.buttonContainer} >{content}</View>);
         } else {
             // watermark = (
             //     <CSSTransition
@@ -296,11 +357,6 @@ class VideoBox extends Component {
         }
 
         //console.log('local media stream in videobox', this.state);
-
-        const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
-        const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
-        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
-        let buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
 
         return (
             <View style={styles.container}>
@@ -327,80 +383,26 @@ class VideoBox extends Component {
                             />
                         </TouchableWithoutFeedback>
                     </View>
-                : null }
+                    : null }
                 { this.state.localVideoShow ?
-                <View style={[styles.localVideoContainer]}>
-                    <TouchableWithoutFeedback onPress={this.toggleCamera}>
-                        <RTCView objectFit='cover' style={[styles.video, styles.localVideo]} ref={this.localVideo}
-                        streamURL={this.state.localStream ? this.state.localStream.toURL() : null} mirror={true} />
-                    </TouchableWithoutFeedback>
-                </View>
-                : null }
+                    <View style={[styles.localVideoContainer]}>
+                        <TouchableWithoutFeedback onPress={this.toggleCamera}>
+                            <RTCView 
+                                objectFit='cover' 
+                                style={[styles.video, styles.localVideo]} 
+                                ref={this.localVideo}
+                                streamURL={this.state.localStream ? this.state.localStream.toURL() : null} 
+                                mirror={true} 
+                            />
+                        </TouchableWithoutFeedback>
+                    </View>
+                    : null }
 
-                {this.props.reconnectingCall ?
-                <ActivityIndicator style={styles.reconnectContainer} animating={true} size={'large'} color={Colors.red800} />
-                :
-                null
+                {this.props.reconnectingCall
+                    ? <ActivityIndicator style={styles.reconnectContainer} animating={true} size={'large'} color={Colors.red800} />
+                    : null
                 }
-
-                <View style={[styles.buttonContainer, !this.state.callOverlayVisible && styles.hidden]} >
-                    { this.props.intercomDtmfTone ?
-                        <View style={buttonContainerClass}>
-                            <IconButton
-                                size={50}
-                                style={buttonClass}
-                                icon={this.state.doorOpened ? "door-open": "door" }
-                                onPress={this.openDoor}
-                                disabled={!(this.props.call && this.props.call.state === 'established')}
-                            />
-                            <IconButton
-                                size={34}
-                                style={[buttonClass]}
-                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                                onPress={this.props.toggleSpeakerPhone}
-                            />
-                            <IconButton
-                                size={50}
-                                style={[styles.button, styles.hangupButton]}
-                                onPress={this.hangupCall}
-                                icon="phone-hangup"
-                            />
-                        </View>
-                        :
-                        <View style={buttonContainerClass}>
-                            <IconButton
-                                size={34}
-                                style={buttonClass}
-                                onPress={this.toggleEscalateConferenceModal}
-                                icon="account-plus"
-                            />
-                            <IconButton
-                                size={34}
-                                style={buttonClass}
-                                onPress={this.muteAudio}
-                                icon={muteButtonIcons}
-                            />
-                            <IconButton
-                                size={34}
-                                style={buttonClass}
-                                onPress={this.muteVideo}
-                                icon={muteVideoButtonIcons}
-                            />
-                            <IconButton
-                                size={34}
-                                style={[buttonClass]}
-                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                                onPress={this.props.toggleSpeakerPhone}
-                            />
-                            <IconButton
-                                size={34}
-                                style={[buttonClass, styles.hangupButton]}
-                                onPress={this.hangupCall}
-                                icon="phone-hangup"
-                            />
-                        </View>
-                    }
-                </View>
+                {buttons}
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
