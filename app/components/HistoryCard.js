@@ -195,7 +195,8 @@ class HistoryCard extends Component {
         }
 
         if (this.props.contact.tags.indexOf('history') > -1) {
-            let duration = moment.duration(this.props.contact.duration, 'seconds').format('hh:mm:ss', {trim: false});
+
+            let duration = moment.duration(this.props.contact.duration, 'seconds').format('HH:mm:ss', {trim: false});
 
             if (this.props.contact.direction === 'received' && this.props.contact.duration === 0) {
                 color.color = '#a94442';
