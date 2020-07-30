@@ -366,7 +366,7 @@ class Sylk extends Component {
                             outgoingMedia: null,
                             outgoingCallUUID: null,
                             currentCall: null,
-                            incomingCall: null,
+                            inboundCall: null,
                             targetUri: '',
                             reconnectingCall: false,
                             localMedia: null
@@ -772,15 +772,16 @@ class Sylk extends Component {
                 this.setState({showIncomingModal: false});
                 newInboundCall = null;
                 newCurrentCall = null;
-            } else if (oldState === 'incoming' && newState === 'accepted') {
+            } else if (newState === 'accepted' || newState === 'established') {
                 utils.timestampedLog("Incoming call is accepted");
                 newCurrentCall = this.state.inboundCall;
                 newInboundCall = this.state.inboundCall;
                 this.setState({showIncomingModal: false});
             } else if (oldState === 'established' && newState === 'terminated') {
+                utils.timestampedLog("Incoming call was terminated");
                 // old call was hangup to accept a new incoming calls
                 newCurrentCall = null;
-                newInboundCall = this.state.inboundCall;
+                newInboundCall = null;
             } else {
                 utils.timestampedLog('Call state changed:', 'we have one inbound call and unhandled state');
             }
@@ -898,7 +899,6 @@ class Sylk extends Component {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 }
 
-                //utils.timestampedLog('Call', callUUID, 'ended:', reason);
                 this._callKeepManager.endCall(callUUID, CALLKEEP_REASON);
 
                 if (this.state.currentCall === null) {
@@ -944,15 +944,6 @@ class Sylk extends Component {
             default:
                 break;
         }
-
-//        console.log('newCurrentCall', newCurrentCall);
-//        console.log('inboundCall', newInboundCall);
-/*
-        this.setState({
-                    currentCall: newCurrentCall,
-                    inboundCall: newInboundCall
-                });
-*/
 
     }
 
@@ -1966,7 +1957,6 @@ class Sylk extends Component {
 
     call() {
         return (
-
             <Call
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
