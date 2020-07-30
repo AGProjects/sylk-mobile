@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {Component, Fragment} from 'react';
-import { View, Platform, TouchableWithoutFeedback } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback, Dimensions } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -20,6 +20,7 @@ import ConferenceDrawerLog from './ConferenceDrawerLog';
 import ConferenceDrawerParticipant from './ConferenceDrawerParticipant';
 import ConferenceDrawerParticipantList from './ConferenceDrawerParticipantList';
 import ConferenceDrawerSpeakerSelection from './ConferenceDrawerSpeakerSelection';
+import ConferenceDrawerSpeakerSelectionWrapper from './ConferenceDrawerSpeakerSelectionWrapper';
 import ConferenceHeader from './ConferenceHeader';
 import ConferenceCarousel from './ConferenceCarousel';
 import ConferenceParticipant from './ConferenceParticipant';
@@ -45,6 +46,7 @@ class ConferenceBox extends Component {
             showDrawer: false,
             showFiles: false,
             shareOverlayVisible: false,
+            showSpeakerSelection: false,
             activeSpeakers: props.call.activeParticipants.slice(),
             selfDisplayedLarge: false,
             eventLog: [],
@@ -69,6 +71,7 @@ class ConferenceBox extends Component {
         this.logEvent = {};
         this.haveVideo = false;
         this.uploads = [];
+        this.selectSpeaker = 1;
 
         [
             'error',
@@ -300,6 +303,15 @@ class ConferenceBox extends Component {
         event.target.value = '';
     }
 
+    toggleSpeakerSelection() {
+        this.setState({showSpeakerSelection: !this.state.showSpeakerSelection});
+    }
+
+    startSpeakerSelection(number) {
+        this.selectSpeaker = number;
+        this.toggleSpeakerSelection();
+    }
+
     uploadFiles(files) {
         for (var key in files) {
             // is the item a File?
@@ -425,7 +437,7 @@ class ConferenceBox extends Component {
     }
 
     toggleDrawer() {
-        this.setState({callOverlayVisible: true, showDrawer: !this.state.showDrawer, showFiles: false});
+        this.setState({callOverlayVisible: true, showDrawer: !this.state.showDrawer, showFiles: false, showSpeakerSelection: false});
         clearTimeout(this.overlayTimer);
     }
 
@@ -743,16 +755,38 @@ class ConferenceBox extends Component {
                 <ConferenceDrawer
                     show={this.state.showDrawer}
                     close={this.toggleDrawer}
+                    isLandscape={this.props.isLandscape}
+                    title="Conference Data"
+                >
+                    <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
+                        <View style={{flex: this.props.isLandscape ? 1 : 2}}>
+                            <ConferenceDrawerSpeakerSelectionWrapper
+                                selectSpeaker={this.startSpeakerSelection}
+                                activeSpeakers={this.state.activeSpeakers}
+                            />
+                            <ConferenceDrawerParticipantList style={styles.container}>
+                                {drawerParticipants}
+                            </ConferenceDrawerParticipantList>
+                        </View>
+                        <View style={styles.container}>
+                            <ConferenceDrawerLog log={this.state.eventLog} />
+                        </View>
+                    </View>
+                </ConferenceDrawer>
+                <ConferenceDrawer
+                    show={this.state.showSpeakerSelection}
+                    close={this.toggleSpeakerSelection}
+                    isLandscape={this.props.isLandscape}
+                    showBackdrop={false}
+                    title={`Select Speaker ${this.selectSpeaker}`}
                 >
                     <ConferenceDrawerSpeakerSelection
                         participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
                         selected={this.handleActiveSpeakerSelected}
                         activeSpeakers={this.state.activeSpeakers}
+                        selectSpeaker={this.selectSpeaker}
+                        key = {this.state.activeSpeakers}
                     />
-                    <ConferenceDrawerParticipantList>
-                        {drawerParticipants}
-                    </ConferenceDrawerParticipantList>
-                    <ConferenceDrawerLog log={this.state.eventLog} />
                 </ConferenceDrawer>
             </View>
         );
