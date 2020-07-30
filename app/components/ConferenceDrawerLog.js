@@ -1,38 +1,42 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import utils from '../utils';
-import { Title, Text, List, Avatar } from 'react-native-paper';
+import { Title, Text, List } from 'react-native-paper';
+import { View, FlatList } from 'react-native';
 
-const ConferenceDrawerLog = (props) => {
-    const entries = props.log.map((elem, idx) => {
-        // const classes = classNames({
-        //     'text-danger'   : elem.level === 'error',
-        //     'text-warning'  : elem.level === 'warning',
-        //     'log-entry'     : true
-        // });
-        console.log(elem)
+import styles from '../assets/styles/blink/_ConferenceDrawerLog.scss';
+
+
+const ConferenceDrawerLog = props => {
+    const renderItem = ( {item, index} ) => {
+        const elem = item
         const originator = elem.originator.displayName || elem.originator.uri || elem.originator;
 
         const messages = elem.messages.map((message, index) => {
-            return <Text key={index}>{message}</Text>;
+            return <Text style={styles.messageText} key={index}>{message}</Text>;
         });
 
-        const number = props.log.length - idx;
+        const number = props.log.length - index;
 
         const color = utils.generateMaterialColor(elem.originator.uri || elem.originator)['300'];
+        const title = (<><Text style={{color: color}}>{originator}</Text> {elem.action} {messages}</>);
         return (
             <List.Item
-                title={`${originator} ${elem.action}`}
-                description={messages}
-                left={props => <Avatar.Text label={number} />}
+                titleNumberOfLines={2}
+                title={title}
+                titleStyle={styles.messageText}
+                left={props => <View style={styles.leftContainer}><Text style={styles.messageText}>{number}</Text></View>}
             />
         )
-    });
-
+    }
     return (
         <Fragment>
             <Title>Configuration Events</Title>
-            {entries}
+            <FlatList
+                data={props.log}
+                renderItem={renderItem}
+            >
+            </FlatList>
         </Fragment>
     );
 };
