@@ -511,8 +511,10 @@ class Sylk extends Component {
     }
 
     startCallWhenReady(targetUri, options) {
-        utils.timestampedLog('Start call when ready to', targetUri);
-        this._callKeepManager.startCall(options.callUUID, targetUri, options.video);
+        if (!options.video) {
+            this._callKeepManager.startCall(options.callUUID, targetUri, options.video);
+        }
+
         if (options.conference) {
             this.startConference(targetUri, options);
         } else {
