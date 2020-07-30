@@ -194,6 +194,8 @@ export default class CallManager extends events.EventEmitter {
 
     acceptCall(callUUID) {
         utils.timestampedLog('Callkeep: accept call', callUUID);
+        this.backToForeground();
+
         this._acceptedCalls.set(callUUID, true);
 
         if (this._timeouts.has(callUUID)) {
@@ -218,8 +220,6 @@ export default class CallManager extends events.EventEmitter {
             // We accepted the call before it arrived on web socket
             this.webSocketActions.set(callUUID, 'accept');
         }
-
-        this.backToForeground();
     }
 
     _rnEnd(data) {
@@ -231,6 +231,7 @@ export default class CallManager extends events.EventEmitter {
     rejectCall(callUUID) {
         utils.timestampedLog('Callkeep: reject call', callUUID);
 
+        this.backToForeground();
         this.callKeep.rejectCall(callUUID);
 
         this._rejectedCalls.set(callUUID, true);
@@ -398,8 +399,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
-        utils.timestampedLog("Callkeep: started call from native dialer");
-        console.log(data);
+        utils.timestampedLog("Callkeep: started call", data.callUUID);
         this.startCallFromOutside(data);
     }
 
