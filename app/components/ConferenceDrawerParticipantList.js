@@ -1,15 +1,17 @@
-
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { List, Title } from 'react-native-paper';
+import { FlatList } from 'react-native';
+import { Title } from 'react-native-paper';
 
-const ConferenceDrawerParticipantList = (props) => {
+
+const ConferenceDrawerParticipantList = props => {
     return (
         <Fragment>
             <Title>Participants</Title>
-            <List.Section>
-                {props.children}
-            </List.Section>
+            <FlatList
+                data={props.children}
+                renderItem={({item}) => {return (item)}}
+            />
         </Fragment>
     );
 };
