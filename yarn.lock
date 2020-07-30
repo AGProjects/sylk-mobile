@@ -7528,6 +7528,7 @@ react-native-sylkrtc@AGProjects/react-native-sylkrtc.js:
     bowser "^2.7.0"
     debug "^4.1.1"
     dompurify "^2.0.10"
+    react-native-device-info "^5.5.4"
     react-native-get-random-values "^1.4.0"
     react-native-uuid "^1.4.9"
     sdp-transform "^2.3.0"
