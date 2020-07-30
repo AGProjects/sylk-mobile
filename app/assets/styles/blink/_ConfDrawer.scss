@@ -1,0 +1,42 @@
+.margin {
+    padding: 10px;
+    background-color: #fff;
+    height: 100%;
+    // position: relative;
+    flex: 1;
+}
+
+.negative {
+    margin-left: -10px;
+    margin-top: -10px;
+    margin-right: -10px;
+    elevation: 0;
+}
+
+.flex {
+    flex: 1;
+}
+
+.container {
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right:0;
+}
+
+.drawerColor {
+    background-color: #fff;
+}
+
+.backdrop {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 100%;
+}
+
+.backdropColor{
+    background-color: rgba(0,0,0,.54);
+}
