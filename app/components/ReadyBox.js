@@ -1,7 +1,6 @@
 import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
-// import VizSensor     = require('react-visibility-sensor').default;
 import autoBind from 'auto-bind';
 import { View, Platform} from 'react-native';
 import { IconButton, Title, Button } from 'react-native-paper';
@@ -12,8 +11,8 @@ import FooterBox from './FooterBox';
 import URIInput from './URIInput';
 import config from '../config';
 import utils from '../utils';
-
 import styles from '../assets/styles/blink/_ReadyBox.scss';
+
 
 class ReadyBox extends Component {
     constructor(props) {
@@ -21,7 +20,7 @@ class ReadyBox extends Component {
         autoBind(this);
 
         this.state = {
-            targetUri: this.props.missedTargetUri,
+            targetUri: '',
             contacts: this.props.contacts,
             selectedContact: null,
             showConferenceModal: false,
@@ -38,14 +37,12 @@ class ReadyBox extends Component {
     }
 
     async componentDidMount() {
-        //console.log('Ready now');
         if (this.state.targetUri) {
             console.log('We must call', this.state.targetUri);
         }
     }
 
     filterHistory(filter) {
-       //console.log('set historyFilter', filter);
        this.setState({'historyFilter': filter});
        this.handleTargetChange('');
     }
@@ -244,7 +241,6 @@ ReadyBox.propTypes = {
     config          : PropTypes.object.isRequired,
     startCall       : PropTypes.func.isRequired,
     startConference : PropTypes.func.isRequired,
-    missedTargetUri : PropTypes.string,
     contacts        : PropTypes.array,
     orientation     : PropTypes.string,
     isTablet        : PropTypes.bool,

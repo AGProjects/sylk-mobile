@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
+import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors } from 'react-native-paper';
@@ -11,19 +12,17 @@ import CallOverlay from './CallOverlay';
 import EscalateConferenceModal from './EscalateConferenceModal';
 import DTMFModal from './DTMFModal';
 import config from '../config';
-import dtmf from 'react-native-dtmf';
-
 import styles from '../assets/styles/blink/_VideoBox.scss';
 
 const DEBUG = debug('blinkrtc:Video');
 debug.enable('*');
+
 
 class VideoBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
 
-        this.userHangup = false;
         this.state = {
             callOverlayVisible: true,
             audioMuted: false,
@@ -41,6 +40,7 @@ class VideoBox extends Component {
         this.overlayTimer = null;
         this.localVideo = React.createRef();
         this.remoteVideo = React.createRef();
+        this.userHangup = false;
     }
 
     callStateChanged(oldState, newState, data) {
@@ -63,13 +63,6 @@ class VideoBox extends Component {
     }
 
     componentDidMount() {
-        /*
-        console.log('VideoBox: did mount');
-        console.log('Call is', this.props.call);
-        console.log('localStreams', this.props.call.getLocalStreams());
-        console.log('remoteStreams', this.props.call.getRemoteStreams());
-        */
-
         this.setState({
             localStream: this.props.call.getLocalStreams()[0],
             localVideoShow: true,
@@ -77,33 +70,13 @@ class VideoBox extends Component {
             remoteVideoShow: true
         });
 
-        this.props.call.on('stateChanged', this.callStateChanged);
-
-        // sylkrtc.utils.attachMediaStream(, this.localVideo.current, {disableContextMenu: true});
-        // let promise =  this.localVideo.current.play()
-        // if (promise !== undefined) {
-        //     promise.then(_ => {
-        //         this.setState({localVideoShow: true});    // eslint-disable-line react/no-did-mount-set-state
-        //         // Autoplay started!
-        //     }).catch(error => {
-        //         // Autoplay was prevented.
-        //         // Show a "Play" button so that user can start playback.
-        //     });
-        // } else {
-        //     this.localVideo.current.addEventListener('playing', () => {
-        //         this.setState({});    // eslint-disable-line react/no-did-mount-set-state
-        //     });
-        // }
-
-        // this.remoteVideo.current.addEventListener('playing', this.handleRemoteVideoPlaying);
-        // sylkrtc.utils.attachMediaStream(this.props.call.getRemoteStreams()[0], this.remoteVideo.current, {disableContextMenu: true});
+        if (this.props.call) {
+            this.props.call.on('stateChanged', this.callStateChanged);
+        }
         this.armOverlayTimer();
     }
 
     componentWillUnmount() {
-        // clearTimeout(this.overlayTimer);
-        // this.remoteVideo.current.removeEventListener('playing', this.handleRemoteVideoPlaying);
-        // this.exitFullscreen();
         if (this.props.call != null) {
             this.props.call.removeListener('stateChanged', this.callStateChanged);
         }
@@ -124,14 +97,9 @@ class VideoBox extends Component {
 
     handleRemoteVideoPlaying() {
         this.setState({remoteVideoShow: true});
-        // this.remoteVideo.current.onresize = (event) => {
-        //     this.handleRemoteResize(event)
-        // };
-        // this.armOverlayTimer();
     }
 
     handleRemoteResize(event, target) {
-        //DEBUG("%o", event);
         const resolutions = [ '1280x720', '960x540', '640x480', '640x360', '480x270','320x180'];
         const videoResolution = event.target.videoWidth + 'x' + event.target.videoHeight;
         if (resolutions.indexOf(videoResolution) === -1) {
@@ -220,15 +188,15 @@ class VideoBox extends Component {
     }
 
     render() {
-        if (this.props.call == null) {
+        if (this.props.call === null) {
             return null;
         }
 
-        //console.log('Render Video Box in state', this.props.call.state);
+        // 'mirror'          : !this.props.call.sharingScreen && !this.props.generatedVideoTrack,
+        // we do not want mirrored local video once the call has started, just in preview
 
         const localVideoClasses = classNames({
             'video-thumbnail' : true,
-            'mirror'          : !this.props.call.sharingScreen && !this.props.generatedVideoTrack,
             'hidden'          : !this.state.localVideoShow,
             'animated'        : true,
             'fadeIn'          : this.state.localVideoShow || this.state.videoMuted,
@@ -244,78 +212,41 @@ class VideoBox extends Component {
             'fit'           : this.state.remoteSharesScreen
         });
 
-        // let callButtons;
-        // let watermark;
-
         let buttons;
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         const buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
+        const buttonSize = 34;
 
         if (this.state.callOverlayVisible) {
-            // const screenSharingButtonIcons = classNames({
-            //     'fa'                    : true,
-            //     'fa-clone'              : true,
-            //     'fa-flip-horizontal'    : true,
-            //     'text-warning'          : this.props.call.sharingScreen
-            // });
-
-            // const fullScreenButtonIcons = classNames({
-            //     'fa'            : true,
-            //     'fa-expand'     : !this.isFullScreen(),
-            //     'fa-compress'   : this.isFullScreen()
-            // });
-
-            // const commonButtonClasses = classNames({
-            //     'btn'           : true,
-            //     'btn-round'     : true,
-            //     'btn-default'   : true
-            // });
-            // const buttons = [];
-
-            // buttons.push(<Button key="shareScreen" type="button" title="Share screen" className={commonButtonClasses} onPress={this.props.shareScreen}><i className={screenSharingButtonIcons}></i></button>);
-            // if (this.isFullscreenSupported()) {
-            //     buttons.push(<button key="fsButton" type="button" className={commonButtonClasses} onPress={this.handleFullscreen}> <i className={fullScreenButtonIcons}></i> </button>);
-            // }
-            // buttons.push(<br key="break" />);
-
-            // callButtons = (
-            //     // <CSSTransition
-            //     //     key="buttons"
-            //     //     classNames="videobuttons"
-            //     //     timeout={{ enter: 300, exit: 300}}
-            //     // >
-
-            //     // </CSSTransition>
-            // );
             let content = (<View style={buttonContainerClass}>
                 <IconButton
-                    size={34}
+                    size={buttonSize}
                     style={buttonClass}
                     onPress={this.toggleEscalateConferenceModal}
                     icon="account-plus"
                 />
                 <IconButton
-                    size={34}
+                    size={buttonSize}
                     style={buttonClass}
                     onPress={this.muteAudio}
                     icon={muteButtonIcons}
                 />
                 <IconButton
-                    size={34}
+                    size={buttonSize}
                     style={buttonClass}
                     onPress={this.muteVideo}
                     icon={muteVideoButtonIcons}
                 />
                 <IconButton
-                    size={34}
+                    size={buttonSize}
                     style={[buttonClass]}
                     icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                     onPress={this.props.toggleSpeakerPhone}
                 />
                 <IconButton
-                    size={34}
+                    size={buttonSize}
                     style={[buttonClass, styles.hangupButton]}
                     onPress={this.hangupCall}
                     icon="phone-hangup"
@@ -331,7 +262,7 @@ class VideoBox extends Component {
                         disabled={!(this.props.call && this.props.call.state === 'established')}
                     />
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={[buttonClass]}
                         icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                         onPress={this.props.toggleSpeakerPhone}
@@ -345,19 +276,7 @@ class VideoBox extends Component {
                 </View>);
             }
             buttons = (<View style={styles.buttonContainer}>{content}</View>);
-        } else {
-            // watermark = (
-            //     <CSSTransition
-            //         key="watermark"
-            //         classNames="watermark"
-            //         timeout={{enter: 600, exit: 300}}
-            //     >
-            //         <View className="watermark"></View>
-            //     </CSSTransition>
-            // );
         }
-
-        //console.log('local media stream in videobox', this.state);
 
         return (
             <View style={styles.container}>
@@ -369,9 +288,6 @@ class VideoBox extends Component {
                     connection = {this.props.connection}
                     accountId = {this.props.accountId}
                 />
-                {/* <TransitionGroup> */}
-                    {/* {watermark} */}
-                {/* </TransitionGroup> */}
                 {this.state.remoteVideoShow && !this.props.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
                         <TouchableWithoutFeedback onPress={this.toggleCallOverlay}>

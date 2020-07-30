@@ -1,29 +1,21 @@
 import React, { Component } from 'react';
 import { View, Platform } from 'react-native';
 import { IconButton, Dialog, Text, ActivityIndicator, Colors } from 'react-native-paper';
-
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
-import Logger from "../../Logger";
+import EscalateConferenceModal from './EscalateConferenceModal';
 import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
-import EscalateConferenceModal from './EscalateConferenceModal';
 import UserIcon from './UserIcon';
-
-import utils from '../utils';
-
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
-
-const logger = new Logger("AudioCallBox");
+import utils from '../utils';
 
 
 class AudioCallBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-
-        this.userHangup = false;
 
         this.state = {
             active                      : false,
@@ -33,9 +25,9 @@ class AudioCallBox extends Component {
             call                        : this.props.call,
             reconnectingCall            : this.props.reconnectingCall
         };
-        // this.speechEvents = null;
 
         this.remoteAudio = React.createRef();
+        this.userHangup = false;
     }
 
     componentDidMount() {
@@ -104,17 +96,6 @@ class AudioCallBox extends Component {
 
     attachStream(call) {
         this.setState({stream: call.getRemoteStreams()[0]}); //we dont use it anywhere though as audio gets automatically piped
-        // const options = {
-        //     interval: 225,
-        //     play: false
-        // };
-        // this.speechEvents = hark(remoteStream, options);
-        // this.speechEvents.on('speaking', () => {
-        //     this.setState({active: true});
-        // });
-        // this.speechEvents.on('stopped_speaking', () => {
-        //     this.setState({active: false});
-        // });
     }
 
     escalateToConference(participants) {
@@ -138,12 +119,10 @@ class AudioCallBox extends Component {
         const track = localStream.getAudioTracks()[0];
 
         if(this.state.audioMuted) {
-            //console.log('Unmute microphone');
             this.state.callKeepToggleMute(false);
             track.enabled = true;
             this.setState({audioMuted: false});
         } else {
-            //console.log('Mute microphone');
             track.enabled = false;
             this.state.callKeepToggleMute(true);
             this.setState({audioMuted: true});
@@ -164,15 +143,13 @@ class AudioCallBox extends Component {
         });
     }
 
-//  {this.props.orientation !== 'landscape' && !this.userHangup && (!this.state.call || (this.state.call && this.state.call.state !== 'established')) ?
-
     render() {
         let remoteIdentity = {uri: this.props.remoteUri, displayName: this.props.remoteDisplayName};
-
-        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
         let buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
-        //console.log('Audio box reconnecting', this.state.reconnectingCall);
+
+        const buttonSize = 34;
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         return (
             <View style={styles.container}>
@@ -202,32 +179,32 @@ class AudioCallBox extends Component {
                 {this.state.call && this.state.call.state === 'established' ?
                     <View style={buttonContainerClass}>
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={buttonClass}
                         icon="account-plus"
                         onPress={this.toggleEscalateConferenceModal}
                     />
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={buttonClass}
                         icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
                         onPress={this.muteAudio}
                     />
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={buttonClass}
                         icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                         onPress={this.props.toggleSpeakerPhone}
                     />
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={buttonClass}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
                         disabled={!(this.state.call && this.state.call.state === 'established')}
                     />
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={[buttonClass, styles.hangupButton]}
                         icon="phone-hangup"
                         onPress={this.hangupCall}
@@ -236,7 +213,7 @@ class AudioCallBox extends Component {
                     :
                     <View style={buttonContainerClass}>
                     <IconButton
-                        size={34}
+                        size={buttonSize}
                         style={[buttonClass, styles.hangupButton]}
                         icon="phone-hangup"
                         onPress={this.cancelCall}
