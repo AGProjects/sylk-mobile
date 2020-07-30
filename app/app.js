@@ -142,6 +142,7 @@ class Sylk extends Component {
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
         this.registrationFailureTimer = null;
+        this.contacts = [];
 
         this.cachedHistory = []; // used for caching server history
 
