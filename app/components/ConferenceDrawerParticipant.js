@@ -18,7 +18,7 @@ const ConferenceDrawerParticipant = (props) => {
 
     return (
         <List.Item
-            description={participant.identity.displayName || participant.identity.uri}
+            title={participant.identity.displayName || participant.identity.uri}
             left={props => <UserIcon identity={participant.identity} />}
             right={props => tag ? <Text>{tag}</Text> : null}
         />
