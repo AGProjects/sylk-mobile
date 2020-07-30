@@ -2,7 +2,6 @@ import React, { Component, Fragment } from 'react';
 import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet} from 'react-native';
 import { DeviceEventEmitter } from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
-import { BreadProvider } from "material-bread";
 import { registerGlobals } from 'react-native-webrtc';
 import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
