@@ -361,6 +361,18 @@ class Sylk extends Component {
 
         if (route === '/ready') {
             this.closeLocalMedia();
+
+            this.setState({
+                            refreshHistory: !this.state.refreshHistory,
+                            outgoingMedia: null,
+                            outgoingCallUUID: null,
+                            currentCall: null,
+                            incomingCall: null,
+                            targetUri: '',
+                            reconnectingCall: false,
+                            localMedia: null
+                            });
+
         }
 
         utils.timestampedLog('Change route:', this.currentRoute, '->', route);
@@ -916,10 +928,6 @@ class Sylk extends Component {
 
                     if (goToReady) {
                         this.goToReadyTimer = setTimeout(() => {
-                            this.setState({
-                                currentCall: newCurrentCall,
-                                inboundCall: newInboundCall
-                            });
                             this.changeRoute('/ready');
                         }, 4000);
                     }
@@ -1273,7 +1281,6 @@ class Sylk extends Component {
         if (this.state.localMedia != null) {
             sylkrtc.utils.closeMediaStream(this.state.localMedia);
             utils.timestampedLog('Close local media');
-            this.setState({localMedia: null});
         }
     }
 
