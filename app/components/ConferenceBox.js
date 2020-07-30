@@ -643,7 +643,7 @@ class ConferenceBox extends Component {
         let videos = [];
         if (this.state.participants.length === 0) {
             videos.push(
-                <RTCView objectFit="cover" style={styles.wholePageVideo} ref="largeVideo" poster="assets/images/transparent-1px.png" streamURL={this.state.largeVideoStream ? this.state.largeVideoStream.toURL() : null} />
+                <RTCView key="self" objectFit="cover" style={styles.wholePageVideo} ref="largeVideo" poster="assets/images/transparent-1px.png" streamURL={this.state.largeVideoStream ? this.state.largeVideoStream.toURL() : null} />
             );
         } else {
             const activeSpeakers = this.state.activeSpeakers;
