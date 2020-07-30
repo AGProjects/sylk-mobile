@@ -111,7 +111,7 @@ class Preview extends Component {
 
     hangupCall(event) {
         event.preventDefault();
-        this.props.hangupCall();
+        this.props.hangupCall(null, 'stop_preview');
     }
 
     toggleDrawer() {
