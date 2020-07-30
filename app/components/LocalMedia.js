@@ -8,6 +8,7 @@ import { IconButton } from 'react-native-paper';
 import CallOverlay from './CallOverlay';
 import styles from '../assets/styles/blink/_LocalMedia.scss';
 
+
 class LocalMedia extends Component {
     constructor(props) {
         super(props);
@@ -15,12 +16,15 @@ class LocalMedia extends Component {
 
         this.localVideo = React.createRef();
 
+    }
+
+    componentDidMount() {
         this.props.mediaPlaying();
     }
 
     hangupCall(event) {
         event.preventDefault();
-        this.props.hangupCall();
+        this.props.hangupCall('stop_preview');
     }
 
     render() {
@@ -29,6 +33,8 @@ class LocalMedia extends Component {
             height,
             width
         };
+
+        const streamUrl = this.props.localMedia ? this.props.localMedia.toURL() : null;
 
         return (
             <Fragment>
@@ -43,8 +49,15 @@ class LocalMedia extends Component {
                 <View style={styles.buttonContainer}>
                     <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={34} />
                 </View>
+
                 <View style={styles.container}>
-                    <RTCView objectFit="cover" style={[styles.video, videoStyle]} id="localVideo" ref={this.localVideo} streamURL={this.props.localMedia ? this.props.localMedia.toURL() : null} mirror={true} />
+                    <RTCView objectFit="cover"
+                             style={[styles.video, videoStyle]}
+                             id="localVideo"
+                             ref={this.localVideo}
+                             streamURL={streamUrl}
+                             mirror={true}
+                             />
                 </View>
             </Fragment>
         );

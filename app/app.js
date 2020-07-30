@@ -1300,12 +1300,8 @@ class Sylk extends Component {
         if (reason !== 'connection_failed') {
             this.setState({reconnectingCall: false});
 
-            if (reason === 'user_cancelled' || reason === 'timeout') {
+            if (reason === 'user_cancelled' || reason === 'timeout' || reason === 'stop_preview') {
                 this.changeRoute('/ready');
-                this.setState({
-                                refreshHistory: !this.state.refreshHistory,
-                                currentCall: null
-                                });
              } else {
                     setTimeout(() => {
                         this.changeRoute('/ready');
