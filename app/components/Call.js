@@ -6,14 +6,11 @@ import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import uuid from 'react-native-uuid';
 
-import Logger from "../../Logger";
 import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
 import config from '../config';
 import utils from '../utils';
-
-const logger = new Logger("Call");
 
 
 class Call extends Component {
@@ -21,13 +18,12 @@ class Call extends Component {
         super(props);
         autoBind(this);
 
-        this.defaultWaitInterval = 40; // until we can reconnect
+        this.defaultWaitInterval = 60; // until we can connect or reconnect
         this.waitCounter = 0;
         this.waitInterval = this.defaultWaitInterval;
 
         let audioOnly = false;
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
-            //logger.debug('Will send audio only');
             audioOnly = true;
         }
 
@@ -71,9 +67,10 @@ class Call extends Component {
     }
 
     mediaPlaying() {
-        this.mediaIsPlaying = true;
         if (this.state.direction === 'incoming') {
             this.answerCall();
+        } else {
+            this.mediaIsPlaying = true;
         }
     }
 
@@ -94,8 +91,6 @@ class Call extends Component {
         if (this.props.call !== null) {
             remoteUri = this.props.call.remoteIdentity.uri;
             remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
-            //console.log('Incoming call remoteUri', remoteUri);
-            //console.log('Incoming call remoteDisplayName', remoteDisplayName);
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
@@ -151,31 +146,38 @@ class Call extends Component {
 
     callStateChanged(oldState, newState, data) {
         //console.log('Call: callStateChanged', oldState, '->', newState);
+        let remoteHasNoVideoTracks;
+        let remoteIsRecvOnly;
+        let remoteIsInactive;
+        let remoteStreams;
+
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
-            // Check the media type again, remote can choose to not accept all offered media types
             const currentCall = this.props.call;
-            const remoteHasStreams = currentCall.getRemoteStreams().length > 0;
-            const remoteHasNoVideoTracks = currentCall.getRemoteStreams()[0].getVideoTracks().length === 0;
-            const remoteIsRecvOnly = currentCall.remoteMediaDirections.video[0] === 'recvonly';
-            const remoteIsInactive = currentCall.remoteMediaDirections.video[0] === 'inactive';
 
-            if (remoteHasStreams && (remoteHasNoVideoTracks || remoteIsRecvOnly || remoteIsInactive) && !this.state.audioOnly) {
+            if (currentCall) {
+                remoteStreams = currentCall.getRemoteStreams();
+                if (remoteStreams) {
+                    if (remoteStreams.length > 0) {
+                        const remotestream = remoteStreams[0];
+                        remoteHasNoVideoTracks = remotestream.getVideoTracks().length === 0;
+                        remoteIsRecvOnly = currentCall.remoteMediaDirections.video[0] === 'recvonly';
+                        remoteIsInactive = currentCall.remoteMediaDirections.video[0] === 'inactive';
+                    }
+                }
+            }
+
+            if (remoteStreams && (remoteHasNoVideoTracks || remoteIsRecvOnly || remoteIsInactive) && !this.state.audioOnly) {
                 //console.log('Media type changed to audio');
                 // Stop local video
                 if (this.props.localMedia.getVideoTracks().length !== 0) {
                     currentCall.getLocalStreams()[0].getVideoTracks()[0].stop();
                 }
                 this.setState({audioOnly: true});
-                this.props.speakerphoneOff();
             } else {
                 this.forceUpdate();
             }
-            currentCall.removeListener('stateChanged', this.callStateChanged);
-        // Switch to video earlier. The callOverlay has a handle on
-        // 'established'. It starts a timer. To prevent a state updating on
-        // unmounted component we try to switch on 'accept'. This means we get
-        // to localMedia first.
+
         } else if (newState === 'accepted') {
             // Switch if we have audioOnly and local videotracks. This means
             // the call object switched and we are transitioning to an
@@ -183,7 +185,6 @@ class Call extends Component {
             if (this.state.audioOnly &&  this.props.localMedia && this.props.localMedia.getVideoTracks().length !== 0) {
                 //console.log('Media type changed to video on accepted');
                 this.setState({audioOnly: false});
-                this.props.speakerphoneOn();
             }
         }
 
@@ -264,8 +265,6 @@ class Call extends Component {
     }
 
     call() {
-        //console.log('Call: creating new call', this.props.callUUID);
-
         if (this.props.localMedia === null)  {
             console.log('Call: cannot create new call without local media');
             return;
@@ -281,7 +280,6 @@ class Call extends Component {
     }
 
     answerCall() {
-        //console.log('Call: Answer call');
         if (this.props.call && this.props.call.state === 'incoming') {
             this.lookupContact();
             let options = {pcConfig: {iceServers: config.iceServers}};
@@ -295,7 +293,6 @@ class Call extends Component {
         this.waitInterval = this.defaultWaitInterval;
 
         this.props.callUUID || this.props.call._callkeepUUID;
-        //console.log('Call: hangup call', callUUID, 'reason', reason);
 
         if (this.props.call) {
             this.props.call.removeListener('stateChanged', this.callStateChanged);
@@ -312,17 +309,7 @@ class Call extends Component {
         this.props.hangupCall(callUUID, reason);
     }
 
-
     render() {
-        /*
-        console.log('Call: render', this.state.direction, 'call', this.props.callUUID, 'reconnecting=', this.state.reconnectingCall);
-        if (this.props.call) {
-            console.log('Call state', this.props.call.state);
-        } else {
-            console.log('Call is null');
-        }
-        */
-
         let box = null;
 
         if (this.props.localMedia !== null) {
@@ -372,6 +359,7 @@ class Call extends Component {
                     );
                 } else {
                     if (this.props.call && this.props.call.state === 'terminated') {
+                        //console.log('Skip render local media');
                         // do not render
                     } else {
                         //console.log('Render local media');
@@ -409,8 +397,7 @@ Call.propTypes = {
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
     callKeepToggleMute      : PropTypes.func,
-    speakerphoneOn          : PropTypes.func,
-    speakerphoneOff         : PropTypes.func,
+    speakerPhoneEnabled     : PropTypes.bool,
     callUUID                : PropTypes.string,
     contacts                : PropTypes.array,
     intercomDtmfTone        : PropTypes.string,
