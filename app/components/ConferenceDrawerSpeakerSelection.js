@@ -1,8 +1,13 @@
 import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Title } from 'react-native-paper';
-import { Select } from 'material-bread';
+import { FlatList, TouchableOpacity, View, Text } from 'react-native';
+import { Button } from 'react-native-paper';
+import { SwipeRow } from 'react-native-swipe-list-view';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import ConferenceDrawerParticipant from './ConferenceDrawerParticipant';
+
+import styles from '../assets/styles/blink/_ConferenceDrawerSpeakerSelection.scss';
 
 class ConferenceDrawerSpeakerSelection extends Component {
     constructor(props) {
@@ -10,26 +15,13 @@ class ConferenceDrawerSpeakerSelection extends Component {
         autoBind(this)
         this.state = {
             speakers: props.activeSpeakers.map((participant) => {return participant.id}),
-            selectedLeft: 'None',
-            selectedRight: 'None'
         };
     }
 
-    componentWillReceiveProps(nextProps) {
-        let speakers = [];
-        if (nextProps.activeSpeakers.length !== 0) {
-            speakers = nextProps.activeSpeakers.map((participant) => {
-                return participant.id
-            });
-        }
-        this.setState({speakers: speakers});
-    }
-
     handleFirstSpeakerSelected(event) {
-        this.setState({selectedLeft: event.name});
-        if (event === 'None') {
+        if (event === 'none') {
             if (this.state.speakers.length > 0) {
-                this.props.selected({ id: event.id});
+                this.props.selected({id: event});
                 const newSpeakers = this.state.speakers.slice(1);
                 this.setState({speakers: newSpeakers});
             }
@@ -44,10 +36,9 @@ class ConferenceDrawerSpeakerSelection extends Component {
     }
 
     handleSecondSpeakerSelected(event) {
-        this.setState({selectedRight: event.name});
-        if (event.name === 'None') {
+        if (event === 'none') {
             if (this.state.speakers.length > 1) {
-                this.props.selected({ id: event.id}, true);
+                this.props.selected({id: event}, true);
                 const newSpeakers = this.state.speakers.slice();
                 newSpeakers.pop();
                 this.setState({speakers: newSpeakers});
@@ -61,46 +52,50 @@ class ConferenceDrawerSpeakerSelection extends Component {
     }
 
     render() {
-        const participantsLeft = [];
-        const participantsRight = [];
+        const parts = [];
 
-        if (this.state.speakers.length < 2) {
-            participantsRight.push({ name: 'None' });
+        let changeFunction = this.handleFirstSpeakerSelected;
+        if (this.props.selectSpeaker === 2) {
+            changeFunction = this.handleSecondSpeakerSelected;
         }
 
         this.props.participants.forEach((p, index) => {
+            const id = index;
 
-            let name = p.identity.displayName || p.identity.uri;
-            let id = index;
-
-            if (this.state.speakers[0] === p.id) {
-                participantsLeft.push({ id, name });
-            } else if (this.state.speakers[1] === p.id) {
-                participantsRight.push({ id, name });
+            if (this.state.speakers[this.props.selectSpeaker-1] === p.id) {
+                parts.push(
+                    <SwipeRow
+                         disableRightSwipe={true}
+                         rightOpenValue={-80}
+                         style={styles.swipeHidden}
+                    >
+                        <View style={styles.hiddenItem}>
+                            <TouchableOpacity onPress={() => changeFunction('none')} style={styles.button}>
+                                <Icon name="minus" size={30} color="#fff"/>
+                                <Text style={styles.removeButton}>Remove</Text>
+                            </TouchableOpacity>
+                        </View>
+                        <View style={styles.front}>
+                            <ConferenceDrawerParticipant participant={p} />
+                        </View>
+                    </SwipeRow>
+                );
             } else {
-                participantsRight.push({ id, name });
-                participantsLeft.push({ id, name });
+                parts.push(
+                    <TouchableOpacity onPress={() => changeFunction({id: id})} key={p.id}>
+                        <ConferenceDrawerParticipant participant={p} selected={true} />
+                    </TouchableOpacity>
+                );
             }
         });
 
         return (
             <Fragment>
-                <Title>Active Speakers</Title>
-                <Select
-                    label='Speaker 1'
-                    type='outlined'
-                    menuItems={participantsLeft}
-                    onSelect={this.handleFirstSpeakerSelected}
-                    selectedItem={this.state.selectedLeft}
-                />
-
-                <Select
-                    label='Speaker 2'
-                    type='outlined'
-                    menuItems={participantsRight}
-                    onSelect={this.handleSecondSpeakerSelected}
-                    selectedItem={this.state.selectedRight}
-                    visible={this.props.participants.length < 2 || this.state.speakers.length === 0}
+                {/* {this.props.activeSpeakers.length === this.props.selectSpeaker && <Button style={styles.firstButton} onPress={() => changeFunction('none')}>Remove speaker {this.props.selectSpeaker}</Button>} */}
+                <FlatList
+                    style={styles.flatlist}
+                    data={parts}
+                    renderItem={({item}) => {return (item)}}
                 />
             </Fragment>
         );
@@ -114,4 +109,3 @@ ConferenceDrawerSpeakerSelection.propTypes = {
 };
 
 export default ConferenceDrawerSpeakerSelection;
-
