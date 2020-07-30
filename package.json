@@ -15,7 +15,6 @@
     "@react-native-firebase/app": "^6.3.4",
     "@react-native-firebase/messaging": "^6.3.4",
     "auto-bind": "^4.0.0",
-    "material-bread": "0.2.6",
     "react": "16.9.0",
     "react-native": "0.61.5",
     "react-native-callkeep": "nimbleape/react-native-callkeep-1#aaf508332ff0855f500bd522779ef87884b59621",

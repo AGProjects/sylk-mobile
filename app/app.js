@@ -1842,55 +1842,53 @@ class Sylk extends Component {
         }
 
         return (
-            <BreadProvider>
-                <PaperProvider theme={theme}>
-                    <Router history={history} ref="router">
-                        <ImageBackground source={backgroundImage} style={{width: '100%', height: '100%'}}>
-                                    <View style={mainStyle.MainContainer} onLayout={(event) => this.setState({
-                                                                            Width_Layout : event.nativeEvent.layout.width,
-                                                                            Height_Layout : event.nativeEvent.layout.height
-                                                                           }, ()=> this._detectOrientation())}>
-                            <SafeAreaView style={[styles.root, extraStyles]}>
+            <PaperProvider theme={theme}>
+                <Router history={history} ref="router">
+                    <ImageBackground source={backgroundImage} style={{width: '100%', height: '100%'}}>
+                                <View style={mainStyle.MainContainer} onLayout={(event) => this.setState({
+                                                                        Width_Layout : event.nativeEvent.layout.width,
+                                                                        Height_Layout : event.nativeEvent.layout.height
+                                                                        }, ()=> this._detectOrientation())}>
+                        <SafeAreaView style={[styles.root, extraStyles]}>
 
-                                <LoadingScreen
-                                text={this.state.loading}
-                                show={this.state.loading !== null}
-                                orientation={this.state.orientation}
-                                isTablet={this.state.isTablet}
-                                />
+                            <LoadingScreen
+                            text={this.state.loading}
+                            show={this.state.loading !== null}
+                            orientation={this.state.orientation}
+                            isTablet={this.state.isTablet}
+                            />
 
-                                <IncomingCallModal
-                                    call={this.state.inboundCall}
-                                    onAccept={this.callKeepAcceptCall}
-                                    onReject={this.callKeepRejectCall}
-                                    show={this.state.showIncomingModal}
-                                    contacts = {this.contacts}
-                                />
+                            <IncomingCallModal
+                                call={this.state.inboundCall}
+                                onAccept={this.callKeepAcceptCall}
+                                onReject={this.callKeepRejectCall}
+                                show={this.state.showIncomingModal}
+                                contacts = {this.contacts}
+                            />
 
-                                {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
-                                <Switch>
-                                    <Route exact path="/" component={this.main} />
-                                    <Route exact path="/login" component={this.login} />
-                                    <Route exact path="/logout" component={this.logout} />
-                                    <Route exact path="/ready" component={this.ready} />
-                                    <Route exact path="/call" component={this.call} />
-                                    <Route path="/call/:targetUri" component={this.callByUri} />
-                                    {/* <Location path="/call/:targetUri" urlPatternOptions={{segmentValueCharset: 'a-zA-Z0-9-_ \.@'}} handler={this.callByUri} /> */}
-                                    <Route exact path="/conference" component={this.conference} />
-                                    <Route path="/conference/:targetUri" component={this.conferenceByUri} />
-                                    {/* <Location path="/conference/:targetUri" urlPatternOptions={{segmentValueCharset: 'a-zA-Z0-9-_~ %\.@'}}  handler={this.conferenceByUri} /> */}
-                                    <Route exact path="/preview" component={this.preview} />
-                                    <Route component={this.notFound} />
-                                </Switch>
+                            {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
+                            <Switch>
+                                <Route exact path="/" component={this.main} />
+                                <Route exact path="/login" component={this.login} />
+                                <Route exact path="/logout" component={this.logout} />
+                                <Route exact path="/ready" component={this.ready} />
+                                <Route exact path="/call" component={this.call} />
+                                <Route path="/call/:targetUri" component={this.callByUri} />
+                                {/* <Location path="/call/:targetUri" urlPatternOptions={{segmentValueCharset: 'a-zA-Z0-9-_ \.@'}} handler={this.callByUri} /> */}
+                                <Route exact path="/conference" component={this.conference} />
+                                <Route path="/conference/:targetUri" component={this.conferenceByUri} />
+                                {/* <Location path="/conference/:targetUri" urlPatternOptions={{segmentValueCharset: 'a-zA-Z0-9-_~ %\.@'}}  handler={this.conferenceByUri} /> */}
+                                <Route exact path="/preview" component={this.preview} />
+                                <Route component={this.notFound} />
+                            </Switch>
 
-                                <NotificationCenter ref="notificationCenter" />
+                            <NotificationCenter ref="notificationCenter" />
 
-                            </SafeAreaView>
-                            </View>
-                        </ImageBackground>
-                    </Router>
-                </PaperProvider>
-            </BreadProvider>
+                        </SafeAreaView>
+                        </View>
+                    </ImageBackground>
+                </Router>
+            </PaperProvider>
         );
     }
 

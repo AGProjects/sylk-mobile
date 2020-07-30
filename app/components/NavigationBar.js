@@ -3,7 +3,7 @@ import { Linking, Image, View } from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text } from 'react-native-paper';
-import { Icon } from 'material-bread';
+import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
 import config from '../config';
 import AboutModal from './AboutModal';
