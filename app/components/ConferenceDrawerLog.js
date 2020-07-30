@@ -35,7 +35,7 @@ const ConferenceDrawerLog = props => {
             <FlatList
                 data={props.log}
                 renderItem={renderItem}
-                keyExtractor={(item, index) => index}
+                keyExtractor={(item, index) => {`${index}`}}
             >
             </FlatList>
         </Fragment>
