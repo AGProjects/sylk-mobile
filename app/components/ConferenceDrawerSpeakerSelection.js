@@ -68,6 +68,7 @@ class ConferenceDrawerSpeakerSelection extends Component {
                          disableRightSwipe={true}
                          rightOpenValue={-80}
                          style={styles.swipeHidden}
+                         key={index}
                     >
                         <View style={styles.hiddenItem}>
                             <TouchableOpacity onPress={() => changeFunction('none')} style={styles.button}>
