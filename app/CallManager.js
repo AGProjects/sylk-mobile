@@ -190,6 +190,11 @@ export default class CallManager extends events.EventEmitter {
         } else {
             utils.timestampedLog('Callkeep: already accepted callback', callUUID);
         }
+
+        if (this._timeouts.has(callUUID)) {
+            clearTimeout(this._timeouts.get(callUUID));
+            this._timeouts.delete(callUUID);
+        }
     }
 
     acceptCall(callUUID) {
@@ -226,6 +231,11 @@ export default class CallManager extends events.EventEmitter {
         utils.timestampedLog('Callkeep: end callback', callUUID);
         let callUUID = data.callUUID.toLowerCase();
         this.rejectCall(callUUID);
+
+        if (this._timeouts.has(callUUID)) {
+            clearTimeout(this._timeouts.get(callUUID));
+            this._timeouts.delete(callUUID);
+        }
     }
 
     rejectCall(callUUID) {
@@ -237,6 +247,7 @@ export default class CallManager extends events.EventEmitter {
         this._rejectedCalls.set(callUUID, true);
 
         if (this._timeouts.has(callUUID)) {
+            utils.timestampedLog('Callkeep: cancel auto timeout for call', callUUID);
             clearTimeout(this._timeouts.get(callUUID));
             this._timeouts.delete(callUUID);
         }
