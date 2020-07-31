@@ -22,6 +22,7 @@ const ConferenceDrawerLog = props => {
         const title = (<><Text style={{color: color}}>{originator}</Text> {elem.action} {messages}</>);
         return (
             <List.Item
+                style={styles.lessPadding}
                 titleNumberOfLines={2}
                 title={title}
                 titleStyle={styles.messageText}
