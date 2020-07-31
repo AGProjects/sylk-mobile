@@ -247,7 +247,6 @@ export default class CallManager extends events.EventEmitter {
         this._rejectedCalls.set(callUUID, true);
 
         if (this._timeouts.has(callUUID)) {
-            utils.timestampedLog('Callkeep: cancel auto timeout for call', callUUID);
             clearTimeout(this._timeouts.get(callUUID));
             this._timeouts.delete(callUUID);
         }
@@ -321,7 +320,7 @@ export default class CallManager extends events.EventEmitter {
 
         // if user does not decide anything this will be handled later
         this._timeouts.set(callUUID, setTimeout(() => {
-            utils.timestampedLog('Callkeep: end call because user did not react', callUUID);
+            utils.timestampedLog('Callkeep: end call because user did not accept or reject', callUUID);
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
