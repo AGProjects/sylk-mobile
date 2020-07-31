@@ -31,7 +31,7 @@ const ConferenceDrawerLog = props => {
     }
     return (
         <Fragment>
-            <Title>Configuration Events</Title>
+            <Title>Configuration events</Title>
             <FlatList
                 data={props.log}
                 renderItem={renderItem}

@@ -27,7 +27,7 @@ const ConferenceDrawerSpeakerSelectionWrapper = props => {
     const twoButtons = props.activeSpeakers.length >= 1;
     return (
         <Fragment>
-            <Title>Active Speakers</Title>
+            <Title>Active speakers</Title>
             <Button
                 style={[styles.firstButton, !twoButtons && styles.onlyButton]}
                 icon="account"

@@ -756,7 +756,7 @@ class ConferenceBox extends Component {
                     show={this.state.showDrawer}
                     close={this.toggleDrawer}
                     isLandscape={this.props.isLandscape}
-                    title="Conference Data"
+                    title="Conference data"
                 >
                     <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
                         <View style={{flex: this.props.isLandscape ? 1 : 2}}>
@@ -778,7 +778,7 @@ class ConferenceBox extends Component {
                     close={this.toggleSpeakerSelection}
                     isLandscape={this.props.isLandscape}
                     showBackdrop={false}
-                    title={`Select Speaker ${this.selectSpeaker}`}
+                    title={`Select speaker ${this.selectSpeaker}`}
                 >
                     <ConferenceDrawerSpeakerSelection
                         participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
