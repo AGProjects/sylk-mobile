@@ -119,12 +119,12 @@ class AudioCallBox extends Component {
         const track = localStream.getAudioTracks()[0];
 
         if(this.state.audioMuted) {
-            this.state.callKeepToggleMute(false);
+            this.props.callKeepToggleMute(false);
             track.enabled = true;
             this.setState({audioMuted: false});
         } else {
             track.enabled = false;
-            this.state.callKeepToggleMute(true);
+            this.props.callKeepToggleMute(true);
             this.setState({audioMuted: true});
         }
     }
