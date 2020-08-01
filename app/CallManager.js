@@ -200,12 +200,13 @@ export default class CallManager extends events.EventEmitter {
     }
 
     acceptCall(callUUID) {
-        utils.timestampedLog('Callkeep: accept call', callUUID);
 
         if (this._acceptedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: already accepted call', callUUID);
             return;
         }
+
+        utils.timestampedLog('Callkeep: accept call', callUUID);
 
         this._acceptedCalls.set(callUUID, true);
 
@@ -238,12 +239,13 @@ export default class CallManager extends events.EventEmitter {
     }
 
     rejectCall(callUUID) {
-        utils.timestampedLog('Callkeep: reject call', callUUID);
 
         if (this._rejectedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: already rejected call', callUUID);
             return;
         }
+
+        utils.timestampedLog('Callkeep: reject call', callUUID);
 
         this._rejectedCalls.set(callUUID, true);
 
