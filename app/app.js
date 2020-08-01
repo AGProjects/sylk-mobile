@@ -720,6 +720,15 @@ class Sylk extends Component {
         let callUUID = call._callkeepUUID;
         utils.timestampedLog(call.direction, 'call', callUUID, 'state change:', oldState, '->', newState);
 
+        if (newState === 'established' || newState === 'accepted') {
+            // restore the correct UI state if it has transitioned illegally to /ready state
+            if (call.hasOwnProperty('_participants')) {
+                this.changeRoute('/conference');
+            } else {
+                this.changeRoute('/call');
+            }
+        }
+
         let newCurrentCall;
         let newincomingCall;
         let direction = call.direction;
