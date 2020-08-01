@@ -290,7 +290,7 @@ class VideoBox extends Component {
         }
 
         const remoteStreamUrl = this.state.remoteStream ? this.state.remoteStream.toURL() : null
-        console.log('Remote video stream Url', remoteStreamUrl);
+        //console.log('Render remote video stream Url', remoteStreamUrl);
 
         return (
             <View style={styles.container}>
