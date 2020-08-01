@@ -289,6 +289,9 @@ class VideoBox extends Component {
             buttons = (<View style={styles.buttonContainer}>{content}</View>);
         }
 
+        const remoteStreamUrl = this.state.remoteStream ? this.state.remoteStream.toURL() : null
+        console.log('Remote video stream Url', remoteStreamUrl);
+
         return (
             <View style={styles.container}>
                 <CallOverlay
@@ -307,7 +310,7 @@ class VideoBox extends Component {
                                 style={[styles.video, styles.remoteVideo]}
                                 poster="assets/images/transparent-1px.png"
                                 ref={this.remoteVideo}
-                                streamURL={this.state.remoteStream ? this.state.remoteStream.toURL() : null}
+                                streamURL={remoteStreamUrl}
                             />
                         </TouchableWithoutFeedback>
                     </View>

@@ -818,25 +818,31 @@ class Sylk extends Component {
                     incomingCall: newincomingCall
                 });
                 this.resetGoToReadyTimer();
+
+                if (direction === 'outgoing') {
+                    let hasVideo = false;
+
+                    if (!this.state.isConference) {
+                        const videoTracks = call.remoteMediaDirections.video;
+                        hasVideo = videoTracks && videoTracks.length > 0;
+                        this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, hasVideo);
+                    }
+
+                } else {
+                    this._callKeepManager.setCurrentCallActive(callUUID);
+                }
                 break;
             case 'accepted':
-                this._callKeepManager.backToForeground();
 
-                this._callKeepManager.setCurrentCallActive(callUUID);
-
-                if (this.state.isConference) {
-                    // allow ringtone to play once as connection is too fast
-                    setTimeout(() => {InCallManager.stopRingback();}, 1500);
-                } else {
-                    //utils.timestampedLog('Stop ringback tone');
-                    InCallManager.stopRingback();
-                }
+                InCallManager.stopRingback();
 
                 if (this.state.isConference) {
                     this.speakerphoneOn();
                 } else if (this.state.currentCall && this.state.currentCall.remoteMediaDirections) {
-                    const videoTracks = this.state.currentCall.remoteMediaDirections.video;
-                    if (videoTracks && videoTracks.length > 0) {
+                    const videoTracks = call.remoteMediaDirections.video;
+                    const hasVideo = videoTracks && videoTracks.length > 0;
+
+                    if (hasVideo) {
                         utils.timestampedLog('Call state changed:', 'Video call started')
                         this.speakerphoneOn();
                     }
