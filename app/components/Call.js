@@ -226,6 +226,8 @@ class Call extends Component {
         utils.timestampedLog('Call: start call', this.props.callUUID, 'when ready to', this.props.targetUri);
         this.waitCounter = 0;
 
+        this.lookupContact();
+
         utils.timestampedLog('Call: waiting for establishing call', this.waitInterval, 'seconds');
 
         let diff = 0;
@@ -265,12 +267,12 @@ class Call extends Component {
     }
 
     call() {
+        utils.timestampedLog('Call: starting call', this.props.callUUID);
+
         if (this.props.localMedia === null)  {
             console.log('Call: cannot create new call without local media');
             return;
         }
-
-        this.lookupContact();
 
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
         options.localStream = this.props.localMedia;
