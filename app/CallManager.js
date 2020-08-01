@@ -155,7 +155,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setCurrentCallActive(callUUID) {
-        //utils.timestampedLog('Callkeep: set call active', callUUID);
+        utils.timestampedLog('Callkeep: set call active', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
     }
 
@@ -175,31 +175,37 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnActiveAudioSession() {
-        //utils.timestampedLog('Callkeep: activated call');
+        utils.timestampedLog('Callkeep: activated audio call');
     }
 
     _rnDeactiveAudioSession() {
-        //utils.timestampedLog('Callkeep: deactivated call');
+        utils.timestampedLog('Callkeep: deactivated audio call');
     }
 
     _rnAccept(data) {
-        utils.timestampedLog('Callkeep: accept callback', callUUID);
+        let callUUID = data.callUUID.toLowerCase();
+        if (!this._rejectedCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: accept callback', callUUID);
+            this.acceptCall(callUUID);
+        }
+    }
+
+    _rnEnd(data) {
+        // this is called both when user touches Reject and when the call ends
         let callUUID = data.callUUID.toLowerCase();
         if (!this._acceptedCalls.has(callUUID)) {
-            this.acceptCall(callUUID);
-        } else {
-            utils.timestampedLog('Callkeep: already accepted callback', callUUID);
-        }
-
-        if (this._timeouts.has(callUUID)) {
-            clearTimeout(this._timeouts.get(callUUID));
-            this._timeouts.delete(callUUID);
+            utils.timestampedLog('Callkeep: end callback', callUUID);
+            this.rejectCall(callUUID);
         }
     }
 
     acceptCall(callUUID) {
         utils.timestampedLog('Callkeep: accept call', callUUID);
-        this.backToForeground();
+
+        if (this._acceptedCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: already accepted call', callUUID);
+            return;
+        }
 
         this._acceptedCalls.set(callUUID, true);
 
@@ -208,15 +214,19 @@ export default class CallManager extends events.EventEmitter {
             this._timeouts.delete(callUUID);
         }
 
+        this.backToForeground();
+
         if (this._conferences.has(callUUID)) {
             let room = this._conferences.get(callUUID);
 
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
-            this.callKeep.endCall(callUUID);
+
+            this.endCall(callUUID, 4);
+
             this._conferences.delete(callUUID);
 
-            utils.timestampedLog('Will start conference to', room);
-            this.conferenceCall(room); // this is app callKeepStartConference()
+            utils.timestampedLog('Callkeep: will start conference to', room);
+            this.conferenceCall(room);
 
         } else if (this._calls.has(callUUID)) {
             this.sylkAcceptCall();
@@ -227,22 +237,13 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
-    _rnEnd(data) {
-        utils.timestampedLog('Callkeep: end callback', callUUID);
-        let callUUID = data.callUUID.toLowerCase();
-        this.rejectCall(callUUID);
-
-        if (this._timeouts.has(callUUID)) {
-            clearTimeout(this._timeouts.get(callUUID));
-            this._timeouts.delete(callUUID);
-        }
-    }
-
     rejectCall(callUUID) {
         utils.timestampedLog('Callkeep: reject call', callUUID);
 
-        this.backToForeground();
-        this.callKeep.rejectCall(callUUID);
+        if (this._rejectedCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: already rejected call', callUUID);
+            return;
+        }
 
         this._rejectedCalls.set(callUUID, true);
 
@@ -250,6 +251,10 @@ export default class CallManager extends events.EventEmitter {
             clearTimeout(this._timeouts.get(callUUID));
             this._timeouts.delete(callUUID);
         }
+
+        this.backToForeground();
+
+        this.callKeep.rejectCall(callUUID);
 
         if (this._conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: reject conference invite', callUUID);
@@ -304,7 +309,7 @@ export default class CallManager extends events.EventEmitter {
         // call is received by push notification
 
         if (this._rejectedCalls.has(callUUID)) {
-            this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
+            this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
             return;
         }
 
@@ -321,7 +326,7 @@ export default class CallManager extends events.EventEmitter {
         // if user does not decide anything this will be handled later
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: end call because user did not accept or reject', callUUID);
-            this.callKeep.reportEndCallWithUUID(callUUID, reason);
+            this.endCall(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
     }
@@ -383,15 +388,15 @@ export default class CallManager extends events.EventEmitter {
         }
 
         this._conferences.set(callUUID, room);
+
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
 
         this.showAlertPanelforPush(callUUID, from_uri);
 
-        // there is no cancel, so we add a timer
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: conference timeout', callUUID);
             this.timeoutCall(callUUID, from_uri);
-            this.callKeep.reportEndCallWithUUID(callUUID, CK_CONSTANTS.END_CALL_REASONS.MISSED);
+            this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.MISSED);
             this._timeouts.delete(callUUID);
         }, 45000));
 

@@ -809,7 +809,9 @@ class Sylk extends Component {
                 break;
             case 'accepted':
                 this._callKeepManager.backToForeground();
+
                 this._callKeepManager.setCurrentCallActive(callUUID);
+
                 if (this.state.isConference) {
                     // allow ringtone to play once as connection is too fast
                     setTimeout(() => {InCallManager.stopRingback();}, 1500);
@@ -1460,7 +1462,7 @@ class Sylk extends Component {
 
             if (n === wait_interval - 1) {
                 utils.timestampedLog('Terminating call', callUUID, 'that did not start yet');
-                this._callKeepManager.endCall(callUUID, 6);
+                this.cancelIncomingCall(callUUID)
             }
             n++;
         }
@@ -1493,10 +1495,7 @@ class Sylk extends Component {
     conferenceInviteFromWebSocket(data) {
         // comes from web socket
         utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
-        //this._notificationCenter.postSystemNotification('Conference invite', {body: `From ${data.originator.displayName || data.originator.uri} for room ${data.room}`, timeout: 15, silent: false});
-        if (Platform.OS === 'android') {
-            this.incomingConference(data.id, data.room, data.originator.uri);
-        }
+        this._notificationCenter.postSystemNotification('Conference invite', {body: `from ${data.originator.displayName || data.originator.uri}`, timeout: 5, silent: false});
     }
 
     incomingCallFromPush(callUUID, from) {
