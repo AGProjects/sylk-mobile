@@ -144,11 +144,21 @@ class AudioCallBox extends Component {
     }
 
     render() {
+        let buttonContainerClass;
+        let userIconContainerClass;
+
         let remoteIdentity = {uri: this.props.remoteUri, displayName: this.props.remoteDisplayName};
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
-        let buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
 
-        const buttonSize = 34;
+        if (this.props.isTablet) {
+            buttonContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapeButtonContainer : styles.tabletPortraitButtonContainer;
+            userIconContainerClass = styles.tabletUserIconContainer;
+        } else {
+            buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
+            userIconContainerClass = styles.userIconContainer;
+        }
+
+        const buttonSize = this.props.isTablet ? 40 : 34;
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         return (
@@ -161,7 +171,7 @@ class AudioCallBox extends Component {
                     connection={this.props.connection}
                     accountId={this.props.accountId}
                 />
-                <View style={styles.userIconContainer}>
+                <View style={userIconContainerClass}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
                 <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>

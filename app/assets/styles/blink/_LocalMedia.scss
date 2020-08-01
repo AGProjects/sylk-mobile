@@ -7,6 +7,15 @@
 .video {
 }
 
+.tabletButtonContainer {
+    position: absolute;
+    bottom: 60;
+    width: 100%;
+    z-index: 99;
+    justify-content: center;
+    align-items: center;
+}
+
 .buttonContainer {
     position: absolute;
     bottom: 40;

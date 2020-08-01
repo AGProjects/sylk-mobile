@@ -35,6 +35,8 @@ class LocalMedia extends Component {
         };
 
         const streamUrl = this.props.localMedia ? this.props.localMedia.toURL() : null;
+        const buttonSize = this.props.isTablet ? 40 : 34;
+        const buttonContainerClass = this.props.isTablet ? styles.tabletButtonContainer : styles.buttonContainer;
 
         return (
             <Fragment>
@@ -46,8 +48,8 @@ class LocalMedia extends Component {
                     connection={this.props.connection}
                     accountId={this.props.accountId}
                 />
-                <View style={styles.buttonContainer}>
-                    <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={34} />
+                <View style={buttonContainerClass}>
+                    <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={buttonSize} />
                 </View>
 
                 <View style={styles.container}>
@@ -73,7 +75,9 @@ LocalMedia.propTypes = {
     mediaPlaying        : PropTypes.func.isRequired,
     generatedVideoTrack : PropTypes.bool,
     connection          : PropTypes.object,
-    accountId           : PropTypes.string
+    accountId           : PropTypes.string,
+    orientation         : PropTypes.string,
+    isTablet            : PropTypes.bool
 };
 
 

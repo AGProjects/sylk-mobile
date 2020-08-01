@@ -47,6 +47,20 @@
     margin-bottom: 0px;
 }
 
+.tabletPortraitButtonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    margin-bottom: 40px;
+    bottom: 60;
+}
+
+.tabletLandscapeButtonContainer {
+    flex-direction: row;
+    margin: 0 auto;
+    margin-bottom: 0px;
+    bottom: 60;
+}
+
 .buttonContainer {
     position: absolute;
     left: 0;

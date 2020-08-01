@@ -212,12 +212,23 @@ class VideoBox extends Component {
             'fit'           : this.state.remoteSharesScreen
         });
 
+        let buttonContainerClass;
+        let userIconContainerClass;
+
         let buttons;
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
-        const buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
-        const buttonSize = 34;
+
+        const buttonSize = this.props.isTablet ? 40 : 34;
+
+        if (this.props.isTablet) {
+            buttonContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapeButtonContainer : styles.tabletPortraitButtonContainer;
+            userIconContainerClass = styles.tabletUserIconContainer;
+        } else {
+            buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
+            userIconContainerClass = styles.userIconContainer;
+        }
 
         if (this.state.callOverlayVisible) {
             let content = (<View style={buttonContainerClass}>

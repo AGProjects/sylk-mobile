@@ -374,6 +374,8 @@ class Call extends Component {
                                 generatedVideoTrack = {this.props.generatedVideoTrack}
                                 accountId={this.state.accountId}
                                 connection = {this.props.connection}
+                                orientation = {this.props.orientation}
+                                isTablet = {this.props.isTablet}
                             />
                         );
                     }
