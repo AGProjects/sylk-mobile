@@ -1,6 +1,8 @@
 .container {
-    padding: 10px;
-    margin: 10px;
+    padding: 20px;
+    margin: 0px;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .title {
@@ -13,4 +15,14 @@
     padding: 10px;
     font-size: 16px;
     text-align: center;
+}
+
+.button {
+    margin: 10px;
+    width: 230;
+}
+
+.buttonRow {
+    flex-direction: row;
+    justify-content: center;
 }

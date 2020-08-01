@@ -802,7 +802,10 @@ class Sylk extends Component {
         switch (newState) {
             case 'progress':
                 //utils.timestampedLog('Play ringback tone');
-                InCallManager.startRingback('_BUNDLE_');
+                if (!this.state.isConference) {
+                    InCallManager.startRingback('_BUNDLE_');
+                }
+
                 this.setState({
                     currentCall: newCurrentCall,
                     incomingCall: newincomingCall
@@ -933,8 +936,6 @@ class Sylk extends Component {
                         //utils.timestampedLog('Stop InCall manager');
                         InCallManager.stop();
                     }
-
-                    this.participantsToInvite = null;
 
                     if (goToReady) {
                         this.goToReadyTimer = setTimeout(() => {
@@ -1223,8 +1224,7 @@ class Sylk extends Component {
 
     startCall(targetUri, options) {
         utils.timestampedLog('startCall', targetUri);
-        this.setState({targetUri: targetUri});
-        //this.addHistoryEntry(targetUri);
+        this.setState({targetUri: targetUri, isConference: false});
         this.getLocalMedia(Object.assign({audio: true, video: true}, options), '/call');
     }
 
@@ -1311,11 +1311,13 @@ class Sylk extends Component {
 
             if (reason === 'user_cancelled' || reason === 'timeout' || reason === 'stop_preview' || reason === 'user_press_hangup') {
                 this.changeRoute('/ready');
-             } else {
+            } else {
+                if (reason !== 'escalate_to_conference') {
                     setTimeout(() => {
                         this.changeRoute('/ready');
                     }, 4000);
-             }
+                }
+            }
          } else {
              this.setState({reconnectingCall: true,
                             outgoingCallUUID: uuid.v4()});
@@ -1485,7 +1487,7 @@ class Sylk extends Component {
 
     escalateToConference(participants) {
         const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
-        utils.timestampedLog('Move current call to conference', uri, 'with participants', participants);
+        utils.timestampedLog('Escalate call to conference', uri, 'with participants', participants);
         if (this.state.currentCall) {
             this.hangupCall(this.state.currentCall._callkeepUUID, 'escalate_to_conference');
             this.setState({currentCall: null});

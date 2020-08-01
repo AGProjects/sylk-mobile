@@ -15,12 +15,22 @@ class EscalateConferenceModal extends React.Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
         this.state = {
-            users: null
+            call: this.props.call,
+            users: (this.props.call && this.props.call.remoteIdentity) ? this.props.call.remoteIdentity.uri: null
         }
     }
 
-    escalate(event) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.call !== null && nextProps.call !== this.state.call) {
+           this.setState({call: nextProps.call,
+                          users: (nextProps.call && nextProps.call.remoteIdentity) ? nextProps.call.remoteIdentity.uri: null
+                          });
+        }
+    }
+
+    escalateToConference(event) {
         event.preventDefault();
         const uris = [];
         if (this.state.users) {
@@ -32,7 +42,10 @@ class EscalateConferenceModal extends React.Component {
                 uris.push(item);
             };
         }
-        uris.push(this.props.call.remoteIdentity.uri);
+
+        if (uris.indexOf(this.props.call.remoteIdentity.uri) === -1) {
+            uris.push(this.props.call.remoteIdentity.uri);
+        }
         this.props.escalateToConference(uris);
     }
 
@@ -45,19 +58,26 @@ class EscalateConferenceModal extends React.Component {
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title>Move to conference</Dialog.Title>
-                        <Paragraph>Please enter the account(s) you wish to add to this call. After pressing Move, all parties will be invited to join a conference.</Paragraph>
+                        <Dialog.Title>Move call to conference</Dialog.Title>
+                        <Paragraph>Enter the accounts you wish to invite separated by commas</Paragraph>
                         <View>
                             <TextInput
                                 mode="flat"
-                                label="Users"
+                                label="Accounts"
                                 id="inputTarget"
                                 onChangeText={this.onInputChange}
-                                placeholder="alice@sip2sip.info,bob,carol"
                                 required
                                 autoCapitalize="none"
+                                value={this.state.users}
                             />
-                            <Button style={styles.button} onPress={this.escalate} icon="send">Move</Button>
+                            <View style={styles.buttonRow}>
+                            <Button
+                            mode="contained"
+                            style={styles.button}
+                            onPress={this.escalateToConference}
+                            icon="video"
+                            >Start conference</Button>
+                            </View>
                         </View>
                     </Surface>
                 </DialogType>
