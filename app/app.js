@@ -1116,10 +1116,10 @@ class Sylk extends Component {
             if ((nextRoute === '/conference' ||  this.state.mode === MODE_GUEST_CONFERENCE)) {
                 constraints.video = {
                     'width': {
-                        'ideal': 1280
+                        'ideal': 640
                     },
                     'height': {
-                        'ideal': 720
+                        'ideal': 480
                     }
                 };
 
@@ -1130,10 +1130,10 @@ class Sylk extends Component {
                 // ask for 720p video
                 constraints.video = {
                     'width': {
-                        'ideal': 1280
+                        'ideal': 640
                     },
                     'height': {
-                        'ideal': 720
+                        'ideal': 480
                     }
                 };
             }
