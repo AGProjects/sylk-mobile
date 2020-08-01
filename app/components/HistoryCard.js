@@ -207,22 +207,19 @@ class HistoryCard extends Component {
 
             if (this.state.conference) {
                 if (this.state.participants && this.state.participants.length) {
-                    if (!showActions) {
-                        const p_text = this.state.participants.length > 1 ? 'participants' : 'participant';
-                        subtitle = 'With ' + this.state.participants.length + ' ' + p_text;
-                    } else {
-                        let i = 1;
-                        let contact_obj;
-                        let dn;
-                        let _item;
-                        this.state.participants.forEach((participant) => {
-                            contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
-                            dn = contact_obj ? contact_obj.displayName : participant;
-                            _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
-                            participantsData.push(_item);
-                            i = i + 1;
-                        });
-                    }
+                    const p_text = this.state.participants.length > 1 ? 'participants' : 'participant';
+                    subtitle = 'With ' + this.state.participants.length + ' ' + p_text;
+                    let i = 1;
+                    let contact_obj;
+                    let dn;
+                    let _item;
+                    this.state.participants.forEach((participant) => {
+                        contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
+                        dn = contact_obj ? contact_obj.displayName : participant;
+                        _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
+                        participantsData.push(_item);
+                        i = i + 1;
+                    });
                 } else {
                     subtitle = 'No participants';
                 }
@@ -255,7 +252,6 @@ class HistoryCard extends Component {
                             </Caption>
                             {this.state.participants && this.state.participants.length && showActions ?
                             <SafeAreaView>
-                            <Title noWrap style={color}>Participants:</Title>
                               <FlatList
                                 horizontal={false}
                                 data={participantsData}
