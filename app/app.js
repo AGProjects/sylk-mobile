@@ -1309,7 +1309,7 @@ class Sylk extends Component {
         if (reason !== 'connection_failed') {
             this.setState({reconnectingCall: false});
 
-            if (reason === 'user_cancelled' || reason === 'timeout' || reason === 'stop_preview') {
+            if (reason === 'user_cancelled' || reason === 'timeout' || reason === 'stop_preview' || reason === 'user_press_hangup') {
                 this.changeRoute('/ready');
              } else {
                     setTimeout(() => {
