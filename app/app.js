@@ -831,8 +831,6 @@ class Sylk extends Component {
                     hasVideo = true;
                 }
 
-                console.log('Call has video', hasVideo);
-
                 if (direction === 'outgoing') {
                     if (!this.state.isConference) {
                         this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, hasVideo);
