@@ -25,7 +25,7 @@ class VideoBox extends Component {
 
         this.state = {
             callOverlayVisible: true,
-            audioMuted: false,
+            audioMuted: this.props.muted,
             videoMuted: false,
             localVideoShow: false,
             remoteVideoShow: false,
@@ -41,6 +41,13 @@ class VideoBox extends Component {
         this.localVideo = React.createRef();
         this.remoteVideo = React.createRef();
         this.userHangup = false;
+    }
+
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.hasOwnProperty('muted')) {
+            this.setState({audioMuted: nextProps.muted});
+        }
     }
 
     callStateChanged(oldState, newState, data) {
@@ -111,21 +118,7 @@ class VideoBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        const localStream = this.state.localStream;
-        if (localStream.getAudioTracks().length > 0) {
-            const track = localStream.getAudioTracks()[0];
-            if(this.state.audioMuted) {
-                DEBUG('Unmute microphone');
-                track.enabled = true;
-                this.props.callKeepToggleMute(false);
-                this.setState({audioMuted: false});
-            } else {
-                DEBUG('Mute microphone');
-                track.enabled = false;
-                this.props.callKeepToggleMute(true);
-                this.setState({audioMuted: true});
-            }
-        }
+        this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
     }
 
     muteVideo(event) {
@@ -363,13 +356,14 @@ VideoBox.propTypes = {
     escalateToConference    : PropTypes.func,
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
-    callKeepToggleMute      : PropTypes.func,
+    toggleMute              : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     intercomDtmfTone        : PropTypes.string,
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
-    reconnectingCall        : PropTypes.bool
+    reconnectingCall        : PropTypes.bool,
+    muted                   : PropTypes.bool
 };
 
 export default VideoBox;

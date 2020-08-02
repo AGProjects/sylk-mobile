@@ -327,12 +327,13 @@ class Call extends Component {
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
-                        callKeepToggleMute = {this.props.callKeepToggleMute}
+                        toggleMute = {this.props.toggleMute}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         orientation = {this.props.orientation}
                         isTablet = {this.props.isTablet}
                         reconnectingCall = {this.state.reconnectingCall}
+                        muted = {this.props.muted}
                     />
                 );
             } else {
@@ -350,13 +351,14 @@ class Call extends Component {
                             escalateToConference = {this.props.escalateToConference}
                             generatedVideoTrack = {this.props.generatedVideoTrack}
                             callKeepSendDtmf = {this.props.callKeepSendDtmf}
-                            callKeepToggleMute = {this.props.callKeepToggleMute}
+                            toggleMute = {this.props.toggleMute}
                             speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                             toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                             intercomDtmfTone = {this.props.intercomDtmfTone}
                             orientation = {this.props.orientation}
                             isTablet = {this.props.isTablet}
                             reconnectingCall = {this.state.reconnectingCall}
+                            muted = {this.props.muted}
                         />
                     );
                 } else {
@@ -400,14 +402,15 @@ Call.propTypes = {
     escalateToConference    : PropTypes.func,
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
-    callKeepToggleMute      : PropTypes.func,
+    toggleMute              : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     callUUID                : PropTypes.string,
     contacts                : PropTypes.array,
     intercomDtmfTone        : PropTypes.string,
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
-    reconnectingCall        : PropTypes.bool
+    reconnectingCall        : PropTypes.bool,
+    muted                   : PropTypes.bool
 };
 
 

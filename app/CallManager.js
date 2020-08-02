@@ -42,7 +42,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -62,6 +62,7 @@ export default class CallManager extends events.EventEmitter {
         this.sylkRejectCall = rejectFunc;
         this.sylkHangupCall = hangupFunc;
         this.timeoutCall = timeoutFunc;
+        this.toggleMute = muteFunc;
         this.conferenceCall = conferenceCallFunc;
         this.startCallFromOutside = startCallFromCallKeeper;
 
@@ -127,11 +128,6 @@ export default class CallManager extends events.EventEmitter {
     backToForeground() {
        //utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
-    }
-
-    setMutedCall(callUUID, mute) {
-        utils.timestampedLog('Callkeep: set call', callUUID, 'muted =', mute);
-        this.callKeep.setMutedCall(callUUID, mute);
     }
 
     startCall(callUUID, targetUri, hasVideo) {
@@ -281,14 +277,26 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
+    setMutedCall(callUUID, mute=false) {
+        //utils.timestampedLog('Callkeep: set call', callUUID, 'muted =', mute);
+
+        if (this._calls.has(callUUID)) {
+            this.callKeep.setMutedCall(callUUID, mute);
+            let call = this._calls.get(callUUID);
+            const localStream = call.getLocalStreams()[0];
+
+            if (mute) {
+                utils.timestampedLog('Callkeep: local stream audio track disabled');
+            } else {
+                utils.timestampedLog('Callkeep: local stream audio track enabled');
+            }
+            localStream.getAudioTracks()[0].enabled = !mute;
+        }
+    }
+
     _rnMute(data) {
         utils.timestampedLog('Callkeep: mute ' + data.muted + ' for call', data.callUUID);
-        //get the uuid, find the call with that uuid and mute/unmute it
-        if (this._calls.has(data.callUUID.toLowerCase())) {
-            let call = this._calls.get(data.callUUID.toLowerCase());
-            const localStream = call.getLocalStreams()[0];
-            localStream.getAudioTracks()[0].enabled = !data.muted;
-        }
+        this.toggleMute(data.callUUID, data.muted);
     }
 
     _rnDTMF(data) {

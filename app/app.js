@@ -133,7 +133,8 @@ class Sylk extends Component {
             favoriteUris: [],
             blockedUris: [],
             initialUrl: null,
-            reconnectingCall: false
+            reconnectingCall: false,
+            muted: false
         };
 
         this.currentRoute = null;
@@ -158,12 +159,11 @@ class Sylk extends Component {
         this.redirectTo = null;
         this.prevPath = null;
         this.shouldUseHashRouting = false;
-        this.muteIncoming = false;
         this.goToReadyTimer = null;
 
         storage.initialize();
 
-        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.timeoutCall, this.callKeepStartConference, this.startCallFromCallKeeper);
+        this._callKeepManager = new CallManager(RNCallKeep, this.acceptCall, this.rejectCall, this.hangupCall, this.timeoutCall, this.callKeepStartConference, this.startCallFromCallKeeper, this.toggleMute);
 
         if (InCallManager.recordPermission !== 'granted') {
             InCallManager.requestRecordPermission()
@@ -369,7 +369,8 @@ class Sylk extends Component {
                             incomingCall: null,
                             targetUri: '',
                             reconnectingCall: false,
-                            localMedia: null
+                            localMedia: null,
+                            muted: false
                             });
 
         }
@@ -572,7 +573,7 @@ class Sylk extends Component {
 
     startCallFromCallKeeper(data) {
         // like from native iOS history
-        utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
+        //utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
         // we dont have options in the tmp var, which means this likely came from the native dialer
         // for now, we only do audio calls from the native dialer.
         let callUUID = data.callUUID || uuid.v4();
@@ -1343,11 +1344,10 @@ class Sylk extends Component {
         }
     }
 
-    callKeepToggleMute(mute) {
-        utils.timestampedLog('Toggle mute %s', mute);
-        if (this.state.currentCall) {
-            this._callKeepManager.setMutedCall(this.state.currentCall._callkeepUUID, mute);
-        }
+    toggleMute(callUUID, mute) {
+        utils.timestampedLog('Toggle mute for call', callUUID, ':', mute);
+        this._callKeepManager.setMutedCall(callUUID, mute);
+        this.setState({muted: mute});
     }
 
     toggleSpeakerPhone() {
@@ -1373,10 +1373,6 @@ class Sylk extends Component {
     startGuestConference(targetUri) {
         this.setState({targetUri: targetUri});
         this.getLocalMedia({audio: true, video: true});
-    }
-
-    toggleMute() {
-        this.muteIncoming = !this.muteIncoming;
     }
 
     outgoingCall(call) {
@@ -1982,7 +1978,7 @@ class Sylk extends Component {
                 hangupCall = {this.hangupCall}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
                 callKeepSendDtmf = {this.callKeepSendDtmf}
-                callKeepToggleMute = {this.callKeepToggleMute}
+                toggleMute = {this.toggleMute}
                 callKeepStartCall = {this.callKeepStartCall}
                 toggleSpeakerPhone = {this.toggleSpeakerPhone}
                 speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
@@ -1994,6 +1990,7 @@ class Sylk extends Component {
                 orientation = {this.state.orientation}
                 isTablet = {this.state.isTablet}
                 reconnectingCall = {this.state.reconnectingCall}
+                muted = {this.state.muted}
             />
         )
     }
@@ -2081,12 +2078,14 @@ class Sylk extends Component {
                 hangupCall = {this.hangupCall}
                 shareScreen = {this.switchScreensharing}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
+                toggleMute = {this.toggleMute}
                 toggleSpeakerPhone = {this.toggleSpeakerPhone}
                 speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
                 callUUID = {this.state.outgoingCallUUID}
                 proposedMedia = {this.state.outgoingMedia}
                 isLandscape = {this.state.orientation === 'landscape'}
                 isTablet = {this.state.isTablet}
+                muted = {this.state.muted}
             />
         )
     }

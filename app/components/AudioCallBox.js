@@ -19,7 +19,7 @@ class AudioCallBox extends Component {
 
         this.state = {
             active                      : false,
-            audioMuted                  : false,
+            audioMuted                  : this.props.muted,
             showDtmfModal               : false,
             showEscalateConferenceModal : false,
             call                        : this.props.call,
@@ -78,6 +78,10 @@ class AudioCallBox extends Component {
             console.log('Audio box got prop reconnecting', nextProps.reconnectingCall);
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
+
+        if (nextProps.hasOwnProperty('muted')) {
+            this.setState({audioMuted: nextProps.muted});
+        }
     }
 
     componentWillUnmount() {
@@ -115,19 +119,8 @@ class AudioCallBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        const localStream = this.state.call.getLocalStreams()[0];
-        const track = localStream.getAudioTracks()[0];
-
-        if(this.state.audioMuted) {
-            this.props.callKeepToggleMute(false);
-            track.enabled = true;
-            this.setState({audioMuted: false});
-        } else {
-            track.enabled = false;
-            this.props.callKeepToggleMute(true);
-            this.setState({audioMuted: true});
-        }
-    }
+        this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
+     }
 
     showDtmfModal() {
         this.setState({showDtmfModal: true});
@@ -258,12 +251,14 @@ AudioCallBox.propTypes = {
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
     callKeepSendDtmf        : PropTypes.func,
-    callKeepToggleMute      : PropTypes.func,
+    toggleMute              : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
-    reconnectingCall        : PropTypes.bool
+    reconnectingCall        : PropTypes.bool,
+    muted                   : PropTypes.bool
+
 };
 
 export default AudioCallBox;

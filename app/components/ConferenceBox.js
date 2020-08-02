@@ -39,7 +39,7 @@ class ConferenceBox extends Component {
         autoBind(this);
         this.state = {
             callOverlayVisible: true,
-            audioMuted: false,
+            audioMuted: this.props.muted,
             videoMuted: false,
             participants: props.call.participants.slice(),
             showInviteModal: false,
@@ -131,6 +131,13 @@ class ConferenceBox extends Component {
             this.props.notificationCenter().removeNotification(upload[1]);
             upload[0].abort();
         })
+    }
+
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.hasOwnProperty('muted')) {
+            this.setState({audioMuted: nextProps.muted});
+        }
     }
 
     onParticipantJoined(p) {
@@ -367,20 +374,8 @@ class ConferenceBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        const localStream = this.props.call.getLocalStreams()[0];
-        if (localStream.getAudioTracks().length > 0) {
-            const track = localStream.getAudioTracks()[0];
-            if(this.state.audioMuted) {
-                DEBUG('Unmute microphone');
-                track.enabled = true;
-                this.setState({audioMuted: false});
-            } else {
-                DEBUG('Mute microphone');
-                track.enabled = false;
-                this.setState({audioMuted: true});
-            }
-        }
-    }
+        this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
+     }
 
     toggleCamera(event) {
         event.preventDefault();
@@ -803,10 +798,12 @@ ConferenceBox.propTypes = {
     previousParticipants: PropTypes.array,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
+    toggleMute          : PropTypes.func,
     toggleSpeakerPhone  : PropTypes.func,
     speakerPhoneEnabled : PropTypes.bool,
     isLandscape         : PropTypes.bool,
-    isTablet            : PropTypes.bool
+    isTablet            : PropTypes.bool,
+    muted               : PropTypes.bool
 };
 
 export default ConferenceBox;

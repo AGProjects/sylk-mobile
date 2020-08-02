@@ -111,7 +111,6 @@ class Conference extends React.Component {
 
         if (this.props.localMedia !== null) {
             if (this.props.currentCall != null && this.props.currentCall.state === 'established') {
-                //console.log('Render conference in call state', this.props.currentCall.state);
                 box = (
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
@@ -125,10 +124,12 @@ class Conference extends React.Component {
                         shareScreen = {this.props.shareScreen}
                         generatedVideoTrack = {this.props.generatedVideoTrack}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
+                        toggleMute = {this.props.toggleMute}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         isLandscape = {this.props.isLandscape}
                         isTablet = {this.props.isTablet}
-                    />
+                        muted = {this.props.muted}
+                   />
                 );
             } else {
                 box = (
@@ -164,10 +165,13 @@ Conference.propTypes = {
     targetUri               : PropTypes.string,
     participantsToInvite    : PropTypes.array,
     generatedVideoTrack     : PropTypes.bool,
+    toggleMute              : PropTypes.func,
+    toggleSpeakerPhone      : PropTypes.func,
     callUUID                : PropTypes.string,
     proposedMedia           : PropTypes.object,
     isLandscape             : PropTypes.bool,
-    isTablet                : PropTypes.bool
+    isTablet                : PropTypes.bool,
+    muted                   : PropTypes.bool
 };
 
 
