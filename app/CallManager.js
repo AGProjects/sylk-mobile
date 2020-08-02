@@ -190,9 +190,21 @@ export default class CallManager extends events.EventEmitter {
     _rnEnd(data) {
         // this is called both when user touches Reject and when the call ends
         let callUUID = data.callUUID.toLowerCase();
-        if (!this._acceptedCalls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: end callback', callUUID);
-            this.rejectCall(callUUID);
+        utils.timestampedLog('Callkeep: end callback', callUUID);
+
+        let call = this._calls.get(callUUID);
+
+        if (!call) {
+            utils.timestampedLog('Callkeep: cannot find call', callUUID);
+            return;
+        }
+
+        if (call.state === 'incoming') {
+            if (!this._acceptedCalls.has(callUUID)) {
+                this.rejectCall(callUUID);
+            }
+        } else {
+            this.sylkHangupCall(callUUID);
         }
     }
 
@@ -263,10 +275,8 @@ export default class CallManager extends events.EventEmitter {
         } else if (this._calls.has(callUUID)) {
             let call = this._calls.get(callUUID);
             if (call.state === 'incoming') {
-                utils.timestampedLog('Callkeep: reject call', callUUID);
                 this.sylkRejectCall(callUUID);
             } else {
-                utils.timestampedLog('Callkeep: hangup call', callUUID);
                 this.sylkHangupCall(callUUID);
             }
         } else {
