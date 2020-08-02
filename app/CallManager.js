@@ -165,6 +165,10 @@ export default class CallManager extends events.EventEmitter {
         utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
+            if (reason === 6 && this._timeouts.has(callUUID)) {
+                clearTimeout(this._timeouts.get(callUUID));
+                this._timeouts.delete(callUUID);
+            }
         } else {
             this.callKeep.endCall(callUUID);
         }
