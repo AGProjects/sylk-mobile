@@ -153,6 +153,8 @@ class Sylk extends Component {
 
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
+        this._terminatedCalls = new Map();
+
         this.__notificationCenter = null;
 
         this.participantsToInvite = null;
@@ -511,10 +513,6 @@ class Sylk extends Component {
     }
 
     startCallWhenReady(targetUri, options) {
-        if (!options.video) {
-            this._callKeepManager.startCall(options.callUUID, targetUri, options.video);
-        }
-
         if (options.conference) {
             this.startConference(targetUri, options);
         } else {
@@ -734,6 +732,7 @@ class Sylk extends Component {
         let newincomingCall;
         let direction = call.direction;
         let goToReady = direction === 'incoming' ? true : false;
+        let hasVideo = false;
 
         if (this.state.incomingCall && this.state.currentCall) {
             if (this.state.incomingCall != this.state.currentCall) {
@@ -818,45 +817,45 @@ class Sylk extends Component {
                     currentCall: newCurrentCall,
                     incomingCall: newincomingCall
                 });
+
                 this.resetGoToReadyTimer();
 
-                if (direction === 'outgoing') {
-                    let hasVideo = false;
+                if (!this.state.isConference) {
+                    const videoTracks = call.remoteMediaDirections.video;
+                    hasVideo = videoTracks && videoTracks.length > 0;
 
+                    if (hasVideo) {
+                        this.speakerphoneOn();
+                    }
+                } else {
+                    hasVideo = true;
+                }
+
+                console.log('Call has video', hasVideo);
+
+                if (direction === 'outgoing') {
                     if (!this.state.isConference) {
-                        const videoTracks = call.remoteMediaDirections.video;
-                        hasVideo = videoTracks && videoTracks.length > 0;
                         this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, hasVideo);
                     }
-
                 } else {
                     this._callKeepManager.setCurrentCallActive(callUUID);
                 }
+
                 break;
             case 'accepted':
 
                 InCallManager.stopRingback();
 
-                if (this.state.isConference) {
-                    this.speakerphoneOn();
-                } else if (this.state.currentCall && this.state.currentCall.remoteMediaDirections) {
-                    const videoTracks = call.remoteMediaDirections.video;
-                    const hasVideo = videoTracks && videoTracks.length > 0;
-
-                    if (hasVideo) {
-                        utils.timestampedLog('Call state changed:', 'Video call started')
-                        this.speakerphoneOn();
-                    }
-                } else {
-                    this.speakerphoneOff();
-                }
                 this.setState({
                     currentCall: newCurrentCall,
                     incomingCall: newincomingCall
                 });
+
                 this.resetGoToReadyTimer();
                 break;
             case 'terminated':
+                this._terminatedCalls.set(callUUID, true);
+
                 let callSuccesfull = false;
                 let reason = data.reason;
                 let play_busy_tone = true;
@@ -1177,6 +1176,8 @@ class Sylk extends Component {
             if (nextRoute !== null) {
                 this.changeRoute(nextRoute);
             }
+            this._callKeepManager.backToForeground();
+
         })
         .catch((error) => {
             utils.timestampedLog('Access to local media failed, trying audio only', error);
@@ -1515,6 +1516,9 @@ class Sylk extends Component {
         utils.timestampedLog('Handle incoming push call', callUUID, 'from', from);
         if (this.state.account && from === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri === from) {
             utils.timestampedLog('Reject call to myself', callUUID);
+            this._callKeepManager.rejectCall(callUUID);
+        } else if (this._terminatedCalls.has(callUUID)) {
+            utils.timestampedLog('Reject call already terminated', callUUID);
             this._callKeepManager.rejectCall(callUUID);
         } else {
             this._callKeepManager.incomingCallFromPush(callUUID, from);

@@ -177,10 +177,12 @@ export default class CallManager extends events.EventEmitter {
 
     _rnActiveAudioSession() {
         utils.timestampedLog('Callkeep: activated audio call');
+        this.backToForeground();
     }
 
     _rnDeactiveAudioSession() {
         utils.timestampedLog('Callkeep: deactivated audio call');
+        this.backToForeground();
     }
 
     _rnAccept(data) {
@@ -208,7 +210,7 @@ export default class CallManager extends events.EventEmitter {
                 this.rejectCall(callUUID);
             }
         } else {
-            this.sylkHangupCall(callUUID);
+            this.sylkHangupCall(callUUID, 'user_press_hangup');
         }
     }
 
@@ -216,6 +218,7 @@ export default class CallManager extends events.EventEmitter {
 
         if (this._acceptedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: already accepted call', callUUID);
+            this.setCurrentCallActive(callUUID);
             return;
         }
 
@@ -281,7 +284,7 @@ export default class CallManager extends events.EventEmitter {
             if (call.state === 'incoming') {
                 this.sylkRejectCall(callUUID);
             } else {
-                this.sylkHangupCall(callUUID);
+                this.sylkHangupCall(callUUID, 'user_press_hangup');
             }
         } else {
             // We rejected the call before it arrived on web socket
