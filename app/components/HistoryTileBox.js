@@ -384,7 +384,7 @@ class HistoryTileBox extends Component {
 
             let matchedContacts = [];
             if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
-                matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().search(this.props.targetUri) > -1 || contact.displayName.toLowerCase().search(this.props.targetUri) > -1));
+                matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().indexOf(this.props.targetUri) > -1 || contact.displayName.toLowerCase().indexOf(this.props.targetUri) > -1));
             } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
                 matchedContacts.push(this.props.selectedContact);
             }

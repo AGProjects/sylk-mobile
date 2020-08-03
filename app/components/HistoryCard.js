@@ -115,7 +115,7 @@ class HistoryCard extends Component {
     }
 
     isAnonymous(uri) {
-        if (uri.search('@guest.') > -1 || uri.search('@anonymous.') > -1) {
+        if (uri.indexOf('@guest.') > -1 || uri.indexOf('@anonymous.') > -1) {
             return true
         }
 
@@ -134,7 +134,7 @@ class HistoryCard extends Component {
         let displayName = this.state.displayName;
 
         let buttonMode = 'text';
-        let showBlockButton = uri.search('@videoconference.') === -1 ? true : false;
+        let showBlockButton = uri.indexOf('@videoconference.') === -1 ? true : false;
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
         let showDeleteButton = this.props.contact.tags.indexOf('local') > -1 ? true: false;
@@ -157,11 +157,11 @@ class HistoryCard extends Component {
             }
         }
 
-        if (uri.search('3333@') > -1) {
+        if (uri.indexOf('3333@') > -1) {
             showBlockButton = false;
         }
 
-        if (uri.search('4444@') > -1) {
+        if (uri.indexOf('4444@') > -1) {
             showBlockButton = false;
         }
 
