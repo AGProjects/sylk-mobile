@@ -872,6 +872,10 @@ class Sylk extends Component {
                         CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                     }
                     goToReady = true;
+                } else if (reason.match(/402/)) {
+                    reason = 'Payment required';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 } else if (reason.match(/403/)) {
                     reason = 'This domain is not served here';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
@@ -913,6 +917,7 @@ class Sylk extends Component {
                 } else {
                     reason = 'Connection failed';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    goToReady = true;
                 }
 
                 this._callKeepManager.endCall(callUUID, CALLKEEP_REASON);
