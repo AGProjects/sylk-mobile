@@ -7541,9 +7541,9 @@ react-native-voip-push-notification@2.1.0:
   resolved "https://registry.yarnpkg.com/react-native-voip-push-notification/-/react-native-voip-push-notification-2.1.0.tgz#3a580be2da72cf1a4834d2a491c1789a8f72c541"
   integrity sha512-ihR/E5iRD+4NM6DL5wcVLC8wn+Oo6TErTwQdIuO1ZeWpIOLp6X4baNJ+fwxiuT9oIHqfMOJWUGQ9TRESOcTOoQ==
 
-react-native-webrtc@nimbleape/react-native-webrtc#493cb3ecd55b9d477728802dbb730a51bd20ffe8:
-  version "1.75.3"
-  resolved "https://codeload.github.com/nimbleape/react-native-webrtc/tar.gz/493cb3ecd55b9d477728802dbb730a51bd20ffe8"
+react-native-webrtc@nimbleape/react-native-webrtc#2f716bed0cbcf4aa4441886f890c40cd5f8dff81:
+  version "1.84.0"
+  resolved "https://codeload.github.com/nimbleape/react-native-webrtc/tar.gz/2f716bed0cbcf4aa4441886f890c40cd5f8dff81"
   dependencies:
     base64-js "^1.1.2"
     event-target-shim "^1.0.5"
