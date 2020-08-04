@@ -201,7 +201,8 @@ export default class CallManager extends events.EventEmitter {
         let call = this._calls.get(callUUID);
 
         if (!call) {
-            utils.timestampedLog('Callkeep: cannot find call', callUUID);
+            utils.timestampedLog('Callkeep: add call', callUUID, ' reject to the waitings list');
+            this.webSocketActions.set(callUUID, 'reject');
             return;
         }
 
@@ -249,6 +250,7 @@ export default class CallManager extends events.EventEmitter {
             this.sylkAcceptCall();
 
         } else {
+            utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
             this.webSocketActions.set(callUUID, 'accept');
         }
@@ -289,7 +291,7 @@ export default class CallManager extends events.EventEmitter {
         } else {
             // We rejected the call before it arrived on web socket
             // from iOS push notifications
-            utils.timestampedLog('Callkeep: add call', callUUID, 'to the waitings list');
+            utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
         }
     }
@@ -341,14 +343,6 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        if (Platform.OS === 'ios') {
-            if (this._calls.has(callUUID)) {
-                utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
-            }
-        } else {
-            this.showAlertPanelforPush(callUUID, from);
-        }
-
         let reason = this.webSocketActions.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
 
         // if user does not decide anything this will be handled later
@@ -357,6 +351,15 @@ export default class CallManager extends events.EventEmitter {
             this.endCall(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
+
+        if (Platform.OS === 'ios') {
+            if (this._calls.has(callUUID)) {
+                utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
+            }
+        } else {
+            this.showAlertPanelforPush(callUUID, from);
+        }
+
     }
 
     incomingCallFromWebSocket(call) {
@@ -377,11 +380,6 @@ export default class CallManager extends events.EventEmitter {
             }
 
             this.webSocketActions.delete(call._callkeepUUID);
-
-            if (this._timeouts.has(call.id)) {
-                clearTimeout(this._timeouts.get(call.id));
-                this._timeouts.delete(call.id);
-            }
 
         } else {
             // iOS invite push does not arrive if app is in the foreground

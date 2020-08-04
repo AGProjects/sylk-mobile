@@ -143,6 +143,7 @@ class Sylk extends Component {
         this.intercomDtmfTone = null;
         this.registrationFailureTimer = null;
         this.contacts = [];
+        this.startedByPush = false;
 
         this.cachedHistory = []; // used for caching server history
 
@@ -362,6 +363,7 @@ class Sylk extends Component {
 
         if (route === '/ready') {
             this.closeLocalMedia();
+            this.startedByPush = false;
 
             this.setState({
                             refreshHistory: !this.state.refreshHistory,
@@ -416,6 +418,7 @@ class Sylk extends Component {
                 if (url) {
                       utils.timestampedLog('Initial Linking URL: ' + url);
                       this.incomingCallFromUrl(url);
+                      this.startedByPush = true;
                 }
               }).catch(err => {
                 logger.error({ err }, 'Error getting initial URL');
@@ -670,8 +673,7 @@ class Sylk extends Component {
             this._callKeepManager.setAvailable(true);
             this.setState({loading: null, registrationKeepalive: true, registrationState: 'registered'});
 
-            //if (!this.state.currentCall) {
-            if (this.currentRoute === '/login') {
+            if (this.currentRoute === '/login' && !this.startedByPush) {
                 this.changeRoute('/ready');
             }
             //this._notificationCenter.postSystemNotification('Ready to receive calls', {body: '', timeout: 1});
