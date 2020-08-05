@@ -41,7 +41,7 @@ class CallOverlay extends React.Component {
 
     componentDidMount() {
         if (this.state.call) {
-            if (this.state.call.state === 'established') {
+            if (this.state.call.state === 'accepted') {
                 this.startTimer();
             }
             this.state.call.on('stateChanged', this.callStateChanged);
@@ -70,7 +70,7 @@ class CallOverlay extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        if (newState === 'established' && this._isMounted) {
+        if (newState === 'accepted' && this._isMounted) {
             this.startTimer();
         }
 
@@ -142,6 +142,8 @@ class CallOverlay extends React.Component {
                         if (this.finalDuration) {
                             callDetail = callDetail +  ' after ' + this.finalDuration;
                         }
+                    } else if (this.state.callState === 'established') {
+                        callDetail = 'Media activated...';
                     } else {
                         callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
                     }

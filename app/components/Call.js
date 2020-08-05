@@ -340,8 +340,7 @@ class Call extends Component {
                     />
                 );
             } else {
-                console.log('Call video');
-                if (this.props.call != null && (this.props.call.state === 'established' || (this.props.call.state === 'terminated' && this.state.reconnectingCall))) {
+                if (this.props.call != null && (this.props.call.state === 'accepted' || (this.props.call.state === 'terminated' && this.state.reconnectingCall))) {
                     box = (
                         <VideoBox
                             remoteUri = {this.state.remoteUri}
@@ -368,9 +367,8 @@ class Call extends Component {
                     );
                 } else {
                     if (this.props.call && this.props.call.state === 'terminated' && this.state.reconnectingCall) {
-                        console.log('Skip render local media because we will reconnect');
+                        //console.log('Skip render local media because we will reconnect');
                     } else {
-                        //console.log('Render local media');
                         box = (
                             <LocalMedia
                                 call = {this.props.call}

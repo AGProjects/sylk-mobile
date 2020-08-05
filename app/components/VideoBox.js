@@ -261,7 +261,7 @@ class VideoBox extends Component {
                         style={buttonClass}
                         icon={this.state.doorOpened ? "door-open": "door" }
                         onPress={this.openDoor}
-                        disabled={!(this.props.call && this.props.call.state === 'established')}
+                        disabled={!(this.props.call && this.props.call.state === 'accepted')}
                     />
                     <IconButton
                         size={buttonSize}

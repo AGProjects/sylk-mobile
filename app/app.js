@@ -706,6 +706,7 @@ class Sylk extends Component {
 
     callStateChanged(oldState, newState, data) {
         // outgoing accepted: null -> progress -> accepted -> established -> terminated
+        // outgoing accepted: null -> progress -> established -> accepted -> terminated (with early media)
         // incoming accepted: null -> incoming -> accepted -> established -> terminated
         // 2nd incoming call is automatically rejected by sylkrtc library
 
@@ -751,7 +752,7 @@ class Sylk extends Component {
                         // new call must be cancelled
                         newincomingCall = null;
                         newCurrentCall = this.state.currentCall;
-                    } else if (oldState === 'established') {
+                    } else if (oldState === 'established' || oldState === 'accepted') {
                         utils.timestampedLog('Call state changed:', 'Old call must be closed');
                         // old call must be closed
                         newCurrentCall = null;
@@ -761,18 +762,20 @@ class Sylk extends Component {
                     }
                 }
             } else if (newState === 'accepted') {
-                if (this.state.incomingCall == this.state.currentCall) {
+                if (this.state.incomingCall === this.state.currentCall) {
                     newCurrentCall = this.state.incomingCall;
                     newincomingCall = this.state.incomingCall;
                 } else {
-                    utils.timestampedLog('Call state changed:', 'Error: we have two different calls and unhandled state transition');
+                    newCurrentCall = this.state.currentCall;
                 }
             } else if (newState === 'established') {
-                if (this.state.incomingCall == this.state.currentCall) {
+                if (this.state.incomingCall === this.state.currentCall) {
+                    utils.timestampedLog("Incoming call media started");
                     newCurrentCall = this.state.incomingCall;
                     newincomingCall = this.state.incomingCall;
                 } else {
-                    utils.timestampedLog('Call state changed:', 'Error: we have two different calls and unhandled state transition');
+                    utils.timestampedLog("Outgoing call media started");
+                    newCurrentCall = this.state.currentCall;
                 }
             } else {
                 utils.timestampedLog('Call state changed:', 'We have two calls and unhandled state');
@@ -783,12 +786,17 @@ class Sylk extends Component {
                 this.setState({showIncomingModal: false});
                 newincomingCall = null;
                 newCurrentCall = null;
-            } else if (newState === 'accepted' || newState === 'established') {
+            } else if (newState === 'accepted') {
                 utils.timestampedLog("Incoming call is accepted");
                 newCurrentCall = this.state.incomingCall;
                 newincomingCall = this.state.incomingCall;
                 this.setState({showIncomingModal: false});
-            } else if (oldState === 'established' && newState === 'terminated') {
+            } else if (newState === 'established') {
+                utils.timestampedLog("Incoming call media started");
+                newCurrentCall = this.state.incomingCall;
+                newincomingCall = this.state.incomingCall;
+                this.setState({showIncomingModal: false});
+            } else if (newState === 'terminated') {
                 utils.timestampedLog("Incoming call was terminated");
                 // old call was hangup to accept a new incoming calls
                 newCurrentCall = null;
@@ -815,6 +823,8 @@ class Sylk extends Component {
                 this.resetGoToReadyTimer();
                 break;
             case 'established':
+                InCallManager.stopRingback();
+
                 this.setState({
                     currentCall: newCurrentCall,
                     incomingCall: newincomingCall
@@ -843,8 +853,6 @@ class Sylk extends Component {
 
                 break;
             case 'accepted':
-
-                InCallManager.stopRingback();
 
                 this.setState({
                     currentCall: newCurrentCall,
