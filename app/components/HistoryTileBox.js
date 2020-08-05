@@ -393,6 +393,7 @@ class HistoryTileBox extends Component {
         }
 
         items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
+
         if (!this.props.targetUri && !this.props.filter) {
             if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
                 items.push(this.echoTest);
