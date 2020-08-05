@@ -231,7 +231,7 @@ class ReadyBox extends Component {
                     </View>
                     {((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
                       (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') ||
-                      (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked')
+                      (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked') ||
                       (this.state.historyFilter === 'missed')
                       ) ?
                     <View style={styles.historyButtonGroup}>
