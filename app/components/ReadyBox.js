@@ -27,7 +27,8 @@ class ReadyBox extends Component {
             sticky: false,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
-            historyFilter: null
+            historyFilter: null,
+            missedCalls: false
         };
     }
 
@@ -40,6 +41,10 @@ class ReadyBox extends Component {
         if (this.state.targetUri) {
             console.log('We must call', this.state.targetUri);
         }
+    }
+
+    setMissedCalls(flag) {
+        this.setState({missedCalls: flag});
     }
 
     filterHistory(filter) {
@@ -121,12 +126,16 @@ class ReadyBox extends Component {
             return false;
         }
 
+        if (this.state.targetUri.match(/^(\+)(\d+)$/)) {
+            return false;
+        }
+
         return true;
     }
 
 
     render() {
-        //utils.timestampedLog('Render ready');
+        //utils.timestampedLog('Render ready', this.state.historyFilter);
 
         const defaultDomain = `${config.defaultDomain}`;
 
@@ -201,6 +210,7 @@ class ReadyBox extends Component {
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             selectedContact={this.state.selectedContact}
+                            setMissedCalls={this.setMissedCalls}
                             isTablet={this.props.isTablet}
                             account={this.props.account}
                             password={this.props.password}
@@ -222,11 +232,13 @@ class ReadyBox extends Component {
                     {((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
                       (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') ||
                       (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked')
+                      (this.state.historyFilter === 'missed')
                       ) ?
                     <View style={styles.historyButtonGroup}>
-                       <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>
+                       {this.state.historyFilter !== null ? <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>: null}
                        {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
                        {(this.state.blockedUris.length > 0 && this.state.historyFilter !== 'blocked')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
+                       {(this.state.missedCalls && this.state.historyFilter !== 'missed')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
                     </View>
                     : null}
                     {this.props.isTablet && 0?

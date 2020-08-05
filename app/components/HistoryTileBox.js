@@ -219,6 +219,7 @@ class HistoryTileBox extends Component {
 
         let history = [];
         let localTime;
+        let hasMissedCalls = false;
 
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
@@ -235,15 +236,17 @@ class HistoryTileBox extends Component {
                 return;
             }
 
+            if (data.received) {
+                data.received.map(elem => {elem.direction = 'received'; return elem});
+                history = history.concat(data.received);
+            }
+
             if (data.placed) {
                 data.placed.map(elem => {elem.direction = 'placed'; return elem});
                 history = history.concat(data.placed);
             }
 
-            if (data.received) {
-                data.received.map(elem => {elem.direction = 'received'; return elem});
-                history = history.concat(data.received);
-            }
+            history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
             if (history) {
                 const known = [];
@@ -327,17 +330,22 @@ class HistoryTileBox extends Component {
 
                     if (known.indexOf(elem.remoteParty) <= -1) {
                         known.push(elem.remoteParty);
+                        if (elem.direction === 'received' && elem.duration === 0) {
+                            elem.tags.push('missed');
+                            hasMissedCalls = true;
+                        }
                         return elem;
                     }
                 });
 
                 this.props.cacheHistory(history);
                 this.setState({serverHistory: history});
-
+                this.props.setMissedCalls(hasMissedCalls);
             }
         }, (errorCode) => {
             console.log('Error getting call history from server', errorCode);
         });
+
     }
 
     render() {
@@ -346,7 +354,7 @@ class HistoryTileBox extends Component {
         }
         // TODO: render blocked and favorites also when there is no history
 
-        //console.log('Render history');
+        //console.log('Render history', this.props.filter);
 
         //console.log('Favorite URIs', this.state.favoriteUris);
         //console.log('blockedUris URIs', this.state.blockedUris);
@@ -361,6 +369,9 @@ class HistoryTileBox extends Component {
         } else if (this.props.filter === 'blocked') {
             let blockedContacts = this.getBlockedContacts();
             items = blockedContacts.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
+        } else if (this.props.filter === 'missed') {
+            history = this.state.serverHistory;
+            items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri) && historyItem.tags.indexOf('missed') > -1);
         } else {
             history = this.getLocalHistory();
             history = history.concat(this.state.serverHistory);
@@ -370,17 +381,6 @@ class HistoryTileBox extends Component {
             searchExtraItems.concat(this.echoTest);
 
             items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
-
-            /*
-            if (!this.props.targetUri && !this.props.filter) {
-                if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
-                    items.push(this.echoTest);
-                }
-                if (!this.findObjectByKey(items, 'remoteParty', this.videoTest.remoteParty)) {
-                    items.push(this.videoTest);
-                }
-            }
-            */
 
             let matchedContacts = [];
             if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
@@ -393,6 +393,14 @@ class HistoryTileBox extends Component {
         }
 
         items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
+        if (!this.props.targetUri && !this.props.filter) {
+            if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
+                items.push(this.echoTest);
+            }
+            if (!this.findObjectByKey(items, 'remoteParty', this.videoTest.remoteParty)) {
+                items.push(this.videoTest);
+            }
+        }
 
         const known = [];
         items = items.filter((elem) => {
@@ -488,6 +496,7 @@ HistoryTileBox.propTypes = {
     deleteHistoryEntry : PropTypes.func,
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
+    setMissedCalls  : PropTypes.func,
     filter          : PropTypes.string
 };
 

@@ -1628,7 +1628,7 @@ class Sylk extends Component {
             let from = data.originator.display_name || data.originator.uri;
             this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`, timeout: 180, silent: false});
         }
-        this.forceUpdate();
+        this.setState({refreshHistory: !this.state.refreshHistory});
     }
 
     startPreview() {
