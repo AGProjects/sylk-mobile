@@ -860,6 +860,12 @@ class Sylk extends Component {
                 let reason = data.reason;
                 let play_busy_tone = true;
 
+                if (direction === 'incoming') {
+                    this.setState({
+                        incomingCall: null
+                    });
+                }
+
                 let CALLKEEP_REASON;
                 //utils.timestampedLog('Call state changed:', 'call', callUUID, 'terminated reason:', reason);
 
@@ -1524,7 +1530,7 @@ class Sylk extends Component {
             this._callKeepManager.rejectCall(callUUID);
         } else if (this._terminatedCalls.has(callUUID)) {
             utils.timestampedLog('Reject call already terminated', callUUID);
-            this._callKeepManager.rejectCall(callUUID);
+            this.cancelIncomingCall(callUUID);
         } else {
             this._callKeepManager.incomingCallFromPush(callUUID, from);
         }
