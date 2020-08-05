@@ -395,6 +395,14 @@ class HistoryTileBox extends Component {
             items = items.concat(matchedContacts);
         }
 
+        const known = [];
+        items = items.filter((elem) => {
+            if (known.indexOf(elem.remoteParty) <= -1) {
+                known.push(elem.remoteParty);
+                return elem;
+            }
+        });
+
         items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         if (!this.props.targetUri && !this.props.filter) {
@@ -405,14 +413,6 @@ class HistoryTileBox extends Component {
                 items.push(this.videoTest);
             }
         }
-
-        const known = [];
-        items = items.filter((elem) => {
-            if (known.indexOf(elem.remoteParty) <= -1) {
-                    known.push(elem.remoteParty);
-                    return elem;
-            }
-        });
 
         items.forEach((item) => {
             item.showActions = false;
