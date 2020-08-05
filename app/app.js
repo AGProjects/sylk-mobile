@@ -832,29 +832,42 @@ class Sylk extends Component {
                     incomingCall: newincomingCall
                 });
 
-                this.resetGoToReadyTimer();
-
-                break;
-            case 'accepted':
                 if (direction === 'outgoing') {
                     if (!this.state.isConference) {
                         const videoTracks = call.remoteMediaDirections.video;
                         hasVideo = videoTracks && videoTracks.length > 0;
-                        this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, hasVideo);
+                        // video is lost if we start call in keeper
+                        if (Platform.OS === 'ios') {
+                            this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, hasVideo);
+                        } else {
+                            // TODO solve this later for android -adi
+                        }
                     } else {
-                        this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, true);
+                        if (Platform.OS === 'ios') {
+                            this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, true);
+                        } else {
+                            // TODO solve this later for android -adi
+                        }
                     }
                 } else {
+                    // works well for incoming calls
                     this._callKeepManager.setCurrentCallActive(callUUID);
                 }
 
+                this._callKeepManager.backToForeground();
+                this.resetGoToReadyTimer();
+
+                break;
+            case 'accepted':
                 this.setState({
                     currentCall: newCurrentCall,
                     incomingCall: newincomingCall
                 });
 
+                this._callKeepManager.backToForeground();
                 this.resetGoToReadyTimer();
                 break;
+
             case 'terminated':
                 this._terminatedCalls.set(callUUID, true);
 
