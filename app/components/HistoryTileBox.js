@@ -326,9 +326,9 @@ class HistoryTileBox extends Component {
 
                     if (elem.timezone !== undefined) {
                         localTime = momenttz.tz(elem.startTime, elem.timezone).toDate();
-                        elem.startTime = moment(localTime).format('YYYY-MM-DD H:mm:ss');
+                        elem.startTime = moment(localTime).format('YYYY-MM-DD HH:mm:ss');
                         localTime = momenttz.tz(elem.stopTime, elem.timezone).toDate();
-                        elem.stopTime = moment(localTime).format('YYYY-MM-DD H:mm:ss');
+                        elem.stopTime = moment(localTime).format('YYYY-MM-DD HH:mm:ss');
                     }
 
                     if (known.indexOf(elem.remoteParty) <= -1) {
