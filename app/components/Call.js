@@ -340,7 +340,7 @@ class Call extends Component {
                     />
                 );
             } else {
-                if (this.props.call != null && (this.props.call.state === 'accepted' || (this.props.call.state === 'terminated' && this.state.reconnectingCall))) {
+                if (this.props.call != null && (this.props.call.state === 'established' || (this.props.call.state === 'terminated' && this.state.reconnectingCall))) {
                     box = (
                         <VideoBox
                             remoteUri = {this.state.remoteUri}

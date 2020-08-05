@@ -142,8 +142,6 @@ class CallOverlay extends React.Component {
                         if (this.finalDuration) {
                             callDetail = callDetail +  ' after ' + this.finalDuration;
                         }
-                    } else if (this.state.callState === 'established') {
-                        callDetail = 'Media activated...';
                     } else {
                         callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
                     }

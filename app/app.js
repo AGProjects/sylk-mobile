@@ -719,6 +719,8 @@ class Sylk extends Component {
             return;
         }
 
+        this._callKeepManager.backToForeground();
+
         let callUUID = call._callkeepUUID;
         utils.timestampedLog(call.direction, 'call', callUUID, 'state change:', oldState, '->', newState);
 
@@ -837,11 +839,15 @@ class Sylk extends Component {
                     hasVideo = videoTracks && videoTracks.length > 0;
 
                     if (hasVideo) {
+                        this.speakerphoneOff();
                         this.speakerphoneOn();
                     }
                 } else {
                     hasVideo = true;
                 }
+
+                break;
+            case 'accepted':
 
                 if (direction === 'outgoing') {
                     if (!this.state.isConference) {
@@ -850,9 +856,6 @@ class Sylk extends Component {
                 } else {
                     this._callKeepManager.setCurrentCallActive(callUUID);
                 }
-
-                break;
-            case 'accepted':
 
                 this.setState({
                     currentCall: newCurrentCall,
@@ -974,6 +977,8 @@ class Sylk extends Component {
                 }
 
                 this.updateHistoryEntry(callUUID);
+
+                this._callKeepManager.backToForeground();
 
                 break;
             default:
