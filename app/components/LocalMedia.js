@@ -44,6 +44,7 @@ class LocalMedia extends Component {
                     show = {true}
                     remoteUri={this.props.remoteUri}
                     remoteDisplayName={this.props.remoteDisplayName}
+                    photo={this.props.photo}
                     call = {this.props.call}
                     connection={this.props.connection}
                     accountId={this.props.accountId}
@@ -72,6 +73,7 @@ LocalMedia.propTypes = {
     localMedia          : PropTypes.object.isRequired,
     remoteUri           : PropTypes.string,
     remoteDisplayName   : PropTypes.string,
+    photo               : PropTypes.string,
     mediaPlaying        : PropTypes.func.isRequired,
     generatedVideoTrack : PropTypes.bool,
     connection          : PropTypes.object,

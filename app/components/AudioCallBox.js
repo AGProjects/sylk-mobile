@@ -140,7 +140,10 @@ class AudioCallBox extends Component {
         let buttonContainerClass;
         let userIconContainerClass;
 
-        let remoteIdentity = {uri: this.props.remoteUri, displayName: this.props.remoteDisplayName};
+        let remoteIdentity = {uri: this.props.remoteUri,
+                              displayName: this.props.remoteDisplayName,
+                              photo: this.props.photo
+                              };
         let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
 
         if (this.props.isTablet) {
@@ -244,6 +247,7 @@ class AudioCallBox extends Component {
 AudioCallBox.propTypes = {
     remoteUri               : PropTypes.string.isRequired,
     remoteDisplayName       : PropTypes.string,
+    photo                   : PropTypes.string,
     call                    : PropTypes.object,
     connection              : PropTypes.object,
     accountId               : PropTypes.string,

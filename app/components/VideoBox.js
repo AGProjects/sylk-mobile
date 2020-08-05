@@ -206,7 +206,6 @@ class VideoBox extends Component {
         });
 
         let buttonContainerClass;
-        let userIconContainerClass;
 
         let buttons;
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
@@ -220,7 +219,6 @@ class VideoBox extends Component {
             userIconContainerClass = styles.tabletUserIconContainer;
         } else {
             buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
-            userIconContainerClass = styles.userIconContainer;
         }
 
         if (this.state.callOverlayVisible) {
@@ -291,6 +289,7 @@ class VideoBox extends Component {
                     show = {this.state.callOverlayVisible || this.props.reconnectingCall}
                     remoteUri = {this.props.remoteUri}
                     remoteDisplayName = {this.props.remoteDisplayName}
+                    photo={this.props.photo}
                     call = {this.props.call}
                     connection = {this.props.connection}
                     accountId = {this.props.accountId}
@@ -347,6 +346,7 @@ class VideoBox extends Component {
 VideoBox.propTypes = {
     call                    : PropTypes.object,
     connection              : PropTypes.object,
+    photo                   : PropTypes.string,
     accountId               : PropTypes.string,
     remoteUri               : PropTypes.string,
     remoteDisplayName       : PropTypes.string,

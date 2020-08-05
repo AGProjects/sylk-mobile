@@ -87,6 +87,7 @@ class Call extends Component {
     lookupContact() {
         let remoteUri = '';
         let remoteDisplayName = '';
+        let photo = null;
 
         if (this.props.call !== null) {
             remoteUri = this.props.call.remoteIdentity.uri;
@@ -112,7 +113,7 @@ class Call extends Component {
 
             if (contact_obj) {
                 remoteDisplayName = contact_obj.displayName;
-                this.setState({remoteDisplayName: remoteDisplayName});
+                photo = contact_obj.photo;
                 if (isPhoneNumber) {
                     remoteUri = username;
                 }
@@ -125,7 +126,8 @@ class Call extends Component {
         }
 
         this.setState({remoteDisplayName: remoteDisplayName,
-                       remoteUri: remoteUri
+                       remoteUri: remoteUri,
+                       photo: photo
                        });
     }
 
@@ -320,6 +322,7 @@ class Call extends Component {
                     <AudioCallBox
                         remoteUri = {this.state.remoteUri}
                         remoteDisplayName = {this.state.remoteDisplayName}
+                        photo = {this.state.photo}
                         hangupCall = {this.hangupCall}
                         call = {this.props.call}
                         accountId={this.state.accountId}
@@ -342,6 +345,7 @@ class Call extends Component {
                         <VideoBox
                             remoteUri = {this.state.remoteUri}
                             remoteDisplayName = {this.state.remoteDisplayName}
+                            photo = {this.state.photo}
                             hangupCall = {this.hangupCall}
                             call = {this.props.call}
                             accountId={this.state.accountId}
@@ -372,6 +376,7 @@ class Call extends Component {
                                 call = {this.props.call}
                                 remoteUri = {this.state.remoteUri}
                                 remoteDisplayName = {this.state.remoteDisplayName}
+                                photo = {this.state.photo}
                                 localMedia = {this.props.localMedia}
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}

@@ -177,6 +177,7 @@ CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string.isRequired,
     remoteDisplayName: PropTypes.string,
+    photo: PropTypes.string,
     accountId: PropTypes.string,
     call: PropTypes.object,
     connection: PropTypes.object
