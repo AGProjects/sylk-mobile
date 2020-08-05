@@ -27,7 +27,8 @@ class HistoryTileBox extends Component {
             password: this.props.password,
             targetUri: this.props.targetUri,
             favoriteUris: this.props.favoriteUris,
-            blockedUris: this.props.blockedUris
+            blockedUris: this.props.blockedUris,
+            isRefreshing: false
         }
 
         const echoTest = {
@@ -221,6 +222,8 @@ class HistoryTileBox extends Component {
         let localTime;
         let hasMissedCalls = false;
 
+        this.setState({isRefreshing: true});
+
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
             `${this.props.config.serverCallHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
@@ -339,7 +342,7 @@ class HistoryTileBox extends Component {
                 });
 
                 this.props.cacheHistory(history);
-                this.setState({serverHistory: history});
+                this.setState({serverHistory: history, isRefreshing: false});
                 this.props.setMissedCalls(hasMissedCalls);
             }
         }, (errorCode) => {
@@ -354,7 +357,7 @@ class HistoryTileBox extends Component {
         }
         // TODO: render blocked and favorites also when there is no history
 
-        //console.log('Render history', this.props.filter);
+        //console.log('Render history');
 
         //console.log('Favorite URIs', this.state.favoriteUris);
         //console.log('blockedUris URIs', this.state.blockedUris);
@@ -466,6 +469,8 @@ class HistoryTileBox extends Component {
               <FlatList
                 horizontal={false}
                 numColumns={columns}
+                onRefresh={this.getServerHistory}
+                refreshing={this.state.isRefreshing}
                 data={items}
                 renderItem={this.renderItem}
                 listKey={item => item.id}
