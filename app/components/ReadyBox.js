@@ -115,6 +115,16 @@ class ReadyBox extends Component {
         this.setState({showConferenceModal: false});
     }
 
+    conferenceButtonActive() {
+        if (this.state.targetUri.indexOf('@') > -1 &&
+            this.state.targetUri.indexOf(config.defaultConferenceDomain) === -1) {
+            return false;
+        }
+
+        return true;
+    }
+
+
     render() {
         //utils.timestampedLog('Render ready');
 
@@ -176,6 +186,7 @@ class ReadyBox extends Component {
                                 />
                                 <IconButton
                                     style={styles.conferenceButton}
+                                    disabled={!this.conferenceButtonActive()}
                                     size={34}
                                     onPress={this.showConferenceModal}
                                     icon="account-group"
