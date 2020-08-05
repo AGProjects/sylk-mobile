@@ -182,7 +182,7 @@ class AudioCallBox extends Component {
                 null
                 }
 
-                {this.state.call && this.state.call.state === 'accepted' ?
+                {this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established') ?
                     <View style={buttonContainerClass}>
                     <IconButton
                         size={buttonSize}
@@ -207,7 +207,7 @@ class AudioCallBox extends Component {
                         style={buttonClass}
                         icon="dialpad"
                         onPress={this.showDtmfModal}
-                        disabled={!(this.state.call && this.state.call.state === 'accepted')}
+                        disabled={!(this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
                     />
                     <IconButton
                         size={buttonSize}

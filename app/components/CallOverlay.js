@@ -113,7 +113,6 @@ class CallOverlay extends React.Component {
         }
         */
 
-
         let header = null;
 
         let displayName = this.props.remoteUri;

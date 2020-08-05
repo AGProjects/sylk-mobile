@@ -834,24 +834,15 @@ class Sylk extends Component {
 
                 this.resetGoToReadyTimer();
 
-                if (!this.state.isConference) {
-                    const videoTracks = call.remoteMediaDirections.video;
-                    hasVideo = videoTracks && videoTracks.length > 0;
-
-                    if (hasVideo) {
-                        this.speakerphoneOff();
-                        this.speakerphoneOn();
-                    }
-                } else {
-                    hasVideo = true;
-                }
-
                 break;
             case 'accepted':
-
                 if (direction === 'outgoing') {
                     if (!this.state.isConference) {
+                        const videoTracks = call.remoteMediaDirections.video;
+                        hasVideo = videoTracks && videoTracks.length > 0;
                         this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, hasVideo);
+                    } else {
+                        this._callKeepManager.startCall(callUUID, call.remoteIdentity.uri, true);
                     }
                 } else {
                     this._callKeepManager.setCurrentCallActive(callUUID);
