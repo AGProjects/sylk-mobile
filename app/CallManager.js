@@ -126,7 +126,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       utils.timestampedLog('Callkeep: bring app to the foreground');
+       //utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
     }
 
@@ -229,7 +229,7 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('Callkeep: accept call', callUUID);
 
-        this._acceptedCalls.set(callUUID, true);
+        this._acceptedCalls.set(callUUID, Date.now());
 
         if (this._timeouts.has(callUUID)) {
             clearTimeout(this._timeouts.get(callUUID));
@@ -269,7 +269,7 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('Callkeep: reject call', callUUID);
 
-        this._rejectedCalls.set(callUUID, true);
+        this._rejectedCalls.set(callUUID, Date.now());
 
         if (this._timeouts.has(callUUID)) {
             clearTimeout(this._timeouts.get(callUUID));
@@ -296,6 +296,8 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
         }
+
+        this.endCall(callUUID);
     }
 
     setMutedCall(callUUID, mute=false) {
@@ -333,15 +335,18 @@ export default class CallManager extends events.EventEmitter {
         utils.timestampedLog('Callkeep: got a provider reset, clearing down all calls');
         this._calls.forEach((call) => {
             call.terminate();
-        })
+        });
     }
 
     incomingCallFromPush(callUUID, from) {
         utils.timestampedLog('Callkeep: handle incoming push call', callUUID);
-        // call is received by push notification
 
         if (this._rejectedCalls.has(callUUID)) {
             this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
+            return;
+        }
+
+        if (this._acceptedCalls.has(callUUID)) {
             return;
         }
 
@@ -359,7 +364,7 @@ export default class CallManager extends events.EventEmitter {
                 utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
             }
         } else {
-            this.showAlertPanelforPush(callUUID, from);
+            this.showAlertPanel(callUUID, from);
         }
 
     }
@@ -384,16 +389,7 @@ export default class CallManager extends events.EventEmitter {
             this.webSocketActions.delete(call._callkeepUUID);
 
         } else {
-            // iOS invite push does not arrive if app is in the foreground
-            // If the push arrived, we would be above this else
-            if (Platform.OS === 'ios') {
-                this.showAlertPanelforCall(call);
-            } else {
-                // Andoid always receives the invite push and we must show the alert
-                // at that time, if we do it here, the previously shown alert panel
-                // will vanish and the app will go to the foregound leaving the user confused
-                // the alert panel is hidden somewhere in the notifications bar
-            }
+            this.showAlertPanelforCall(call);
         }
 
         // Emit event.
@@ -401,6 +397,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     handleOutgoingCall(call) {
+
         // this is an outgoing call
         call._callkeepUUID = call.id;
         this._calls.set(call._callkeepUUID, call);
@@ -411,6 +408,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     handleConference(callUUID, room, from_uri) {
+
         if (this._conferences.has(callUUID)) {
             return;
         }
@@ -419,7 +417,7 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
 
-        this.showAlertPanelforPush(callUUID, from_uri);
+        this.showAlertPanel(callUUID, from_uri);
 
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: conference timeout', callUUID);
@@ -431,13 +429,25 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    showAlertPanelforPush(callUUID, uri) {
-        utils.timestampedLog('Callkeep: show alert panel for push', callUUID, 'from', uri);
+    showAlertPanelforCall(call, force=false) {
+        const callUUID = call._callkeepUUID;
+        const uri = call.remoteIdentity.uri;
+        const hasVideo = call.mediaTypes && call.mediaTypes.video;
+        this.showAlertPanel(callUUID, uri, hasVideo);
+    }
 
+    showAlertPanel(callUUID, uri, hasVideo=false) {
+        if (this._alertedCalls.has(callUUID)) {
+            return;
+        }
+
+        utils.timestampedLog('Callkeep: show alert panel for', callUUID, 'from', uri);
         utils.timestampedLog('Callkeep: WILL START CALL incoming', callUUID);
 
+        this._alertedCalls.set(callUUID, Date.now());
+
         if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', true);
+            this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
             this.callKeep.displayIncomingCall(callUUID, uri, uri);
         }
@@ -454,25 +464,8 @@ export default class CallManager extends events.EventEmitter {
 
     _displayIncomingCall(data) {
         utils.timestampedLog('Incoming alert panel displayed');
-        this._alertedCalls.set(data.callUUID.toLowerCase(), true);
     }
 
-    showAlertPanelforCall(call, force=false) {
-        if (this._alertedCalls.has(call._callkeepUUID) && !force) {
-            utils.timestampedLog('Callkeep: alert panel was already shown for call', call._callkeepUUID);
-            return;
-        }
-
-        utils.timestampedLog('Callkeep: show alert panel for call', call._callkeepUUID);
-
-        let hasVideo = call.mediaTypes && call.mediaTypes.video;
-
-        if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName, 'email', hasVideo);
-        } else if (Platform.OS === 'android') {
-            this.callKeep.displayIncomingCall(call._callkeepUUID, call.remoteIdentity.uri, call.remoteIdentity.displayName);
-        }
-    }
 
     _emitSessionsChange(countChanged) {
         this.emit('sessionschange', countChanged);

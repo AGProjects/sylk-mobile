@@ -1320,7 +1320,6 @@ class Sylk extends Component {
             this.state.incomingCall.terminate();
             utils.timestampedLog('Sylkrtc reject call', callUUID);
         }
-        this.forceUpdate();
     }
 
     timeoutCall(callUUID, uri) {
