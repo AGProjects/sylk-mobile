@@ -347,6 +347,7 @@ export default class CallManager extends events.EventEmitter {
         }
 
         if (this._acceptedCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: call already handled', callUUID);
             return;
         }
 
