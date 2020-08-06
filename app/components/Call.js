@@ -230,11 +230,13 @@ class Call extends Component {
 
         this.lookupContact();
 
-        utils.timestampedLog('Call: waiting for establishing call', this.waitInterval, 'seconds');
-
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
+            if (this.waitCounter === 1) {
+                utils.timestampedLog('Call: waiting for establishing call', this.waitInterval, 'seconds');
+            }
+
             if (this.userHangup) {
                 this.hangupCall('user_cancelled');
                 return;
@@ -406,6 +408,7 @@ Call.propTypes = {
     generatedVideoTrack     : PropTypes.bool,
     callKeepSendDtmf        : PropTypes.func,
     toggleMute              : PropTypes.func,
+    toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     callUUID                : PropTypes.string,
     contacts                : PropTypes.array,

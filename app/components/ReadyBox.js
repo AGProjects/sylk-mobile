@@ -182,14 +182,14 @@ class ReadyBox extends Component {
                                 <IconButton
                                     style={buttonClass}
                                     size={34}
-                                    disabled={this.state.targetUri.length === 0}
+                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1}
                                     onPress={this.handleAudioCall}
                                     icon="phone"
                                 />
                                 <IconButton
                                     style={buttonClass}
                                     size={34}
-                                    disabled={this.state.targetUri.length === 0}
+                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1}
                                     onPress={this.handleVideoCall}
                                     icon="video"
                                 />

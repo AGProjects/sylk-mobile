@@ -126,12 +126,12 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       //utils.timestampedLog('Callkeep: bring app to the foreground');
+       utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
     }
 
-    startCall(callUUID, targetUri, hasVideo) {
-        utils.timestampedLog('Callkeep: start outgoing call', callUUID);
+    startOutgoingCall(callUUID, targetUri, hasVideo) {
+        utils.timestampedLog('Callkeep: WILL START CALL outgoing', callUUID);
         if (Platform.OS === 'ios') {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
@@ -151,7 +151,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setCurrentCallActive(callUUID) {
-        utils.timestampedLog('Callkeep: set call active', callUUID);
+        utils.timestampedLog('Callkeep: CALL ACTIVE', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
         this.backToForeground();
     }
@@ -162,7 +162,11 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
-        utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
+        if (this._rejectedCalls.has(callUUID)) {
+            return;
+        }
+
+        utils.timestampedLog('Callkeep: END CALL', callUUID, 'with reason', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             if (reason === 6 && this._timeouts.has(callUUID)) {
@@ -172,6 +176,7 @@ export default class CallManager extends events.EventEmitter {
         } else {
             this.callKeep.endCall(callUUID);
         }
+
         this._calls.delete(callUUID);
     }
 
@@ -182,7 +187,6 @@ export default class CallManager extends events.EventEmitter {
 
     _rnDeactiveAudioSession() {
         utils.timestampedLog('Callkeep: deactivated audio call');
-        this.backToForeground();
     }
 
     _rnAccept(data) {
@@ -271,8 +275,6 @@ export default class CallManager extends events.EventEmitter {
             clearTimeout(this._timeouts.get(callUUID));
             this._timeouts.delete(callUUID);
         }
-
-        this.backToForeground();
 
         this.callKeep.rejectCall(callUUID);
 
@@ -402,7 +404,7 @@ export default class CallManager extends events.EventEmitter {
         // this is an outgoing call
         call._callkeepUUID = call.id;
         this._calls.set(call._callkeepUUID, call);
-        utils.timestampedLog('Callkeep: start outgoing call', call._callkeepUUID);
+        //utils.timestampedLog('Callkeep: handle outgoing call', call._callkeepUUID);
 
         // Emit event.
         this._emitSessionsChange(true);
@@ -432,6 +434,8 @@ export default class CallManager extends events.EventEmitter {
     showAlertPanelforPush(callUUID, uri) {
         utils.timestampedLog('Callkeep: show alert panel for push', callUUID, 'from', uri);
 
+        utils.timestampedLog('Callkeep: WILL START CALL incoming', callUUID);
+
         if (Platform.OS === 'ios') {
             this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', true);
         } else if (Platform.OS === 'android') {
@@ -440,8 +444,12 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
-        utils.timestampedLog("Callkeep: started call", data.callUUID);
-        this.startCallFromOutside(data);
+        utils.timestampedLog("Callkeep: STARTED CALL", data.callUUID);
+        if (!this._calls.has(data.callUUID)) {
+            // call has started from OS native dialer
+            this.startCallFromOutside(data);
+        }
+        this.backToForeground();
     }
 
     _displayIncomingCall(data) {
