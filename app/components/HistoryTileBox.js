@@ -160,7 +160,7 @@ class HistoryTileBox extends Component {
             tags.push('history');
 
             if (uri.indexOf('@videoconference.') > -1) {
-                displayName = 'Conference ' + uri.split('@')[0];
+                displayName = uri.split('@')[0];
                 uri = uri.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
                 conference = true;
                 media = ['audio', 'video', 'chat'];
@@ -288,7 +288,7 @@ class HistoryTileBox extends Component {
                     }
 
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {
-                        elem.displayName = 'Conference ' + elem.remoteParty.split('@')[0];
+                        elem.displayName = elem.remoteParty.split('@')[0];
                         elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
                         elem.conference = true;
                         elem.media = ['audio', 'video', 'chat'];

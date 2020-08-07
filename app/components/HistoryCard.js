@@ -137,7 +137,7 @@ class HistoryCard extends Component {
         let showBlockButton = uri.indexOf('@videoconference.') === -1 ? true : false;
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
-        let showDeleteButton = this.props.contact.tags.indexOf('local') > -1 ? true: false;
+        let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite ) ? true: false;
         let blockTextbutton = 'Block';
         let favoriteTextbutton = 'Favorite';
         let undoTextbutton = 'Abort';
@@ -190,7 +190,7 @@ class HistoryCard extends Component {
         let subtitle = uri;
         let description = this.props.contact.startTime;
 
-        if (displayName === uri) {
+        if (displayName === uri || this.state.conference) {
             title = toTitleCase(uri.split('@')[0]);
         }
 

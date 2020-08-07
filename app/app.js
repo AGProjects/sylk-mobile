@@ -1832,7 +1832,7 @@ class Sylk extends Component {
                         type: 'history',
                         conference: true,
                         media: ['audio', 'video'],
-                        displayName: 'Conference ' + uri.split('@')[0],
+                        displayName: uri.split('@')[0],
                         sessionId: callUUID,
                         startTime: startTime,
                         stopTime: startTime,
