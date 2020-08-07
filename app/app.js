@@ -367,7 +367,6 @@ class Sylk extends Component {
             this.startedByPush = false;
 
             this.setState({
-                            refreshHistory: !this.state.refreshHistory,
                             isConference: false,
                             outgoingMedia: null,
                             outgoingCallUUID: null,
@@ -379,6 +378,9 @@ class Sylk extends Component {
                             muted: false
                             });
 
+            setTimeout(() => {
+                this.setState({refreshHistory: !this.state.refreshHistory});
+            }, 1500);
         }
 
         utils.timestampedLog('Change route:', this.currentRoute, '->', route);
@@ -985,10 +987,6 @@ class Sylk extends Component {
                             this.changeRoute('/ready');
                         }, 4000);
                     }
-
-                    setTimeout(() => {
-                        this.setState({refreshHistory: !this.state.refreshHistory});
-                    }, 2000);
                 }
 
                 this.updateHistoryEntry(callUUID);
@@ -1702,8 +1700,6 @@ class Sylk extends Component {
         let idx = favoriteUris.indexOf(uri);
         let ret;
 
-        console.log('idx', idx);
-
         if (idx === -1) {
             favoriteUris.push(uri);
             ret = true;
@@ -1714,7 +1710,7 @@ class Sylk extends Component {
         }
 
         storage.set('favoriteUris', favoriteUris);
-        this.setState({favoriteUris: favoriteUris, refreshHistory: !this.state.refreshHistory});
+        this.setState({favoriteUris: favoriteUris});
         return ret;
     }
 
@@ -1737,7 +1733,7 @@ class Sylk extends Component {
 
         console.log('New blocked Uris:', blockedUris);
         storage.set('blockedUris', blockedUris);
-        this.setState({blockedUris: blockedUris, refreshHistory: !this.state.refreshHistory});
+        this.setState({blockedUris: blockedUris});
         return ret;
     }
 
@@ -1817,8 +1813,7 @@ class Sylk extends Component {
         }
 
         storage.set('history', history);
-        this.setState({localHistory: history,
-                       refreshHistory: !this.state.refreshHistory});
+        this.setState({localHistory: history});
     }
 
     addHistoryEntry(uri, callUUID, direction='placed') {

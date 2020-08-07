@@ -151,12 +151,11 @@ class HistoryTileBox extends Component {
             conference = false;
             let tags = ['favorite'];
 
-
             const history_obj = this.findObjectByKey(this.state.serverHistory, 'remoteParty', uri);
             const startTime = history_obj? history_obj.startTime : null;
             const stopTime = history_obj? history_obj.stopTime : null;
             const duration = history_obj? history_obj.duration : 0;
-            const media = history_obj? history_obj.media : 'audio';
+            let media = history_obj? history_obj.media : ['audio'];
             tags.push('history');
 
             if (uri.indexOf('@videoconference.') > -1) {
@@ -216,7 +215,7 @@ class HistoryTileBox extends Component {
     }
 
     getServerHistory() {
-        //utils.timestampedLog('Requesting call history from server');
+        utils.timestampedLog('Requesting call history from server');
 
         let history = [];
         let localTime;
