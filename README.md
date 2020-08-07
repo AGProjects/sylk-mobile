@@ -13,7 +13,7 @@ Sylk Suite consists of:
 * Mobile client development SDK
 * Desktop client development SDK
 
-[Home page] (https://sylkserver.com)
+[Home page](https://sylkserver.com)
 
 
 ## License
@@ -21,7 +21,7 @@ Sylk Suite consists of:
 Sylk mobile licensed under GNU General Public License version 3.  A copy of
 the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
 
-Copyright 2020 [AG Projects] (https://ag-projects.com)
+Copyright 2020 [AG Projects](https://ag-projects.com)
 
 
 ## Availability
@@ -52,8 +52,8 @@ Copyright 2020 [AG Projects] (https://ag-projects.com)
 
 ### Financial support
 
-* [NLnet] (http://nlnet.nl)
-* [Project description] (https://nlnet.nl/project/SylkMobile/)
+* [NLnet](http://nlnet.nl)
+* [Project description](https://nlnet.nl/project/SylkMobile/)
 
 ### People
 
@@ -75,8 +75,8 @@ Copyright 2020 [AG Projects] (https://ag-projects.com)
 
 
 * [OpenSIPS](https://opensips.org) server software 
-* [SIP2SIP] (https://sip2sip.info) public infrastructure
-* [Janus] (https://github.com/meetecho/janus-gateway) Gateway
+* [SIP2SIP](https://sip2sip.info) public infrastructure
+* [Janus](https://github.com/meetecho/janus-gateway) Gateway
 
 
 ## Getting Started
