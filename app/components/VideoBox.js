@@ -24,6 +24,7 @@ class VideoBox extends Component {
         autoBind(this);
 
         this.state = {
+            mirror: true,
             callOverlayVisible: true,
             audioMuted: this.props.muted,
             videoMuted: false,
@@ -144,6 +145,7 @@ class VideoBox extends Component {
         if (localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
             track._switchCamera();
+            this.setState({mirror: !this.state.mirror});
         }
     }
 
@@ -315,7 +317,7 @@ class VideoBox extends Component {
                                 style={[styles.video, styles.localVideo]}
                                 ref={this.localVideo}
                                 streamURL={this.state.localStream ? this.state.localStream.toURL() : null}
-                                mirror={true}
+                                mirror={this.state.mirror}
                             />
                         </TouchableWithoutFeedback>
                     </View>

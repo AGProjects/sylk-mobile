@@ -53,6 +53,7 @@ export default class CallManager extends events.EventEmitter {
         this._conferences = new Map();
         this._rejectedCalls = new Map();
         this._acceptedCalls = new Map();
+        this._cancelledCalls = new Map();
         this._alertedCalls = new Map();
 
         this.webSocketActions = new Map();
@@ -126,7 +127,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       //utils.timestampedLog('Callkeep: bring app to the foreground');
+       utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();
     }
 
@@ -166,10 +167,19 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
+        if (this._cancelledCalls.has(callUUID)) {
+            //utils.timestampedLog('Callkeep: CALL', callUUID, 'already cancelled');
+            return;
+        }
+
+        if (reason === 2) {
+            this._cancelledCalls.set(callUUID, Date.now());
+        }
+
         utils.timestampedLog('Callkeep: END CALL', callUUID, 'with reason', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
-            if (reason === 6 && this._timeouts.has(callUUID)) {
+            if (this._timeouts.has(callUUID)) {
                 clearTimeout(this._timeouts.get(callUUID));
                 this._timeouts.delete(callUUID);
             }
@@ -235,8 +245,6 @@ export default class CallManager extends events.EventEmitter {
             clearTimeout(this._timeouts.get(callUUID));
             this._timeouts.delete(callUUID);
         }
-
-        this.backToForeground();
 
         if (this._conferences.has(callUUID)) {
             let room = this._conferences.get(callUUID);
@@ -370,15 +378,21 @@ export default class CallManager extends events.EventEmitter {
 
     }
 
-    incomingCallFromWebSocket(call) {
-        call._callkeepUUID = call.id;
+    addWebsocketCall(call) {
+        if (this._calls.has(call.id)) {
+            return;
+        }
+        this._calls.set(call.id, call);
+    }
 
-        this._calls.set(call._callkeepUUID, call);
-        utils.timestampedLog('Callkeep: handle incoming websocket call', call._callkeepUUID);
+    incomingCallFromWebSocket(call) {
+        this.addWebsocketCall(call);
+
+        utils.timestampedLog('Callkeep: handle incoming websocket call', call.id);
 
         // if the call came via push and was already accepted or rejected
-        if (this.webSocketActions.get(call._callkeepUUID)) {
-            let action = this.webSocketActions.get(call._callkeepUUID);
+        if (this.webSocketActions.get(call.id)) {
+            let action = this.webSocketActions.get(call.id);
             utils.timestampedLog('Callkeep: execute action decided earlier', action);
 
             if (action === 'accept') {
@@ -387,22 +401,11 @@ export default class CallManager extends events.EventEmitter {
                 this.sylkRejectCall(call.id);
             }
 
-            this.webSocketActions.delete(call._callkeepUUID);
+            this.webSocketActions.delete(call.id);
 
         } else {
             this.showAlertPanelforCall(call);
         }
-
-        // Emit event.
-        this._emitSessionsChange(true);
-    }
-
-    handleOutgoingCall(call) {
-
-        // this is an outgoing call
-        call._callkeepUUID = call.id;
-        this._calls.set(call._callkeepUUID, call);
-        //utils.timestampedLog('Callkeep: handle outgoing call', call._callkeepUUID);
 
         // Emit event.
         this._emitSessionsChange(true);
@@ -431,7 +434,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showAlertPanelforCall(call, force=false) {
-        const callUUID = call._callkeepUUID;
+        const callUUID = call.id;
         const uri = call.remoteIdentity.uri;
         const hasVideo = call.mediaTypes && call.mediaTypes.video;
         this.showAlertPanel(callUUID, uri, hasVideo);
@@ -442,8 +445,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('Callkeep: show alert panel for', callUUID, 'from', uri);
-        utils.timestampedLog('Callkeep: WILL START CALL incoming', callUUID);
+        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', uri);
 
         this._alertedCalls.set(callUUID, Date.now());
 
@@ -460,13 +462,11 @@ export default class CallManager extends events.EventEmitter {
             // call has started from OS native dialer
             this.startCallFromOutside(data);
         }
-        this.backToForeground();
     }
 
     _displayIncomingCall(data) {
         utils.timestampedLog('Incoming alert panel displayed');
     }
-
 
     _emitSessionsChange(countChanged) {
         this.emit('sessionschange', countChanged);

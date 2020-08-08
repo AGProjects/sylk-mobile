@@ -18,6 +18,9 @@ class AudioCallBox extends Component {
         autoBind(this);
 
         this.state = {
+            remoteUri                   : this.props.remoteUri,
+            remoteDisplayName           : this.props.remoteDisplayName,
+            photo                       : this.props.photo,
             active                      : false,
             audioMuted                  : this.props.muted,
             showDtmfModal               : false,
@@ -82,6 +85,10 @@ class AudioCallBox extends Component {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
         }
+
+        this.setState({remoteUri: nextProps.remoteUri,
+                       remoteDisplayName: nextProps.remoteDisplayName
+                       });
     }
 
     componentWillUnmount() {
@@ -140,11 +147,11 @@ class AudioCallBox extends Component {
         let buttonContainerClass;
         let userIconContainerClass;
 
-        let remoteIdentity = {uri: this.props.remoteUri,
-                              displayName: this.props.remoteDisplayName,
-                              photo: this.props.photo
+        let remoteIdentity = {uri: this.state.remoteUri || '',
+                              displayName: this.state.remoteDisplayName || '',
+                              photo: this.state.photo
                               };
-        let displayName = (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ? this.props.remoteDisplayName: this.props.remoteUri;
+        let displayName = (this.state.remoteDisplayName && this.state.remoteUri !== this.state.remoteDisplayName) ? this.state.remoteDisplayName: this.state.remoteUri;
 
         if (this.props.isTablet) {
             buttonContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapeButtonContainer : styles.tabletPortraitButtonContainer;
@@ -161,8 +168,8 @@ class AudioCallBox extends Component {
             <View style={styles.container}>
                 <CallOverlay style={styles.callStatus}
                     show={true}
-                    remoteUri={this.props.remoteUri}
-                    remoteDisplayName={this.props.remoteDisplayName}
+                    remoteUri={this.state.remoteUri}
+                    remoteDisplayName={this.state.remoteDisplayName}
                     call={this.state.call}
                     connection={this.props.connection}
                     accountId={this.props.accountId}
@@ -171,9 +178,9 @@ class AudioCallBox extends Component {
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
                 <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
-                { (this.props.remoteDisplayName && this.props.remoteUri !== this.props.remoteDisplayName) ?
+                { (this.state.remoteDisplayName && this.state.remoteUri !== this.state.remoteDisplayName) ?
 
-                <Text style={styles.uri}>{this.props.remoteUri}</Text>
+                <Text style={styles.uri}>{this.state.remoteUri}</Text>
                 : null }
 
                 {this.props.orientation !== 'landscape' && !this.userHangup && this.state.reconnectingCall ?
@@ -245,7 +252,7 @@ class AudioCallBox extends Component {
 }
 
 AudioCallBox.propTypes = {
-    remoteUri               : PropTypes.string.isRequired,
+    remoteUri               : PropTypes.string,
     remoteDisplayName       : PropTypes.string,
     photo                   : PropTypes.string,
     call                    : PropTypes.object,

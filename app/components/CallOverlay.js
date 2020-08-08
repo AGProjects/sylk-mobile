@@ -28,6 +28,8 @@ class CallOverlay extends React.Component {
 
         this.state = {
             callState: null,
+            remoteUri: this.props.remoteUri,
+            remoteDisplayName: this.props.remoteDisplayName,
             call: this.props.call,
             direction: this.props.call ? this.props.call.direction : 'outgoing'
         }
@@ -52,27 +54,35 @@ class CallOverlay extends React.Component {
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.call && nextProps.call !== this.state.call) {
+            console.log('Call: received props call', nextProps.call);
             nextProps.call.on('stateChanged', this.callStateChanged);
 
             if (this.state.call !== null) {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
+
             this.setState({call: nextProps.call});
         }
+
+        this.setState({remoteDisplayName: nextProps.remoteDisplayName, remoteUri: nextProps.remoteUri});
     }
 
     componentWillUnmount() {
         if (this.state.call) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
+
         this._isMounted = false;
         clearTimeout(this.timer);
     }
 
     callStateChanged(oldState, newState, data) {
+        //console.log('Call Overlay: callStateChanged', oldState, '->', newState);
+
         if (newState === 'accepted' && this._isMounted) {
             this.startTimer();
         }
+
 
         if (newState === 'terminated') {
             if (this.state.call) {
@@ -106,19 +116,17 @@ class CallOverlay extends React.Component {
     }
 
     render() {
-        /*
-        console.log('Render call overlay with call state', this.state.callState);
+        //console.log('Render call overlay with call state', this.state.callState);
         if (this.props.connection) {
-            console.log('Connection state', this.props.connection.state);
+            //console.log('Connection state', this.props.connection.state);
         }
-        */
 
         let header = null;
 
-        let displayName = this.props.remoteUri;
+        let displayName = this.state.remoteUri;
 
-        if (this.props.remoteDisplayName && this.props.remoteDisplayName !== this.props.remoteUri) {
-            displayName = this.props.remoteDisplayName;
+        if (this.state.remoteDisplayName && this.state.remoteDisplayName !== this.state.remoteUri) {
+            displayName = this.state.remoteDisplayName;
         }
 
         if (this.props.show) {
@@ -147,8 +155,8 @@ class CallOverlay extends React.Component {
                 }
             }
 
-            if (this.props.remoteUri.search('videoconference') > -1) {
-                displayName = this.props.remoteUri.split('@')[0];
+            if (this.state.remoteUri && this.state.remoteUri.search('videoconference') > -1) {
+                displayName = this.state.remoteUri.split('@')[0];
 
                 header = (
                     <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -174,7 +182,7 @@ class CallOverlay extends React.Component {
 
 CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
-    remoteUri: PropTypes.string.isRequired,
+    remoteUri: PropTypes.string,
     remoteDisplayName: PropTypes.string,
     photo: PropTypes.string,
     accountId: PropTypes.string,

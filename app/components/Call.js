@@ -22,27 +22,21 @@ class Call extends Component {
         this.waitCounter = 0;
         this.waitInterval = this.defaultWaitInterval;
 
-        let audioOnly = false;
-        if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
-            audioOnly = true;
-        }
-
+        let callUUID;
         let remoteUri = '';
         let remoteDisplayName = '';
         let callState = null;
         let direction = 'outgoing';
-        let callUUID;
         let callEnded = false;
         this.mediaIsPlaying = false;
 
         if (this.props.call !== null) {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
-            callState = this.props.call.state;
             remoteUri = this.props.call.remoteIdentity.uri;
+            remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
             direction = this.props.call.direction;
             callUUID = this.props.call.id;
-            remoteDisplayName = this.props.call.remoteIdentity.displayName;
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
@@ -53,10 +47,18 @@ class Call extends Component {
             this.props.connection.on('stateChanged', this.connectionStateChanged);
         }
 
+        let audioOnly = false;
+        if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
+            audioOnly = true;
+        }
+
         this.state = {
+                      call: this.props.call,
+                      targetUri: this.props.targetUri,
                       audioOnly: audioOnly,
                       remoteUri: remoteUri,
                       remoteDisplayName: remoteDisplayName,
+                      localMedia: this.props.localMedia,
                       connection: this.props.connection,
                       accountId: this.props.account ? this.props.account.id : null,
                       callState: callState,
@@ -66,7 +68,46 @@ class Call extends Component {
                       }
     }
 
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        // Needed for switching to incoming call while in a call
+        if (nextProps.call !== null && this.state.call !== nextProps.currentCall) {
+            nextProps.call.on('stateChanged', this.callStateChanged);
+
+            this.setState({
+                           call: nextProps.call,
+                           remoteUri: nextProps.call.remoteIdentity.uri,
+                           direction: nextProps.call.direction,
+                           callUUID: nextProps.call.id,
+                           remoteDisplayName: nextProps.call.remoteIdentity.displayName
+                           });
+
+            this.lookupContact();
+
+        }
+
+        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
+        }
+
+        if (nextProps.targetUri !== this.state.targetUri) {
+            this.setState({targetUri: nextProps.targetUri});
+        }
+
+        if (nextProps.localMedia !== this.state.localMedia) {
+            console.log('Call: received new media stream');
+            let audioOnly = false;
+            if (nextProps.localMedia && nextProps.localMedia.getVideoTracks().length === 0) {
+                audioOnly = true;
+            }
+
+            this.setState({localMedia: nextProps.localMedia,
+                           audioOnly: audioOnly});
+        }
+    }
+
     mediaPlaying() {
+        console.log('Call: mediaPlaying');
         if (this.state.direction === 'incoming') {
             this.answerCall();
         } else {
@@ -75,6 +116,7 @@ class Call extends Component {
     }
 
     componentDidMount() {
+        this.lookupContact();
         if (this.state.direction === 'outgoing') {
             this.startCallWhenReady();
         }
@@ -85,17 +127,9 @@ class Call extends Component {
     }
 
     lookupContact() {
-        let remoteUri = '';
-        let remoteDisplayName = '';
         let photo = null;
-
-        if (this.props.call !== null) {
-            remoteUri = this.props.call.remoteIdentity.uri;
-            remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
-        } else {
-            remoteUri = this.props.targetUri;
-            remoteDisplayName = this.props.targetUri;
-        }
+        let remoteUri = this.state.remoteUri || '';
+        let remoteDisplayName = this.state.remoteDisplayName || '';
 
         if (remoteUri.indexOf('3333@') > -1) {
             remoteDisplayName = 'Video Test';
@@ -131,21 +165,6 @@ class Call extends Component {
                        });
     }
 
-    //getDerivedStateFromProps(nextProps, state) {
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        //console.log('Call: received props');
-        // Needed for switching to incoming call while in a call
-        if (this.props.call != null && this.props.call != nextProps.currentCall) {
-            if (nextProps.currentCall != null) {
-                nextProps.currentCall.on('stateChanged', this.callStateChanged);
-            }
-        }
-
-        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
-            this.setState({reconnectingCall: nextProps.reconnectingCall});
-        }
-    }
-
     callStateChanged(oldState, newState, data) {
         //console.log('Call: callStateChanged', oldState, '->', newState);
         let remoteHasNoVideoTracks;
@@ -155,7 +174,7 @@ class Call extends Component {
 
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
-            const currentCall = this.props.call;
+            const currentCall = this.state.call;
 
             if (currentCall) {
                 remoteStreams = currentCall.getRemoteStreams();
@@ -172,7 +191,7 @@ class Call extends Component {
             if (remoteStreams && (remoteHasNoVideoTracks || remoteIsRecvOnly || remoteIsInactive) && !this.state.audioOnly) {
                 //console.log('Media type changed to audio');
                 // Stop local video
-                if (this.props.localMedia.getVideoTracks().length !== 0) {
+                if (this.state.localMedia.getVideoTracks().length !== 0) {
                     currentCall.getLocalStreams()[0].getVideoTracks()[0].stop();
                 }
                 this.setState({audioOnly: true});
@@ -184,7 +203,7 @@ class Call extends Component {
             // Switch if we have audioOnly and local videotracks. This means
             // the call object switched and we are transitioning to an
             // incoming call.
-            if (this.state.audioOnly &&  this.props.localMedia && this.props.localMedia.getVideoTracks().length !== 0) {
+            if (this.state.audioOnly &&  this.state.localMedia && this.state.localMedia.getVideoTracks().length !== 0) {
                 //console.log('Media type changed to video on accepted');
                 this.setState({audioOnly: false});
             }
@@ -222,13 +241,11 @@ class Call extends Component {
     }
 
     async startCallWhenReady() {
-        if (!this.props.callUUID || !this.props.targetUri) {
+        if (!this.state.callUUID || !this.state.targetUri) {
             return;
         }
-        utils.timestampedLog('Call: start call', this.props.callUUID, 'when ready to', this.props.targetUri);
+        utils.timestampedLog('Call: start call', this.state.callUUID, 'when ready to', this.state.targetUri);
         this.waitCounter = 0;
-
-        this.lookupContact();
 
         let diff = 0;
 
@@ -243,7 +260,7 @@ class Call extends Component {
             }
 
             if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Call: terminating conference', this.props.callUUID, 'that did not start yet');
+                utils.timestampedLog('Call: terminating conference', this.state.callUUID, 'that did not start yet');
                 this.hangupCall('timeout');
             }
 
@@ -271,37 +288,36 @@ class Call extends Component {
     }
 
     call() {
-        utils.timestampedLog('Call: starting call', this.props.callUUID);
+        utils.timestampedLog('Call: starting call', this.state.callUUID);
 
-        if (this.props.localMedia === null)  {
+        if (this.state.localMedia === null)  {
             console.log('Call: cannot create new call without local media');
             return;
         }
 
-        let options = {pcConfig: {iceServers: config.iceServers}, id: this.props.callUUID};
-        options.localStream = this.props.localMedia;
+        let options = {pcConfig: {iceServers: config.iceServers}, id: this.state.callUUID};
+        options.localStream = this.state.localMedia;
 
-        let call = this.props.account.call(this.props.targetUri, options);
+        let call = this.props.account.call(this.state.targetUri, options);
         call.on('stateChanged', this.callStateChanged);
     }
 
     answerCall() {
-        if (this.props.call && this.props.call.state === 'incoming') {
-            this.lookupContact();
+        if (this.state.call && this.state.call.state === 'incoming') {
             let options = {pcConfig: {iceServers: config.iceServers}};
-            options.localStream = this.props.localMedia;
-            this.props.call.answer(options);
+            options.localStream = this.state.localMedia;
+            this.state.call.answer(options);
         }
     }
 
     hangupCall(reason) {
-        let callUUID = this.props.call ? this.props.call._callkeepUUID : this.props.callUUID;
+        let callUUID = this.state.call ? this.state.call.id : this.state.callUUID;
         this.waitInterval = this.defaultWaitInterval;
 
-        this.props.callUUID || this.props.call._callkeepUUID;
+        this.state.callUUID || this.state.call.id;
 
-        if (this.props.call) {
-            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        if (this.state.call) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
 
         if (this.props.connection) {
@@ -317,8 +333,7 @@ class Call extends Component {
 
     render() {
         let box = null;
-
-        if (this.props.localMedia !== null) {
+        if (this.state.localMedia !== null) {
             if (this.state.audioOnly) {
                 box = (
                     <AudioCallBox
@@ -326,12 +341,12 @@ class Call extends Component {
                         remoteDisplayName = {this.state.remoteDisplayName}
                         photo = {this.state.photo}
                         hangupCall = {this.hangupCall}
-                        call = {this.props.call}
+                        call = {this.state.call}
                         accountId={this.state.accountId}
                         connection = {this.props.connection}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
-                        callKeepSendDtmf = {this.props.callKeepSendDtmf}
+                        callKeepSendDtmf = {this.state.callKeepSendDtmf}
                         toggleMute = {this.props.toggleMute}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
@@ -342,21 +357,21 @@ class Call extends Component {
                     />
                 );
             } else {
-                if (this.props.call != null && (this.props.call.state === 'established' || (this.props.call.state === 'terminated' && this.state.reconnectingCall))) {
+                if (this.state.call !== null && (this.state.call.state === 'established' || (this.state.call.state === 'terminated' && this.state.reconnectingCall))) {
                     box = (
                         <VideoBox
                             remoteUri = {this.state.remoteUri}
                             remoteDisplayName = {this.state.remoteDisplayName}
                             photo = {this.state.photo}
                             hangupCall = {this.hangupCall}
-                            call = {this.props.call}
+                            call = {this.state.call}
                             accountId={this.state.accountId}
                             connection = {this.props.connection}
-                            localMedia = {this.props.localMedia}
+                            localMedia = {this.state.localMedia}
                             shareScreen = {this.props.shareScreen}
                             escalateToConference = {this.props.escalateToConference}
                             generatedVideoTrack = {this.props.generatedVideoTrack}
-                            callKeepSendDtmf = {this.props.callKeepSendDtmf}
+                            callKeepSendDtmf = {this.state.callKeepSendDtmf}
                             toggleMute = {this.props.toggleMute}
                             speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                             toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
@@ -368,16 +383,16 @@ class Call extends Component {
                         />
                     );
                 } else {
-                    if (this.props.call && this.props.call.state === 'terminated' && this.state.reconnectingCall) {
+                    if (this.state.call && this.state.call.state === 'terminated' && this.state.reconnectingCall) {
                         //console.log('Skip render local media because we will reconnect');
                     } else {
                         box = (
                             <LocalMedia
-                                call = {this.props.call}
+                                call = {this.state.call}
                                 remoteUri = {this.state.remoteUri}
                                 remoteDisplayName = {this.state.remoteDisplayName}
                                 photo = {this.state.photo}
-                                localMedia = {this.props.localMedia}
+                                localMedia = {this.state.localMedia}
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}
                                 generatedVideoTrack = {this.props.generatedVideoTrack}

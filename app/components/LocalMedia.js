@@ -16,6 +16,10 @@ class LocalMedia extends Component {
 
         this.localVideo = React.createRef();
 
+        this.state = {
+            localMedia: this.props.localMedia,
+        };
+
     }
 
     componentDidMount() {
@@ -25,6 +29,13 @@ class LocalMedia extends Component {
     hangupCall(event) {
         event.preventDefault();
         this.props.hangupCall('stop_preview');
+    }
+
+    //getDerivedStateFromProps(nextProps, state)
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.localMedia && nextProps.localMedia !== this.state.localMedia) {
+            this.props.mediaPlaying();
+        }
     }
 
     render() {

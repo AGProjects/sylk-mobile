@@ -11,7 +11,11 @@ const UserIcon = (props) => {
     const name = props.identity.displayName || props.identity.uri;
     const photo = props.identity.photo;
 
-    let initials = name.split(' ', 2).map(x => x[0]).join('');
+    let initials = '';
+    if (name) {
+        initials = name.split(' ', 2).map(x => x[0]).join('');
+    }
+
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
     let avatarSize = props.large ? 120: 50;
     if (props.carousel === true) {
@@ -23,13 +27,13 @@ const UserIcon = (props) => {
         return  <Avatar.Image source={{uri: photo}} size={avatarSize} />
     }
 
-    if (props.identity.uri.search('anonymous') !== -1) {
+    if (props.identity.uri && props.identity.uri.search('anonymous') !== -1) {
         return (
             <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />
         )
     }
 
-    if (props.identity.uri.search('videoconference') !== -1) {
+    if (props.identity.uri && props.identity.uri.search('videoconference') !== -1) {
         return (
             <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />
         )
