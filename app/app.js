@@ -546,6 +546,10 @@ class Sylk extends Component {
     }
 
     startCallWhenReady(targetUri, options) {
+        if (options.video) {
+            this.speakerphoneOn();
+        }
+
         if (options.conference) {
             this.startConference(targetUri, options);
         } else {
@@ -794,12 +798,16 @@ class Sylk extends Component {
                     if (oldState === 'incoming') {
                         utils.timestampedLog('Call state changed:', 'incoming call must be cancelled');
                     }
+
+                    if (oldState === 'established' || oldState === 'accepted') {
+                        utils.timestampedLog('Call state changed:', 'incoming call ended');
+                    }
                     // new call must be cancelled
                     newincomingCall = null;
                     newCurrentCall = this.state.currentCall;
                 }
 
-                if (this.state.currentCall.id === call.id) {
+                if (this.state.currentCall != this.state.currentCall && this.state.currentCall.id === call.id) {
                     if (oldState === 'established' || newState === 'accepted') {
                         utils.timestampedLog('Call state changed:', 'outgoing call must be hangup');
                         // old call must be closed
@@ -807,6 +815,7 @@ class Sylk extends Component {
                     newCurrentCall = null;
                     newincomingCall = this.state.incomingCall;
                 }
+
             } else if (newState === 'accepted') {
                 if (this.state.incomingCall === this.state.currentCall) {
                     newCurrentCall = this.state.incomingCall;
@@ -833,7 +842,7 @@ class Sylk extends Component {
                 newincomingCall = null;
                 newCurrentCall = null;
             } else if (newState === 'accepted') {
-                utils.timestampedLog("Incoming call is accepted");
+                utils.timestampedLog("Incoming call was accepted");
                 newCurrentCall = this.state.incomingCall;
                 newincomingCall = this.state.incomingCall;
                 this.setState({showIncomingModal: false});
@@ -843,7 +852,7 @@ class Sylk extends Component {
                 newincomingCall = this.state.incomingCall;
                 this.setState({showIncomingModal: false});
             } else if (newState === 'terminated') {
-                utils.timestampedLog("Outgoing call was terminated");
+                utils.timestampedLog("Incoming call was terminated");
                 // old call was hangup to accept a new incoming calls
                 newCurrentCall = null;
             } else {
@@ -875,6 +884,18 @@ class Sylk extends Component {
             case 'established':
                 InCallManager.stopRingback();
 
+                const getTracks = call.getLocalStreams()[0].getVideoTracks();
+                const mediaType = (getTracks && getTracks.length > 0) ? 'video' : 'audio';
+
+                utils.timestampedLog('Start InCall manager:', mediaType);
+                InCallManager.start({media: mediaType});
+
+                if (mediaType === 'video') {
+                    this.speakerphoneOn();
+                } else {
+                    this.speakerphoneOff();
+                }
+
                 this.resetGoToReadyTimer();
 
                 this._callKeepManager.setCurrentCallActive(callUUID);
@@ -891,6 +912,14 @@ class Sylk extends Component {
 
             case 'terminated':
                 this._terminatedCalls.set(callUUID, true);
+
+                if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
+                    newincomingCall = null;
+                }
+
+                if (this.state.currentCall && this.state.currentCall.id === call.id) {
+                    newCurrentCall = null;
+                }
 
                 let callSuccesfull = false;
                 let reason = data.reason;
@@ -1002,9 +1031,10 @@ class Sylk extends Component {
         });
 
         if (this.state.currentCall || this.state.incomingCall) {
-            console.log('New call state:');
+            //console.log('New call state:');
+
         } else {
-            utils.timestampedLog('Will go to ready in 4 seconds');
+            //utils.timestampedLog('Will go to ready in 4 seconds');
 
             this.goToReadyTimer = setTimeout(() => {
 
@@ -1013,10 +1043,10 @@ class Sylk extends Component {
         }
 
         if (this.state.currentCall) {
-            console.log('Current:', this.state.currentCall.id);
+            //console.log('Current:', this.state.currentCall.id);
         }
         if (this.state.incomingCall) {
-            console.log('Incoming:', this.state.incomingCall.id);
+            //console.log('Incoming:', this.state.incomingCall.id);
         }
 
     }
@@ -1446,12 +1476,8 @@ class Sylk extends Component {
             const localStream = call.getLocalStreams()[0];
             mediaType = localStream.getVideoTracks().length > 0 ? 'video' : 'audio';
         }
-
         utils.timestampedLog('Outgoing', mediaType, 'call', call.id, 'started to', call.remoteIdentity.uri);
         this._callKeepManager.addWebsocketCall(call);
-
-        //utils.timestampedLog('Start InCall manager:', mediaType);
-        InCallManager.start({media: mediaType});
 
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
@@ -1632,6 +1658,7 @@ class Sylk extends Component {
         if (this.state.currentCall && this.state.currentCall.state === 'progress') {
             utils.timestampedLog('Reject call while outgoing in progress', callUUID);
             this._callKeepManager.rejectCall(callUUID);
+            this._notificationCenter.postSystemNotification('Missed call from', {body: from, timeout: 5});
             return true;
         }
 
@@ -1639,6 +1666,7 @@ class Sylk extends Component {
             // TODO - handle transition to new incoming call
             utils.timestampedLog('I am in another call', callUUID);
             this._callKeepManager.rejectCall(callUUID);
+            this._notificationCenter.postSystemNotification('Missed call from', {body: from, timeout: 5});
             return true;
         }
 
@@ -1683,9 +1711,6 @@ class Sylk extends Component {
 
         call.on('stateChanged', this.callStateChanged);
         this.setState({incomingCall: call});
-
-        //utils.timestampedLog('Start InCall manager:', mediaType);
-        InCallManager.start({media: mediaType});
 
         this._callKeepManager.incomingCallFromWebSocket(call);
 

@@ -27,11 +27,12 @@ class CallOverlay extends React.Component {
         autoBind(this);
 
         this.state = {
-            callState: null,
+            call: this.props.call,
+            callState: this.props.call ? this.props.call.state : null,
+            direction: this.props.call ? this.props.call.direction: 'outgoing',
             remoteUri: this.props.remoteUri,
             remoteDisplayName: this.props.remoteDisplayName,
-            call: this.props.call,
-            direction: this.props.call ? this.props.call.direction : 'outgoing'
+            photo: this.props.photo
         }
 
         this.duration = null;
@@ -43,7 +44,7 @@ class CallOverlay extends React.Component {
 
     componentDidMount() {
         if (this.state.call) {
-            if (this.state.call.state === 'accepted') {
+            if (this.state.call.state === 'established') {
                 this.startTimer();
             }
             this.state.call.on('stateChanged', this.callStateChanged);
@@ -54,7 +55,6 @@ class CallOverlay extends React.Component {
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.call && nextProps.call !== this.state.call) {
-            console.log('Call: received props call', nextProps.call);
             nextProps.call.on('stateChanged', this.callStateChanged);
 
             if (this.state.call !== null) {
@@ -77,12 +77,9 @@ class CallOverlay extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        //console.log('Call Overlay: callStateChanged', oldState, '->', newState);
-
-        if (newState === 'accepted' && this._isMounted) {
+        if (newState === 'established' && this._isMounted) {
             this.startTimer();
         }
-
 
         if (newState === 'terminated') {
             if (this.state.call) {
@@ -107,20 +104,17 @@ class CallOverlay extends React.Component {
         // TODO: consider using window.requestAnimationFrame
 
         const startTime = new Date();
+        this.duration = moment.duration(new Date() - startTime).format('hh:mm:ss', {trim: false});
+
         this.timer = setInterval(() => {
             this.duration = moment.duration(new Date() - startTime).format('hh:mm:ss', {trim: false});
             if (this.props.show) {
                 this.forceUpdate();
             }
-        }, 300);
+        }, 1000);
     }
 
     render() {
-        //console.log('Render call overlay with call state', this.state.callState);
-        if (this.props.connection) {
-            //console.log('Connection state', this.props.connection.state);
-        }
-
         let header = null;
 
         let displayName = this.state.remoteUri;
@@ -184,7 +178,7 @@ CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string,
     remoteDisplayName: PropTypes.string,
-    photo: PropTypes.string,
+    photo: PropTypes.object,
     accountId: PropTypes.string,
     call: PropTypes.object,
     connection: PropTypes.object

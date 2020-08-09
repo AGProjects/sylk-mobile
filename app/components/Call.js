@@ -95,7 +95,6 @@ class Call extends Component {
         }
 
         if (nextProps.localMedia !== this.state.localMedia) {
-            console.log('Call: received new media stream');
             let audioOnly = false;
             if (nextProps.localMedia && nextProps.localMedia.getVideoTracks().length === 0) {
                 audioOnly = true;
@@ -107,7 +106,6 @@ class Call extends Component {
     }
 
     mediaPlaying() {
-        console.log('Call: mediaPlaying');
         if (this.state.direction === 'incoming') {
             this.answerCall();
         } else {
@@ -130,6 +128,10 @@ class Call extends Component {
         let photo = null;
         let remoteUri = this.state.remoteUri || '';
         let remoteDisplayName = this.state.remoteDisplayName || '';
+
+        if (!remoteUri) {
+            return;
+        }
 
         if (remoteUri.indexOf('3333@') > -1) {
             remoteDisplayName = 'Video Test';
@@ -358,6 +360,7 @@ class Call extends Component {
                 );
             } else {
                 if (this.state.call !== null && (this.state.call.state === 'established' || (this.state.call.state === 'terminated' && this.state.reconnectingCall))) {
+
                     box = (
                         <VideoBox
                             remoteUri = {this.state.remoteUri}

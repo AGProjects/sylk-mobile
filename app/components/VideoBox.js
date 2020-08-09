@@ -24,16 +24,18 @@ class VideoBox extends Component {
         autoBind(this);
 
         this.state = {
+            call: this.props.call,
+            reconnectingCall: this.props.reconnectingCall,
+            audioMuted: this.props.muted,
             mirror: true,
             callOverlayVisible: true,
-            audioMuted: this.props.muted,
             videoMuted: false,
-            localVideoShow: false,
-            remoteVideoShow: false,
+            localVideoShow: true,
+            remoteVideoShow: true,
             remoteSharesScreen: false,
             showEscalateConferenceModal: false,
-            localStream: null,
-            remoteStream: null,
+            localStream: this.props.call.getLocalStreams()[0],
+            remoteStream: this.props.call.getRemoteStreams()[0],
             showDtmfModal: false,
             doorOpened: false
         };
@@ -49,6 +51,23 @@ class VideoBox extends Component {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
         }
+
+        if (nextProps.call && nextProps.call !== this.state.call) {
+            nextProps.call.on('stateChanged', this.callStateChanged);
+
+            if (this.state.call !== null) {
+                this.state.call.removeListener('stateChanged', this.callStateChanged);
+            }
+            this.setState({call: nextProps.call,
+                           localStream: nextProps.call.getLocalStreams()[0],
+                           remoteStream: nextProps.call.getRemoteStreams()[0]
+            });
+        }
+
+        if (nextProps.reconnectingCall != this.state.reconnectingCall) {
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
+        }
+
     }
 
     callStateChanged(oldState, newState, data) {
@@ -64,29 +83,22 @@ class VideoBox extends Component {
         dtmf.stopTone(); //don't play a tone at the same time as another
         dtmf.playTone(dtmf['DTMF_' + tone], 1000);
 
-        if (this.props.call !== null && this.props.call.state === 'established') {
-            this.props.call.sendDtmf(tone);
+        if (this.state.call !== null && this.state.call.state === 'established') {
+            this.state.call.sendDtmf(tone);
             /*this.props.notificationCenter.postSystemNotification('Door opened', {timeout: 5});*/
         }
     }
 
     componentDidMount() {
-        this.setState({
-            localStream: this.props.call.getLocalStreams()[0],
-            localVideoShow: true,
-            remoteStream: this.props.call.getRemoteStreams()[0],
-            remoteVideoShow: true
-        });
-
-        if (this.props.call) {
-            this.props.call.on('stateChanged', this.callStateChanged);
+        if (this.state.call) {
+            this.state.call.on('stateChanged', this.callStateChanged);
         }
         this.armOverlayTimer();
     }
 
     componentWillUnmount() {
-        if (this.props.call != null) {
-            this.props.call.removeListener('stateChanged', this.callStateChanged);
+        if (this.state.call != null) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
     }
 
@@ -119,7 +131,7 @@ class VideoBox extends Component {
 
     muteAudio(event) {
         event.preventDefault();
-        this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
+        this.props.toggleMute(this.state.call.id, !this.state.audioMuted);
     }
 
     muteVideo(event) {
@@ -183,11 +195,11 @@ class VideoBox extends Component {
     }
 
     render() {
-        if (this.props.call === null) {
+        if (this.state.call === null) {
             return null;
         }
 
-        // 'mirror'          : !this.props.call.sharingScreen && !this.props.generatedVideoTrack,
+        // 'mirror'          : !this.state.call.sharingScreen && !this.props.generatedVideoTrack,
         // we do not want mirrored local video once the call has started, just in preview
 
         const localVideoClasses = classNames({
@@ -196,7 +208,7 @@ class VideoBox extends Component {
             'animated'        : true,
             'fadeIn'          : this.state.localVideoShow || this.state.videoMuted,
             'fadeOut'         : this.state.videoMuted,
-            'fit'             : this.props.call.sharingScreen
+            'fit'             : this.state.call.sharingScreen
         });
 
         const remoteVideoClasses = classNames({
@@ -263,7 +275,7 @@ class VideoBox extends Component {
                         style={buttonClass}
                         icon={this.state.doorOpened ? "door-open": "door" }
                         onPress={this.openDoor}
-                        disabled={!(this.props.call && this.props.call.state === 'accepted')}
+                        disabled={!(this.state.call && this.state.call.state === 'accepted')}
                     />
                     <IconButton
                         size={buttonSize}
@@ -283,20 +295,20 @@ class VideoBox extends Component {
         }
 
         const remoteStreamUrl = this.state.remoteStream ? this.state.remoteStream.toURL() : null
-        //console.log('Render remote video stream Url', remoteStreamUrl);
+        const show = this.state.callOverlayVisible || this.state.reconnectingCall;
 
         return (
             <View style={styles.container}>
                 <CallOverlay
-                    show = {this.state.callOverlayVisible || this.props.reconnectingCall}
+                    show = {show}
                     remoteUri = {this.props.remoteUri}
                     remoteDisplayName = {this.props.remoteDisplayName}
                     photo={this.props.photo}
-                    call = {this.props.call}
+                    call = {this.state.call}
                     connection = {this.props.connection}
                     accountId = {this.props.accountId}
                 />
-                {this.state.remoteVideoShow && !this.props.reconnectingCall ?
+                {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
                         <TouchableWithoutFeedback onPress={this.toggleCallOverlay}>
                             <RTCView
@@ -323,7 +335,7 @@ class VideoBox extends Component {
                     </View>
                     : null }
 
-                {this.props.reconnectingCall
+                {this.state.reconnectingCall
                     ? <ActivityIndicator style={styles.reconnectContainer} animating={true} size={'large'} color={Colors.red800} />
                     : null
                 }
@@ -331,12 +343,12 @@ class VideoBox extends Component {
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
-                    call={this.props.call}
+                    call={this.state.call}
                     callKeepSendDtmf={this.props.callKeepSendDtmf}
                 />
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
-                    call={this.props.call}
+                    call={this.state.call}
                     close={this.toggleEscalateConferenceModal}
                     escalateToConference={this.escalateToConference}
                 />

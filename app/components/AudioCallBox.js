@@ -87,7 +87,8 @@ class AudioCallBox extends Component {
         }
 
         this.setState({remoteUri: nextProps.remoteUri,
-                       remoteDisplayName: nextProps.remoteDisplayName
+                       remoteDisplayName: nextProps.remoteDisplayName,
+                       photo: nextProps.photo
                        });
     }
 
