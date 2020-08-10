@@ -1586,17 +1586,35 @@ class Sylk extends Component {
     }
 
     incomingCallFromUrl(url) {
+        utils.timestampedLog('Incoming call from URL', url);
         try {
-            var url_parts = url.split("/");
-            const direction = url_parts[2];
-            const event     = url_parts[3];
-            const callUUID  = url_parts[4];
-            const uri       = url_parts[5];
-            const to        = url_parts[6];
+            let scheme;
+            let direction = 'outgoing';
+            let event;
+            let callUUID;
+            let uri;
+            let to;
 
-            utils.timestampedLog('Parsed URL:', direction, event, 'from', uri, 'to', to);
-            if (direction === 'outgoing' && event === 'conference' && uri && to) {
-                 this.incomingConference(callUUID, uri, to);
+            var url_parts = url.split("/");
+
+            if (scheme === 'sylk:') {
+                //sylk://outgoing/call/${callUUID}/${handle}/${name}
+                direction = url_parts[2];
+                event     = url_parts[3];
+                callUUID  = url_parts[4];
+                uri       = url_parts[5];
+                to        = url_parts[6];
+            } else {
+                // https://webrtc.sipthor.net/conference/DaffodilFlyChill0
+                event = url_parts[3];
+                uri = url_parts[4];
+                if (uri.indexOf('@') === -1) {
+                    uri = url_parts[4] + '@' + config.defaultConferenceDomain;
+                }
+            }
+
+            if (direction === 'outgoing' && event === 'conference' && uri) {
+                 this.callKeepStartConference(uri);
             } else if (direction === 'incoming' && event === 'call' && uri) {
                 //this.setState({showIncomingModal: true});
                 this.incomingCallFromPush(callUUID, uri);
@@ -1605,6 +1623,7 @@ class Sylk extends Component {
                  this.callKeepStartCall(uri, {audio: true, video: false, callUUID: callUUID});
             } else {
                  utils.timestampedLog('Unclear URL structure');
+                 this.changeRoute('/ready', 'initial_url');
             }
         } catch (err) {
             utils.timestampedLog('Error parsing URL', url, ":", err);
