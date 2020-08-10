@@ -362,29 +362,11 @@ class Sylk extends Component {
             return;
         }
 
-        /*
-
-        if (route === '/ready') {
-            if (this.state.currentCall) {
-                utils.timestampedLog('Ready state current call:', this.state.currentCall.state);
-
-                if (this.state.currentCall.state === 'established' || this.state.currentCall.state === 'accepted') {
-                    return;
-                }
-            }
-
-            if (this.state.incomingCall) {
-                utils.timestampedLog('Ready state incoming call:', this.state.incomingCall.state);
-                if (this.state.incomingCall.state === 'established' || this.state.incomingCall.state === 'accepted') {
-                    return;
-                }
-            }
-        }
-        */
-
         utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
 
         if (route === '/ready') {
+            InCallManager.stopRingback();
+            InCallManager.stop();
 
             this.closeLocalMedia();
             this.startedByPush = false;
@@ -882,7 +864,9 @@ class Sylk extends Component {
 
                 break;
             case 'established':
-                InCallManager.stopRingback();
+                if (direction === 'outgoing') {
+                    InCallManager.stopRingback();
+                }
 
                 const getTracks = call.getLocalStreams()[0].getVideoTracks();
                 const mediaType = (getTracks && getTracks.length > 0) ? 'video' : 'audio';
@@ -904,6 +888,10 @@ class Sylk extends Component {
 
                 break;
             case 'accepted':
+                if (direction === 'outgoing') {
+                    InCallManager.stopRingback();
+                }
+
                 this.resetGoToReadyTimer();
 
                 this._callKeepManager.backToForeground();
@@ -911,6 +899,10 @@ class Sylk extends Component {
                 break;
 
             case 'terminated':
+                if (direction === 'outgoing') {
+                    InCallManager.stopRingback();
+                }
+
                 this._terminatedCalls.set(callUUID, true);
 
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
@@ -1002,9 +994,6 @@ class Sylk extends Component {
                 if (!newCurrentCall && !newincomingCall) {
                     if (play_busy_tone) {
                         this.playBusyTone();
-                    } else {
-                        //utils.timestampedLog('Stop InCall manager');
-                        InCallManager.stop();
                     }
 
                 }
