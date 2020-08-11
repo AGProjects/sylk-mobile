@@ -126,6 +126,12 @@ export default class CallManager extends events.EventEmitter {
         this.callKeep.setAvailable(available);
     }
 
+    checkCalls() {
+        this.callUUIDS.forEach((callUUID) => {
+            utils.timestampedLog('Callkeep: call active', callUUID);
+        });
+    }
+
     backToForeground() {
        utils.timestampedLog('Callkeep: bring app to the foreground');
        this.callKeep.backToForeground();

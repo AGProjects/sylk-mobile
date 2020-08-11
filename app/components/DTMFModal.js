@@ -61,7 +61,7 @@ DTMFModal.propTypes = {
     show: PropTypes.bool.isRequired,
     hide: PropTypes.func.isRequired,
     call: PropTypes.object,
-    callKeepSendDtmf: PropTypes.func.isRequired
+    callKeepSendDtmf: PropTypes.func
 };
 
 
