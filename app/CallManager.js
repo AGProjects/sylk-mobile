@@ -144,7 +144,6 @@ export default class CallManager extends events.EventEmitter {
         } else if (Platform.OS === 'android') {
             this.callKeep.startCall(callUUID, targetUri, targetUri);
         }
-        this.backToForeground();
     }
 
     updateDisplay(callUUID, displayName, uri) {
@@ -169,8 +168,14 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
+        if (reason) {
+            utils.timestampedLog('Callkeep: END CALL', callUUID, 'with reason', reason);
+        } else {
+            utils.timestampedLog('Callkeep: END CALL', callUUID);
+        }
+
         if (this._rejectedCalls.has(callUUID)) {
-            return;
+        //    return;
         }
 
         if (this._cancelledCalls.has(callUUID)) {
@@ -182,7 +187,6 @@ export default class CallManager extends events.EventEmitter {
             this._cancelledCalls.set(callUUID, Date.now());
         }
 
-        utils.timestampedLog('Callkeep: END CALL', callUUID, 'with reason', reason);
         if (reason) {
             this.callKeep.reportEndCallWithUUID(callUUID, reason);
             if (this._timeouts.has(callUUID)) {
@@ -192,8 +196,12 @@ export default class CallManager extends events.EventEmitter {
         } else {
             this.callKeep.endCall(callUUID);
         }
+    }
 
-        this._calls.delete(callUUID);
+    terminateCall(callUUID) {
+        if (this._calls.has(callUUID)) {
+           this._calls.delete(callUUID);
+        }
     }
 
     _rnActiveAudioSession() {
@@ -271,6 +279,12 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
             this.webSocketActions.set(callUUID, 'accept');
+            setTimeout(() => {
+                utils.timestampedLog('Callkeep: check if call', callUUID, 'arrived over web socket');
+                if (!this._calls.has(callUUID)) {
+                    this.endCall(callUUID, 1);
+                }
+            }, 15000);
         }
     }
 
@@ -309,6 +323,13 @@ export default class CallManager extends events.EventEmitter {
             // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
+
+            setTimeout(() => {
+                utils.timestampedLog('Callkeep: check if call', callUUID, 'arrived over web socket');
+                if (!this._calls.has(callUUID)) {
+                    this.endCall(callUUID, 1);
+                }
+            }, 15000);
         }
 
         this.endCall(callUUID);

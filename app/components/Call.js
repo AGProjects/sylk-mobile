@@ -29,6 +29,9 @@ class Call extends Component {
         let direction = 'outgoing';
         let callEnded = false;
         this.mediaIsPlaying = false;
+        this.ended = false;
+
+        console.log('Call: init');
 
         if (this.props.call !== null) {
             // If current call is available on mount we must have incoming
@@ -71,7 +74,11 @@ class Call extends Component {
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         // Needed for switching to incoming call while in a call
-        if (nextProps.call !== null && this.state.call !== nextProps.currentCall) {
+        if (this.ended) {
+            return;
+        }
+
+        if (nextProps.call !== null && this.state.call !== nextProps.call) {
             nextProps.call.on('stateChanged', this.callStateChanged);
 
             this.setState({
@@ -82,15 +89,18 @@ class Call extends Component {
                            remoteDisplayName: nextProps.call.remoteIdentity.displayName
                            });
 
-            this.lookupContact();
+            if (this.state.direction === 'outgoing' && nextProps.call.direction === 'incoming') {
+                this.mediaPlaying();
+            }
 
+            this.lookupContact();
         }
 
         if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
-        if (nextProps.targetUri !== this.state.targetUri) {
+        if (nextProps.targetUri !== this.state.targetUri && this.state.direction === 'outgoing') {
             this.setState({targetUri: nextProps.targetUri});
         }
 
@@ -106,6 +116,7 @@ class Call extends Component {
     }
 
     mediaPlaying() {
+        console.log('Call: mediaPlaying', this.state.direction);
         if (this.state.direction === 'incoming') {
             this.answerCall();
         } else {
@@ -121,7 +132,15 @@ class Call extends Component {
     }
 
     componentWillUnmount() {
-        //console.log('Call: will unmount');
+        this.ended = true;
+
+        if (this.state.call) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
+        }
+
+        if (this.props.connection) {
+            this.props.connection.removeListener('stateChanged', this.connectionStateChanged);
+        }
     }
 
     lookupContact() {
@@ -261,8 +280,12 @@ class Call extends Component {
                 return;
             }
 
+            if (this.ended) {
+                return;
+            }
+
             if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Call: terminating conference', this.state.callUUID, 'that did not start yet');
+                utils.timestampedLog('Call: terminating call', this.state.callUUID, 'that did not start yet');
                 this.hangupCall('timeout');
             }
 
@@ -272,6 +295,10 @@ class Call extends Component {
                  !this.mediaIsPlaying
                  ) {
                 utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                if (this.state.call) {
+                    utils.timestampedLog('Call: state', this.state.call.state);
+                }
+
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;
@@ -301,7 +328,9 @@ class Call extends Component {
         options.localStream = this.state.localMedia;
 
         let call = this.props.account.call(this.state.targetUri, options);
-        call.on('stateChanged', this.callStateChanged);
+        if (call) {
+            call.on('stateChanged', this.callStateChanged);
+        }
     }
 
     answerCall() {

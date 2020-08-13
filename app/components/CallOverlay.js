@@ -54,7 +54,7 @@ class CallOverlay extends React.Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.call && nextProps.call !== this.state.call) {
+        if (nextProps.call !== null && nextProps.call !== this.state.call) {
             nextProps.call.on('stateChanged', this.callStateChanged);
 
             if (this.state.call !== null) {
