@@ -259,7 +259,7 @@ class ReadyBox extends Component {
 
 
 ReadyBox.propTypes = {
-    account         : PropTypes.object.isRequired,
+    account         : PropTypes.object,
     password        : PropTypes.string.isRequired,
     config          : PropTypes.object.isRequired,
     startCall       : PropTypes.func.isRequired,

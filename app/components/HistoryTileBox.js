@@ -52,10 +52,15 @@ class HistoryTileBox extends Component {
             };
 
         this.videoTest = Object.assign({}, videoTest);
+        this.ended = false;
     }
 
     componentDidMount() {
         this.getServerHistory();
+    }
+
+    componentWillUnmount() {
+        this.ended = true;
     }
 
     setTargetUri(uri, contact) {
@@ -103,6 +108,9 @@ class HistoryTileBox extends Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(props) {
+        if (this.ended) {
+            return;
+        }
         const { refreshHistory } = this.props;
         if (props.refreshHistory !== refreshHistory) {
             this.getServerHistory();
@@ -481,7 +489,7 @@ class HistoryTileBox extends Component {
 }
 
 HistoryTileBox.propTypes = {
-    account         : PropTypes.object.isRequired,
+    account         : PropTypes.object,
     password        : PropTypes.string.isRequired,
     config          : PropTypes.object.isRequired,
     targetUri       : PropTypes.string,

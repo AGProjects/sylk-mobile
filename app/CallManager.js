@@ -50,13 +50,16 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep = RNCallKeep;
 
         this._calls = new Map();
+        this._pushCalls = new Map();
         this._conferences = new Map();
         this._rejectedCalls = new Map();
         this._acceptedCalls = new Map();
         this._cancelledCalls = new Map();
         this._alertedCalls = new Map();
+        this._terminatedCalls = new Map();
 
         this.webSocketActions = new Map();
+        this.pushNotificationsActions = new Map();
         this._timeouts = new Map();
 
         this.sylkAcceptCall = acceptFunc;
@@ -202,6 +205,7 @@ export default class CallManager extends events.EventEmitter {
         if (this._calls.has(callUUID)) {
            this._calls.delete(callUUID);
         }
+        this._terminatedCalls.set(callUUID, Date.now());
     }
 
     _rnActiveAudioSession() {
@@ -244,10 +248,10 @@ export default class CallManager extends events.EventEmitter {
     }
 
     acceptCall(callUUID) {
+        this.setCurrentCallActive(callUUID);
 
         if (this._acceptedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: already accepted call', callUUID);
-            this.setCurrentCallActive(callUUID);
             return;
         }
 
@@ -279,9 +283,11 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
             this.webSocketActions.set(callUUID, 'accept');
+            utils.timestampedLog('Callkeep: check over 15 seconds if call', callUUID, 'arrived over web socket');
             setTimeout(() => {
                 utils.timestampedLog('Callkeep: check if call', callUUID, 'arrived over web socket');
                 if (!this._calls.has(callUUID)) {
+                    this.webSocketActions.delete(callUUID);
                     this.endCall(callUUID, 1);
                 }
             }, 15000);
@@ -323,10 +329,12 @@ export default class CallManager extends events.EventEmitter {
             // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
+            utils.timestampedLog('Callkeep: check over 15 seconds if call', callUUID, 'arrived on web socket');
 
             setTimeout(() => {
-                utils.timestampedLog('Callkeep: check if call', callUUID, 'arrived over web socket');
                 if (!this._calls.has(callUUID)) {
+                    utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive on web socket');
+                    this.webSocketActions.delete(callUUID);
                     this.endCall(callUUID, 1);
                 }
             }, 15000);
@@ -373,24 +381,45 @@ export default class CallManager extends events.EventEmitter {
         });
     }
 
-    incomingCallFromPush(callUUID, from) {
-        utils.timestampedLog('Callkeep: handle incoming push call', callUUID);
+    addWebsocketCall(call) {
+        if (this._calls.has(call.id)) {
+            return;
+        }
+        this._calls.set(call.id, call);
+    }
+
+    incomingCallFromPush(callUUID, from, force) {
+        utils.timestampedLog('Callkeep: handle new incoming push call', callUUID, 'from', from);
+
+        if (this._pushCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: push call already handled', callUUID);
+            return;
+        }
+
+        this._pushCalls.set(callUUID, true);
 
         if (this._rejectedCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: call already rejected', callUUID);
             this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.UNANSWERED);
             return;
         }
 
         if (this._acceptedCalls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: call already handled', callUUID);
+            utils.timestampedLog('Callkeep: call already accepted', callUUID);
             return;
         }
 
-        let reason = this.webSocketActions.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
-
         // if user does not decide anything this will be handled later
         this._timeouts.set(callUUID, setTimeout(() => {
-            utils.timestampedLog('Callkeep: end call because user did not accept or reject', callUUID);
+            utils.timestampedLog('Callkeep: incoming call', callUUID, 'timeout');
+            let reason = this.webSocketActions.has(callUUID) ? CK_CONSTANTS.END_CALL_REASONS.FAILED : CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
+
+            if (!this._terminatedCalls.has(callUUID) && !this._calls.has(callUUID)) {
+                utils.timestampedLog('Callkeep: call', callUUID, 'did not arive on web socket');
+                reason = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+            } else if (this._calls.has(callUUID)) {
+                utils.timestampedLog('Callkeep: user did not accept or reject', callUUID);
+            }
             this.endCall(callUUID, reason);
             this._timeouts.delete(callUUID);
         }, 45000));
@@ -400,16 +429,14 @@ export default class CallManager extends events.EventEmitter {
                 utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
             }
         } else {
-            this.showAlertPanel(callUUID, from);
+            if (this._calls.has(callUUID) || force) {
+                // on Android display alert panel only after websocket call arrives
+                // force is required when Android is locked, if we do not bring up the panel, the app will not wake up
+                this.showAlertPanel(callUUID, from);
+            } else {
+                utils.timestampedLog('Callkeep: waiting for call', callUUID, 'on web socket');
+            }
         }
-
-    }
-
-    addWebsocketCall(call) {
-        if (this._calls.has(call.id)) {
-            return;
-        }
-        this._calls.set(call.id, call);
     }
 
     incomingCallFromWebSocket(call) {

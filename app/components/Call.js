@@ -31,8 +31,6 @@ class Call extends Component {
         this.mediaIsPlaying = false;
         this.ended = false;
 
-        console.log('Call: init');
-
         if (this.props.call !== null) {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
@@ -116,7 +114,6 @@ class Call extends Component {
     }
 
     mediaPlaying() {
-        console.log('Call: mediaPlaying', this.state.direction);
         if (this.state.direction === 'incoming') {
             this.answerCall();
         } else {
@@ -295,8 +292,8 @@ class Call extends Component {
                  !this.mediaIsPlaying
                  ) {
                 utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
-                if (this.state.call) {
-                    utils.timestampedLog('Call: state', this.state.call.state);
+                if (this.state.call && this.state.call.state !== 'terminated') {
+                    return;
                 }
 
                 await this._sleep(1000);
