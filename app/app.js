@@ -24,14 +24,10 @@ import RNCallKeep, { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
 import Call from './components/Call';
-import CallByUriBox from './components/CallByUriBox';
 import Conference from './components/Conference';
-import ConferenceByUriBox from './components/ConferenceByUriBox';
-// import AudioPlayer from './components/AudioPlayer';
-// import ErrorPanel from './components/ErrorPanel';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
-import IncomingCallModal from './components/IncomingCallModal';
+//import IncomingCallModal from './components/IncomingCallModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -1056,42 +1052,6 @@ class Sylk extends Component {
 
     }
 
-    handleCallByUri(displayName, targetUri) {
-        const accountId = `${utils.generateUniqueId()}@${config.defaultGuestDomain}`;
-        this.setState({
-            accountId      : accountId,
-            password       : '',
-            displayName    : displayName,
-            //mode           : MODE_GUEST_CALL,
-            targetUri      : utils.normalizeUri(targetUri, config.defaultDomain),
-            loading        : 'Connecting...'
-        });
-
-        if (this.state.connection === null) {
-            let connection = sylkrtc.createConnection({server: config.wsServer});
-            connection.on('stateChanged', this.connectionStateChanged);
-            this.setState({connection: connection});
-        }
-    }
-
-    handleConferenceByUri(displayName, targetUri) {
-        const accountId = `${utils.generateUniqueId()}@${config.defaultGuestDomain}`;
-        this.setState({
-            accountId      : accountId,
-            password       : '',
-            displayName    : displayName,
-            //mode           : MODE_GUEST_CONFERENCE,
-            targetUri      : targetUri,
-            loading        : 'Connecting...'
-        });
-
-        if (this.state.connection === null) {
-            let connection = sylkrtc.createConnection({server: config.wsServer});
-            connection.on('stateChanged', this.connectionStateChanged);
-            this.setState({connection: connection});
-        }
-    }
-
     handleRegistration(accountId, password, remember) {
         this.setState({
             accountId : accountId,
@@ -1347,8 +1307,6 @@ class Sylk extends Component {
         this.setState({showIncomingModal: false});
 
         this.resetGoToReadyTimer();
-
-        this.setFocusEvents(false);
 
         if (this.state.currentCall) {
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
@@ -1754,39 +1712,14 @@ class Sylk extends Component {
         call.mediaTypes = mediaTypes;
 
         call.on('stateChanged', this.callStateChanged);
+
         this.setState({incomingCall: call});
 
         this._callKeepManager.incomingCallFromWebSocket(call);
 
         this.autoAcceptIncomingCall(callUUID, from);
 
-        this.setFocusEvents(true);
-
     }
-
-    setFocusEvents(enabled) {
-        // if (this.shouldUseHashRouting) {
-        //     const remote = window.require('electron').remote;
-        //     if (enabled) {
-        //         const currentWindow = remote.getCurrentWindow();
-        //         currentWindow.on('focus', this.hasFocus);
-        //         currentWindow.on('blur', this.hasNoFocus);
-        //         this.setState({haveFocus: currentWindow.isFocused()});
-        //     } else {
-        //         const currentWindow = remote.getCurrentWindow();
-        //         currentWindow.removeListener('focus', this.hasFocus);
-        //         currentWindow.removeListener('blur', this.hasNoFocus);
-        //     }
-        // }
-    }
-
-    // hasFocus() {
-    //     this.setState({haveFocus: true});
-    // }
-
-    // hasNoFocus() {
-    //     this.setState({haveFocus: false});
-    // }
 
     missedCall(data) {
         utils.timestampedLog('Missed call from ' + data.originator);
@@ -2017,6 +1950,16 @@ class Sylk extends Component {
            footerBox = null;
         }
 
+/*
+                            <IncomingCallModal
+                                call={this.state.incomingCall}
+                                onAccept={this.callKeepAcceptCall}
+                                onReject={this.callKeepRejectCall}
+                                show={this.state.showIncomingModal}
+                                contacts = {this.contacts}
+                            />
+*/
+
         return (
             <PaperProvider theme={theme}>
                 <Router history={history} ref="router">
@@ -2033,27 +1976,13 @@ class Sylk extends Component {
                             orientation={this.state.orientation}
                             isTablet={this.state.isTablet}
                             />
-
-                            <IncomingCallModal
-                                call={this.state.incomingCall}
-                                onAccept={this.callKeepAcceptCall}
-                                onReject={this.callKeepRejectCall}
-                                show={this.state.showIncomingModal}
-                                contacts = {this.contacts}
-                            />
-
-                            {/* <Locations hash={this.shouldUseHashRouting}  onBeforeNavigation={this.checkRoute}> */}
                             <Switch>
                                 <Route exact path="/" component={this.main} />
                                 <Route exact path="/login" component={this.login} />
                                 <Route exact path="/logout" component={this.logout} />
                                 <Route exact path="/ready" component={this.ready} />
                                 <Route exact path="/call" component={this.call} />
-                                <Route path="/call/:targetUri" component={this.callByUri} />
-                                {/* <Location path="/call/:targetUri" urlPatternOptions={{segmentValueCharset: 'a-zA-Z0-9-_ \.@'}} handler={this.callByUri} /> */}
                                 <Route exact path="/conference" component={this.conference} />
-                                <Route path="/conference/:targetUri" component={this.conferenceByUri} />
-                                {/* <Location path="/conference/:targetUri" urlPatternOptions={{segmentValueCharset: 'a-zA-Z0-9-_~ %\.@'}}  handler={this.conferenceByUri} /> */}
                                 <Route exact path="/preview" component={this.preview} />
                                 <Route component={this.notFound} />
                             </Switch>
@@ -2171,34 +2100,6 @@ class Sylk extends Component {
                 muted = {this.state.muted}
             />
         )
-    }
-
-    callByUri(urlParameters) {
-        // check if the uri contains a domain
-        if (urlParameters.targetUri.indexOf('@') === -1) {
-            const status = {
-                title   : 'Invalid user',
-                message : `Oops, the domain of the user is not set in '${urlParameters.targetUri}'`,
-                level   : 'danger',
-                width   : 'large'
-            }
-            return (
-                <StatusBox {...status} />
-            );
-        }
-        return (
-            <CallByUriBox
-                handleCallByUri = {this.handleCallByUri}
-                notificationCenter = {this.notificationCenter}
-                targetUri = {urlParameters.targetUri}
-                localMedia = {this.state.localMedia}
-                account = {this.state.account}
-                currentCall = {this.state.currentCall}
-                hangupCall = {this.hangupCall}
-                // shareScreen = {this.switchScreensharing}
-                generatedVideoTrack = {this.state.generatedVideoTrack}
-            />
-        );
     }
 
     conference() {
