@@ -386,9 +386,12 @@ class Sylk extends Component {
                                 participantsToInvite: null
                                 });
 
-                setTimeout(() => {
-                    this.setState({refreshHistory: !this.state.refreshHistory});
-                }, 1500);
+
+                if (this.state.account) {
+                    setTimeout(() => {
+                        this.setState({refreshHistory: !this.state.refreshHistory});
+                    }, 1500);
+                }
             }
         }
 
