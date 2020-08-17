@@ -35,7 +35,6 @@ class ReadyBox extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        console.log('UNSAFE_componentWillReceiveProps', nextProps.myInvitedParties);
         this.setState({myInvitedParties: nextProps.myInvitedParties});
     }
 
@@ -45,9 +44,6 @@ class ReadyBox extends Component {
     }
 
     async componentDidMount() {
-        if (this.state.targetUri) {
-            console.log('We must call', this.state.targetUri);
-        }
     }
 
     setMissedCalls(flag) {

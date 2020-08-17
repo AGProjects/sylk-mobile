@@ -26,7 +26,7 @@ function toTitleCase(str) {
 const Item = ({ nr, uri, displayName }) => (
   <View style={styles.participantView}>
     {displayName !==  uri?
-    <Text style={styles.participant}>{nr}. {displayName} ({uri})</Text>
+    <Text style={styles.participant}>{displayName} ({uri})</Text>
     :
     <Text style={styles.participant}>{nr}. {uri}</Text>
     }
@@ -63,6 +63,23 @@ class HistoryCard extends Component {
             showEditConferenceModal: false
         }
 
+    }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        this.setState({
+            id: nextProps.contact.id,
+            displayName: nextProps.contact.displayName,
+            uri: nextProps.contact.remoteParty,
+            invitedParties: nextProps.invitedParties,
+            participants: nextProps.contact.participants,
+            conference: nextProps.contact.conference,
+            type: nextProps.contact.type,
+            photo: nextProps.contact.photo,
+            label: nextProps.contact.label,
+            orientation: nextProps.orientation,
+            favorite: (nextProps.contact.tags.indexOf('favorite') > -1)? true : false,
+            blocked: (nextProps.contact.tags.indexOf('blocked') > -1)? true : false,
+        });
     }
 
     shouldComponentUpdate(nextProps) {

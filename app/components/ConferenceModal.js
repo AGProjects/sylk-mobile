@@ -35,8 +35,6 @@ class ConferenceModal extends Component {
             uri = nextProps.targetUri.split('@')[0];
         }
 
-        console.log('Conference modal', nextProps.myInvitedParties);
-
         this.setState({targetUri: uri, myInvitedParties: nextProps.myInvitedParties});
         this.handleConferenceTargetChange(uri);
     }
