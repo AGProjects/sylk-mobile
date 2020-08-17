@@ -14,17 +14,40 @@ class InviteParticipantsModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        let users = this.props.previousParticipants ? this.props.previousParticipants.toString(): null;
+        let difference = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
+
+        console.log('this.props.previousParticipants', this.props.previousParticipants);
+        console.log('this.props.currentParticipants', this.props.currentParticipants);
+
         this.state = {
-            users: users
+            participants: difference.toString(),
+            previousParticipants: this.props.previousParticipants,
+            currentParticipants: this.props.currentParticipants
         }
     }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.hasOwnProperty('muted')) {
+            this.setState({audioMuted: nextProps.muted});
+        }
+
+        let difference = nextProps.previousParticipants.filter(x => !nextProps.currentParticipants.includes(x));
+        this.setState({
+            participants: difference.toString(),
+            previousParticipants: nextProps.previousParticipants,
+            currentParticipants: nextProps.currentParticipants
+        });
+
+        console.log('this.props.previousParticipants', this.props.previousParticipants);
+        console.log('this.props.currentParticipants', this.props.currentParticipants);
+    }
+
 
     invite(event) {
         event.preventDefault();
         const uris = [];
-        if (this.state.users) {
-            this.state.users.split(',').forEach((item) => {
+        if (this.state.participants) {
+            this.state.participants.split(',').forEach((item) => {
                 item = item.trim();
                 if (item.indexOf('@') === -1) {
                     item = `${item}@${config.defaultDomain}`;
@@ -34,13 +57,13 @@ class InviteParticipantsModal extends Component {
         }
         if (uris) {
             this.props.inviteParticipants(uris);
-            this.setState({users: null});
+            this.setState({participants: null});
         }
         this.props.close();
     }
 
     onInputChange(value) {
-        this.setState({users: value});
+        this.setState({participants: value});
     }
 
     render() {
@@ -50,13 +73,13 @@ class InviteParticipantsModal extends Component {
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
                         <Dialog.Title>Invite participants</Dialog.Title>
-                        <Text>Enter users to invite</Text>
+                        <Text>Enter participants to invite</Text>
                         <TextInput
                             mode="flat"
-                            name="users"
-                            label="Users"
+                            name="people"
+                            label="People"
                             onChangeText={this.onInputChange}
-                            value={this.state.users}
+                            value={this.state.participants}
                             placeholder="bob,carol,alice@sip2sip.info"
                             required
                             autoCapitalize="none"
@@ -80,6 +103,7 @@ InviteParticipantsModal.propTypes = {
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
     inviteParticipants: PropTypes.func,
+    currentParticipants: PropTypes.array,
     previousParticipants: PropTypes.array,
     room: PropTypes.string
 };

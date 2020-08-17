@@ -131,7 +131,8 @@ class Sylk extends Component {
             initialUrl: null,
             reconnectingCall: false,
             muted: false,
-            participantsToInvite: null
+            participantsToInvite: null,
+            myInvitedParties: null
         };
 
         this.currentRoute = null;
@@ -149,7 +150,6 @@ class Sylk extends Component {
         this.state = Object.assign({}, this._initialSstate);
 
         this.myParticipants = {};
-        this.myInvitedParties = {};
 
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
@@ -209,6 +209,7 @@ class Sylk extends Component {
             if (myInvitedParties) {
                 this.myInvitedParties = myInvitedParties;
                 console.log('My invited parties', this.myInvitedParties);
+                this.setState({myInvitedParties: this.myInvitedParties});
             }
         });
 
@@ -1266,11 +1267,27 @@ class Sylk extends Component {
         });
     }
 
-    callKeepStartConference(targetUri, options={audio: true, video: true}) {
+    callKeepStartConference(targetUri, options={audio: true, video: true, participants: null}) {
+        if (!targetUri) {
+            return;
+        }
+
         let callUUID = options.callUUID || uuid.v4();
+        let participants = options.participants || null;
         this.addHistoryEntry(targetUri, callUUID);
-        this.setState({outgoingCallUUID: callUUID, outgoingMedia: options, reconnectingCall: false});
-        utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri);
+
+        this.setState({outgoingCallUUID: callUUID,
+                       outgoingMedia: options,
+                       reconnectingCall: false,
+                       participantsToInvite: participants
+                       });
+
+        if (participants) {
+            utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri, 'with', participants);
+        } else {
+            utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri);
+        }
+
         this._callKeepManager.backToForeground();
 
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: callUUID});
@@ -1542,7 +1559,7 @@ class Sylk extends Component {
         }
     }
 
-    startConference(targetUri, options={audio: true, video: true}) {
+    startConference(targetUri, options={audio: true, video: true, participants: []}) {
         utils.timestampedLog('New outgoing conference to room', targetUri);
         this.setState({targetUri: targetUri, isConference: true});
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
@@ -1841,6 +1858,7 @@ class Sylk extends Component {
     }
 
     saveInvitedParties(room, uris) {
+        room = room.split('@')[0];
         console.log('Save invited parties', uris, 'for room', room);
 
         if (!this.myInvitedParties) {
@@ -1869,6 +1887,7 @@ class Sylk extends Component {
         }
 
         storage.set('myInvitedParties', this.myInvitedParties);
+        this.setState({myInvitedParties: this.myInvitedParties});
     }
 
     deleteHistoryEntry(uri) {
@@ -2052,7 +2071,7 @@ class Sylk extends Component {
                     myPhoneNumber = {this.state.myPhoneNumber}
                     deleteHistoryEntry = {this.deleteHistoryEntry}
                     saveInvitedParties = {this.saveInvitedParties}
-                    myInvitedParties = {this.myInvitedParties}
+                    myInvitedParties = {this.state.myInvitedParties}
                     setFavoriteUri = {this.setFavoriteUri}
                     setBlockedUri = {this.setBlockedUri}
                     favoriteUris = {this.state.favoriteUris}
@@ -2110,6 +2129,7 @@ class Sylk extends Component {
     conference() {
         let _previousParticipants = new Set();
 
+        /*
         if (this.myParticipants) {
             let room = this.state.targetUri.split('@')[0];
             if (this.myParticipants.hasOwnProperty(room)) {
@@ -2126,7 +2146,9 @@ class Sylk extends Component {
                 }
             }
         }
+        */
 
+        console.log('Previous app parties', this.myInvitedParties);
         if (this.myInvitedParties) {
             let room = this.state.targetUri.split('@')[0];
             if (this.myInvitedParties.hasOwnProperty(room)) {

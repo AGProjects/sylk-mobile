@@ -28,8 +28,15 @@ class ReadyBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             historyFilter: null,
-            missedCalls: false
+            missedCalls: false,
+            participants: null,
+            myInvitedParties: this.props.myInvitedParties
         };
+    }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        console.log('UNSAFE_componentWillReceiveProps', nextProps.myInvitedParties);
+        this.setState({myInvitedParties: nextProps.myInvitedParties});
     }
 
     getTargetUri() {
@@ -79,7 +86,11 @@ class ReadyBox extends Component {
         }
         // the user pressed enter, start a video call by default
         if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri, {audio: true, video: true});
+            let participants;
+            if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(this.state.targetUri)) {
+                participants = this.state.myInvitedParties[this.state.targetUri];
+            }
+            this.props.startConference(this.state.targetUri, {audio: true, video: true, participants: this.state.participants});
         } else {
             this.props.startCall(this.getTargetUri(), {audio: true, video: true});
         }
@@ -87,6 +98,9 @@ class ReadyBox extends Component {
 
     showConferenceModal(event) {
         event.preventDefault();
+        this.setState({showConferenceModal: true});
+        return;
+
         if (this.state.targetUri.length !== 0) {
             const uri = `${this.state.targetUri.split('@')[0].replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
             this.handleConferenceCall(uri.toLowerCase());
@@ -113,10 +127,8 @@ class ReadyBox extends Component {
         }
     }
 
-    handleConferenceCall(targetUri, options={audio: true, video: true, conference: true}) {
-        if (targetUri) {
-            this.props.startConference(targetUri, options);
-        }
+    handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
+        this.props.startConference(targetUri, {audio: true, video: options.video, participants: options.participants});
         this.setState({showConferenceModal: false});
     }
 
@@ -135,8 +147,6 @@ class ReadyBox extends Component {
 
 
     render() {
-        //utils.timestampedLog('Render ready', this.state.historyFilter);
-
         const defaultDomain = `${config.defaultDomain}`;
 
         let uriClass = styles.portraitUriInputBox;
@@ -224,7 +234,7 @@ class ReadyBox extends Component {
                             deleteHistoryEntry={this.props.deleteHistoryEntry}
                             setFavoriteUri={this.props.setFavoriteUri}
                             saveInvitedParties={this.props.saveInvitedParties}
-                            myInvitedParties = {this.props.myInvitedParties}
+                            myInvitedParties = {this.state.myInvitedParties}
                             setBlockedUri={this.props.setBlockedUri}
                             favoriteUris={this.state.favoriteUris}
                             blockedUris={this.state.blockedUris}
@@ -252,6 +262,7 @@ class ReadyBox extends Component {
                 <ConferenceModal
                     show={this.state.showConferenceModal}
                     targetUri={this.state.targetUri}
+                    myInvitedParties={this.state.myInvitedParties}
                     handleConferenceCall={this.handleConferenceCall}
                 />
             </Fragment>
@@ -277,7 +288,6 @@ ReadyBox.propTypes = {
     myPhoneNumber   : PropTypes.string,
     deleteHistoryEntry: PropTypes.func,
     setFavoriteUri  : PropTypes.func,
-    saveInvitedParties: PropTypes.func,
     myInvitedParties: PropTypes.object,
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,

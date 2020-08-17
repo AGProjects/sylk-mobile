@@ -37,6 +37,7 @@ class ConferenceBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
         this.state = {
             callOverlayVisible: true,
             audioMuted: this.props.muted,
@@ -51,7 +52,8 @@ class ConferenceBox extends Component {
             selfDisplayedLarge: false,
             eventLog: [],
             sharedFiles: props.call.sharedFiles.slice(),
-            largeVideoStream: null
+            largeVideoStream: null,
+            previousParticipants: this.props.previousParticipants
         };
 
         const friendlyName = this.props.remoteUri.split('@')[0];
@@ -448,7 +450,6 @@ class ConferenceBox extends Component {
 
     inviteParticipants(uris) {
         console.log('Invite participants', uris);
-        //this.props.saveInvitedParties(this.props.call.id, this.props.remoteUri.split('@')[0], uris);
         this.props.call.inviteParticipants(uris);
     }
 
@@ -742,7 +743,8 @@ class ConferenceBox extends Component {
                 <InviteParticipantsModal
                     show={this.state.showInviteModal}
                     inviteParticipants={this.inviteParticipants}
-                    previousParticipants={this.props.previousParticipants}
+                    previousParticipants={this.state.previousParticipants}
+                    currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
                     close={this.toggleInviteModal}
                     room={this.props.remoteUri.split('@')[0]}
                 />
@@ -794,8 +796,7 @@ ConferenceBox.propTypes = {
     connection          : PropTypes.object,
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
-    saveInvitedParties  : PropTypes.func,
-    previousParticipants: PropTypes.array,
+    previousParticipants: PropTypes.object,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
     toggleMute          : PropTypes.func,

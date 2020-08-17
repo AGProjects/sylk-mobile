@@ -49,7 +49,8 @@ class HistoryCard extends Component {
             id: this.props.contact.id,
             displayName: this.props.contact.displayName,
             uri: this.props.contact.remoteParty,
-            invitedParties: this.props.invitedParties || this.props.contact.participants,
+            invitedParties: this.props.invitedParties,
+            participants: this.props.contact.participants,
             conference: this.props.contact.conference,
             type: this.props.contact.type,
             photo: this.props.contact.photo,
@@ -61,6 +62,7 @@ class HistoryCard extends Component {
             confirmed: false,
             showEditConferenceModal: false
         }
+
     }
 
     shouldComponentUpdate(nextProps) {
@@ -74,7 +76,7 @@ class HistoryCard extends Component {
 
     saveInvitedParties(uris) {
         this.setState({invitedParties: uris});
-        this.props.saveInvitedParties(this.state.uri, uris);
+        this.props.saveInvitedParties(this.state.uri.split('@')[0], uris);
     }
 
     handleParticipant() {
@@ -141,7 +143,6 @@ class HistoryCard extends Component {
     render () {
         let containerClass = styles.portraitContainer;
         let cardClass = styles.card;
-        //console.log('Render card', this.state.uri, this.state.orientation);
 
         let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
 
@@ -225,12 +226,26 @@ class HistoryCard extends Component {
             if (this.state.conference) {
                 if (this.state.invitedParties && this.state.invitedParties.length) {
                     const p_text = this.state.invitedParties.length > 1 ? 'participants' : 'participant';
-                    subtitle = 'With ' + this.state.invitedParties.length + ' ' + p_text;
+                    subtitle = 'With ' + this.state.invitedParties.length + ' favorite ' + p_text;
                     let i = 1;
                     let contact_obj;
                     let dn;
                     let _item;
                     this.state.invitedParties.forEach((participant) => {
+                        contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
+                        dn = contact_obj ? contact_obj.displayName : participant;
+                        _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
+                        participantsData.push(_item);
+                        i = i + 1;
+                    });
+                } else if (this.state.participants && this.state.participants.length) {
+                    const p_text = this.state.participants.length > 1 ? 'participants' : 'participant';
+                    subtitle = 'With ' + this.state.participants.length + ' ' + p_text;
+                    let i = 1;
+                    let contact_obj;
+                    let dn;
+                    let _item;
+                    this.state.participants.forEach((participant) => {
                         contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
                         dn = contact_obj ? contact_obj.displayName : participant;
                         _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};

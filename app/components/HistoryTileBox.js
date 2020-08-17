@@ -28,7 +28,8 @@ class HistoryTileBox extends Component {
             targetUri: this.props.targetUri,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
-            isRefreshing: false
+            isRefreshing: false,
+            myInvitedParties: this.props.myInvitedParties
         }
 
         const echoTest = {
@@ -79,6 +80,12 @@ class HistoryTileBox extends Component {
 
     saveInvitedParties(room, uris) {
         this.props.saveInvitedParties(room, uris);
+        let myInvitedParties = this.state.myInvitedParties;
+
+        if (myInvitedParties && myInvitedParties.hasOwnProperty(room)) {
+            myInvitedParties[room] = uris;
+            this.setState({myInvitedParties: myInvitedParties});
+        }
     }
 
     setBlockedUri(uri) {
@@ -90,8 +97,10 @@ class HistoryTileBox extends Component {
         let invitedParties = [];
         let uri = item.item.remoteParty;
 
-        if (this.props.myInvitedParties.hasOwnProperty(uri)) {
-            invitedParties = this.props.myInvitedParties[uri];
+        let username = uri.split('@')[0];
+
+        if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(username)) {
+            invitedParties = this.state.myInvitedParties[username];
         }
 
         return(
@@ -120,12 +129,18 @@ class HistoryTileBox extends Component {
     }
 
     //getDerivedStateFromProps(nextProps, state) {
-    UNSAFE_componentWillReceiveProps(props) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
         if (this.ended) {
             return;
         }
+
+        if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
+            console.log('myInvitedParties were updated');
+            this.setState({myInvitedParties: nextProps.myInvitedParties});
+        }
+
         const { refreshHistory } = this.props;
-        if (props.refreshHistory !== refreshHistory) {
+        if (nextProps.refreshHistory !== refreshHistory) {
             this.getServerHistory();
         }
     }
@@ -375,6 +390,7 @@ class HistoryTileBox extends Component {
         if (!this.state.accountId) {
             return null;
         }
+
         // TODO: render blocked and favorites also when there is no history
 
         //console.log('Render history');
