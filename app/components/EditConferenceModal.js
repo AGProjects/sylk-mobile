@@ -2,7 +2,7 @@ import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View } from 'react-native';
-import { Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
+import { Chip, Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
@@ -10,17 +10,24 @@ const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 import config from '../config';
 import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
 
-class InviteParticipantsModal extends Component {
+class EditConferenceModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        let users = this.props.previousParticipants ? this.props.previousParticipants.toString(): null;
+
+        let users = this.props.invitedParties ? this.props.invitedParties.toString(): null;
         this.state = {
             users: users
         }
     }
 
-    invite(event) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.invitedParties) {
+            this.setState({users: nextProps.invitedParties.toString()});
+        }
+    }
+
+    saveParticipants(event) {
         event.preventDefault();
         const uris = [];
         if (this.state.users) {
@@ -32,8 +39,9 @@ class InviteParticipantsModal extends Component {
                 uris.push(item);
             });
         }
+
         if (uris) {
-            this.props.inviteParticipants(uris);
+            this.props.saveInvitedParties(uris);
             this.setState({users: null});
         }
         this.props.close();
@@ -44,29 +52,28 @@ class InviteParticipantsModal extends Component {
     }
 
     render() {
-
         return (
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title>Invite participants</Dialog.Title>
-                        <Text>Enter users to invite</Text>
+                        <Dialog.Title>{this.props.room} conference participants </Dialog.Title>
                         <TextInput
                             mode="flat"
                             name="users"
-                            label="Users"
+                            label="Accounts"
                             onChangeText={this.onInputChange}
                             value={this.state.users}
-                            placeholder="bob,carol,alice@sip2sip.info"
+                            placeholder="Enter accounts separated by commas"
                             required
                             autoCapitalize="none"
                         />
+
                         <View style={styles.buttonRow}>
                         <Button
                             mode="contained"
                             style={styles.button}
-                            onPress={this.invite}
-                            icon="email">Invite
+                            onPress={this.saveParticipants}
+                            icon="email">Save
                         </Button>
                         </View>
                     </Surface>
@@ -76,12 +83,12 @@ class InviteParticipantsModal extends Component {
     }
 }
 
-InviteParticipantsModal.propTypes = {
+EditConferenceModal.propTypes = {
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
-    inviteParticipants: PropTypes.func,
-    previousParticipants: PropTypes.array,
+    saveInvitedParties: PropTypes.func,
+    invitedParties: PropTypes.array,
     room: PropTypes.string
 };
 
-export default InviteParticipantsModal;
+export default EditConferenceModal;

@@ -75,7 +75,10 @@ class HistoryTileBox extends Component {
 
     setFavoriteUri(uri) {
         return this.props.setFavoriteUri(uri);
-        this.props.setTargetUri();
+    }
+
+    saveInvitedParties(room, uris) {
+        this.props.saveInvitedParties(room, uris);
     }
 
     setBlockedUri(uri) {
@@ -83,11 +86,21 @@ class HistoryTileBox extends Component {
     }
 
     renderItem(item) {
+
+        let invitedParties = [];
+        let uri = item.item.remoteParty;
+
+        if (this.props.myInvitedParties.hasOwnProperty(uri)) {
+            invitedParties = this.props.myInvitedParties[uri];
+        }
+
         return(
             <HistoryCard
             id={item.id}
             contact={item.item}
+            invitedParties={invitedParties}
             setFavoriteUri={this.setFavoriteUri}
+            saveInvitedParties={this.saveInvitedParties}
             setBlockedUri={this.setBlockedUri}
             deleteHistoryEntry={this.deleteHistoryEntry}
             setTargetUri={this.setTargetUri}
@@ -505,6 +518,8 @@ HistoryTileBox.propTypes = {
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
     setFavoriteUri  : PropTypes.func,
+    saveInvitedParties: PropTypes.func,
+    myInvitedParties: PropTypes.object,
     setBlockedUri   : PropTypes.func,
     deleteHistoryEntry : PropTypes.func,
     favoriteUris    : PropTypes.array,

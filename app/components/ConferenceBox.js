@@ -448,7 +448,7 @@ class ConferenceBox extends Component {
 
     inviteParticipants(uris) {
         console.log('Invite participants', uris);
-        this.props.saveInvitedParties(this.props.call.id, this.props.remoteUri.split('@')[0], uris);
+        //this.props.saveInvitedParties(this.props.call.id, this.props.remoteUri.split('@')[0], uris);
         this.props.call.inviteParticipants(uris);
     }
 

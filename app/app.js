@@ -1842,7 +1842,9 @@ class Sylk extends Component {
         storage.set('myParticipants', this.myParticipants);
     }
 
-    saveInvitedParties(callUUID, room, uris) {
+    saveInvitedParties(room, uris) {
+        console.log('Save invited parties', uris, 'for room', room);
+
         if (!this.myInvitedParties) {
             this.myInvitedParties = new Object();
         }
@@ -2051,6 +2053,8 @@ class Sylk extends Component {
                     myDisplayName = {this.state.myDisplayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
                     deleteHistoryEntry = {this.deleteHistoryEntry}
+                    saveInvitedParties = {this.saveInvitedParties}
+                    myInvitedParties = {this.myInvitedParties}
                     setFavoriteUri = {this.setFavoriteUri}
                     setBlockedUri = {this.setBlockedUri}
                     favoriteUris = {this.state.favoriteUris}

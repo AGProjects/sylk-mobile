@@ -1,4 +1,4 @@
-﻿import React, { Component} from 'react';
+﻿import React, { Component, Fragment} from 'react';
 import { View, SafeAreaView, FlatList } from 'react-native';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
@@ -7,6 +7,7 @@ import momentFormat from 'moment-duration-format';
 import { Card, IconButton, Button, Caption, Title, Subheading, List, Text} from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
+import EditConferenceModal from './EditConferenceModal';
 
 import styles from '../assets/styles/blink/_HistoryCard.scss';
 
@@ -48,7 +49,7 @@ class HistoryCard extends Component {
             id: this.props.contact.id,
             displayName: this.props.contact.displayName,
             uri: this.props.contact.remoteParty,
-            participants: this.props.contact.participants,
+            invitedParties: this.props.invitedParties || this.props.contact.participants,
             conference: this.props.contact.conference,
             type: this.props.contact.type,
             photo: this.props.contact.photo,
@@ -57,13 +58,23 @@ class HistoryCard extends Component {
             isTablet: this.props.isTablet,
             favorite: (this.props.contact.tags.indexOf('favorite') > -1)? true : false,
             blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false,
-            confirmed: false
+            confirmed: false,
+            showEditConferenceModal: false
         }
     }
 
     shouldComponentUpdate(nextProps) {
         //https://medium.com/sanjagh/how-to-optimize-your-react-native-flatlist-946490c8c49b
         return true;
+    }
+
+    toggleEditConferenceModal() {
+        this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
+    }
+
+    saveInvitedParties(uris) {
+        this.setState({invitedParties: uris});
+        this.props.saveInvitedParties(this.state.uri, uris);
     }
 
     handleParticipant() {
@@ -81,6 +92,10 @@ class HistoryCard extends Component {
     setBlockedUri() {
         let newBlockedState = this.props.setBlockedUri(this.state.uri);
         this.setState({blocked: newBlockedState});
+    }
+
+    editConference() {
+         this.toggleEditConferenceModal();
     }
 
     deleteHistoryEntry() {
@@ -138,7 +153,9 @@ class HistoryCard extends Component {
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
         let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite ) ? true: false;
+        let showEditButton = (uri.indexOf('@videoconference.') > -1 && this.state.favorite && !this.state.confirmed ) ? true: false;
         let blockTextbutton = 'Block';
+        let editTextbutton = 'Edit';
         let favoriteTextbutton = 'Favorite';
         let undoTextbutton = 'Abort';
         let deleteTextbutton = 'Delete';
@@ -206,14 +223,14 @@ class HistoryCard extends Component {
             }
 
             if (this.state.conference) {
-                if (this.state.participants && this.state.participants.length) {
-                    const p_text = this.state.participants.length > 1 ? 'participants' : 'participant';
-                    subtitle = 'With ' + this.state.participants.length + ' ' + p_text;
+                if (this.state.invitedParties && this.state.invitedParties.length) {
+                    const p_text = this.state.invitedParties.length > 1 ? 'participants' : 'participant';
+                    subtitle = 'With ' + this.state.invitedParties.length + ' ' + p_text;
                     let i = 1;
                     let contact_obj;
                     let dn;
                     let _item;
-                    this.state.participants.forEach((participant) => {
+                    this.state.invitedParties.forEach((participant) => {
                         contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
                         dn = contact_obj ? contact_obj.displayName : participant;
                         _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
@@ -239,6 +256,8 @@ class HistoryCard extends Component {
             description = description + ' (' + duration + ')';
 
             return (
+                <Fragment>
+
                 <Card
                     onPress={() => {this.setTargetUri(uri, this.props.contact)}}
                     style={[containerClass, cardClass]}
@@ -250,7 +269,7 @@ class HistoryCard extends Component {
                             <Caption color="textSecondary">
                                 <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
                             </Caption>
-                            {this.state.participants && this.state.participants.length && showActions ?
+                            {this.state.invitedParties && this.state.invitedParties.length && showActions ?
                             <SafeAreaView>
                               <FlatList
                                 horizontal={false}
@@ -270,6 +289,7 @@ class HistoryCard extends Component {
                     {showActions ?
                         <View style={styles.buttonContainer}>
                         <Card.Actions>
+                           {showEditButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.editConference()}}>{editTextbutton}</Button>: null}
                            {showDeleteButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteHistoryEntry()}}>{deleteTextbutton}</Button>: null}
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
                            {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
@@ -278,6 +298,15 @@ class HistoryCard extends Component {
                         </View>
                         : null}
                 </Card>
+                <EditConferenceModal
+                    show={this.state.showEditConferenceModal}
+                    room={title}
+                    invitedParties={this.state.invitedParties}
+                    saveInvitedParties={this.saveInvitedParties}
+                    close={this.toggleEditConferenceModal}
+                />
+                </Fragment>
+
             );
 
         } else {
@@ -320,6 +349,7 @@ HistoryCard.propTypes = {
     setTargetUri   : PropTypes.func,
     setBlockedUri  : PropTypes.func,
     setFavoriteUri : PropTypes.func,
+    saveInvitedParties : PropTypes.func,
     deleteHistoryEntry : PropTypes.func,
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool,

@@ -223,6 +223,8 @@ class ReadyBox extends Component {
                             myPhoneNumber={this.props.myPhoneNumber}
                             deleteHistoryEntry={this.props.deleteHistoryEntry}
                             setFavoriteUri={this.props.setFavoriteUri}
+                            saveInvitedParties={this.props.saveInvitedParties}
+                            myInvitedParties = {this.props.myInvitedParties}
                             setBlockedUri={this.props.setBlockedUri}
                             favoriteUris={this.state.favoriteUris}
                             blockedUris={this.state.blockedUris}
@@ -275,6 +277,8 @@ ReadyBox.propTypes = {
     myPhoneNumber   : PropTypes.string,
     deleteHistoryEntry: PropTypes.func,
     setFavoriteUri  : PropTypes.func,
+    saveInvitedParties: PropTypes.func,
+    myInvitedParties: PropTypes.object,
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array
