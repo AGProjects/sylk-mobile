@@ -362,6 +362,18 @@ class Sylk extends Component {
 
         if (route === '/ready') {
             this.startedByPush = false;
+            this.setState({
+                            isConference: false,
+                            outgoingMedia: null,
+                            outgoingCallUUID: null,
+                            currentCall: null,
+                            incomingCall: null,
+                            targetUri: '',
+                            reconnectingCall: false,
+                            localMedia: null,
+                            muted: false,
+                            participantsToInvite: null
+                            });
 
             if (this.currentRoute === 'call' || this.currentRoute === 'conference') {
                 if (reason !== 'user_press_hangup') {
@@ -372,20 +384,6 @@ class Sylk extends Component {
                 this._callKeepManager.endCalls();
 
                 this.closeLocalMedia();
-
-                this.setState({
-                                isConference: false,
-                                outgoingMedia: null,
-                                outgoingCallUUID: null,
-                                currentCall: null,
-                                incomingCall: null,
-                                targetUri: '',
-                                reconnectingCall: false,
-                                localMedia: null,
-                                muted: false,
-                                participantsToInvite: null
-                                });
-
 
                 if (this.state.account) {
                     setTimeout(() => {
