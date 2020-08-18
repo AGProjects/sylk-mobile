@@ -1,1 +1,1 @@
-Sylk Client is the WebRTC client companion for SylkServer
+SIP compatible video conferencing client (WebRTC)
