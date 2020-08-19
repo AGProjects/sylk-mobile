@@ -406,7 +406,15 @@ class Sylk extends Component {
         }, 5000);
 
         try {
+            await RNCallKeep.supportConnectionService ();
+            utils.timestampedLog('Connection service is enabled');
+        } catch(err) {
+            utils.timestampedLog(err);
+        }
+
+        try {
             await RNCallKeep.hasPhoneAccount();
+            utils.timestampedLog('Phone account is enabled');
         } catch(err) {
             utils.timestampedLog(err);
         }
@@ -617,13 +625,16 @@ class Sylk extends Component {
             case 'closed':
                 this.setState({connection: null, loading: null});
                 //this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 3000});
+                this._callKeepManager.setAvailable(false);
                 break;
             case 'ready':
                 this._notificationCenter.removeNotification();
                 //this._notificationCenter.postSystemNotification('Connection OK', {body: '', timeout: 1});
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
+                this._callKeepManager.setAvailable(true);
                 break;
             case 'disconnected':
+                this._callKeepManager.setAvailable(false);
                 if (this.state.currentCall) {
                     this.hangupCall(this.state.currentCall.id, 'outgoing_connection_failed');
                 }
@@ -641,6 +652,7 @@ class Sylk extends Component {
 
                 break;
             default:
+                this._callKeepManager.setAvailable(false);
                 if (this.state.registrationKeepalive !== true) {
                     this.setState({loading: 'Connecting...'});
                 }
