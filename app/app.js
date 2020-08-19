@@ -1016,11 +1016,6 @@ class Sylk extends Component {
                     this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
                 }
 
-                if (newCurrentCall) {
-                    // we had an old active call that must be revived
-                    this._callKeepManager.setCurrentCallActive(newCurrentCall.id);
-                }
-
                 this.updateHistoryEntry(callUUID);
 
                 if (newState === 'established' || newState === 'accepted') {
@@ -1050,7 +1045,6 @@ class Sylk extends Component {
 
         } else {
             //utils.timestampedLog('Will go to ready in 4 seconds');
-
             this.goToReadyTimer = setTimeout(() => {
 
                 this.changeRoute('/ready', 'no more calls');
@@ -1284,6 +1278,8 @@ class Sylk extends Component {
             return;
         }
 
+        this.resetGoToReadyTimer();
+
         let callUUID = options.callUUID || uuid.v4();
         let participants = options.participants || null;
         this.addHistoryEntry(targetUri, callUUID);
@@ -1306,6 +1302,7 @@ class Sylk extends Component {
     }
 
     callKeepStartCall(targetUri, options) {
+        this.resetGoToReadyTimer();
         let callUUID = options.callUUID || uuid.v4();
         this.setState({outgoingCallUUID: callUUID, reconnectingCall: false});
         utils.timestampedLog('User will start call', callUUID, 'to', targetUri);
