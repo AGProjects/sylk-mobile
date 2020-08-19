@@ -1,9 +1,4 @@
-Sylk Mobile is part of Sylk Suite, a set of real-time communications
-applications using IETF SIP protocol and WebRTC specifications.  With it you
-can call to any other SIP address and you can receive calls from SIP
-applications and WebRTC browsers.
-
-Features
+Sylk Mobile is part of Sylk Suite, a set of real-time communications applications using IETF SIP protocol and WebRTC specifications.  With it you can call to any other SIP address and you can receive calls from SIP applications and WebRTC browsers.
 
 Features
 
