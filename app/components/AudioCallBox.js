@@ -11,6 +11,15 @@ import UserIcon from './UserIcon';
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
 import utils from '../utils';
 
+function toTitleCase(str) {
+    return str.replace(
+        /\w\S*/g,
+        function(txt) {
+            return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+        }
+    );
+}
+
 
 class AudioCallBox extends Component {
     constructor(props) {
@@ -152,7 +161,13 @@ class AudioCallBox extends Component {
                               displayName: this.state.remoteDisplayName || '',
                               photo: this.state.photo
                               };
-        let displayName = (this.state.remoteDisplayName && this.state.remoteUri !== this.state.remoteDisplayName) ? this.state.remoteDisplayName: this.state.remoteUri;
+
+
+        let displayName = this.state.remoteUri ? toTitleCase(this.state.remoteUri.split('@')[0]) : '';
+
+        if (this.state.remoteDisplayName && this.state.remoteUri !== this.state.remoteDisplayName) {
+            displayName = this.state.remoteDisplayName;
+        }
 
         if (this.props.isTablet) {
             buttonContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapeButtonContainer : styles.tabletPortraitButtonContainer;
@@ -178,11 +193,9 @@ class AudioCallBox extends Component {
                 <View style={userIconContainerClass}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
-                <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
-                { (this.state.remoteDisplayName && this.state.remoteUri !== this.state.remoteDisplayName) ?
 
+                <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
                 <Text style={styles.uri}>{this.state.remoteUri}</Text>
-                : null }
 
                 {this.props.orientation !== 'landscape' && !this.userHangup && this.state.reconnectingCall ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
