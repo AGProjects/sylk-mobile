@@ -73,7 +73,7 @@ class NavigationBar extends Component {
 
         statusIcon = 'check-circle';
         if (!this.props.connection || this.props.connection.state !== 'ready') {
-            statusIcon = 'error-outline';
+            statusIcon = 'alert-circle';
         } else if (this.props.registrationState && this.props.registrationState !== 'registered') {
             statusIcon = 'priority-high';
         }
