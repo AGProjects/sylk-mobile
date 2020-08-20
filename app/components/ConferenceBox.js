@@ -796,7 +796,7 @@ ConferenceBox.propTypes = {
     connection          : PropTypes.object,
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
-    previousParticipants: PropTypes.object,
+    previousParticipants: PropTypes.array,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,
     toggleMute          : PropTypes.func,
