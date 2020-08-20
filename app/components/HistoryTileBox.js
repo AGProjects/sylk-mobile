@@ -391,13 +391,6 @@ class HistoryTileBox extends Component {
             return null;
         }
 
-        // TODO: render blocked and favorites also when there is no history
-
-        //console.log('Render history');
-
-        //console.log('Favorite URIs', this.state.favoriteUris);
-        //console.log('blockedUris URIs', this.state.blockedUris);
-
         let history = [];
         let searchExtraItems = [];
         let items = [];

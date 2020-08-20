@@ -28,7 +28,7 @@ const Item = ({ nr, uri, displayName }) => (
     {displayName !==  uri?
     <Text style={styles.participant}>{displayName} ({uri})</Text>
     :
-    <Text style={styles.participant}>{nr}. {uri}</Text>
+    <Text style={styles.participant}>{uri}</Text>
     }
 
   </View>
@@ -301,7 +301,7 @@ class HistoryCard extends Component {
                             <Caption color="textSecondary">
                                 <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
                             </Caption>
-                            {this.state.invitedParties && this.state.invitedParties.length && showActions ?
+                            {participantsData && participantsData.length && showActions ?
                             <SafeAreaView>
                               <FlatList
                                 horizontal={false}
