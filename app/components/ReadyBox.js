@@ -257,7 +257,9 @@ class ReadyBox extends Component {
                     show={this.state.showConferenceModal}
                     targetUri={this.state.targetUri}
                     myInvitedParties={this.state.myInvitedParties}
+                    selectedContact={this.state.selectedContact}
                     handleConferenceCall={this.handleConferenceCall}
+                    defaultDomain={this.props.defaultDomain}
                 />
             </Fragment>
         );

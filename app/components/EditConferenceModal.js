@@ -15,15 +15,32 @@ class EditConferenceModal extends Component {
         super(props);
         autoBind(this);
 
-        let users = this.props.invitedParties ? this.props.invitedParties.toString(): null;
+        let users = '';
+        if (this.props.invitedParties && this.props.invitedParties.length > 0) {
+            users = this.props.invitedParties;
+        } else if (this.props.selectedContact && this.props.selectedContact.participants) {
+            users = this.props.selectedContact.participants;
+        }
+
         this.state = {
-            users: users
+            users: users.toString(),
+            selectedContact: this.props.selectedContact,
+            invitedParties: this.props.invitedParties
         }
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.invitedParties) {
-            this.setState({users: nextProps.invitedParties.toString()});
+        let users = '';
+        if (nextProps.invitedParties && nextProps.invitedParties.length > 0) {
+            users = nextProps.invitedParties;
+        } else if (nextProps.selectedContact && nextProps.selectedContact.participants) {
+            users = nextProps.selectedContact.participants;
+        }
+
+        this.state = {
+            users: users.toString(),
+            selectedContact: nextProps.selectedContact,
+            invitedParties: nextProps.invitedParties
         }
     }
 
@@ -96,6 +113,7 @@ EditConferenceModal.propTypes = {
     saveInvitedParties: PropTypes.func,
     invitedParties: PropTypes.array,
     room: PropTypes.string,
+    selectedContact: PropTypes.object,
     defaultDomain: PropTypes.string
 };
 

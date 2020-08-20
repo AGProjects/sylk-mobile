@@ -47,6 +47,7 @@ class HistoryCard extends Component {
 
         this.state = {
             id: this.props.contact.id,
+            contact: this.props.contact,
             displayName: this.props.contact.displayName,
             uri: this.props.contact.remoteParty,
             invitedParties: this.props.invitedParties,
@@ -68,6 +69,7 @@ class HistoryCard extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({
             id: nextProps.contact.id,
+            contact: nextProps.contact,
             displayName: nextProps.contact.displayName,
             uri: nextProps.contact.remoteParty,
             invitedParties: nextProps.invitedParties,
@@ -145,7 +147,7 @@ class HistoryCard extends Component {
             return;
         }
 
-        this.props.setTargetUri(uri, this.contact);
+        this.props.setTargetUri(uri, this.state.contact);
     }
 
     isAnonymous(uri) {
@@ -164,6 +166,7 @@ class HistoryCard extends Component {
         let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
 
         let uri =  this.state.uri;
+        let username =  uri.split('@')[0];
         let displayName = this.state.displayName;
 
         let buttonMode = 'text';
@@ -221,12 +224,12 @@ class HistoryCard extends Component {
 
         let color = {};
 
-        let title = displayName || uri.split('@')[0];
+        let title = displayName || username;
         let subtitle = uri;
         let description = this.props.contact.startTime;
 
-        if (displayName === uri || this.state.conference) {
-            title = toTitleCase(uri.split('@')[0]);
+        if (displayName === uri) {
+            title = toTitleCase(username);
         }
 
         if (this.props.contact.tags.indexOf('history') > -1) {
@@ -241,28 +244,16 @@ class HistoryCard extends Component {
             }
 
             if (this.state.conference) {
-                if (this.state.invitedParties && this.state.invitedParties.length) {
-                    const p_text = this.state.invitedParties.length > 1 ? 'participants' : 'participant';
-                    subtitle = 'With ' + this.state.invitedParties.length + ' favorite ' + p_text;
+                let participants = (this.state.invitedParties && this.state.invitedParties.length > 0) ? this.state.invitedParties: this.state.participants;
+                if (participants && participants.length > 0) {
+                    console.log('participants.length', participants.length);
+                    const p_text = participants.length > 1 ? 'participants' : 'participant';
+                    subtitle = 'With ' + participants.length + ' ' + p_text;
                     let i = 1;
                     let contact_obj;
                     let dn;
                     let _item;
-                    this.state.invitedParties.forEach((participant) => {
-                        contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
-                        dn = contact_obj ? contact_obj.displayName : participant;
-                        _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
-                        participantsData.push(_item);
-                        i = i + 1;
-                    });
-                } else if (this.state.participants && this.state.participants.length) {
-                    const p_text = this.state.participants.length > 1 ? 'participants' : 'participant';
-                    subtitle = 'With ' + this.state.participants.length + ' ' + p_text;
-                    let i = 1;
-                    let contact_obj;
-                    let dn;
-                    let _item;
-                    this.state.participants.forEach((participant) => {
+                    participants.forEach((participant) => {
                         contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
                         dn = contact_obj ? contact_obj.displayName : participant;
                         _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
@@ -270,7 +261,27 @@ class HistoryCard extends Component {
                         i = i + 1;
                     });
                 } else {
-                    subtitle = 'No participants';
+                    subtitle = 'With no participants';
+                }
+
+                let dn;
+                if (participantsData.length > 4 || participantsData.length === 0) {
+                    title = username.length > 10 ? 'Conference' : 'Conference ' + toTitleCase(username);
+                } else if (participantsData.length > 0 || participantsData.length <= 4 ) {
+                    let j = 0;
+                    title = '';
+                    participantsData.forEach((participant) => {
+                        if (participant.displayName === participant.uri) {
+                            dn = toTitleCase(participant.uri.split('@')[0]);
+                        } else {
+                            dn = participant.displayName.split(' ')[0];
+                        }
+                        title = title + dn;
+                        if (j < participantsData.length - 1) {
+                            title = title + ' & ';
+                        }
+                        j = j + 1;
+                    });
                 }
             }
 
@@ -334,6 +345,7 @@ class HistoryCard extends Component {
                     show={this.state.showEditConferenceModal}
                     room={title}
                     invitedParties={this.state.invitedParties}
+                    selectedContact={this.state.contact}
                     saveInvitedParties={this.saveInvitedParties}
                     close={this.toggleEditConferenceModal}
                     defaultDomain={this.props.defaultDomain}

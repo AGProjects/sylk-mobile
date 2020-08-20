@@ -295,7 +295,7 @@ class HistoryTileBox extends Component {
                         elem.tags = [];
                     }
 
-                    if (elem.remoteParty.indexOf('@conference.sip2sip.info') > -1) {
+                    if (elem.remoteParty.indexOf('@conference.') > -1) {
                         return null;
                     }
 

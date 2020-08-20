@@ -17,6 +17,7 @@ class ConferenceModal extends Component {
         this.state = {
             targetUri: props.targetUri ? props.targetUri.split('@')[0] : '',
             myInvitedParties: props.myInvitedParties,
+            selectedContact: props.selectedContact,
             participants: null
         };
 
@@ -37,13 +38,16 @@ class ConferenceModal extends Component {
             uri = nextProps.targetUri.split('@')[0];
         }
 
-        this.setState({targetUri: uri, myInvitedParties: nextProps.myInvitedParties});
+        this.setState({targetUri: uri,
+                      myInvitedParties: nextProps.myInvitedParties,
+                      selectedContact: nextProps.selectedContact
+                      });
         this.handleConferenceTargetChange(uri);
     }
 
     handleConferenceTargetChange(value) {
         let targetUri = value;
-        let participants = null;
+        let participants = '';
         let sanitizedParticipants = [];
         let username;
         let domain;
@@ -53,25 +57,27 @@ class ConferenceModal extends Component {
             uri = uri.split('@')[0].toLowerCase();
             if (this.props.myInvitedParties && this.props.myInvitedParties.hasOwnProperty(uri)) {
                 participants = this.props.myInvitedParties[uri].toString();
-
-                participants.split(',').forEach((item) => {
-                    item = item.trim().toLowerCase();
-                    if (item.indexOf('@') === -1) {
-                        item = `${item}@${this.props.defaultDomain}`;
-                    }
-
-                    username = item.split('@')[0];
-                    domain = item.split('@')[1];
-
-                    if (username && username !== ',') {
-                        if (domain === this.props.defaultDomain) {
-                            sanitizedParticipants.push(username);
-                        } else {
-                            sanitizedParticipants.push(item);
-                        }
-                    }
-                });
+            } else if (this.state.selectedContact && this.state.selectedContact.participants) {
+                participants = this.state.selectedContact.participants.toString();
             }
+
+            participants.split(',').forEach((item) => {
+                item = item.trim().toLowerCase();
+                if (item.indexOf('@') === -1) {
+                    item = `${item}@${this.props.defaultDomain}`;
+                }
+
+                username = item.split('@')[0];
+                domain = item.split('@')[1];
+
+                if (username && username !== ',') {
+                    if (domain === this.props.defaultDomain) {
+                        sanitizedParticipants.push(username);
+                    } else {
+                        sanitizedParticipants.push(item);
+                    }
+                }
+            });
         }
         this.setState({targetUri: targetUri, participants: sanitizedParticipants.toString()});
     }
@@ -172,6 +178,7 @@ ConferenceModal.propTypes = {
     show: PropTypes.bool.isRequired,
     handleConferenceCall: PropTypes.func.isRequired,
     myInvitedParties: PropTypes.object,
+    selectedContact: PropTypes.object,
     targetUri: PropTypes.string.isRequired,
     defaultDomain: PropTypes.string
 };
