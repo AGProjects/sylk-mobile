@@ -1581,15 +1581,14 @@ class Sylk extends Component {
 
         if (this.state.currentCall) {
             this.hangupCall(this.state.currentCall.id, 'escalate_to_conference');
-            this.setState({currentCall: null,
-                           participantsToInvite: participants});
+            this.setState({currentCall: null});
         }
 
         if (this.state.incomingCall) {
             this.hangupCall(this.state.incomingCall.id, 'escalate_to_conference');
         }
 
-        this.callKeepStartConference(uri);
+        this.callKeepStartConference(uri, {audio: true, video: true, participants: participants});
     }
 
     conferenceInviteFromWebSocket(data) {
