@@ -24,7 +24,9 @@ class ConferenceModal extends Component {
         this.onHide = this.onHide.bind(this);
         this.joinAudio = this.joinAudio.bind(this);
         this.joinVideo = this.joinVideo.bind(this);
+    }
 
+    componentDidMount() {
         this.handleConferenceTargetChange(this.state.targetUri);
     }
 
@@ -53,7 +55,7 @@ class ConferenceModal extends Component {
                 participants = this.props.myInvitedParties[uri].toString();
 
                 participants.split(',').forEach((item) => {
-                    item = item.trim();
+                    item = item.trim().toLowerCase();
                     if (item.indexOf('@') === -1) {
                         item = `${item}@${config.defaultDomain}`;
                     }
@@ -77,13 +79,37 @@ class ConferenceModal extends Component {
     joinAudio(event) {
         event.preventDefault();
         const uri = `${this.state.targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
-        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: false, participants: this.state.participants.split(',')});
+        const participants = [];
+
+        if (this.state.participants) {
+            this.state.participants.split(',').forEach((item) => {
+                item = item.trim().toLowerCase();
+                if (item.indexOf('@') === -1) {
+                    item = `${item}@${config.defaultDomain}`;
+                }
+                participants.push(item);
+            });
+        }
+
+        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: false, participants: participants});
     }
 
     joinVideo(event) {
         event.preventDefault();
         const uri = `${this.state.targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
-        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: true, participants: this.state.participants.split(',')});
+        const participants = [];
+
+        if (this.state.participants) {
+            this.state.participants.split(',').forEach((item) => {
+                item = item.trim().toLowerCase();
+                if (item.indexOf('@') === -1) {
+                    item = `${item}@${config.defaultDomain}`;
+                }
+                participants.push(item);
+            });
+        }
+
+        this.props.handleConferenceCall(uri.toLowerCase(), {audio: true, video: true, participants: participants});
     }
 
     onHide() {

@@ -16,9 +16,6 @@ class InviteParticipantsModal extends Component {
         autoBind(this);
         let difference = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
 
-        console.log('this.props.previousParticipants', this.props.previousParticipants);
-        console.log('this.props.currentParticipants', this.props.currentParticipants);
-
         this.state = {
             participants: difference.toString(),
             previousParticipants: this.props.previousParticipants,
@@ -37,9 +34,6 @@ class InviteParticipantsModal extends Component {
             previousParticipants: nextProps.previousParticipants,
             currentParticipants: nextProps.currentParticipants
         });
-
-        console.log('this.props.previousParticipants', this.props.previousParticipants);
-        console.log('this.props.currentParticipants', this.props.currentParticipants);
     }
 
 
