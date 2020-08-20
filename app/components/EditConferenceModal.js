@@ -37,11 +37,11 @@ class EditConferenceModal extends Component {
             users = nextProps.selectedContact.participants;
         }
 
-        this.state = {
+        this.setState({
             users: users.toString(),
             selectedContact: nextProps.selectedContact,
             invitedParties: nextProps.invitedParties
-        }
+        });
     }
 
     saveParticipants(event) {

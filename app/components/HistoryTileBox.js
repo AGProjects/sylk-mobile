@@ -150,8 +150,12 @@ class HistoryTileBox extends Component {
         history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         let known = [];
+        let uri;
+
         history = history.filter((elem) => {
-            if (known.indexOf(elem.remoteParty) <= -1) {
+            uri = elem.remoteParty.toLowerCase();
+
+            if (known.indexOf(uri) <= -1) {
                 elem.type = 'history';
                 if (!elem.tags) {
                     elem.tags = [];
@@ -162,7 +166,8 @@ class HistoryTileBox extends Component {
                 if (elem.tags.indexOf('local') === -1) {
                     elem.tags.push('local');
                 }
-                known.push(elem.remoteParty);
+
+                known.push(uri);
                 return elem;
             }
         });
@@ -181,6 +186,7 @@ class HistoryTileBox extends Component {
         contacts = contacts.concat(this.echoTest);
 
         this.state.favoriteUris.forEach((uri) => {
+            uri = uri.toLowerCase();
             const contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
             displayName = contact_obj ? contact_obj.displayName : uri;
             label = contact_obj ? contact_obj.label: null;
@@ -236,7 +242,7 @@ class HistoryTileBox extends Component {
             label = contact_obj ? contact_obj.label: null;
 
             const item = {
-                remoteParty: uri,
+                remoteParty: uri.toLowerCase(),
                 displayName: displayName,
                 conference: false,
                 type: 'contact',
@@ -298,6 +304,8 @@ class HistoryTileBox extends Component {
                     if (elem.remoteParty.indexOf('@conference.') > -1) {
                         return null;
                     }
+
+                    elem.remoteParty = elem.remoteParty.toLowerCase();
 
                     let username = elem.remoteParty.split('@')[0];
                     let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
