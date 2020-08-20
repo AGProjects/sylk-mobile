@@ -544,6 +544,8 @@ class Sylk extends Component {
     }
 
     startCallWhenReady(targetUri, options) {
+        this.resetGoToReadyTimer();
+
         if (options.video) {
             this.speakerphoneOn();
         }
@@ -800,7 +802,9 @@ class Sylk extends Component {
 
         if (this.state.incomingCall && this.state.currentCall) {
             if (this.state.incomingCall != this.state.currentCall) {
-                utils.timestampedLog('We have two calls');
+                //utils.timestampedLog('Call state changed: We have two calls');
+            } else {
+                //utils.timestampedLog('Call state changed: we have two calls the same');
             }
 
             if (newState === 'terminated') {
@@ -849,9 +853,11 @@ class Sylk extends Component {
                     newCurrentCall = this.state.currentCall;
                 }
             } else {
-                utils.timestampedLog('Call state changed:', 'We have two calls and unhandled state');
+                utils.timestampedLog('Call state changed:', 'We have two calls in unclear state');
             }
         } else if (this.state.incomingCall) {
+            utils.timestampedLog('Call state changed: We have on incoming call');
+
             if (oldState === 'incoming' && newState === 'terminated') {
                 utils.timestampedLog("Incoming call was cancelled");
                 this.setState({showIncomingModal: false});
@@ -877,9 +883,15 @@ class Sylk extends Component {
             }
 
         } else {
-            newCurrentCall = newState === 'terminated' ? null : this.state.currentCall;
+            //utils.timestampedLog('Call state changed: We have one current call');
+            newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
         }
+
+        /*
+        utils.timestampedLog('---currentCall:', newCurrentCall);
+        utils.timestampedLog('---incomingCall:', newincomingCall);
+        */
 
         switch (newState) {
             case 'progress':
