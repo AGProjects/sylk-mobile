@@ -7,8 +7,8 @@ import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
-import config from '../config';
 import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
+
 
 class InviteParticipantsModal extends Component {
     constructor(props) {
@@ -44,7 +44,7 @@ class InviteParticipantsModal extends Component {
             this.state.participants.split(',').forEach((item) => {
                 item = item.trim();
                 if (item.indexOf('@') === -1) {
-                    item = `${item}@${config.defaultDomain}`;
+                    item = `${item}@${this.props.defaultDomain}`;
                 }
                 uris.push(item);
             });
@@ -99,7 +99,8 @@ InviteParticipantsModal.propTypes = {
     inviteParticipants: PropTypes.func,
     currentParticipants: PropTypes.array,
     previousParticipants: PropTypes.array,
-    room: PropTypes.string
+    room: PropTypes.string,
+    defaultDomain: PropTypes.string
 };
 
 export default InviteParticipantsModal;

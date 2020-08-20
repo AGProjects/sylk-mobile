@@ -129,6 +129,7 @@ class Conference extends React.Component {
                         isLandscape = {this.props.isLandscape}
                         isTablet = {this.props.isTablet}
                         muted = {this.props.muted}
+                        defaultDomain = {this.props.defaultDomain}
                    />
                 );
             } else {
@@ -171,7 +172,9 @@ Conference.propTypes = {
     proposedMedia           : PropTypes.object,
     isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
-    muted                   : PropTypes.bool
+    muted                   : PropTypes.bool,
+    defaultDomain           : PropTypes.string
+
 };
 
 

@@ -747,6 +747,7 @@ class ConferenceBox extends Component {
                     currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
                     close={this.toggleInviteModal}
                     room={this.props.remoteUri.split('@')[0]}
+                    defaultDomain = {this.props.defaultDomain}
                 />
 
                 <ConferenceDrawer
@@ -804,7 +805,9 @@ ConferenceBox.propTypes = {
     speakerPhoneEnabled : PropTypes.bool,
     isLandscape         : PropTypes.bool,
     isTablet            : PropTypes.bool,
-    muted               : PropTypes.bool
+    muted               : PropTypes.bool,
+    defaultDomain       : PropTypes.string
+
 };
 
 export default ConferenceBox;

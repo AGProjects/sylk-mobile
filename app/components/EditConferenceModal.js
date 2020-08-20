@@ -34,7 +34,7 @@ class EditConferenceModal extends Component {
             this.state.users.split(',').forEach((item) => {
                 item = item.trim();
                 if (item.indexOf('@') === -1) {
-                    item = `${item}@${config.defaultDomain}`;
+                    item = `${item}@${this.props.defaultDomain}`;
                 }
 
                 let username = item.split('@')[0];
@@ -95,7 +95,8 @@ EditConferenceModal.propTypes = {
     close: PropTypes.func.isRequired,
     saveInvitedParties: PropTypes.func,
     invitedParties: PropTypes.array,
-    room: PropTypes.string
+    room: PropTypes.string,
+    defaultDomain: PropTypes.string
 };
 
 export default EditConferenceModal;

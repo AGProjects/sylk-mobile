@@ -156,8 +156,8 @@ class HistoryCard extends Component {
         return false;
     }
 
-
     render () {
+
         let containerClass = styles.portraitContainer;
         let cardClass = styles.card;
 
@@ -336,6 +336,7 @@ class HistoryCard extends Component {
                     invitedParties={this.state.invitedParties}
                     saveInvitedParties={this.saveInvitedParties}
                     close={this.toggleEditConferenceModal}
+                    defaultDomain={this.props.defaultDomain}
                 />
                 </Fragment>
 
@@ -385,7 +386,8 @@ HistoryCard.propTypes = {
     deleteHistoryEntry : PropTypes.func,
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool,
-    contacts       : PropTypes.array
+    contacts       : PropTypes.array,
+    defaultDomain  : PropTypes.string
 };
 
 

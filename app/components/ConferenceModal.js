@@ -57,14 +57,14 @@ class ConferenceModal extends Component {
                 participants.split(',').forEach((item) => {
                     item = item.trim().toLowerCase();
                     if (item.indexOf('@') === -1) {
-                        item = `${item}@${config.defaultDomain}`;
+                        item = `${item}@${this.props.defaultDomain}`;
                     }
 
                     username = item.split('@')[0];
                     domain = item.split('@')[1];
 
                     if (username && username !== ',') {
-                        if (domain === config.defaultDomain) {
+                        if (domain === this.props.defaultDomain) {
                             sanitizedParticipants.push(username);
                         } else {
                             sanitizedParticipants.push(item);
@@ -85,7 +85,7 @@ class ConferenceModal extends Component {
             this.state.participants.split(',').forEach((item) => {
                 item = item.trim().toLowerCase();
                 if (item.indexOf('@') === -1) {
-                    item = `${item}@${config.defaultDomain}`;
+                    item = `${item}@${this.props.defaultDomain}`;
                 }
                 participants.push(item);
             });
@@ -103,7 +103,7 @@ class ConferenceModal extends Component {
             this.state.participants.split(',').forEach((item) => {
                 item = item.trim().toLowerCase();
                 if (item.indexOf('@') === -1) {
-                    item = `${item}@${config.defaultDomain}`;
+                    item = `${item}@${this.props.defaultDomain}`;
                 }
                 participants.push(item);
             });
@@ -172,7 +172,8 @@ ConferenceModal.propTypes = {
     show: PropTypes.bool.isRequired,
     handleConferenceCall: PropTypes.func.isRequired,
     myInvitedParties: PropTypes.object,
-    targetUri: PropTypes.string.isRequired
+    targetUri: PropTypes.string.isRequired,
+    defaultDomain: PropTypes.string
 };
 
 export default ConferenceModal;

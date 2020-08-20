@@ -9,7 +9,6 @@ const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import styles from '../assets/styles/blink/_EscalateConferenceModal.scss';
 
-import config from '../config';
 
 class EscalateConferenceModal extends React.Component {
     constructor(props) {
@@ -37,7 +36,7 @@ class EscalateConferenceModal extends React.Component {
             for (let item of this.state.users.split(',')) {
                 item = item.trim();
                 if (item.indexOf('@') === -1) {
-                    item = `${item}@${config.defaultDomain}`;
+                    item = `${item}@${this.props.defaultDomain}`;
                 }
                 uris.push(item);
             };
@@ -90,7 +89,8 @@ EscalateConferenceModal.propTypes = {
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
     call: PropTypes.object,
-    escalateToConference: PropTypes.func
+    escalateToConference: PropTypes.func,
+    defaultDomain: PropTypes.string
 };
 
 export default EscalateConferenceModal;

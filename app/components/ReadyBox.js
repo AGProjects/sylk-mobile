@@ -39,8 +39,7 @@ class ReadyBox extends Component {
     }
 
     getTargetUri() {
-        const defaultDomain = this.props.account.id.substring(this.props.account.id.indexOf('@') + 1);
-        return utils.normalizeUri(this.state.targetUri, defaultDomain);
+        return utils.normalizeUri(this.state.targetUri, this.props.defaultDomain);
     }
 
     async componentDidMount() {
@@ -143,8 +142,6 @@ class ReadyBox extends Component {
 
 
     render() {
-        const defaultDomain = `${config.defaultDomain}`;
-
         let uriClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
@@ -235,6 +232,7 @@ class ReadyBox extends Component {
                             favoriteUris={this.state.favoriteUris}
                             blockedUris={this.state.blockedUris}
                             filter={this.state.historyFilter}
+                            defaultDomain={this.props.defaultDomain}
                         />
                     </View>
                     {((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
@@ -287,7 +285,8 @@ ReadyBox.propTypes = {
     myInvitedParties: PropTypes.object,
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,
-    blockedUris     : PropTypes.array
+    blockedUris     : PropTypes.array,
+    defaultDomain   : PropTypes.string
 };
 
 

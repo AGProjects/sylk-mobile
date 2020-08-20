@@ -132,7 +132,8 @@ class Sylk extends Component {
             reconnectingCall: false,
             muted: false,
             participantsToInvite: null,
-            myInvitedParties: null
+            myInvitedParties: null,
+            defaultDomain: config.defaultDomain
         };
 
         this.currentRoute = null;
@@ -709,7 +710,8 @@ class Sylk extends Component {
             this._callKeepManager.setAvailable(true);
             this.setState({loading: null,
                            registrationKeepalive: true,
-                           registrationState: 'registered'
+                           registrationState: 'registered',
+                           defaultDomain: this.state.account.id.split('@')[1]
                            });
 
             if (this.currentRoute === '/login' && !this.startedByPush) {
@@ -1600,7 +1602,6 @@ class Sylk extends Component {
         utils.timestampedLog('Received event from external URL:', url);
 
         try {
-
             let direction;
             let event;
             let callUUID;
@@ -1628,7 +1629,7 @@ class Sylk extends Component {
                 if (uri.indexOf('@') === -1 && event === 'conference') {
                     uri = url_parts[4] + '@' + config.defaultConferenceDomain;
                 } else if (uri.indexOf('@') === -1 && event === 'call') {
-                    uri = url_parts[4] + '@' + config.defaultDomain;
+                    uri = url_parts[4] + '@' + this.state.defaultDomain;
                 }
             }
 
@@ -1847,13 +1848,13 @@ class Sylk extends Component {
 
         if (this.myParticipants.hasOwnProperty(room)) {
             let old_uris = this.myParticipants[room];
-            if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+            if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
                 this.myParticipants[room].push(uri);
             }
 
         } else {
             let new_uris = [];
-            if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+            if (uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
                 new_uris.push(uri);
             }
 
@@ -1876,7 +1877,7 @@ class Sylk extends Component {
         if (this.myInvitedParties.hasOwnProperty(room)) {
             let old_uris = this.myInvitedParties[room];
             uris.forEach((uri) => {
-                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
                     this.myInvitedParties[room].push(uri);
                 }
             });
@@ -1884,7 +1885,7 @@ class Sylk extends Component {
         } else {
             let new_uris = [];
             uris.forEach((uri) => {
-                if (uri !== this.state.account.id && (uri + '@' + config.defaultDomain) !== this.state.account.id) {
+                if (uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
                     new_uris.push(uri);
                 }
             });
@@ -2084,6 +2085,7 @@ class Sylk extends Component {
                     setBlockedUri = {this.setBlockedUri}
                     favoriteUris = {this.state.favoriteUris}
                     blockedUris = {this.state.blockedUris}
+                    defaultDomain = {this.state.defaultDomain}
                 />
             </Fragment>
         );
@@ -2144,7 +2146,7 @@ class Sylk extends Component {
                 let uris = this.myParticipants[room];
                 if (uris) {
                     uris.forEach((uri) => {
-                        if (uri.search(config.defaultDomain) > -1) {
+                        if (uri.search(this.state.defaultDomain) > -1) {
                             let user = uri.split('@')[0];
                             _previousParticipants.add(user);
                         } else {
@@ -2162,7 +2164,7 @@ class Sylk extends Component {
                 let uris = this.myInvitedParties[room];
                 if (uris) {
                     uris.forEach((uri) => {
-                        if (uri.search(config.defaultDomain) > -1) {
+                        if (uri.search(this.state.defaultDomain) > -1) {
                             let user = uri.split('@')[0];
                             _previousParticipants.add(user);
                         } else {
@@ -2199,6 +2201,7 @@ class Sylk extends Component {
                 isLandscape = {this.state.orientation === 'landscape'}
                 isTablet = {this.state.isTablet}
                 muted = {this.state.muted}
+                defaultDomain = {this.state.defaultDomain}
             />
         )
     }
@@ -2296,7 +2299,8 @@ class Sylk extends Component {
                        status: null,
                        history: [],
                        localHistory: [],
-                       cachedHistory: []
+                       cachedHistory: [],
+                       defaultDomain: config.defaultDomain
                        });
         this.changeRoute('/login');
         return null;

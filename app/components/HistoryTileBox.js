@@ -116,6 +116,7 @@ class HistoryTileBox extends Component {
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
             contacts={this.props.contacts}
+            defaultDomain={this.props.defaultDomain}
             />);
     }
 
@@ -540,7 +541,8 @@ HistoryTileBox.propTypes = {
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     setMissedCalls  : PropTypes.func,
-    filter          : PropTypes.string
+    filter          : PropTypes.string,
+    defaultDomain   : PropTypes.string
 };
 
 
