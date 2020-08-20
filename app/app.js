@@ -216,7 +216,6 @@ class Sylk extends Component {
         storage.get('favoriteUris').then((favoriteUris) => {
             if (favoriteUris) {
                 this.setState({favoriteUris: favoriteUris});
-                console.log('My favorite Uris', favoriteUris);
             }
         });
 
@@ -2157,7 +2156,6 @@ class Sylk extends Component {
         }
         */
 
-        console.log('Previous app parties', this.myInvitedParties);
         if (this.myInvitedParties) {
             let room = this.state.targetUri.split('@')[0];
             if (this.myInvitedParties.hasOwnProperty(room)) {

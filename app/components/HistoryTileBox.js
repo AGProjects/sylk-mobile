@@ -135,7 +135,6 @@ class HistoryTileBox extends Component {
         }
 
         if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
-            console.log('myInvitedParties were updated');
             this.setState({myInvitedParties: nextProps.myInvitedParties});
         }
 
