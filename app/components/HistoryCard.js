@@ -170,15 +170,15 @@ class HistoryCard extends Component {
         let displayName = this.state.displayName;
 
         let buttonMode = 'text';
-        let showBlockButton = uri.indexOf('@videoconference.') === -1 ? true : false;
+        let showBlockButton = !this.state.conference;
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
         let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite ) ? true: false;
-        let showEditButton = (uri.indexOf('@videoconference.') > -1 && this.state.favorite && !this.state.confirmed ) ? true: false;
+        let showEditButton = (this.state.conference && this.state.favorite && !this.state.confirmed ) ? true: false;
         let blockTextbutton = 'Block';
         let editTextbutton = 'Edit';
         let favoriteTextbutton = 'Favorite';
-        let undoTextbutton = 'Abort';
+        let undoTextbutton = 'Undo';
         let deleteTextbutton = 'Delete';
         let participantsData = [];
 
@@ -189,7 +189,7 @@ class HistoryCard extends Component {
         }
 
         if (this.state.favorite) {
-            favoriteTextbutton = this.state.confirmed ? 'Confirm' : 'Remove favorite';
+            favoriteTextbutton = this.state.confirmed ? 'Confirm' : 'Remove';
             if (!this.state.blocked) {
                 showBlockButton = false;
             }
