@@ -135,7 +135,7 @@ class ConferenceModal extends Component {
                             mode="flat"
                             autoCapitalize="none"
                             label="Enter the room you wish to join"
-                            placeholder="Conference Room"
+                            placeholder="Conference room"
                             onChangeText={this.handleConferenceTargetChange}
                             name="uri"
                             required
@@ -149,7 +149,7 @@ class ConferenceModal extends Component {
                             label="Invite people"
                             onChangeText={(value) => {this.setState({participants: value});}}
                             value={this.state.participants}
-                            placeholder="bob,carol,alice@sip2sip.info"
+                            placeholder="Enter accounts separated by ,"
                         />
                         <View style={styles.buttonRow}>
                         <Button

@@ -748,6 +748,7 @@ class ConferenceBox extends Component {
                     close={this.toggleInviteModal}
                     room={this.props.remoteUri.split('@')[0]}
                     defaultDomain = {this.props.defaultDomain}
+                    notificationCenter = {this.props.notificationCenter}
                 />
 
                 <ConferenceDrawer

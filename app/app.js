@@ -442,11 +442,11 @@ class Sylk extends Component {
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
                 if (url) {
-                      utils.timestampedLog('Initial Linking URL: ' + url);
-                      this.incomingCallFromUrl(url);
+                      utils.timestampedLog('Initial external URL: ' + url);
+                      this.eventFromUrl(url);
                 }
               }).catch(err => {
-                logger.error({ err }, 'Error getting initial URL');
+                logger.error({ err }, 'Error getting external URL');
               });
 
             firebase.messaging().getToken()
@@ -540,7 +540,7 @@ class Sylk extends Component {
     updateLinkingURL = (event) => {
         // this handles the use case where the app is running in the background and is activated by the listener...
         console.log('Updated Linking url', event.url);
-        this.incomingCallFromUrl(event.url);
+        this.eventFromUrl(event.url);
     }
 
     startCallWhenReady(targetUri, options) {
@@ -1609,7 +1609,7 @@ class Sylk extends Component {
         this._notificationCenter.postSystemNotification('Expecting conference invite', {body: `from ${data.originator.displayName || data.originator.uri}`, timeout: 5, silent: false});
     }
 
-    incomingCallFromUrl(url) {
+    eventFromUrl(url) {
         utils.timestampedLog('Received event from external URL:', url);
 
         try {
@@ -1624,6 +1624,7 @@ class Sylk extends Component {
             if (scheme === 'sylk:') {
                 //sylk://outgoing/call/callUUID/to/displayName - from system dialer/history
                 //sylk://incoming/call/callUUID/from/to - when Android is asleep
+                //sylk://cancel/call/callUUID/from/to - when Android is asleep
 
                 direction = url_parts[2];
                 event     = url_parts[3];
@@ -1652,8 +1653,12 @@ class Sylk extends Component {
             } else if (direction === 'outgoing' && event === 'call' && uri) {
                  this.callKeepStartCall(uri, {audio: true, video: false, callUUID: callUUID});
 
-            } else if (direction === 'incoming' && event === 'call' && uri) {
+            } else if (direction === 'incoming' && uri) {
                 this.incomingCallFromPush(callUUID, uri, true);
+                this.startedByPush = false;
+
+            } else if (direction === 'cancel' && uri) {
+                this.cancelIncomingCall(callUUID);
                 this.startedByPush = false;
 
             } else {

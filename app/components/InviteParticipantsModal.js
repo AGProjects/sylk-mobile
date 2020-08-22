@@ -2,12 +2,16 @@ import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View } from 'react-native';
-import { Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
+import { Dialog, Portal, Text, Button, Surface, TextInput, IconButton} from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import { openComposer } from 'react-native-email-link';
+import Share from 'react-native-share';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
+import config from '../config';
 import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
+import utils from '../utils';
 
 
 class InviteParticipantsModal extends Component {
@@ -19,7 +23,8 @@ class InviteParticipantsModal extends Component {
         this.state = {
             participants: difference.toString(),
             previousParticipants: this.props.previousParticipants,
-            currentParticipants: this.props.currentParticipants
+            currentParticipants: this.props.currentParticipants,
+            roomUrl: config.publicUrl + '/conference/' + this.props.room
         }
     }
 
@@ -36,6 +41,42 @@ class InviteParticipantsModal extends Component {
         });
     }
 
+    handleClipboardButton(event) {
+        utils.copyToClipboard(this.state.roomUrl);
+        this.props.notificationCenter().postSystemNotification('Join conference', {body: 'Conference address copied to clipboard', timeout: 2});
+        this.props.close();
+    }
+
+    handleEmailButton(event) {
+        const emailMessage = 'You can join the conference using a Web browser at ' + this.state.roomUrl +
+                              ' or by using Sylk client app from https://sylkserver.com';
+        const subject = 'Join conference, maybe?';
+
+        openComposer({
+            subject,
+            body: emailMessage
+        })
+        this.props.close();
+    }
+
+    handleShareButton(event) {
+        const subject = 'Join conference, maybe?';
+        const message = 'You can join the conference using a Web browser at ' + this.state.roomUrl +
+                        ' or by using Sylk client app from https://sylkserver.com';
+
+        let options= {
+            subject: subject,
+            message: message
+        }
+
+        Share.open(options)
+            .then((res) => {
+                this.props.close();
+            })
+            .catch((err) => {
+                this.props.close();
+            });
+    }
 
     invite(event) {
         event.preventDefault();
@@ -66,19 +107,19 @@ class InviteParticipantsModal extends Component {
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title>Invite participants</Dialog.Title>
-                        <Text>Enter participants to invite</Text>
+                        <Dialog.Title>Invite to conference</Dialog.Title>
                         <TextInput
                             mode="flat"
                             name="people"
-                            label="People"
+                            label="Accounts"
                             onChangeText={this.onInputChange}
                             value={this.state.participants}
-                            placeholder="bob,carol,alice@sip2sip.info"
+                            placeholder="Enter accounts separated by ,"
                             required
                             autoCapitalize="none"
                         />
                         <View style={styles.buttonRow}>
+
                         <Button
                             mode="contained"
                             style={styles.button}
@@ -86,6 +127,30 @@ class InviteParticipantsModal extends Component {
                             icon="email">Invite
                         </Button>
                         </View>
+
+                        <Text style={styles.body}>
+                             Or share the conference link by:
+                        </Text>
+
+                        <View style={styles.iconContainer}>
+                            <IconButton
+                                size={34}
+                                onPress={this.handleClipboardButton}
+                                icon="content-copy"
+                            />
+                            <IconButton
+                                size={34}
+                                onPress={this.handleEmailButton}
+                                icon="email"
+                            />
+                            <IconButton
+                                size={34}
+                                onPress={this.handleShareButton}
+                                icon="share-variant"
+                            />
+                        </View>
+
+
                     </Surface>
                 </DialogType>
             </Portal>
@@ -94,6 +159,7 @@ class InviteParticipantsModal extends Component {
 }
 
 InviteParticipantsModal.propTypes = {
+    notificationCenter : PropTypes.func.isRequired,
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
     inviteParticipants: PropTypes.func,

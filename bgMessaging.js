@@ -3,11 +3,9 @@ import { NativeModules, AppState } from 'react-native';
 const { SylkNative } = NativeModules;
 
 export default async (remoteMessage) => {
-    console.log('Push notification received', remoteMessage.data.event);
+    console.log('Push notification received', remoteMessage.data.event, 'in state', AppState.currentState);
 
-    if (AppState.currentState == "background" &&
-        (remoteMessage.data.event === 'incoming_session' || remoteMessage.data.event === 'incoming_conference_request')
-    ) {
+    if (AppState.currentState === "background") {
 
         let event = remoteMessage.data.event;
         let callUUID = remoteMessage.data['session-id'];
@@ -19,10 +17,12 @@ export default async (remoteMessage) => {
             url = 'sylk://outgoing/conference/' + callUUID + '/' + from + '/' + to;
         } else if (event === 'incoming_session') {
             url = 'sylk://incoming/call/' + callUUID + '/' + from + '/' + to;
+        } else if (event === 'cancel') {
+            url = 'sylk://cancel/call/' + callUUID + '/' + from + '/' + to;
         }
 
         if (url) {
-            //console.log('Wake up from push with URL', url);
+            console.log('Wake up from push with URL', url);
             SylkNative.launchMainActivity(url);
         }
     }
