@@ -500,8 +500,13 @@ export default class CallManager extends events.EventEmitter {
     showAlertPanelforCall(call, force=false) {
         const callUUID = call.id;
         const uri = call.remoteIdentity.uri;
+
+        const username = uri.split('@')[0];
+        const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+        const from = isPhoneNumber ? username: uri;
+
         const hasVideo = call.mediaTypes && call.mediaTypes.video;
-        this.showAlertPanel(callUUID, uri, hasVideo);
+        this.showAlertPanel(callUUID, from, hasVideo);
     }
 
     showAlertPanel(callUUID, uri, hasVideo=false) {
@@ -509,14 +514,18 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', uri);
+        const username = uri.split('@')[0];
+        const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+        const from = isPhoneNumber ? username: uri;
+
+        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from);
 
         this._alertedCalls.set(callUUID, Date.now());
 
         if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(callUUID, uri, uri, 'email', hasVideo);
+            this.callKeep.displayIncomingCall(callUUID, from, from, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
-            this.callKeep.displayIncomingCall(callUUID, uri, uri);
+            this.callKeep.displayIncomingCall(callUUID, from, from);
         }
     }
 
