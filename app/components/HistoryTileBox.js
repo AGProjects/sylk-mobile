@@ -54,10 +54,11 @@ class HistoryTileBox extends Component {
 
         this.videoTest = Object.assign({}, videoTest);
         this.ended = false;
+
     }
 
     componentDidMount() {
-        this.getServerHistory();
+        //this.getServerHistory();
     }
 
     componentWillUnmount() {
