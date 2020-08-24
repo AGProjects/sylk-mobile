@@ -377,7 +377,7 @@ class Sylk extends Component {
                             outgoingMedia: null,
                             outgoingCallUUID: null,
                             currentCall: null,
-                            incomingCall: (reason === 'accept_new_call') ? this.state.incomingCall: null,
+                            incomingCall: (reason === 'accept_new_call' || reason === 'user_press_hangup') ? this.state.incomingCall: null,
                             targetUri: '',
                             reconnectingCall: false,
                             localMedia: null,
@@ -823,9 +823,9 @@ class Sylk extends Component {
 
         if (this.state.incomingCall && this.state.currentCall) {
             if (this.state.incomingCall != this.state.currentCall) {
-                //utils.timestampedLog('Call state changed: We have two calls');
+                utils.timestampedLog('Call state changed: We have two calls');
             } else {
-                //utils.timestampedLog('Call state changed: we have two calls the same');
+                utils.timestampedLog('Call state changed: we have two calls the same');
             }
 
             if (newState === 'terminated') {
@@ -900,10 +900,13 @@ class Sylk extends Component {
                 }
             }
 
-        } else {
+        } else if (this.state.currentCall) {
             utils.timestampedLog('Call state changed: We have one current call');
             newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
+        } else {
+            newincomingCall = null;
+            newCurrentCall = null;
         }
 
         /*
