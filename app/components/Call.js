@@ -31,7 +31,7 @@ class Call extends Component {
         this.mediaIsPlaying = false;
         this.ended = false;
 
-        if (this.props.call !== null) {
+        if (this.props.call) {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
             remoteUri = this.props.call.remoteIdentity.uri;

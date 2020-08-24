@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { Component } from 'react';
 import PropTypes from 'prop-types';
+import autoBind from 'auto-bind';
 import UserIcon from './UserIcon';
 import { Headline, IconButton, Title, Portal, Modal, Surface } from 'react-native-paper';
-import { View } from 'react-native';
+import { Platform, View } from 'react-native';
 
 import styles from '../assets/styles/blink/_IncomingCallModal.scss';
 
@@ -16,85 +17,91 @@ function findObjectByKey(array, key, value) {
     }
 
 
-const IncomingCallModal = (props) => {
-
-    if (props.call == null) {
-        return false;
+class IncomingCallModal extends Component {
+    constructor(props) {
+        super(props);
+        autoBind(this);
     }
 
-    const answerAudioOnly = () => {
-        props.onAccept(props.call.id, {audio: true, video: false});
+    answerAudioOnly() {
+        this.props.onAccept(this.props.call.id, {audio: true, video: false});
     }
 
-    const answer = () => {
-        props.onAccept(props.call.id, {audio: true, video: true});
+    answer() {
+        this.props.onAccept(this.props.call.id, {audio: true, video: true});
     };
 
-    const reject = () => {
-        props.onReject(props.call.id);
+    reject() {
+        this.props.onReject(this.props.call.id);
     };
 
-    let answerButtons = [];
+    render() {
+        let answerButtons = [];
 
-    answerButtons.push(
-        <IconButton style={styles.button} id="audio"  size={40} onPress={answerAudioOnly} icon="phone" />
-    );
+        if (!this.props.call) {
+            return null;
+        }
 
-    let callType = 'audio';
-    if (props.call.mediaTypes.video) {
-        callType = 'video';
-        /*
         answerButtons.push(
-            <IconButton id="accept" style={styles.button}  size={34} onPress={answer} autoFocus icon="video" />
+            <IconButton style={styles.button} id="audio"  size={40} onPress={this.answerAudioOnly} icon="phone" />
         );
-        */
-    }
 
-    answerButtons.push(
-        <IconButton id="decline" style={styles.rejectButton}  size={40} onPress={reject} icon="phone-hangup" />
-    );
-
-    let remoteUri = props.call.remoteIdentity.uri;
-    let remoteDisplayName = props.call.remoteIdentity.displayName || props.call.remoteIdentity.uri;
-
-    let username = remoteUri.split('@')[0];
-    let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-
-    if (isPhoneNumber) {
-        var contact_obj = findObjectByKey(props.contacts, 'remoteParty', username);
-    } else {
-        var contact_obj = findObjectByKey(props.contacts, 'remoteParty', remoteUri);
-    }
-
-    if (contact_obj) {
-        remoteDisplayName = contact_obj.displayName;
-        if (isPhoneNumber) {
-            remoteUri = username;
+        let callType = 'audio';
+        if (this.props.call.mediaTypes.video) {
+            callType = 'video';
+            /*
+            answerButtons.push(
+                <IconButton id="accept" style={styles.button}  size={34} onPress={this.answer} autoFocus icon="video" />
+            );
+            */
         }
-    } else {
+
+        answerButtons.push(
+            <IconButton id="decline" style={styles.rejectButton}  size={40} onPress={this.reject} icon="phone-hangup" />
+        );
+
+        let remoteUri = this.props.call.remoteIdentity.uri;
+        let remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
+
+        let username = remoteUri.split('@')[0];
+        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
         if (isPhoneNumber) {
-            remoteUri = username;
-            remoteDisplayName = username;
+            var contact_obj = findObjectByKey(this.props.contacts, 'remoteParty', username);
+        } else {
+            var contact_obj = findObjectByKey(this.props.contacts, 'remoteParty', remoteUri);
         }
+
+        if (contact_obj) {
+            remoteDisplayName = contact_obj.displayName;
+            if (isPhoneNumber) {
+                remoteUri = username;
+            }
+        } else {
+            if (isPhoneNumber) {
+                remoteUri = username;
+                remoteDisplayName = username;
+            }
+        }
+
+        let remoteIdentity = {uri: remoteUri,
+                              displayName: remoteDisplayName};
+
+        return (
+            <Portal>
+                <Modal visible={this.props.show} dismissable={false}>
+                    <Surface style={styles.container}>
+                        <UserIcon style={styles.userIcon} large={true} identity={remoteIdentity} />
+                        <Title style={styles.remoteCaller}>{remoteDisplayName}</Title>
+                        <Headline style={styles.remoteMedia}>is calling with {callType}</Headline>
+                        <View style={styles.buttonContainer}>
+                            {answerButtons}
+                        </View>
+                    </Surface>
+                </Modal>
+            </Portal>
+        );
     }
-
-    let remoteIdentity = {uri: remoteUri,
-                          displayName: remoteDisplayName};
-
-    return (
-        <Portal>
-            <Modal visible={props.show} dismissable={false}>
-                <Surface style={styles.container}>
-                    <UserIcon style={styles.userIcon} large={true} identity={remoteIdentity} />
-                    <Title style={styles.remoteCaller}>{remoteDisplayName}</Title>
-                    <Headline style={styles.remoteMedia}>is calling with {callType}</Headline>
-                    <View style={styles.buttonContainer}>
-                        {answerButtons}
-                    </View>
-                </Surface>
-            </Modal>
-        </Portal>
-    );
 }
 
 IncomingCallModal.propTypes = {
