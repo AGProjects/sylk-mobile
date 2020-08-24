@@ -374,7 +374,7 @@ class Call extends Component {
                         connection = {this.props.connection}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
-                        callKeepSendDtmf = {this.state.callKeepSendDtmf}
+                        callKeepSendDtmf = {this.props.callKeepSendDtmf}
                         toggleMute = {this.props.toggleMute}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
@@ -400,7 +400,7 @@ class Call extends Component {
                             shareScreen = {this.props.shareScreen}
                             escalateToConference = {this.props.escalateToConference}
                             generatedVideoTrack = {this.props.generatedVideoTrack}
-                            callKeepSendDtmf = {this.state.callKeepSendDtmf}
+                            callKeepSendDtmf = {this.props.callKeepSendDtmf}
                             toggleMute = {this.props.toggleMute}
                             speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                             toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
