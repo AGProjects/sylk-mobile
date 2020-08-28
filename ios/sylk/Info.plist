@@ -25,7 +25,7 @@
 		<dict/>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>35</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<false/>
 	<key>FirebaseScreenReportingEnabled</key>
@@ -59,13 +59,13 @@
 		</dict>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Camera Permission</string>
+	<string>Camera is used for video calls</string>
 	<key>NSContactsUsageDescription</key>
-	<string>Contacts Permission</string>
+	<string>Contacts permission is needed to call to phone numbers or email addresses found in addressbook</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Microphone Permission</string>
+	<string>Microphone is used for audio calls</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>AntDesign.ttf</string>
