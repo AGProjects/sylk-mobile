@@ -18,17 +18,24 @@ class NotificationCenter extends Component {
             autoDismiss: null,
             action: null
         }
+        this.ended = false;
     }
 
     componentDidMount() {
         //console.log('Notification Center mounted');
+        this.ended = false;
     }
 
     componentWillUnmount() {
         //console.log('Notification Center will unmount');
+        this.ended = true;
     }
 
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
+        if (this.ended) {
+            return;
+        }
+
         this.setState({
             visible: true,
             autoDismiss: 5,
@@ -42,6 +49,10 @@ class NotificationCenter extends Component {
         // if (originator.uri.endsWith(config.defaultGuestDomain)) {
         //     return;
         // }
+        if (this.ended) {
+            return;
+        }
+
         const idx = room.indexOf('@');
         if (idx === -1) {
             return;
@@ -61,6 +72,9 @@ class NotificationCenter extends Component {
     }
 
     postMissedCall(originator, cb) {
+        if (this.ended) {
+            return;
+        }
         const currentDate = moment().format('MMMM Do YYYY [at] HH:mm:ss');
         let action;
         if (originator.uri.endsWith(config.defaultGuestDomain)) {

@@ -54,11 +54,11 @@ class HistoryTileBox extends Component {
 
         this.videoTest = Object.assign({}, videoTest);
         this.ended = false;
-
     }
 
     componentDidMount() {
         //this.getServerHistory();
+        this.ended = false;
     }
 
     componentWillUnmount() {
@@ -80,6 +80,10 @@ class HistoryTileBox extends Component {
     }
 
     saveInvitedParties(room, uris) {
+        if (this.ended) {
+            return;
+        }
+
         this.props.saveInvitedParties(room, uris);
         let myInvitedParties = this.state.myInvitedParties;
 
@@ -260,6 +264,10 @@ class HistoryTileBox extends Component {
     getServerHistory() {
         utils.timestampedLog('Requesting call history from server');
 
+        if (this.ended) {
+            return;
+        }
+
         let history = [];
         let localTime;
         let hasMissedCalls = false;
@@ -386,6 +394,9 @@ class HistoryTileBox extends Component {
                 });
 
                 this.props.cacheHistory(history);
+                if (this.ended) {
+                    return;
+                }
                 this.setState({serverHistory: history, isRefreshing: false});
                 this.props.setMissedCalls(hasMissedCalls);
             }

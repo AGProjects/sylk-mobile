@@ -32,9 +32,13 @@ class ReadyBox extends Component {
             participants: null,
             myInvitedParties: this.props.myInvitedParties
         };
+        this.ended = false;
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        if (this.ended) {
+            return;
+        }
         this.setState({myInvitedParties: nextProps.myInvitedParties});
     }
 
@@ -43,13 +47,26 @@ class ReadyBox extends Component {
     }
 
     async componentDidMount() {
+        this.ended = false;
+    }
+
+    componentWillUnmount() {
+        this.ended = true;
     }
 
     setMissedCalls(flag) {
+        if (this.ended) {
+            return;
+        }
+
         this.setState({missedCalls: flag});
     }
 
     filterHistory(filter) {
+        if (this.ended) {
+            return;
+        }
+
        this.setState({'historyFilter': filter});
        this.handleTargetChange('');
     }

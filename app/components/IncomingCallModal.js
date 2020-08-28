@@ -43,7 +43,7 @@ class IncomingCallModal extends Component {
         }
 
         answerButtons.push(
-            <IconButton style={styles.button} id="audio"  size={40} onPress={this.answerAudioOnly} icon="phone" />
+            <IconButton key="audio" style={styles.button} id="audio"  size={40} onPress={this.answerAudioOnly} icon="phone" />
         );
 
         let callType = 'audio';
@@ -57,7 +57,7 @@ class IncomingCallModal extends Component {
         }
 
         answerButtons.push(
-            <IconButton id="decline" style={styles.rejectButton}  size={40} onPress={this.reject} icon="phone-hangup" />
+            <IconButton key="decline" id="decline" style={styles.rejectButton}  size={40} onPress={this.reject} icon="phone-hangup" />
         );
 
         let remoteUri = this.props.call.remoteIdentity.uri;
