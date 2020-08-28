@@ -95,6 +95,27 @@ const MODE_GUEST_CALL       = Symbol('mode-guest-call');
 const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
 
 
+(function() {
+    if ( typeof Object.id == "undefined" ) {
+        var id = 0;
+
+        Object.id = function(o) {
+            if ( typeof o.__uniqueid == "undefined" ) {
+                Object.defineProperty(o, "__uniqueid", {
+                    value: ++id,
+                    enumerable: false,
+                    // This could go either way, depending on your
+                    // interpretation of what an "id" is
+                    writable: false
+                });
+            }
+
+            return o.__uniqueid;
+        };
+    }
+})();
+
+
 class Sylk extends Component {
     constructor() {
         super();
@@ -417,7 +438,6 @@ class Sylk extends Component {
 
     async componentDidMount() {
         this._loaded = true;
-
         this.watcherTimer = setInterval(() => {
                this.checkCalls();
         }, 5000);
@@ -1113,6 +1133,7 @@ class Sylk extends Component {
             }
 
             let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
+            utils.timestampedLog('Create Websocket connection', Object.id(connection));
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
         } else {
@@ -1786,7 +1807,7 @@ class Sylk extends Component {
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
 
-        utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from);
+        utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
 
         // because of limitation in Sofia stack, we cannot have more then two calls at a time
         // we can have one outgoing call and one incoming call but not two incoming calls
