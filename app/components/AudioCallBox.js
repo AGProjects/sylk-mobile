@@ -241,6 +241,12 @@ class AudioCallBox extends Component {
                     <View style={buttonContainerClass}>
                     <IconButton
                         size={buttonSize}
+                        style={buttonClass}
+                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                        onPress={this.props.toggleSpeakerPhone}
+                    />
+                    <IconButton
+                        size={buttonSize}
                         style={[buttonClass, styles.hangupButton]}
                         icon="phone-hangup"
                         onPress={this.cancelCall}
