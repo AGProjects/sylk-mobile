@@ -7384,6 +7384,11 @@ react-mixin@^4.0.0:
     object-assign "^4.0.1"
     smart-mixin "^2.0.0"
 
+react-native-background-timer@2.1.1:
+  version "2.1.1"
+  resolved "https://registry.yarnpkg.com/react-native-background-timer/-/react-native-background-timer-2.1.1.tgz#9a2489681ab2f8033c213c73272e9d4c47572cd5"
+  integrity sha512-cuXIIv+dcG8a8qkTD8pMzeqOEZCO+UGKglZWIe1osve+yJslmCowYQff+bI9xa7NOt2w+Vtd4L3d9JonlSqODg==
+
 react-native-callkeep@nimbleape/react-native-callkeep-1#aaf508332ff0855f500bd522779ef87884b59621:
   version "3.0.13"
   resolved "https://codeload.github.com/nimbleape/react-native-callkeep-1/tar.gz/aaf508332ff0855f500bd522779ef87884b59621"

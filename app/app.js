@@ -14,6 +14,7 @@ import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-
 import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import Contacts from 'react-native-contacts';
+import BackgroundTimer from 'react-native-background-timer';
 
 registerGlobals();
 
@@ -122,6 +123,7 @@ class Sylk extends Component {
         autoBind(this)
         this._loaded = false;
         this._initialSstate = {
+            appState: '',
             accountId: '',
             password: '',
             displayName: '',
@@ -173,8 +175,6 @@ class Sylk extends Component {
         this.registrationFailureTimer = null;
         this.contacts = [];
         this.startedByPush = false;
-
-        this.watcherTimer = null;
 
         this.cachedHistory = []; // used for caching server history
 
@@ -418,7 +418,7 @@ class Sylk extends Component {
                     this.closeLocalMedia();
                 }
 
-                if (this.state.account && reason !== 'accept_new_call') {
+                if (this.state.account && reason !== 'accept_new_call' && this._loaded) {
                     setTimeout(() => {
                         this.setState({refreshHistory: !this.state.refreshHistory});
                     }, 1500);
@@ -436,10 +436,20 @@ class Sylk extends Component {
         history.push(route);
     }
 
+    componentWillUnmount() {
+        console.log('App will unmount now');
+        AppState.removeEventListener('change', this._handleAppStateChange);
+        this.shutdownActions();
+        this._loaded = false;
+    }
+
     async componentDidMount() {
         this._loaded = true;
-        this.watcherTimer = setInterval(() => {
-               this.checkCalls();
+        // Start a timer that runs once after X milliseconds
+        BackgroundTimer.runBackgroundTimer(() => {
+            // this will be executed once after 10 seconds
+            // even when app is the the background
+            this.checkCalls();
         }, 5000);
 
         if (Platform.OS === 'android') {
@@ -611,24 +621,20 @@ class Sylk extends Component {
         }
     }
 
-    componentWillUnmount() {
-        AppState.removeEventListener('change', this._handleAppStateChange);
-    }
-
     _handleAppStateChange = nextAppState => {
-        //TODO - stop if we havent been backgrounded because of becoming active from a push notification and then going background again
-        // if (nextAppState.match(/background/)) {
-        //     logger.debug('app moving to background so we should stop the client sylk client if we dont have an active call');
-        //     if (this._callKeepManager.count === 0) {
-        //         logger.debug('callmanager count is 0 so closing connection');
-        //         this.state.connection.close();
-        //     }
-        // }
 
-        if (nextAppState === 'active') {
-            if (this._callKeepManager.count === 0 && this.state.connection) {
-                this.state.connection.reconnect();
-            }
+        if (this.state.connection) {
+            console.log('App state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
+        } else {
+            console.log('App state changed from', this.state.appState, 'to', nextAppState, 'with no connection');
+        }
+
+        this.setState({appState: nextAppState});
+
+        if (nextAppState === 'active' && this.state.connection === null && this.state.accountId) {
+            this.handleRegistration(this.state.accountId, this.state.password);
+        } else if (nextAppState.match(/inactive|background/) && this._callKeepManager.count === 0) {
+            this.shutdownActions();
         }
     }
 
@@ -648,6 +654,10 @@ class Sylk extends Component {
     }
 
     connectionStateChanged(oldState, newState) {
+        if (!this._loaded) {
+            return;
+        }
+
         utils.timestampedLog('Web socket state changed:', oldState, '->' , newState);
         switch (newState) {
             case 'closed':
@@ -705,6 +715,10 @@ class Sylk extends Component {
     }
 
     registrationStateChanged(oldState, newState, data) {
+        if (!this._loaded) {
+            return;
+        }
+
         utils.timestampedLog('Registration state changed:', oldState, '->', newState);
 
         if (newState === 'failed') {
@@ -763,19 +777,48 @@ class Sylk extends Component {
         this.setState({showIncomingModal: false});
     }
 
+    shutdownActions() {
+        //BackgroundTimer.stopBackgroundTimer();
+
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
+        if (this.state.account) {
+            utils.timestampedLog('Removing account', this.state.account.id);
+            this.state.connection.removeAccount(this.state.account);
+        }
+
+        if (this.state.connection) {
+            utils.timestampedLog('Closing connection', Object.id(this.state.connection));
+            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+            this.state.connection.close();
+            this.setState({connection: null});
+        }
+    }
+
     checkCalls() {
+        if (this.state.connection) {
+            console.log('Check calls in', this.state.appState, 'with connection', Object.id(this.state.connection), this.state.connection.state);
+        } else {
+            console.log('Check calls in', this.state.appState, 'with no connection');
+        }
+
         let callState;
         if (this.state.currentCall && this.state.incomingCall && this.state.incomingCall === this.state.currentCall) {
-            //utils.timestampedLog('We have an incoming call:', this.state.currentCall ? (this.state.currentCall.id + ' ' + this.state.currentCall.state): 'None');
+            utils.timestampedLog('We have an incoming call:', this.state.currentCall ? (this.state.currentCall.id + ' ' + this.state.currentCall.state): 'None');
             callState = this.state.currentCall.state;
         } else if (this.state.incomingCall) {
-            //utils.timestampedLog('We have an incoming call:', this.state.incomingCall ? (this.state.incomingCall.id + ' ' + this.state.incomingCall.state): 'None');
+            utils.timestampedLog('We have an incoming call:', this.state.incomingCall ? (this.state.incomingCall.id + ' ' + this.state.incomingCall.state): 'None');
             callState = this.state.incomingCall.state;
         } else if (this.state.currentCall) {
-            //utils.timestampedLog('We have an outgoing call:', this.state.currentCall ? (this.state.currentCall.id + ' ' + this.state.currentCall.state): 'None');
+            utils.timestampedLog('We have an outgoing call:', this.state.currentCall ? (this.state.currentCall.id + ' ' + this.state.currentCall.state): 'None');
             callState = this.state.currentCall.state;
         } else {
-            //utils.timestampedLog('We have no calls');
+            utils.timestampedLog('We have no calls');
+            if (this.state.appState === 'background' && this.state.connection && this.state.connection.state === 'ready') {
+                this.shutdownActions();
+            }
         }
 
         this._callKeepManager.checkCalls();
@@ -803,6 +846,10 @@ class Sylk extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
+        if (!this._loaded) {
+            return;
+        }
+
         // outgoing accepted: null -> progress -> accepted -> established -> terminated
         // outgoing accepted: null -> progress -> established -> accepted -> terminated (with early media)
         // incoming accepted: null -> incoming -> accepted -> established -> terminated
@@ -1117,7 +1164,7 @@ class Sylk extends Component {
 
     }
 
-    handleRegistration(accountId, password, remember) {
+    handleRegistration(accountId, password, remember=true) {
         this.setState({
             accountId : accountId,
             password  : password,
@@ -1388,7 +1435,7 @@ class Sylk extends Component {
     }
 
     acceptCall(callUUID) {
-        utils.timestampedLog('User accepted new call', callUUID);
+        utils.timestampedLog('User accepted new call', callUUID, 'on connection', Object.id(this.state.connection));
         this.hideInternalAlertPanel();
 
         this.resetGoToReadyTimer();
@@ -2089,7 +2136,7 @@ class Sylk extends Component {
 
                             <LoadingScreen
                             text={this.state.loading}
-                            show={this.state.loading !== null}
+                            show={this.state.loading !== null && this.currentRoute === '/login'}
                             orientation={this.state.orientation}
                             isTablet={this.state.isTablet}
                             />
