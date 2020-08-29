@@ -784,6 +784,10 @@ class Sylk extends Component {
             return;
         }
 
+        if (this.startedByPush) {
+            return;
+        }
+
         if (this.state.account && this.state.connection && this.state.connection.state === 'active') {
             utils.timestampedLog('Removing account', this.state.account.id);
             this.state.connection.removeAccount(this.state.account);
@@ -1751,11 +1755,9 @@ class Sylk extends Component {
 
             } else if (direction === 'incoming' && uri) {
                 this.incomingCallFromPush(callUUID, uri, true);
-                this.startedByPush = false;
 
             } else if (direction === 'cancel' && uri) {
                 this.cancelIncomingCall(callUUID);
-                this.startedByPush = false;
 
             } else {
                  utils.timestampedLog('Unclear URL structure');
@@ -1842,7 +1844,7 @@ class Sylk extends Component {
 
         if (!this._callKeepManager._calls.get(callUUID) || (this.state.currentCall && this.state.currentCall.direction === 'outgoing')) {
             this._notificationCenter.postSystemNotification('Incoming call', {body: `from ${from}`, timeout: 15, silent: false});
-            if (Platform.OS === 'android') {
+            if (Platform.OS === 'android' && this.state.appState === 'foreground') {
                 skipNativePanel = true;
             }
         }

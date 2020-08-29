@@ -436,8 +436,10 @@ export default class CallManager extends events.EventEmitter {
             if (this._calls.has(callUUID) || force) {
                 // on Android display alert panel only after websocket call arrives
                 // force is required when Android is locked, if we do not bring up the panel, the app will not wake up
-                if (!skipNativePanel) {
+                if (!skipNativePanel || force) {
                     this.showAlertPanel(callUUID, from);
+                } else {
+                    utils.timestampedLog('Callkeep: call', callUUID, 'skipped display of native panel');
                 }
             } else {
                 utils.timestampedLog('Callkeep: waiting for call', callUUID, 'on web socket');
