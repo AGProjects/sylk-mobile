@@ -27,7 +27,7 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 ## Availability
 
 * [Google Play](https://play.google.com/store/apps/details?id=com.agprojects.sylk)
-* [Apple Store](https://testflight.apple.com/join/1IdtulL4)
+* [Apple Store](https://apps.apple.com/us/app/id1489960733)
 * Source code
 
 
