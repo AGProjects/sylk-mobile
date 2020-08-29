@@ -800,9 +800,9 @@ class Sylk extends Component {
 
     checkCalls() {
         if (this.state.connection) {
-            console.log('Check calls in', this.state.appState, 'with connection', Object.id(this.state.connection), this.state.connection.state);
+            //console.log('Check calls in', this.state.appState, 'with connection', Object.id(this.state.connection), this.state.connection.state);
         } else {
-            console.log('Check calls in', this.state.appState, 'with no connection');
+            //console.log('Check calls in', this.state.appState, 'with no connection');
         }
 
         let callState;
@@ -816,7 +816,7 @@ class Sylk extends Component {
             utils.timestampedLog('We have an outgoing call:', this.state.currentCall ? (this.state.currentCall.id + ' ' + this.state.currentCall.state): 'None');
             callState = this.state.currentCall.state;
         } else {
-            utils.timestampedLog('We have no calls');
+            //utils.timestampedLog('We have no calls');
             if (this.state.appState === 'background' && this.state.connection && this.state.connection.state === 'ready') {
                 this.shutdownActions();
             }
@@ -972,6 +972,9 @@ class Sylk extends Component {
             utils.timestampedLog('Call state changed: We have one current call');
             newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
+            if (newState !== 'terminated') {
+                this.setState({reconnectingCall: false});
+            }
         } else {
             newincomingCall = null;
             newCurrentCall = null;
@@ -1149,11 +1152,14 @@ class Sylk extends Component {
             //console.log('New call state:');
 
         } else {
-            //utils.timestampedLog('Will go to ready in 4 seconds');
-            this.goToReadyTimer = setTimeout(() => {
+            if (!this.state.reconnectingCall) {
+                utils.timestampedLog('Will go to ready in 4 seconds');
 
-                this.changeRoute('/ready', 'no more calls');
-            }, readyDelay);
+                this.goToReadyTimer = setTimeout(() => {
+
+                    this.changeRoute('/ready', 'no more calls');
+                }, readyDelay);
+            }
         }
 
         if (this.state.currentCall) {
@@ -1499,11 +1505,8 @@ class Sylk extends Component {
         if (reason === 'outgoing_connection_failed') {
              this.setState({reconnectingCall: true,
                             outgoingCallUUID: uuid.v4()});
-             utils.timestampedLog('Call', callUUID, 'failed due to connection');
              return;
         }
-
-        this.setState({reconnectingCall: false});
 
         if (reason === 'user_cancelled' ||
             reason === 'timeout' ||

@@ -76,22 +76,33 @@ class Call extends Component {
             return;
         }
 
-        if (nextProps.call !== null && this.state.call !== nextProps.call) {
-            nextProps.call.on('stateChanged', this.callStateChanged);
+        if (nextProps.call !== null) {
+            if (this.state.call !== nextProps.call) {
+                nextProps.call.on('stateChanged', this.callStateChanged);
 
-            this.setState({
-                           call: nextProps.call,
-                           remoteUri: nextProps.call.remoteIdentity.uri,
-                           direction: nextProps.call.direction,
-                           callUUID: nextProps.call.id,
-                           remoteDisplayName: nextProps.call.remoteIdentity.displayName
-                           });
+                this.setState({
+                               call: nextProps.call,
+                               remoteUri: nextProps.call.remoteIdentity.uri,
+                               direction: nextProps.call.direction,
+                               callUUID: nextProps.call.id,
+                               remoteDisplayName: nextProps.call.remoteIdentity.displayName
+                               });
 
-            if (this.state.direction === 'outgoing' && nextProps.call.direction === 'incoming') {
-                this.mediaPlaying();
+                if (this.state.direction === 'outgoing' && nextProps.call.direction === 'incoming') {
+                    this.mediaPlaying();
+                }
+
+                this.lookupContact();
             }
+        } else {
+            if (nextProps.callUUID !== null && this.state.callUUID !== nextProps.callUUID) {
+                this.setState({'callUUID': nextProps.callUUID,
+                               'direction': 'outgoing',
+                               'call': null
+                               });
 
-            this.lookupContact();
+                this.startCallWhenReady(nextProps.callUUID);
+            }
         }
 
         if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
@@ -124,7 +135,7 @@ class Call extends Component {
     componentDidMount() {
         this.lookupContact();
         if (this.state.direction === 'outgoing') {
-            this.startCallWhenReady();
+            this.startCallWhenReady(this.state.callUUID);
         }
     }
 
@@ -239,9 +250,8 @@ class Call extends Component {
                 break;
             case 'disconnected':
                 if (oldState === 'ready' && this.state.direction === 'outgoing') {
-                    utils.timestampedLog('Call: reconnecting the call');
+                    utils.timestampedLog('Call: reconnecting the call...');
                     this.waitInterval = this.defaultWaitInterval;
-                    this.startCallWhenReady();
                 }
                 break;
             default:
@@ -258,12 +268,10 @@ class Call extends Component {
         return null;
     }
 
-    async startCallWhenReady() {
-        if (!this.state.callUUID || !this.state.targetUri) {
-            return;
-        }
-        utils.timestampedLog('Call: start call', this.state.callUUID, 'when ready to', this.state.targetUri);
+    async startCallWhenReady(callUUID) {
+        utils.timestampedLog('Call: start call', callUUID, 'when ready to', this.state.targetUri);
         this.waitCounter = 0;
+
 
         let diff = 0;
 
@@ -282,7 +290,6 @@ class Call extends Component {
             }
 
             if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Call: terminating call', this.state.callUUID, 'that did not start yet');
                 this.hangupCall('timeout');
             }
 
@@ -291,8 +298,8 @@ class Call extends Component {
                  this.props.registrationState !== 'registered' ||
                  !this.mediaIsPlaying
                  ) {
-                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
-                if (this.state.call && this.state.call.state !== 'terminated') {
+                //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                if (this.state.call && this.state.call.id === callUUID && this.state.call.state !== 'terminated') {
                     return;
                 }
 

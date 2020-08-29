@@ -39,7 +39,6 @@ class CallOverlay extends React.Component {
         this.finalDuration = null;
         this.timer = null;
         this._isMounted = true;
-        this.reconnecting = false;
     }
 
     componentDidMount() {
@@ -132,8 +131,11 @@ class CallOverlay extends React.Component {
             } else {
                 if (this.finalDuration && (!this.props.connection || this.props.connection.state !== 'ready' || !this.props.accountId)) {
                     if (this.state.callState && this.state.callState === 'terminated') {
-                        callDetail = 'Restoring the conversation...';
-                        this.reconnecting = true;
+                        if (this.state.direction === 'outgoing') {
+                            callDetail = 'Restoring the conversation...';
+                        } else {
+                            callDetail = 'Connection was lost';
+                        }
                     } else {
                         callDetail = 'Waiting for connection...';
                     }
