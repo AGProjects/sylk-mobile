@@ -784,9 +784,10 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.state.account) {
+        if (this.state.account && this.state.connection && this.state.connection.state === 'active') {
             utils.timestampedLog('Removing account', this.state.account.id);
             this.state.connection.removeAccount(this.state.account);
+            this.setState({account: null});
         }
 
         if (this.state.connection) {
