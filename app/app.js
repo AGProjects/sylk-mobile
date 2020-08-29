@@ -420,14 +420,14 @@ class Sylk extends Component {
 
                 if (this.state.account && reason !== 'accept_new_call' && this._loaded) {
                     setTimeout(() => {
-                        this.setState({refreshHistory: !this.state.refreshHistory});
+                        this.refreshHistory()
                     }, 1500);
                 }
             }
 
             if (reason === 'registered') {
                 setTimeout(() => {
-                    this.setState({refreshHistory: !this.state.refreshHistory});
+                    this.refreshHistory()
                 }, 1500);
             }
         }
@@ -1894,6 +1894,12 @@ class Sylk extends Component {
         }
 
         if (this.route === '/ready') {
+            this.refreshHistory()
+        }
+    }
+
+    refreshHistory() {
+        if (this.state.connection && this.state.connection.state === 'active') {
             this.setState({refreshHistory: !this.state.refreshHistory});
         }
     }
