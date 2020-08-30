@@ -101,7 +101,7 @@ const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
         var id = 0;
 
         Object.id = function(o) {
-            if ( typeof o.__uniqueid == "undefined" ) {
+            if ( o && typeof o.__uniqueid == "undefined" ) {
                 Object.defineProperty(o, "__uniqueid", {
                     value: ++id,
                     enumerable: false,
@@ -111,7 +111,7 @@ const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
                 });
             }
 
-            return o.__uniqueid;
+            return o ? o.__uniqueid : null;
         };
     }
 })();
