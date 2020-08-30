@@ -238,6 +238,9 @@ class Sylk extends Component {
 
         storage.get('myInvitedParties').then((myInvitedParties) => {
             if (myInvitedParties) {
+                if (Array.isArray(myInvitedParties)) {
+                    myInvitedParties = null;
+                }
                 this.myInvitedParties = myInvitedParties;
                 console.log('My invited parties', this.myInvitedParties);
                 this.setState({myInvitedParties: this.myInvitedParties});
