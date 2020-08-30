@@ -123,7 +123,7 @@ class Sylk extends Component {
         autoBind(this)
         this._loaded = false;
         this._initialSstate = {
-            appState: '',
+            appState: 'active',
             accountId: '',
             password: '',
             displayName: '',
