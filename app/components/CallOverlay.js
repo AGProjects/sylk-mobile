@@ -29,7 +29,7 @@ class CallOverlay extends React.Component {
         this.state = {
             call: this.props.call,
             callState: this.props.call ? this.props.call.state : null,
-            direction: this.props.call ? this.props.call.direction: 'outgoing',
+            direction: this.props.call ? this.props.call.direction: null,
             remoteUri: this.props.remoteUri,
             remoteDisplayName: this.props.remoteDisplayName,
             photo: this.props.photo
@@ -129,7 +129,7 @@ class CallOverlay extends React.Component {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
                 callDetail = 'Duration:' + this.duration;
             } else {
-                if (this.finalDuration && (!this.props.connection || this.props.connection.state !== 'ready' || !this.props.accountId)) {
+                if (this.finalDuration && (!this.props.connection || this.props.connection.state !== 'ready')) {
                     if (this.state.callState && this.state.callState === 'terminated') {
                         if (this.state.direction === 'outgoing') {
                             callDetail = 'Restoring the conversation...';

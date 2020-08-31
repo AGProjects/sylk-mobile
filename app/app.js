@@ -179,6 +179,7 @@ class Sylk extends Component {
         this.cachedHistory = []; // used for caching server history
 
         this.state = Object.assign({}, this._initialSstate);
+        this.runtime = Object();
 
         this.myParticipants = {};
 
@@ -388,11 +389,13 @@ class Sylk extends Component {
      }
 
     changeRoute(route, reason) {
-        if (this.currentRoute === route) {
+        if (this.currentRoute === route && route !== '/call') {
             return;
         }
 
-        utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
+        if (this.currentRoute !== route) {
+            utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
+        }
 
         if (route === '/ready') {
             this.startedByPush = false;
@@ -442,17 +445,18 @@ class Sylk extends Component {
     componentWillUnmount() {
         console.log('App will unmount now');
         AppState.removeEventListener('change', this._handleAppStateChange);
-        this.shutdownActions();
+        this.shutdownActions('exit');
         this._loaded = false;
     }
 
     async componentDidMount() {
         this._loaded = true;
+        console.log('App did mount');
         // Start a timer that runs once after X milliseconds
         BackgroundTimer.runBackgroundTimer(() => {
             // this will be executed once after 10 seconds
             // even when app is the the background
-            this.checkCalls();
+            this.heartbeat();
         }, 5000);
 
         if (Platform.OS === 'android') {
@@ -475,6 +479,23 @@ class Sylk extends Component {
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
         this._boundOnPushRegistered = this._onPushRegistered.bind(this);
 
+        this._detectOrientation();
+
+        getPhoneNumber().then(phoneNumber => {
+            this.setState({myPhoneNumber: phoneNumber});
+            this.loadContacts();
+        });
+
+        this.listenforPushNotifications();
+    }
+
+    listenforPushNotifications() {
+        if (Object.id(this.runtime) > 1) {
+            return;
+        }
+
+        utils.timestampedLog('---- Add push notifications listeners');
+
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
                 if (url) {
@@ -495,6 +516,7 @@ class Sylk extends Component {
             Linking.addEventListener('url', this.updateLinkingURL);
 
         } else if (Platform.OS === 'ios') {
+
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
 
@@ -515,9 +537,11 @@ class Sylk extends Component {
         if (Platform.OS === 'ios') {
             this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
             this._boundOnLocalNotificationReceivedBackground = this._onLocalNotificationReceivedBackground.bind(this);
+            utils.timestampedLog('Adding iOS push notifications listeners');
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
             VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
         } else if (Platform.OS === 'android') {
+            utils.timestampedLog('Adding Android push notifications listeners');
             firebase
                 .messaging()
                 .requestPermission()
@@ -550,16 +574,11 @@ class Sylk extends Component {
 
                 });
         }
-
-        this._detectOrientation();
-
-        getPhoneNumber().then(phoneNumber => {
-            this.setState({myPhoneNumber: phoneNumber});
-            this.loadContacts();
-        });
     }
 
+
     cancelIncomingCall(callUUID) {
+        this.startedByPush = false;
         let call = this._callKeepManager._calls.get(callUUID);
         if (call === null || (call && call.state === 'incoming')) {
             this._callKeepManager.endCall(callUUID, 2);
@@ -625,20 +644,75 @@ class Sylk extends Component {
     }
 
     _handleAppStateChange = nextAppState => {
+        if (nextAppState === this.state.appState) {
+            return;
+        }
 
         if (this.state.connection) {
-            console.log('App state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
+            //utils.timestampedLog('---- App state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
         } else {
-            console.log('App state changed from', this.state.appState, 'to', nextAppState, 'with no connection');
+            //utils.timestampedLog('---- App state changed from', this.state.appState, 'to', nextAppState, 'with no connection');
+        }
+
+        if (this._callKeepManager.count === 0) {
+            if (this.state.appState === 'background' && nextAppState === 'active') {
+                this.respawnActions(nextAppState);
+            } else if (nextAppState === 'background' && this._callKeepManager.count) {
+                this.shutdownActions(nextAppState);
+            }
         }
 
         this.setState({appState: nextAppState});
 
-        if (nextAppState === 'active' && this.state.connection === null && this.state.accountId) {
-            this.handleRegistration(this.state.accountId, this.state.password);
-        } else if (nextAppState.match(/inactive|background/) && this._callKeepManager.count === 0) {
-            this.shutdownActions();
+    }
+
+    respawnActions(state) {
+        utils.timestampedLog('Respawn actions for', state, 'state');
+        this.handleRegistration(this.state.accountId, this.state.password);
+    }
+
+    shutdownActions(state) {
+        if (Platform.OS === 'android') {
+            this.shutdownActionsAndroid(state);
+        } else {
+            this.shutdownActionsiOS(state);
         }
+    }
+
+    shutdownActionsAndroid(state) {
+
+        if (this.startedByPush) {
+            return;
+        }
+
+        if (this.state.account && this.state.connection && this.state.connection.state === 'active') {
+            utils.timestampedLog('Removing account', this.state.account.id);
+            this.state.connection.removeAccount(this.state.account);
+            this.setState({account: null});
+        }
+
+        if (this.state.connection) {
+            utils.timestampedLog('Closing connection', Object.id(this.state.connection));
+            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+            this.state.connection.close();
+            this.setState({connection: null});
+        }
+    }
+
+    shutdownActionsiOS(state) {
+        utils.timestampedLog('Shutdown actions for', state, 'state');
+
+        if (this.startedByPush) {
+            utils.timestampedLog('Shutdown actions cancelled when woke up by push');
+            return;
+        }
+
+        if (this.state.connection) {
+            utils.timestampedLog('Closing connection', Object.id(this.state.connection));
+            this.state.connection.close();
+            this.setState({connection: null});
+        }
+
     }
 
     startCallFromCallKeeper(data) {
@@ -706,15 +780,15 @@ class Sylk extends Component {
     }
 
     showRegisterFailure(reason) {
-            logger.debug('Registration error: ' + reason);
-            this.setState({
-                loading     : null,
-                registrationState: 'failed',
-                status      : {
-                    msg   : 'Sign In failed: ' + reason,
-                    level : 'danger'
-                }
-            });
+        utils.timestampedLog('Registration error: ' + reason);
+        this.setState({
+            loading     : null,
+            registrationState: 'failed',
+            status      : {
+                msg   : 'Sign In failed: ' + reason,
+                level : 'danger'
+            }
+        });
     }
 
     registrationStateChanged(oldState, newState, data) {
@@ -727,12 +801,17 @@ class Sylk extends Component {
         if (newState === 'failed') {
             this._callKeepManager.setAvailable(false);
             let reason = data.reason;
+
             if (reason.match(/904|408/)) {
                 // Sofia SIP: WAT
                 reason = 'Wrong account or password';
             }
 
             this.showRegisterFailure(reason);
+
+            if (this.startedByPush) {
+                this.changeRoute('/call', 'wake from push');
+            }
 
             if (this.state.registrationKeepalive === true) {
                 if (this.state.connection !== null) {
@@ -780,32 +859,7 @@ class Sylk extends Component {
         this.setState({showIncomingModal: false});
     }
 
-    shutdownActions() {
-        //BackgroundTimer.stopBackgroundTimer();
-
-        if (Platform.OS !== 'android') {
-            return;
-        }
-
-        if (this.startedByPush) {
-            return;
-        }
-
-        if (this.state.account && this.state.connection && this.state.connection.state === 'active') {
-            utils.timestampedLog('Removing account', this.state.account.id);
-            this.state.connection.removeAccount(this.state.account);
-            this.setState({account: null});
-        }
-
-        if (this.state.connection) {
-            utils.timestampedLog('Closing connection', Object.id(this.state.connection));
-            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
-            this.state.connection.close();
-            this.setState({connection: null});
-        }
-    }
-
-    checkCalls() {
+    heartbeat() {
         if (this.state.connection) {
             //console.log('Check calls in', this.state.appState, 'with connection', Object.id(this.state.connection), this.state.connection.state);
         } else {
@@ -825,11 +879,11 @@ class Sylk extends Component {
         } else {
             //utils.timestampedLog('We have no calls');
             if (this.state.appState === 'background' && this.state.connection && this.state.connection.state === 'ready') {
-                this.shutdownActions();
+                this.shutdownActions(this.state.appState);
             }
         }
 
-        this._callKeepManager.checkCalls();
+        this._callKeepManager.heartbeat();
 
         if (callState === 'established' || callState === 'established') {
             if (this.state.isConference) {
@@ -839,7 +893,6 @@ class Sylk extends Component {
             }
         }
     }
-
 
     stopRingback() {
         utils.timestampedLog('Stop ringback');
@@ -877,7 +930,7 @@ class Sylk extends Component {
         }
 
         let callUUID = call.id;
-        utils.timestampedLog(call.direction, 'call', callUUID, 'state change:', oldState, '->', newState);
+        utils.timestampedLog('Websocket call', call.direction, callUUID, 'state change:', oldState, '->', newState);
 
         if (newState === 'established' || newState === 'accepted') {
             // restore the correct UI state if it has transitioned illegally to /ready state
@@ -897,6 +950,8 @@ class Sylk extends Component {
         let readyDelay = 4000;
 
         if (this.state.incomingCall && this.state.currentCall) {
+            this.startedByPush = false;
+
             if (this.state.incomingCall != this.state.currentCall) {
                 utils.timestampedLog('Call state changed: We have two calls');
             } else {
@@ -954,6 +1009,7 @@ class Sylk extends Component {
                 utils.timestampedLog('Call state changed:', 'We have two calls in unclear state');
             }
         } else if (this.state.incomingCall) {
+            this.startedByPush = false;
             utils.timestampedLog('Call state changed: We have one incoming call');
             newincomingCall = this.state.incomingCall;
             newCurrentCall = this.state.incomingCall;
@@ -1116,9 +1172,9 @@ class Sylk extends Component {
 
                 this.stopRingback();
 
-                this._callKeepManager.endCall(callUUID, CALLKEEP_REASON);
-
                 this._callKeepManager.terminateCall(callUUID);
+
+                this._callKeepManager.endCall(callUUID, CALLKEEP_REASON);
 
                 if (this.state.currentCall === null) {
                     utils.timestampedLog('Call state changed:', 'Turn off speakerphone');
@@ -1179,6 +1235,12 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password, remember=true) {
+        utils.timestampedLog('Websocket handle registration for', accountId);
+
+        if (this.startedByPush) {
+            this.changeRoute('/call');
+        }
+
         this.setState({
             accountId : accountId,
             password  : password,
@@ -1188,7 +1250,6 @@ class Sylk extends Component {
 
         if (this.state.connection === null) {
             const userAgent = 'Sylk Mobile';
-            console.log('User Agent:', userAgent);
             if (this.state.phoneNumber) {
                 console.log('Phone number:', this.state.phoneNumber);
             }
@@ -1204,7 +1265,12 @@ class Sylk extends Component {
     }
 
     processRegistration(accountId, password, displayName) {
-        if (this.state.account !== null) {
+        utils.timestampedLog('Process registration for', accountId);
+        if (!this.state.connection) {
+            console.log('Error: Cannot process registration without connection');
+            return;
+        }
+        if (this.state.account !== null && this.state.connection) {
             logger.debug('We already have an account, removing it');
             this.state.connection.removeAccount(this.state.account,
                 (error) => {
@@ -1219,7 +1285,11 @@ class Sylk extends Component {
             displayName: displayName
         };
 
-        this.registrationFailureTimer = setTimeout(this.showRegisterFailure, 6000, 'Wrong account or password');
+        this.registrationFailureTimer = setTimeout(this.showRegisterFailure, 10000, 'Register timeout');
+
+        if (this.state.connection._accounts.has(options.account)) {
+            return;
+        }
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
@@ -1519,7 +1589,9 @@ class Sylk extends Component {
             reason === 'timeout' ||
             reason === 'stop_preview' ||
             reason === 'user_press_hangup' ||
-            reason === 'accept_new_call') {
+            reason === 'accept_new_call' ||
+            reason === 'timeout'
+            ) {
             this.changeRoute('/ready', reason);
         } else {
             if (reason !== 'escalate_to_conference') {
@@ -1632,10 +1704,13 @@ class Sylk extends Component {
         if (event === 'incoming_session') {
             utils.timestampedLog('Incoming call push mobile notification for call', callUUID);
             this.incomingCallFromPush(callUUID, from);
+            this.setState({targetUri: from});
+            this.startedByPush = true;
 
         } else if (event === 'incoming_conference_request') {
             utils.timestampedLog('Incoming conference push mobile notification for call', callUUID);
             this.incomingConference(callUUID, to, from);
+            this.startedByPush = true;
 
         } else if (event === 'cancel') {
             utils.timestampedLog('Cancel push mobile notification for call', callUUID);
@@ -1747,6 +1822,8 @@ class Sylk extends Component {
                     uri = url_parts[4] + '@' + this.state.defaultDomain;
                 }
             }
+
+            this.setState({targetUri: uri});
 
             this.startedByPush = true;
 

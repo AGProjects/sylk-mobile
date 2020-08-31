@@ -129,7 +129,7 @@ export default class CallManager extends events.EventEmitter {
         this.callKeep.setAvailable(available);
     }
 
-    checkCalls() {
+    heartbeat() {
         this.callUUIDS.forEach((callUUID) => {
             //utils.timestampedLog('Callkeep: call active', callUUID);
         });
@@ -209,12 +209,11 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnActiveAudioSession() {
-        utils.timestampedLog('Callkeep: activated audio call');
-        this.backToForeground();
+        //utils.timestampedLog('Callkeep: activated audio call');
     }
 
     _rnDeactiveAudioSession() {
-        utils.timestampedLog('Callkeep: deactivated audio call');
+        //utils.timestampedLog('Callkeep: deactivated audio call');
     }
 
     _rnAccept(data) {
@@ -289,15 +288,13 @@ export default class CallManager extends events.EventEmitter {
             this.webSocketActions.set(callUUID, 'accept');
             utils.timestampedLog('Callkeep: check over 20 seconds if call', callUUID, 'arrived over web socket');
             setTimeout(() => {
-                utils.timestampedLog('Callkeep: check if call', callUUID, 'arrived over web socket');
                 if (!this._calls.has(callUUID)) {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive over web socket');
                     this.webSocketActions.delete(callUUID);
                     this.endCall(callUUID, 1);
-                } else {
-                    utils.timestampedLog('Callkeep: call', callUUID, 'did arrive over web socket');
+                    this.sylkHangupCall(callUUID, 'timeout');
                 }
-            }, 20000);
+            }, 30000);
         }
     }
 

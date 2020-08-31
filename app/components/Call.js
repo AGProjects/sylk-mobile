@@ -26,7 +26,7 @@ class Call extends Component {
         let remoteUri = '';
         let remoteDisplayName = '';
         let callState = null;
-        let direction = 'outgoing';
+        let direction = null;
         let callEnded = false;
         this.mediaIsPlaying = false;
         this.ended = false;
@@ -42,6 +42,7 @@ class Call extends Component {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
             callUUID = this.props.callUUID;
+            direction = this.props.callUUID ? 'outgoing' : null;
         }
 
         if (this.props.connection) {
@@ -57,6 +58,7 @@ class Call extends Component {
                       call: this.props.call,
                       targetUri: this.props.targetUri,
                       audioOnly: audioOnly,
+                      boo: false,
                       remoteUri: remoteUri,
                       remoteDisplayName: remoteDisplayName,
                       localMedia: this.props.localMedia,
@@ -76,6 +78,8 @@ class Call extends Component {
             return;
         }
 
+        this.setState({accountId: nextProps.account ? nextProps.account.id : null});
+
         if (nextProps.call !== null) {
             if (this.state.call !== nextProps.call) {
                 nextProps.call.on('stateChanged', this.callStateChanged);
@@ -88,7 +92,7 @@ class Call extends Component {
                                remoteDisplayName: nextProps.call.remoteIdentity.displayName
                                });
 
-                if (this.state.direction === 'outgoing' && nextProps.call.direction === 'incoming') {
+                if (nextProps.call.direction === 'incoming') {
                     this.mediaPlaying();
                 }
 
@@ -113,14 +117,18 @@ class Call extends Component {
             this.setState({targetUri: nextProps.targetUri});
         }
 
-        if (nextProps.localMedia !== this.state.localMedia) {
+        if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia) {
             let audioOnly = false;
-            if (nextProps.localMedia && nextProps.localMedia.getVideoTracks().length === 0) {
+            if (nextProps.localMedia.getVideoTracks().length === 0) {
                 audioOnly = true;
             }
 
             this.setState({localMedia: nextProps.localMedia,
                            audioOnly: audioOnly});
+
+            setTimeout(() => {
+                this.mediaPlaying();
+            }, 100);
         }
     }
 
@@ -132,9 +140,19 @@ class Call extends Component {
         }
     }
 
+    answerCall() {
+        if (this.state.call && this.state.call.state === 'incoming' && this.state.localMedia) {
+            let options = {pcConfig: {iceServers: config.iceServers}};
+            options.localStream = this.state.localMedia;
+            this.state.call.answer(options);
+        } else {
+            console.log('Call: cannot answer call yet');
+        }
+    }
+
     componentDidMount() {
         this.lookupContact();
-        if (this.state.direction === 'outgoing') {
+        if (this.state.direction === 'outgoing' && this.state.callUUID) {
             this.startCallWhenReady(this.state.callUUID);
         }
     }
@@ -242,7 +260,6 @@ class Call extends Component {
     }
 
     connectionStateChanged(oldState, newState) {
-        utils.timestampedLog('Call: connection state changed:', oldState, '->' , newState);
         switch (newState) {
             case 'closed':
                 break;
@@ -337,14 +354,6 @@ class Call extends Component {
         }
     }
 
-    answerCall() {
-        if (this.state.call && this.state.call.state === 'incoming') {
-            let options = {pcConfig: {iceServers: config.iceServers}};
-            options.localStream = this.state.localMedia;
-            this.state.call.answer(options);
-        }
-    }
-
     hangupCall(reason) {
         let callUUID = this.state.call ? this.state.call.id : this.state.callUUID;
         this.waitInterval = this.defaultWaitInterval;
@@ -370,6 +379,7 @@ class Call extends Component {
         let box = null;
         if (this.state.localMedia !== null) {
             if (this.state.audioOnly) {
+
                 box = (
                     <AudioCallBox
                         remoteUri = {this.state.remoteUri}
@@ -441,6 +451,29 @@ class Call extends Component {
                     }
                 }
             }
+        } else {
+            box = (
+                <AudioCallBox
+                    remoteUri = {this.state.remoteUri}
+                    remoteDisplayName = {this.state.remoteDisplayName}
+                    photo = {this.state.photo}
+                    hangupCall = {this.hangupCall}
+                    call = {this.state.call}
+                    accountId={this.state.accountId}
+                    connection = {this.props.connection}
+                    mediaPlaying = {this.mediaPlaying}
+                    escalateToConference = {this.props.escalateToConference}
+                    callKeepSendDtmf = {this.props.callKeepSendDtmf}
+                    toggleMute = {this.props.toggleMute}
+                    speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
+                    toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
+                    orientation = {this.props.orientation}
+                    isTablet = {this.props.isTablet}
+                    reconnectingCall = {this.state.reconnectingCall}
+                    muted = {this.props.muted}
+                />
+            );
+
         }
         return box;
     }
