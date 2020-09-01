@@ -78,7 +78,6 @@ class ConferenceMatrixParticipant extends Component {
 
     maybeAttachStream() {
         const streams = this.props.participant.streams;
-        console.log(this.props.participant);
         if (streams.length > 0) {
             this.setState({stream: streams[0], hasVideo: streams[0].getVideoTracks().length > 0});
             // const options = {

@@ -8,9 +8,7 @@ import autoBind from 'auto-bind';
 import { Appbar } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, Colors } from 'react-native-paper';
-
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
-
 
 function toTitleCase(str) {
     return str.replace(
@@ -134,7 +132,7 @@ class CallOverlay extends React.Component {
                         if (this.state.direction === 'outgoing') {
                             callDetail = 'Restoring the conversation...';
                         } else {
-                            callDetail = 'Connection was lost';
+                            callDetail = 'Call ended';
                         }
                     } else {
                         callDetail = 'Waiting for connection...';

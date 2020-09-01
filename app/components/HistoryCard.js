@@ -225,6 +225,7 @@ class HistoryCard extends Component {
         let color = {};
 
         let title = displayName || username;
+
         let subtitle = uri;
         let description = this.props.contact.startTime;
 

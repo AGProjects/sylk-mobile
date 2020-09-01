@@ -14,11 +14,11 @@ export default async (remoteMessage) => {
         let url;
 
         if (event === 'incoming_conference_request') {
-            url = 'sylk://outgoing/conference/' + callUUID + '/' + from + '/' + to;
+            url = 'sylk://incoming/conference/' + callUUID + '/' + from + '/' + to;
         } else if (event === 'incoming_session') {
             url = 'sylk://incoming/call/' + callUUID + '/' + from + '/' + to;
         } else if (event === 'cancel') {
-            url = 'sylk://cancel/call/' + callUUID + '/' + from + '/' + to;
+            url = 'sylk://cancel/call/' + callUUID;
         }
 
         if (url) {

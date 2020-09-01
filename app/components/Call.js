@@ -30,6 +30,7 @@ class Call extends Component {
         let callEnded = false;
         this.mediaIsPlaying = false;
         this.ended = false;
+        this.answering = false;
 
         if (this.props.call) {
             // If current call is available on mount we must have incoming
@@ -119,6 +120,7 @@ class Call extends Component {
 
         if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia) {
             let audioOnly = false;
+
             if (nextProps.localMedia.getVideoTracks().length === 0) {
                 audioOnly = true;
             }
@@ -126,27 +128,36 @@ class Call extends Component {
             this.setState({localMedia: nextProps.localMedia,
                            audioOnly: audioOnly});
 
-            setTimeout(() => {
-                this.mediaPlaying();
-            }, 100);
+            this.mediaPlaying(nextProps.localMedia);
         }
     }
 
-    mediaPlaying() {
+    mediaPlaying(localMedia) {
         if (this.state.direction === 'incoming') {
-            this.answerCall();
+            const media = localMedia ? localMedia : this.state.localMedia;
+            this.answerCall(media);
         } else {
             this.mediaIsPlaying = true;
         }
     }
 
-    answerCall() {
-        if (this.state.call && this.state.call.state === 'incoming' && this.state.localMedia) {
+    answerCall(localMedia) {
+        const media = localMedia ? localMedia : this.state.localMedia;
+        if (this.state.call && this.state.call.state === 'incoming' && media) {
             let options = {pcConfig: {iceServers: config.iceServers}};
-            options.localStream = this.state.localMedia;
-            this.state.call.answer(options);
+            options.localStream = media;
+            if (!this.answering) {
+                this.answering = true;
+                utils.timestampedLog('Call: answering call...');
+                this.state.call.answer(options);
+            }
         } else {
-            console.log('Call: cannot answer call yet');
+            if (!media) {
+                utils.timestampedLog('Call: waiting for local media');
+            }
+            if (!this.state.call) {
+                utils.timestampedLog('Call: waiting for incoming call data');
+            }
         }
     }
 
@@ -324,7 +335,7 @@ class Call extends Component {
             } else {
                 this.waitCounter = 0;
 
-                this.call();
+                this.start();
 
                 return;
             }
@@ -337,7 +348,7 @@ class Call extends Component {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    call() {
+    start() {
         utils.timestampedLog('Call: starting call', this.state.callUUID);
 
         if (this.state.localMedia === null)  {
@@ -357,8 +368,6 @@ class Call extends Component {
     hangupCall(reason) {
         let callUUID = this.state.call ? this.state.call.id : this.state.callUUID;
         this.waitInterval = this.defaultWaitInterval;
-
-        this.state.callUUID || this.state.call.id;
 
         if (this.state.call) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);

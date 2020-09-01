@@ -449,7 +449,6 @@ class ConferenceBox extends Component {
     }
 
     inviteParticipants(uris) {
-        console.log('Invite participants', uris);
         this.props.call.inviteParticipants(uris);
     }
 
