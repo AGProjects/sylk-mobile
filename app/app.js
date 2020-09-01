@@ -150,6 +150,7 @@ class Sylk extends Component {
             Height_Layout : '',
             Width_Layout : '',
             outgoingCallUUID: null,
+            incomingCallUUID: null,
             outgoingMedia: null,
             hardware: '',
             phoneNumber: '',
@@ -654,17 +655,13 @@ class Sylk extends Component {
         }
 
         if (this._callKeepManager.count === 0 && !this.state.outgoingCallUUID) {
+            /*
             if (this.state.connection) {
                 utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
             } else {
-                utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState, 'with no connection');
+                utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState);
             }
-
-            if (this.startedByPush) {
-                utils.timestampedLog('Was started by push');
-            } else {
-                utils.timestampedLog('It was not started by push');
-            }
+            */
 
             if (this.state.appState === 'background' && nextAppState === 'active') {
                 this.respawnActions(nextAppState);
@@ -678,13 +675,12 @@ class Sylk extends Component {
 
     respawnActions(state) {
         if (this.state.accountId) {
-            utils.timestampedLog('Respawn actions for', state, 'state');
+            //utils.timestampedLog('Respawn actions for', state, 'state');
             this.handleRegistration(this.state.accountId, this.state.password);
         }
     }
 
     shutdownActions(state) {
-        utils.timestampedLog('-- Shutdown actions for', state, 'state', 'in', this.currentRoute);
 
         if (this.startedByPush) {
             return;
@@ -693,6 +689,8 @@ class Sylk extends Component {
         if (this.currentRoute === '/login') {
             return;
         }
+
+        utils.timestampedLog('-- Shutdown actions for', state, 'state', 'in', this.currentRoute);
 
         if (this.state.account && this.state.connection && this.state.connection.state === 'active') {
             utils.timestampedLog('Removing account', this.state.account.id);
@@ -998,6 +996,7 @@ class Sylk extends Component {
                 } else {
                     newCurrentCall = this.state.currentCall;
                 }
+                this._callKeepManager.backToForeground();
             } else if (newState === 'established') {
                 if (this.state.incomingCall === this.state.currentCall) {
                     //utils.timestampedLog("Incoming call media started");
@@ -1012,7 +1011,7 @@ class Sylk extends Component {
             }
         } else if (this.state.incomingCall) {
             this.startedByPush = false;
-            this._callKeepManager.backToForeground();
+            //this._callKeepManager.backToForeground();
             //utils.timestampedLog('Call state changed: We have one incoming call');
             newincomingCall = this.state.incomingCall;
             newCurrentCall = this.state.incomingCall;
@@ -1028,6 +1027,7 @@ class Sylk extends Component {
                 } else if (newState === 'accepted') {
                     //utils.timestampedLog("Incoming call was accepted");
                     this.hideInternalAlertPanel();
+                    this._callKeepManager.backToForeground();
                 } else if (newState === 'established') {
                     //utils.timestampedLog("Incoming call media started");
                     this.hideInternalAlertPanel();
@@ -1053,7 +1053,7 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
-                this._callKeepManager.backToForeground();
+                //this._callKeepManager.backToForeground();
 
                 this.resetGoToReadyTimer();
 
@@ -1264,9 +1264,11 @@ class Sylk extends Component {
             utils.timestampedLog('Create Websocket connection', Object.id(connection));
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
+            /*
             if (this.startedByPush) {
                 this._callKeepManager.backToForeground();
             }
+            */
 
         } else {
             if (this.state.connection.state === 'ready') {
@@ -1434,7 +1436,7 @@ class Sylk extends Component {
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
-            utils.timestampedLog('Got local media stream:', localStream);
+            utils.timestampedLog('Local media acquired');
             this.setState({localMedia: localStream});
             if (nextRoute !== null) {
                 this.changeRoute(nextRoute);
@@ -1722,7 +1724,7 @@ class Sylk extends Component {
 
         } else if (event === 'cancel') {
             utils.timestampedLog('Cancel PUSH mobile notification for call', callUUID);
-            this.cancelIncomingCall(callUUID);
+            this._callKeepManager.endCall(callUUID, 2);
 
             VoipPushNotification.presentLocalNotification({alertBody:'Call cancelled'});
         }
@@ -1743,6 +1745,7 @@ class Sylk extends Component {
     }
 
     incomingConference(callUUID, to, from) {
+        this.setState({incomingCallUUID: callUUID});
         this._callKeepManager.handleConference(callUUID, to, from);
     }
 
@@ -1807,6 +1810,7 @@ class Sylk extends Component {
 
     eventFromUrl(url) {
         utils.timestampedLog('Received event from external URL:', url);
+        this._callKeepManager.backToForeground();
 
         try {
             let direction;
@@ -1861,7 +1865,10 @@ class Sylk extends Component {
                 this.incomingCallFromPush(callUUID, from, true);
 
             } else if (direction === 'cancel' && callUUID) {
-                this.cancelIncomingCall(callUUID);
+                let call = this._callKeepManager._calls.get(callUUID);
+                if (call === null || (call && call.state === 'incoming')) {
+                    this._callKeepManager.endCall(callUUID, 2);
+                }
 
             } else {
                  utils.timestampedLog('Unclear URL structure');
@@ -1932,7 +1939,7 @@ class Sylk extends Component {
     }
 
     incomingCallFromPush(callUUID, from, force) {
-        utils.timestampedLog('Handle incoming push call', callUUID, 'from', from);
+        utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from);
 
         if (this.autoRejectIncomingCall(callUUID, from)) {
             return;

@@ -489,7 +489,7 @@ class Call extends Component {
 }
 
 Call.propTypes = {
-    targetUri               : PropTypes.string.isRequired,
+    targetUri               : PropTypes.string,
     account                 : PropTypes.object,
     hangupCall              : PropTypes.func,
     connection              : PropTypes.object,

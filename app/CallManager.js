@@ -274,9 +274,11 @@ export default class CallManager extends events.EventEmitter {
             this.conferenceCall(room);
 
         } else if (this._calls.has(callUUID)) {
+            this.backToForeground();
             this.sylkAcceptCall(callUUID);
 
         } else {
+            this.backToForeground();
             utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
             const connection = this.getConnection();
