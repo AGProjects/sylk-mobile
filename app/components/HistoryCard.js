@@ -265,9 +265,9 @@ class HistoryCard extends Component {
                 }
 
                 let dn;
-                if (participantsData.length > 4 || participantsData.length === 0) {
+                if (participantsData.length > 4 || participantsData.length < 2) {
                     title = username.length > 10 ? 'Conference' : 'Conference ' + toTitleCase(username);
-                } else if (participantsData.length > 0 || participantsData.length <= 4 ) {
+                } else if (participantsData.length > 1 || participantsData.length <= 4 ) {
                     let j = 0;
                     title = '';
                     participantsData.forEach((participant) => {

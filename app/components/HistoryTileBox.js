@@ -144,6 +144,10 @@ class HistoryTileBox extends Component {
             this.setState({myInvitedParties: nextProps.myInvitedParties});
         }
 
+        if (nextProps.account !== null && nextProps.account !== this.props.account) {
+            this.setState({accountId: nextProps.account.id});
+        }
+
         const { refreshHistory } = this.props;
         if (nextProps.refreshHistory !== refreshHistory) {
             this.getServerHistory();
@@ -262,11 +266,10 @@ class HistoryTileBox extends Component {
     }
 
     getServerHistory() {
-        utils.timestampedLog('Requesting call history from server');
-
-        if (this.ended) {
+        if (this.ended || !this.state.accountId) {
             return;
         }
+        utils.timestampedLog('Requesting call history from server');
 
         let history = [];
         let localTime;
@@ -407,10 +410,6 @@ class HistoryTileBox extends Component {
     }
 
     render() {
-        if (!this.state.accountId) {
-            return null;
-        }
-
         let history = [];
         let searchExtraItems = [];
         let items = [];
@@ -448,11 +447,10 @@ class HistoryTileBox extends Component {
         items = items.filter((elem) => {
             if (known.indexOf(elem.remoteParty) <= -1) {
                 known.push(elem.remoteParty);
+                //console.log(elem.remoteParty);
                 return elem;
             }
         });
-
-        items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         if (!this.props.targetUri && !this.props.filter) {
             if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
@@ -488,9 +486,15 @@ class HistoryTileBox extends Component {
                 item.tags.splice(idx, 1);
             }
 
+            if (item.remoteParty.indexOf('@videoconference.') === -1) {
+                item.conference = false;
+            }
+
         });
 
         let filteredItems = [];
+        items.reverse();
+
         items.forEach((item) => {
             if (this.props.filter && item.tags.indexOf(this.props.filter) > -1) {
                 filteredItems.push(item);
@@ -500,6 +504,8 @@ class HistoryTileBox extends Component {
         });
 
         items = filteredItems;
+
+        items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         if (items.length === 1) {
             items[0].showActions = true;
