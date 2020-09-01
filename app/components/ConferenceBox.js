@@ -101,7 +101,9 @@ class ConferenceBox extends Component {
         this.props.call.on('roomConfigured', this.onConfigureRoom);
         this.props.call.on('fileSharing', this.onFileSharing);
 
-        this.armOverlayTimer();
+        if (this.state.participants.length > 1) {
+            this.armOverlayTimer();
+        }
 
         // attach to ourselves first if there are no other participants
         if (this.state.participants.length === 0) {
@@ -155,6 +157,11 @@ class ConferenceBox extends Component {
             participants: this.state.participants.concat([p])
         });
         // this.changeResolution();
+        if (this.state.participants.length > 1) {
+            this.armOverlayTimer();
+        } else {
+            this.setState({callOverlayVisible: true});
+        }
     }
 
     onParticipantLeft(p) {
@@ -170,6 +177,11 @@ class ConferenceBox extends Component {
         }
         p.detach(true);
         // this.changeResolution();
+        if (this.state.participants.length > 1) {
+            this.armOverlayTimer();
+        } else {
+            this.setState({callOverlayVisible: true});
+        }
     }
 
     onParticipantStateChanged(oldState, newState) {
