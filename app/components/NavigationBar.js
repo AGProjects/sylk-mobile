@@ -19,14 +19,22 @@ class NavigationBar extends Component {
             showAboutModal: false,
             showCallMeMaybeModal: false,
             mute: false,
-            menuVisible: false
+            menuVisible: false,
+            accountId: this.props.account ? this.props.account.id : null
         }
 
         this.menuRef = React.createRef();
     }
 
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.account !== null && nextProps.account.id !== this.state.accountId) {
+            this.setState({accountId: nextProps.account.id});
+        }
+    }
+
     handleMenu(event) {
-        this.callUrl = `${config.publicUrl}/call/${this.props.account.id}`;
+        this.callUrl = `${config.publicUrl}/call/${this.state.accountId}`;
         switch (event) {
             case 'about':
                 this.toggleAboutModal();
@@ -69,7 +77,6 @@ class NavigationBar extends Component {
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
 
         let statusIcon = null;
-        let account_id = '';
 
         statusIcon = 'check-circle';
         if (!this.props.connection || this.props.connection.state !== 'ready') {
@@ -78,13 +85,9 @@ class NavigationBar extends Component {
             statusIcon = 'priority-high';
         }
 //             <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
-        let callUrl = '';
-        if (this.props.account) {
-            account_id = this.props.account.id;
-            callUrl = config.publicUrl + "/call/" + account_id;
-        }
+        let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
 
-        let subtitle = 'Signed in as ' +  account_id;
+        let subtitle = 'Signed in as ' +  this.state.accountId;
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -93,7 +96,7 @@ class NavigationBar extends Component {
                     title="Sylk"
                     titleStyle={titleStyle}
                     subtitleStyle={subtitleStyle}
-                    subtitle={this.props.isTablet? null: account_id}
+                    subtitle={this.props.isTablet? null: this.state.accountId}
                 />
                 {this.props.isTablet?
                 <Text style={subtitleStyle}>{subtitle}</Text>
