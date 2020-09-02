@@ -42,7 +42,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -66,6 +66,7 @@ export default class CallManager extends events.EventEmitter {
         this.sylkRejectCall = rejectFunc;
         this.sylkHangupCall = hangupFunc;
         this.timeoutCall = timeoutFunc;
+        this.logMissedCall = missedCallFunc;
         this.getConnection = getConnectionFunct;
 
         this.toggleMute = muteFunc;
@@ -103,8 +104,12 @@ export default class CallManager extends events.EventEmitter {
         return this._RNCallKeep;
     }
 
-    get count() {
+    get countCalls() {
         return this._calls.size;
+    }
+
+    get countPushCalls() {
+        return this._pushCalls.size;
     }
 
     get waitingCount() {
@@ -156,7 +161,6 @@ export default class CallManager extends events.EventEmitter {
     setCurrentCallActive(callUUID) {
         utils.timestampedLog('Callkeep: CALL ACTIVE', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
-        this.backToForeground();
     }
 
     endCalls() {
@@ -169,6 +173,10 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: END CALL', callUUID, 'with reason', reason);
         } else {
             utils.timestampedLog('Callkeep: END CALL', callUUID);
+        }
+
+        if (this._pushCalls.has(callUUID)) {
+            this._pushCalls.delete(callUUID);
         }
 
         if (this._rejectedCalls.has(callUUID)) {
@@ -200,6 +208,10 @@ export default class CallManager extends events.EventEmitter {
            this._calls.delete(callUUID);
         }
         this._terminatedCalls.set(callUUID, Date.now());
+
+        if (this._pushCalls.has(callUUID)) {
+            this._pushCalls.delete(callUUID);
+        }
     }
 
     _rnActiveAudioSession() {
@@ -212,6 +224,11 @@ export default class CallManager extends events.EventEmitter {
 
     _rnAccept(data) {
         let callUUID = data.callUUID.toLowerCase();
+
+        if (this._pushCalls.has(callUUID)) {
+            this._pushCalls.delete(callUUID);
+        }
+
         if (!this._rejectedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: accept callback', callUUID);
             this.acceptCall(callUUID);
@@ -223,29 +240,38 @@ export default class CallManager extends events.EventEmitter {
         let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('Callkeep: end callback', callUUID);
 
+        if (this._pushCalls.has(callUUID)) {
+            this._pushCalls.delete(callUUID);
+        }
+
         if (this._terminatedCalls.has(callUUID)) {
             return;
         }
 
         let call = this._calls.get(callUUID);
 
-        if (!call) {
+        if (!call && !this._conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: add call', callUUID, ' reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
             return;
         }
 
-        if (call.state === 'incoming') {
+        if (call && call.state === 'incoming') {
             if (!this._acceptedCalls.has(callUUID)) {
                 this.rejectCall(callUUID);
             }
         } else {
-            this.sylkHangupCall(callUUID, 'user_press_hangup');
+            if (this._conferences.has(callUUID)) {
+                const conference = this._conferences.get(callUUID);
+                this.logMissedCall(conference.room, callUUID, direction='received', participants=[conference.from]);
+                this._conferences.delete(callUUID);
+            } else {
+                this.sylkHangupCall(callUUID, 'user_press_hangup');
+            }
         }
     }
 
     acceptCall(callUUID) {
-        this.backToForeground();
         if (this._acceptedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: already accepted call', callUUID);
             utils.timestampedLog('Callkeep: accept call again', callUUID);
@@ -262,16 +288,16 @@ export default class CallManager extends events.EventEmitter {
         }
 
         if (this._conferences.has(callUUID)) {
-            let room = this._conferences.get(callUUID);
+            let conference = this._conferences.get(callUUID);
 
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
 
             this.endCall(callUUID, 4);
+            this.backToForeground();
 
+            utils.timestampedLog('Callkeep: will start conference to', conference.room);
+            this.conferenceCall(conference.room);
             this._conferences.delete(callUUID);
-
-            utils.timestampedLog('Callkeep: will start conference to', room);
-            this.conferenceCall(room);
 
         } else if (this._calls.has(callUUID)) {
             this.backToForeground();
@@ -489,7 +515,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        this._conferences.set(callUUID, room);
+        this._conferences.set(callUUID, {room: room, from: from_uri});
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
 

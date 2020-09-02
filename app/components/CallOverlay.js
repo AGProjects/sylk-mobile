@@ -51,6 +51,10 @@ class CallOverlay extends React.Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
+        if (!this._isMounted) {
+            return;
+        }
+
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
             nextProps.call.on('stateChanged', this.callStateChanged);
 
@@ -65,11 +69,12 @@ class CallOverlay extends React.Component {
     }
 
     componentWillUnmount() {
+        this._isMounted = false;
+
         if (this.state.call) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
 
-        this._isMounted = false;
         clearTimeout(this.timer);
     }
 
@@ -89,6 +94,9 @@ class CallOverlay extends React.Component {
             this.timer = null;
         }
 
+        if (!this._isMounted) {
+            return;
+        }
         this.setState({callState: newState});
     }
 

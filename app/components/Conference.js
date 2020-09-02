@@ -29,7 +29,7 @@ class Conference extends React.Component {
               localMedia: this.props.localMedia,
               connection: this.props.connection,
               account: this.props.account,
-              callState: this.props.connection ? this.props.connection.state : null,
+              registrationState: this.props.registrationState,
               startedByPush: this.props.startedByPush,
               started: false
               }
@@ -37,12 +37,14 @@ class Conference extends React.Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        //utils.timestampedLog('--Conference got props in connection startedByPush = ', this.state.startedByPush);
         if (nextProps.account !== null && nextProps.account !== this.props.account) {
             this.setState({account: nextProps.account});
         }
-        if (nextProps.connection !== null && nextProps.connection !== this.props.accconnectionount) {
-            this.setState({connection: nextProps.connection, callState: nextProps.connection.state});
+
+        this.setState({registrationState: nextProps.registrationState});
+
+        if (nextProps.connection !== null && nextProps.connection !== this.state.connection) {
+            this.setState({connection: nextProps.connection});
         }
 
         if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia) {
@@ -66,8 +68,23 @@ class Conference extends React.Component {
             return false;
         }
 
-        if (this.state.callState !== 'ready') {
+        if (!this.state.connection) {
+            console.log('Conference: no connection yet');
+            return false;
+        }
+
+        if (this.state.connection.state !== 'ready') {
             console.log('Conference: connection is not ready');
+            return false;
+        }
+
+        if (!this.state.account) {
+            console.log('Conference: no account yet');
+            return false;
+        }
+
+        if (this.state.registrationState !== 'registered') {
+            console.log('Conference: account not ready yet');
             return false;
         }
 
@@ -119,13 +136,15 @@ class Conference extends React.Component {
 
             this.waitCounter++;
 
-            if (!this.state.connection ||
-                !this.props.account ||
-                this.state.callState !== 'ready' ||
-                this.props.registrationState !== 'registered') {
+            if (!this.canConnect()) {
                 utils.timestampedLog('Conference: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
-//                utils.timestampedLog('Conference: connection', this.state.connection);
-//                utils.timestampedLog('Conference: account', this.props.account);
+
+                utils.timestampedLog('Conference wait: connection', this.state.connection);
+                utils.timestampedLog('Conference wait: account', this.props.account);
+
+                if (this.state.connection) {
+                    utils.timestampedLog('Conference wait: connection state', this.state.connection.state);
+                }
 
                 await this._sleep(1000);
             } else {
@@ -189,6 +208,7 @@ class Conference extends React.Component {
                         isTablet = {this.props.isTablet}
                         muted = {this.props.muted}
                         defaultDomain = {this.props.defaultDomain}
+                        inFocus = {this.props.inFocus}
                    />
                 );
             } else if (!this.state.startedByPush) {
@@ -215,11 +235,11 @@ class Conference extends React.Component {
 }
 
 Conference.propTypes = {
-    notificationCenter      : PropTypes.func.isRequired,
-    account                 : PropTypes.object.isRequired,
+    notificationCenter      : PropTypes.func,
+    account                 : PropTypes.object,
     connection              : PropTypes.object,
     registrationState       : PropTypes.string,
-    hangupCall              : PropTypes.func.isRequired,
+    hangupCall              : PropTypes.func,
     saveParticipant         : PropTypes.func,
     saveInvitedParties      : PropTypes.func,
     previousParticipants    : PropTypes.array,
@@ -236,8 +256,8 @@ Conference.propTypes = {
     isTablet                : PropTypes.bool,
     muted                   : PropTypes.bool,
     defaultDomain           : PropTypes.string,
-    startedByPush           : PropTypes.bool
-
+    startedByPush           : PropTypes.bool,
+    inFocus                 : PropTypes.bool
 };
 
 

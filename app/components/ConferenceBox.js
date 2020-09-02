@@ -41,7 +41,8 @@ class ConferenceBox extends Component {
         this.state = {
             callOverlayVisible: true,
             audioMuted: this.props.muted,
-            videoMuted: false,
+            videoMuted: !this.props.inFocus,
+            videoMutedbyUser: false,
             participants: props.call.participants.slice(),
             showInviteModal: false,
             showDrawer: false,
@@ -53,7 +54,8 @@ class ConferenceBox extends Component {
             eventLog: [],
             sharedFiles: props.call.sharedFiles.slice(),
             largeVideoStream: null,
-            previousParticipants: this.props.previousParticipants
+            previousParticipants: this.props.previousParticipants,
+            inFocus:  this.props.inFocus
         };
 
         const friendlyName = this.props.remoteUri.split('@')[0];
@@ -127,6 +129,13 @@ class ConferenceBox extends Component {
         if (this.props.call.getLocalStreams()[0].getVideoTracks().length !== 0) {
             this.haveVideo = true;
         }
+
+        if (this.state.videoMuted) {
+            console.log('Started video muted');
+            this._muteVideo();
+        } else {
+            console.log('Started video active');
+        }
     }
 
     componentWillUnmount() {
@@ -141,6 +150,17 @@ class ConferenceBox extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.inFocus !== this.state.inFocus) {
+            if (nextProps.inFocus) {
+                if (!this.state.videoMutedbyUser) {
+                    this._resumeVideo();
+                }
+            } else {
+                this._muteVideo();
+            }
+            this.setState({inFocus: nextProps.inFocus});
         }
     }
 
@@ -402,17 +422,35 @@ class ConferenceBox extends Component {
 
     muteVideo(event) {
         event.preventDefault();
+        if (this.state.videoMuted) {
+            this._resumeVideo();
+            this.setState({videoMutedbyUser: false});
+        } else {
+            this.setState({videoMutedbyUser: true});
+            this._muteVideo();
+        }
+    }
+
+    _muteVideo() {
         const localStream = this.props.call.getLocalStreams()[0];
-        if (localStream.getVideoTracks().length > 0) {
+        if (localStream && localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
-            if (this.state.videoMuted) {
-                DEBUG('Unmute camera');
-                track.enabled = true;
-                this.setState({videoMuted: false});
-            } else {
+            if (!this.state.videoMuted) {
                 DEBUG('Mute camera');
                 track.enabled = false;
                 this.setState({videoMuted: true});
+            }
+        }
+    }
+
+    _resumeVideo() {
+        const localStream = this.props.call.getLocalStreams()[0];
+        if (localStream && localStream.getVideoTracks().length > 0) {
+            const track = localStream.getVideoTracks()[0];
+            if (this.state.videoMuted) {
+                DEBUG('Resume camera');
+                track.enabled = true;
+                this.setState({videoMuted: false});
             }
         }
     }
@@ -818,8 +856,8 @@ ConferenceBox.propTypes = {
     isLandscape         : PropTypes.bool,
     isTablet            : PropTypes.bool,
     muted               : PropTypes.bool,
-    defaultDomain       : PropTypes.string
-
+    defaultDomain       : PropTypes.string,
+    inFocus             : PropTypes.bool
 };
 
 export default ConferenceBox;
