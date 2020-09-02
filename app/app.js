@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration} from 'react-native';
+import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration, PermissionsAndroid} from 'react-native';
 import { DeviceEventEmitter } from 'react-native';
 import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { registerGlobals } from 'react-native-webrtc';
@@ -266,6 +266,8 @@ class Sylk extends Component {
                 console.log("InCallManager.requestRecordPermission() catch: ", err);
             });
         }
+
+        requestCameraPermission();
 
         // Load camera/mic preferences
         storage.get('devices').then((devices) => {
