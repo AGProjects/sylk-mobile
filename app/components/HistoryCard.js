@@ -8,11 +8,10 @@ import { Card, IconButton, Button, Caption, Title, Subheading, List, Text} from 
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
 import EditConferenceModal from './EditConferenceModal';
-
 import styles from '../assets/styles/blink/_HistoryCard.scss';
-
 import UserIcon from './UserIcon';
 
+import utils from '../utils';
 
 function toTitleCase(str) {
     return str.replace(
@@ -115,6 +114,11 @@ class HistoryCard extends Component {
         this.setState({blocked: newBlockedState});
     }
 
+    setBlockedDomain() {
+        let newBlockedState = this.props.setBlockedUri('@' + this.state.uri.split('@')[1]);
+        this.setState({blocked: newBlockedState});
+    }
+
     editConference() {
          this.toggleEditConferenceModal();
     }
@@ -143,23 +147,10 @@ class HistoryCard extends Component {
     }
 
     setTargetUri(uri, contact) {
-        if (this.isAnonymous(this.state.uri)) {
-            return;
-        }
-
         this.props.setTargetUri(uri, this.state.contact);
     }
 
-    isAnonymous(uri) {
-        if (uri.indexOf('@guest.') > -1 || uri.indexOf('@anonymous.') > -1) {
-            return true
-        }
-
-        return false;
-    }
-
     render () {
-
         let containerClass = styles.portraitContainer;
         let cardClass = styles.card;
 
@@ -171,21 +162,25 @@ class HistoryCard extends Component {
 
         let buttonMode = 'text';
         let showBlockButton = !this.state.conference;
+        let showBlockDomainButton = false;
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
         let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite ) ? true: false;
         let showEditButton = (this.state.conference && this.state.favorite && !this.state.confirmed ) ? true: false;
         let blockTextbutton = 'Block';
+        let blockDomainTextbutton = 'Block domain';
         let editTextbutton = 'Edit';
         let favoriteTextbutton = 'Favorite';
         let undoTextbutton = 'Undo';
         let deleteTextbutton = 'Delete';
         let participantsData = [];
 
-        if (this.isAnonymous(uri)) {
-            uri = 'anonymous@anonymous.invalid';
-            displayName = displayName + ' - from the Web';
-            let showFavoriteButton = false;
+        if (utils.isAnonymous(uri)) {
+            //uri = 'anonymous@anonymous.invalid';
+            displayName = 'Anonymous';
+            showFavoriteButton = false;
+            showBlockButton = true;
+            showBlockDomainButton = true;
         }
 
         if (this.state.favorite) {
@@ -234,7 +229,6 @@ class HistoryCard extends Component {
         }
 
         if (this.props.contact.tags.indexOf('history') > -1) {
-
             let duration = moment.duration(this.props.contact.duration, 'seconds').format('HH:mm:ss', {trim: false});
 
             if (this.props.contact.direction === 'received' && this.props.contact.duration === 0) {
@@ -335,6 +329,7 @@ class HistoryCard extends Component {
                            {showEditButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.editConference()}}>{editTextbutton}</Button>: null}
                            {showDeleteButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteHistoryEntry()}}>{deleteTextbutton}</Button>: null}
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
+                           {showBlockDomainButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedDomain()}}>{blockDomainTextbutton}</Button>: null}
                            {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
                            {showUndoButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.undo()}}>{undoTextbutton}</Button>: null}
                         </Card.Actions>

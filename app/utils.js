@@ -5,6 +5,23 @@ import { Clipboard, Dimensions } from 'react-native';
 import Contacts from 'react-native-contacts';
 
 
+function isAnonymous(uri) {
+    if (uri.indexOf('@guest.') > -1 || uri.indexOf('@anonymous.') > -1) {
+        return true
+    }
+
+    if (uri.indexOf('@192.168.') > -1) {
+        return true;
+    }
+
+    if (uri.indexOf('@10.') > -1) {
+        return true;
+    }
+
+    return false;
+}
+
+
 function appendLeadingZeroes(n){
     if (n <= 9) {
         return "0" + n;
@@ -170,3 +187,5 @@ exports.generateMaterialColor = generateMaterialColor;
 exports.generateVideoTrack = generateVideoTrack;
 exports.getWindowHeight = getWindowHeight;
 exports.findContact = findContact;
+exports.findContact = findContact;
+exports.isAnonymous = isAnonymous;

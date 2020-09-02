@@ -467,15 +467,16 @@ class HistoryTileBox extends Component {
             if (!item.tags) {
                 item.tags = [];
             }
+
             if (this.state.favoriteUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('favorite') === -1) {
                 item.tags.push('favorite');
             }
+
             if (this.state.blockedUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('blocked') === -1) {
                 item.tags.push('blocked');
             }
 
             let idx = item.tags.indexOf('blocked');
-
             if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && idx > -1) {
                 item.tags.splice(idx, 1);
             }
@@ -496,9 +497,10 @@ class HistoryTileBox extends Component {
         items.reverse();
 
         items.forEach((item) => {
+            const fromDomain = '@' + item.remoteParty.split('@')[1];
             if (this.props.filter && item.tags.indexOf(this.props.filter) > -1) {
                 filteredItems.push(item);
-            } else if (this.state.blockedUris.indexOf(item.remoteParty) === -1) {
+            } else if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
                 filteredItems.push(item);
             }
         });

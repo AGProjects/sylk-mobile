@@ -166,6 +166,7 @@ const requestCameraPermission = async () => {
     }
 };
 
+
 class Sylk extends Component {
     constructor() {
         super();
@@ -1965,6 +1966,14 @@ class Sylk extends Component {
             return true;
         }
 
+        const fromDomain = '@' + from.split('@')[1]
+        if (this.state.blockedUris && this.state.blockedUris.indexOf(fromDomain) > -1) {
+            utils.timestampedLog('Reject call', callUUID, 'from blocked domain', fromDomain);
+            this._callKeepManager.rejectCall(callUUID);
+            this._notificationCenter.postSystemNotification('Call rejected', {body: `from domain ${fromDomain}`, timeout: 5000, silent: true});
+            return true;
+        }
+
         if (this.state.currentCall && this.state.incomingCall && this.state.currentCall === this.state.incomingCall && this.state.incomingCall.id !== callUUID) {
             utils.timestampedLog('Reject second incoming call');
             this._callKeepManager.rejectCall(callUUID);
@@ -2151,7 +2160,6 @@ class Sylk extends Component {
         let ret;
         let idx = blockedUris.indexOf(uri);
 
-        console.log('idx', idx);
         if (idx === -1) {
             blockedUris.push(uri);
             ret = true;
