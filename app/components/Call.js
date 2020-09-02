@@ -225,6 +225,10 @@ class Call extends Component {
 
     callStateChanged(oldState, newState, data) {
         //console.log('Call: callStateChanged', oldState, '->', newState);
+        if (this.ended) {
+            return;
+        }
+
         let remoteHasNoVideoTracks;
         let remoteIsRecvOnly;
         let remoteIsInactive;

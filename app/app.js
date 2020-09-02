@@ -135,7 +135,7 @@ const requestCameraPermission = async () => {
             }
         );
         if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-            console.log("You can use the camera");
+            //console.log("You can use the camera");
         } else {
             console.log("Camera permission denied");
         }
@@ -157,7 +157,7 @@ const requestCameraPermission = async () => {
           }
         );
         if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-            console.log("You can use the microphone");
+            //console.log("You can use the microphone");
         } else {
             console.log("Microphone permission denied");
         }
@@ -220,6 +220,7 @@ class Sylk extends Component {
             defaultDomain: config.defaultDomain
         };
 
+        this.tokenSent = false;
         this.currentRoute = null;
         this.pushtoken = null;
         this.pushkittoken = null;
@@ -296,7 +297,7 @@ class Sylk extends Component {
         storage.get('myParticipants').then((myParticipants) => {
             if (myParticipants) {
                 this.myParticipants = myParticipants;
-                console.log('My participants', this.myParticipants);
+                //console.log('My participants', this.myParticipants);
             }
         });
 
@@ -306,7 +307,7 @@ class Sylk extends Component {
                     myInvitedParties = null;
                 }
                 this.myInvitedParties = myInvitedParties;
-                console.log('My invited parties', this.myInvitedParties);
+                //console.log('My invited parties', this.myInvitedParties);
                 this.setState({myInvitedParties: this.myInvitedParties});
             }
         });
@@ -320,7 +321,7 @@ class Sylk extends Component {
         storage.get('blockedUris').then((blockedUris) => {
             if (blockedUris) {
                 this.setState({blockedUris: blockedUris});
-                console.log('My blocked Uris', blockedUris);
+                //console.log('My blocked Uris', blockedUris);
             }
         });
 
@@ -599,9 +600,6 @@ class Sylk extends Component {
         DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
 
         AppState.addEventListener('change', this._handleAppStateChange);
-        AppState.addEventListener('focus', this._handleAndroidFocus);
-        AppState.addEventListener('blur', this._handleAndroidBlur);
-
 
         if (Platform.OS === 'ios') {
             this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
@@ -611,6 +609,9 @@ class Sylk extends Component {
             VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
         } else if (Platform.OS === 'android') {
             utils.timestampedLog('Adding Android push notifications listeners');
+            AppState.addEventListener('focus', this._handleAndroidFocus);
+            AppState.addEventListener('blur', this._handleAndroidBlur);
+
             firebase
                 .messaging()
                 .requestPermission()
@@ -692,7 +693,7 @@ class Sylk extends Component {
     }
 
     _sendPushToken() {
-        if (this.state.account && this.pushtoken) {
+        if (this.state.account && this.pushtoken && !this.tokenSent) {
             let token = null;
 
             if (Platform.OS === 'ios') {
@@ -702,16 +703,17 @@ class Sylk extends Component {
             }
             utils.timestampedLog('Push token', token, 'sent to server');
             this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
+            this.tokenSent = true;
         }
     }
 
     _handleAndroidFocus = nextFocus => {
-        utils.timestampedLog('---- APP is in focus');
+        //utils.timestampedLog('---- APP is in focus');
         this.setState({inFocus: true});
     }
 
     _handleAndroidBlur = nextBlur => {
-        utils.timestampedLog('---- APP is out of focus');
+        //utils.timestampedLog('---- APP is out of focus');
         this.setState({inFocus: false});
     }
 
@@ -721,23 +723,25 @@ class Sylk extends Component {
         }
 
         if (this._callKeepManager.countCalls) {
-            utils.timestampedLog('---- APP state changed, we have', this._callKeepManager.countCalls, 'calls');
+            //utils.timestampedLog('---- APP state changed, we have', this._callKeepManager.countCalls, 'calls');
         }
 
         if (this._callKeepManager.countPushCalls) {
-            utils.timestampedLog('---- APP state changed, we have', this._callKeepManager.countPushCalls, 'push calls');
+            //utils.timestampedLog('---- APP state changed, we have', this._callKeepManager.countPushCalls, 'push calls');
         }
 
         if (this.startedByPush) {
-            utils.timestampedLog('---- APP state changed, started by push');
+            //utils.timestampedLog('---- APP state changed, started by push');
         }
 
         if (this._callKeepManager.countCalls === 0 && !this.state.outgoingCallUUID) {
+            /*
             if (this.state.connection) {
                 utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
             } else {
                 utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState);
             }
+            */
 
             if (this.state.appState === 'background' && nextAppState === 'active') {
                 this.respawnActions(nextAppState);
@@ -747,6 +751,9 @@ class Sylk extends Component {
         }
 
         this.setState({appState: nextAppState});
+        if (Platform.OS !== 'android') {
+            this.setState({inFocus: (nextAppState === 'active') ? true : false});
+        }
     }
 
     respawnActions(state) {
@@ -1129,7 +1136,7 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
-                //this.backToForeground();
+                this.backToForeground();
 
                 this.resetGoToReadyTimer();
 
@@ -1396,7 +1403,6 @@ class Sylk extends Component {
                         this.setState({account: account});
                         this._sendPushToken();
                         account.register();
-                        logger.debug(this.state.mode);
                         if (this.state.mode !== MODE_PRIVATE) {
                             storage.set('account', {
                                 accountId: this.state.accountId,
@@ -1872,7 +1878,7 @@ class Sylk extends Component {
 
     updateLinkingURL = (event) => {
         // this handles the use case where the app is running in the background and is activated by the listener...
-        console.log('Updated Linking url', event.url);
+        //console.log('Updated Linking url', event.url);
         this.eventFromUrl(event.url);
     }
 
