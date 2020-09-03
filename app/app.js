@@ -1832,6 +1832,10 @@ class Sylk extends Component {
         if (this.state.appState !== 'active') {
             this._callKeepManager.backToForeground();
         }
+
+        if (this.state.accountId) {
+            this.handleRegistration(this.state.accountId, this.state.password);
+        }
     }
 
     incomingConference(callUUID, to, from) {
