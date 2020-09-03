@@ -89,7 +89,6 @@ class AudioCallBox extends Component {
         }
 
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
-            console.log('Audio box got prop reconnecting', nextProps.reconnectingCall);
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
@@ -189,6 +188,7 @@ class AudioCallBox extends Component {
                     remoteUri={this.state.remoteUri}
                     remoteDisplayName={this.state.remoteDisplayName}
                     call={this.state.call}
+                    reconnectingCall={this.state.reconnectingCall}
                     connection={this.props.connection}
                     accountId={this.props.accountId}
                 />
@@ -199,13 +199,13 @@ class AudioCallBox extends Component {
                 <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
                 <Text style={styles.uri}>{this.state.remoteUri}</Text>
 
-                {this.props.orientation !== 'landscape' && !this.userHangup && this.state.reconnectingCall ?
+                {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
                 :
                 null
                 }
 
-                {this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established') ?
+                {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) ?
                     <View style={buttonContainerClass}>
                     <IconButton
                         size={buttonSize}

@@ -1151,6 +1151,7 @@ class Sylk extends Component {
 
                 break;
             case 'established':
+                this.backToForeground();
                 this.resetGoToReadyTimer();
 
                 if (direction === 'outgoing') {
@@ -1172,6 +1173,7 @@ class Sylk extends Component {
 
                 break;
             case 'accepted':
+                this.backToForeground();
                 this.resetGoToReadyTimer();
 
                 if (direction === 'outgoing') {
