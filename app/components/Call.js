@@ -118,6 +118,8 @@ class Call extends Component {
             this.setState({targetUri: nextProps.targetUri});
         }
 
+        this.setState({registrationState: nextProps.registrationState});
+
         if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia) {
             let audioOnly = false;
 
@@ -175,8 +177,8 @@ class Call extends Component {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
 
-        if (this.props.connection) {
-            this.props.connection.removeListener('stateChanged', this.connectionStateChanged);
+        if (this.state.connection) {
+            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
         }
     }
 
@@ -300,6 +302,30 @@ class Call extends Component {
         return null;
     }
 
+    canConnect() {
+        if (!this.state.connection) {
+            console.log('Call: no connection yet');
+            return false;
+        }
+
+        if (this.state.connection.state !== 'ready') {
+            console.log('Call: connection is not ready');
+            return false;
+        }
+
+        if (this.props.registrationState !== 'registered') {
+            console.log('Call: account not ready yet');
+            return false;
+        }
+
+        if (!this.mediaIsPlaying) {
+            console.log('Call: media is not playing');
+            return false;
+        }
+
+        return true;
+    }
+
     async startCallWhenReady(callUUID) {
         utils.timestampedLog('Call: start call', callUUID, 'when ready to', this.state.targetUri);
         this.waitCounter = 0;
@@ -325,16 +351,13 @@ class Call extends Component {
                 this.hangupCall('timeout');
             }
 
-            if (!this.props.connection ||
-                 this.props.connection.state !== 'ready' ||
-                 this.props.registrationState !== 'registered' ||
-                 !this.mediaIsPlaying
-                 ) {
+            if (!this.canConnect()) {
                 //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 if (this.state.call && this.state.call.id === callUUID && this.state.call.state !== 'terminated') {
                     return;
                 }
 
+                console.log('Wait', this.waitCounter);
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;

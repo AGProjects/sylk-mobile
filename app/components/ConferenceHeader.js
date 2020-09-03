@@ -49,8 +49,13 @@ const ConferenceHeader = (props) => {
         // );
 
         const room = props.remoteUri.split('@')[0];
+        let callDetail;
 
-        const callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
+        if (props.reconnectingCall) {
+            callDetail = 'Reconnecting call...';
+        } else {
+            callDetail = `Duration: ${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
+        }
 
         videoHeader = (
             <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
@@ -81,7 +86,8 @@ ConferenceHeader.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string.isRequired,
     participants: PropTypes.array.isRequired,
-    buttons: PropTypes.object.isRequired
+    buttons: PropTypes.object.isRequired,
+    reconnectingCall: PropTypes.bool
 };
 
 

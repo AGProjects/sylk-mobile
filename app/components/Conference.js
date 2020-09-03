@@ -19,24 +19,68 @@ class Conference extends React.Component {
         super(props);
         autoBind(this);
 
+        this.defaultWaitInterval = 90; // until we can connect or reconnect
         this.waitCounter = 0;
-        this.waitInterval = 90;
+        this.waitInterval = this.defaultWaitInterval;
+
         this.userHangup = false;
         this.confCall = null;
+        this.ended = false;
+        this.started = false;
 
         this.state = {
-              currentCall: this.props.currentCall,
+              currentCall: null,
+              callUUID: this.props.callUUID,
               localMedia: this.props.localMedia,
               connection: this.props.connection,
               account: this.props.account,
               registrationState: this.props.registrationState,
               startedByPush: this.props.startedByPush,
-              started: false
+              reconnectingCall: this.props.reconnectingCall
               }
+
+        if (this.props.connection) {
+            this.props.connection.on('stateChanged', this.connectionStateChanged);
+        }
+
+    }
+
+    componentWillUnmount() {
+        this.ended = true;
+
+        if (this.state.currentCall) {
+            this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
+        }
+
+        if (this.state.connection) {
+            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+        }
+    }
+
+    callStateChanged(oldState, newState, data) {
+        utils.timestampedLog('Conference: callStateChanged', oldState, '->', newState);
+        if (newState === 'established') {
+            this.setState({reconnectingCall: false});
+        }
+    }
+
+    connectionStateChanged(oldState, newState) {
+        switch (newState) {
+            case 'disconnected':
+                if (oldState === 'ready') {
+                    utils.timestampedLog('Conference: connection failed, reconnecting the call...');
+                    this.waitInterval = this.defaultWaitInterval;
+                }
+                break;
+            default:
+                break;
+        }
     }
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
+        //console.log('Conference got props');
+
         if (nextProps.account !== null && nextProps.account !== this.props.account) {
             this.setState({account: nextProps.account});
         }
@@ -45,24 +89,31 @@ class Conference extends React.Component {
 
         if (nextProps.connection !== null && nextProps.connection !== this.state.connection) {
             this.setState({connection: nextProps.connection});
+            nextProps.connection.on('stateChanged', this.connectionStateChanged);
+        }
+
+        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
         if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia) {
             this.setState({localMedia: nextProps.localMedia});
         }
 
-        if (nextProps.currentCall != this.state.currentCall) {
-            this.setState({currentCall: nextProps.currentCall});
-        }
+        if (nextProps.callUUID !== null && this.state.callUUID !== nextProps.callUUID) {
+            this.setState({callUUID: nextProps.callUUID,
+                           reconnectingCall: true,
+                           currentCall: null});
 
-        this.mediaPlaying();
+            this.startCallWhenReady();
+        }
+    }
+
+    mediaPlaying() {
+        this.startCallWhenReady();
     }
 
     canConnect() {
-        if (this.state.started) {
-            return false;
-        }
-
         if (!this.state.localMedia) {
             console.log('Conference: no local media');
             return false;
@@ -96,27 +147,8 @@ class Conference extends React.Component {
         return true;
     }
 
-    mediaPlaying() {
-        if (this.canConnect()) {
-            this.setState({started: true});
-            this.startConferenceWhenReady();
-        }
-    }
-
-    confStateChanged(oldState, newState, data) {
-        utils.timestampedLog('Conference: callStateChanged', oldState, '->', newState);
-        if (newState === 'established') {
-            this.forceUpdate();
-        }
-    }
-
-    hangup() {
-        this.props.hangupCall(this.props.callUUID, 'user_press_hangup');
-        this.userHangup = true;
-    }
-
-    async startConferenceWhenReady() {
-        utils.timestampedLog('Conference: start conference', this.props.callUUID, 'when ready to', this.props.targetUri);
+    async startCallWhenReady() {
+        utils.timestampedLog('Conference: start conference', this.state.callUUID, 'when ready to', this.props.targetUri);
         this.waitCounter = 0;
 
         //utils.timestampedLog('Conference: waiting for connecting to the conference', this.waitInterval, 'seconds');
@@ -125,35 +157,29 @@ class Conference extends React.Component {
 
         while (this.waitCounter < this.waitInterval) {
             if (this.userHangup) {
-                this.props.hangupCall(this.props.callUUID, 'user_cancelled');
+                this.props.hangupCall(this.state.callUUID, 'user_cancelled');
+                return;
+            }
+
+            if (this.state.currentCall) {
                 return;
             }
 
             if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Conference: cancelling conference', this.props.callUUID);
-                this.props.hangupCall(this.props.callUUID, 'timeout');
+                utils.timestampedLog('Conference: cancelling conference', this.state.callUUID);
+                this.props.hangupCall(this.state.callUUID, 'timeout');
             }
 
-            this.waitCounter++;
-
             if (!this.canConnect()) {
-                utils.timestampedLog('Conference: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
-
-                utils.timestampedLog('Conference wait: connection', this.state.connection);
-                utils.timestampedLog('Conference wait: account', this.props.account);
-
-                if (this.state.connection) {
-                    utils.timestampedLog('Conference wait: connection state', this.state.connection.state);
-                }
-
+                //console.log('Waiting', this.waitCounter);
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;
-
                 this.start();
-
                 return;
             }
+
+            this.waitCounter++;
         }
     }
 
@@ -162,24 +188,32 @@ class Conference extends React.Component {
     }
 
     start() {
-        if (this.state.currentCall === null && this.confCall === null) {
-            const options = {
-                id: this.props.callUUID,
-                pcConfig: {iceServers: config.iceServers},
-                localStream: this.state.localMedia,
-                audio: this.props.proposedMedia.audio,
-                video: this.props.proposedMedia.video,
-                offerOptions: {
-                    offerToReceiveAudio: false,
-                    offerToReceiveVideo: false
-                },
-                initialParticipants: this.props.participantsToInvite
-            };
-             utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.props.callUUID, 'to', this.props.targetUri.toLowerCase());
-            this.confCall = this.state.account.joinConference(this.props.targetUri.toLowerCase(), options);
-            this.confCall.on('stateChanged', this.confStateChanged);
-        } else {
-            //utils.timestampedLog('There is already a conference in progress');
+        const options = {
+            id: this.state.callUUID,
+            pcConfig: {iceServers: config.iceServers},
+            localStream: this.state.localMedia,
+            audio: this.props.proposedMedia.audio,
+            video: this.props.proposedMedia.video,
+            offerOptions: {
+                offerToReceiveAudio: false,
+                offerToReceiveVideo: false
+            },
+            initialParticipants: this.props.participantsToInvite
+        };
+        utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.state.callUUID, 'to', this.props.targetUri.toLowerCase());
+        confCall = this.state.account.joinConference(this.props.targetUri.toLowerCase(), options);
+        if (confCall) {
+            confCall.on('stateChanged', this.callStateChanged);
+            this.setState({currentCall: confCall});
+        }
+    }
+
+    hangup() {
+        this.props.hangupCall(this.state.callUUID, 'user_press_hangup');
+        this.userHangup = true;
+
+        if (this.waitCounter > 0) {
+            this.waitCounter = this.waitInterval;
         }
     }
 
@@ -193,6 +227,7 @@ class Conference extends React.Component {
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
                         call = {this.state.currentCall}
+                        reconnectingCall={this.state.reconnectingCall}
                         connection = {this.state.connection}
                         hangup = {this.hangup}
                         saveParticipant = {this.props.saveParticipant}
@@ -209,6 +244,7 @@ class Conference extends React.Component {
                         muted = {this.props.muted}
                         defaultDomain = {this.props.defaultDomain}
                         inFocus = {this.props.inFocus}
+                        reconnectingCall={this.state.reconnectingCall}
                    />
                 );
             } else if (!this.state.startedByPush) {
@@ -257,7 +293,8 @@ Conference.propTypes = {
     muted                   : PropTypes.bool,
     defaultDomain           : PropTypes.string,
     startedByPush           : PropTypes.bool,
-    inFocus                 : PropTypes.bool
+    inFocus                 : PropTypes.bool,
+    reconnectingCall        : PropTypes.bool
 };
 
 

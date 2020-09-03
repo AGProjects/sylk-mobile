@@ -1742,7 +1742,7 @@ class Sylk extends Component {
     }
 
     outgoingCall(call) {
-        // called by sylrtc.js when an outgoing call starts
+        // called by sylkrtc.js when an outgoing call starts
 
         const localStreams = call.getLocalStreams();
         let mediaType = 'audio';
@@ -2525,6 +2525,7 @@ class Sylk extends Component {
                 defaultDomain = {this.state.defaultDomain}
                 startedByPush = {this.startedByPush}
                 inFocus = {this.state.inFocus}
+                reconnectingCall = {this.state.reconnectingCall}
             />
         )
     }

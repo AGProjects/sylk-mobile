@@ -55,7 +55,8 @@ class ConferenceBox extends Component {
             sharedFiles: props.call.sharedFiles.slice(),
             largeVideoStream: null,
             previousParticipants: this.props.previousParticipants,
-            inFocus:  this.props.inFocus
+            inFocus:  this.props.inFocus,
+            reconnectingCall: this.props.reconnectingCall
         };
 
         const friendlyName = this.props.remoteUri.split('@')[0];
@@ -161,6 +162,10 @@ class ConferenceBox extends Component {
                 this._muteVideo();
             }
             this.setState({inFocus: nextProps.inFocus});
+        }
+
+        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
     }
 
@@ -589,16 +594,18 @@ class ConferenceBox extends Component {
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         const bottomButtons = [];
-        bottomButtons.push(
-            <IconButton
-                size={30}
-                style={buttonClass}
-                title="Share link to this conference"
-                icon="account-plus"
-                onPress={this.toggleInviteModal}
-                key="shareButton"
-            />
-        );
+        if (!this.state.reconnectingCall) {
+            bottomButtons.push(
+                <IconButton
+                    size={30}
+                    style={buttonClass}
+                    title="Share link to this conference"
+                    icon="account-plus"
+                    onPress={this.toggleInviteModal}
+                    key="shareButton"
+                />
+            );
+        }
         if (this.haveVideo) {
             bottomButtons.push(
                 <IconButton
@@ -633,20 +640,22 @@ class ConferenceBox extends Component {
                 />
             );
         }
-        bottomButtons.push(
-            <IconButton
-                size={30}
-                style={buttonClass}
-                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                onPress={this.props.toggleSpeakerPhone}
-                key="speakerPhoneButton"
-            />
-        )
-        // bottomButtons.push(
-        //     <View key="shareFiles">
-        //         <IconButton size={30} style={buttonClass} title="Share files" component="span" disableRipple={true} icon="upload"/>
-        //     </View>
-        // );
+        if (!this.state.reconnectingCall) {
+            bottomButtons.push(
+                <IconButton
+                    size={30}
+                    style={buttonClass}
+                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                    onPress={this.props.toggleSpeakerPhone}
+                    key="speakerPhoneButton"
+                />
+            )
+            // bottomButtons.push(
+            //     <View key="shareFiles">
+            //         <IconButton size={30} style={buttonClass} title="Share files" component="span" disableRipple={true} icon="upload"/>
+            //     </View>
+            // );
+        }
 
         bottomButtons.push(
             <IconButton
@@ -775,6 +784,7 @@ class ConferenceBox extends Component {
                         show={this.state.callOverlayVisible}
                         remoteUri={remoteUri}
                         participants={this.state.participants}
+                        reconnectingCall={this.state.reconnectingCall}
                         buttons={buttons}
                     />
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
@@ -790,7 +800,7 @@ class ConferenceBox extends Component {
                 </View>
 
                 <InviteParticipantsModal
-                    show={this.state.showInviteModal}
+                    show={this.state.showInviteModal && !this.state.reconnectingCall}
                     inviteParticipants={this.inviteParticipants}
                     previousParticipants={this.state.previousParticipants}
                     currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
@@ -801,7 +811,7 @@ class ConferenceBox extends Component {
                 />
 
                 <ConferenceDrawer
-                    show={this.state.showDrawer}
+                    show={this.state.showDrawer && !this.state.reconnectingCall}
                     close={this.toggleDrawer}
                     isLandscape={this.props.isLandscape}
                     title="Conference data"
@@ -857,7 +867,8 @@ ConferenceBox.propTypes = {
     isTablet            : PropTypes.bool,
     muted               : PropTypes.bool,
     defaultDomain       : PropTypes.string,
-    inFocus             : PropTypes.bool
+    inFocus             : PropTypes.bool,
+    reconnectingCall    : PropTypes.bool
 };
 
 export default ConferenceBox;
