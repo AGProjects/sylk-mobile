@@ -833,18 +833,16 @@ class Sylk extends Component {
         switch (newState) {
             case 'closed':
                 this.setState({connection: null, loading: null});
-                //this._notificationCenter.postSystemNotification('Connection failed', {body: '', timeout: 3000});
                 this._callKeepManager.setAvailable(false);
                 break;
             case 'ready':
                 this._notificationCenter.removeNotification();
-                //this._notificationCenter.postSystemNotification('Connection OK', {body: '', timeout: 1});
                 this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
                 this._callKeepManager.setAvailable(true);
                 break;
             case 'disconnected':
                 this._callKeepManager.setAvailable(false);
-                if (this.state.currentCall) {
+                if (this.state.currentCall && this.state.currentCall.direction === 'outgoing') {
                     this.hangupCall(this.state.currentCall.id, 'outgoing_connection_failed');
                 }
 
