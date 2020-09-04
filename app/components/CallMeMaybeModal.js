@@ -20,7 +20,7 @@ class CallMeMaybeModal extends Component {
 
     handleClipboardButton(event) {
         utils.copyToClipboard(this.props.callUrl);
-        this.props.notificationCenter().postSystemNotification('Call me', {body: 'Web address copied to the clipboard', timeout: 2});
+        this.props.notificationCenter().postSystemNotification('Call me', {body: 'Web address copied to the clipboard'});
         this.props.close();
     }
 

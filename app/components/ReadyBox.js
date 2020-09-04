@@ -93,7 +93,7 @@ class ReadyBox extends Component {
 
     handleTargetSelect() {
         if (this.props.connection === null) {
-            this.props._notificationCenter.postSystemNotification("Server unreachable", {timeout: 2});
+            this.props._notificationCenter.postSystemNotification("Server unreachable");
             return;
         }
         // the user pressed enter, start a video call by default

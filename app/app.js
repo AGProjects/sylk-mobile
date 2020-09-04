@@ -183,7 +183,6 @@ class Sylk extends Component {
             registrationKeepalive: false,
             incomingCall: null,
             currentCall: null,
-            isConference: false,
             connection: null,
             showIncomingModal: false,
             showScreenSharingModal: false,
@@ -464,7 +463,6 @@ class Sylk extends Component {
         if (route === '/ready') {
             this.startedByPush = false;
             this.setState({
-                            isConference: false,
                             outgoingMedia: null,
                             outgoingCallUUID: null,
                             currentCall: null,
@@ -764,7 +762,6 @@ class Sylk extends Component {
     }
 
     shutdownActions(state) {
-
         if (this.startedByPush) {
             return;
         }
@@ -773,20 +770,40 @@ class Sylk extends Component {
             return;
         }
 
-        utils.timestampedLog('-- Shutdown actions for', state, 'state', 'in', this.currentRoute);
+        this.closeConnection();
 
-        if (this.state.account && this.state.connection && this.state.connection.state === 'active') {
-            utils.timestampedLog('Removing account', this.state.account.id);
-            this.state.connection.removeAccount(this.state.account);
+    }
+
+    closeConnection() {
+        if (!this.state.connection) {
+            return;
         }
 
-        if (this.state.connection) {
-            utils.timestampedLog('Closing connection', Object.id(this.state.connection));
-            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
-            this.state.connection.close();
+        if (!this.state.account) {
+            if (this.state.connection) {
+                utils.timestampedLog('Closing connection', Object.id(this.state.connection));
+                this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+                this.state.connection.close();
+            }
+            this.setState({connection: null, account: null});
         }
 
-        this.setState({account: null, connection: null});
+        this.state.connection.removeAccount(this.state.account,
+            (error) => {
+                if (error) {
+                    utils.timestampedLog('Failed to remove account:', error);
+                } else {
+                    utils.timestampedLog('Account removed');
+                }
+
+                if (this.state.connection) {
+                    utils.timestampedLog('Closing connection', Object.id(this.state.connection));
+                    this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+                    this.state.connection.close();
+                }
+                this.setState({connection: null, account: null});
+            }
+        );
     }
 
     startCallFromCallKeeper(data) {
@@ -839,8 +856,6 @@ class Sylk extends Component {
                     registrationState: 'failed',
                     generatedVideoTrack: false,
                     });
-
-                //this._notificationCenter.postSystemNotification('Connection lost', {body: '', timeout: 3000});
 
                 break;
             default:
@@ -896,7 +911,7 @@ class Sylk extends Component {
                 if (this.state.connection !== null) {
                     utils.timestampedLog('Retry to register...');
                     //this.setState({loading: 'Register...'});
-                    this._notificationCenter.postSystemNotification('Registering', {body: 'now', timeout: 10000});
+                    this._notificationCenter.postSystemNotification('Registering', {body: 'now'});
                     this.state.account.register();
                 } else {
                     // add a timer to retry register after awhile
@@ -919,10 +934,7 @@ class Sylk extends Component {
 
             if (this.currentRoute === '/login' && !this.startedByPush) {
                 this.changeRoute('/ready', 'registered');
-            } else {
-                this.updateServerHistory();
             }
-            //this._notificationCenter.postSystemNotification('Ready to receive calls', {body: '', timeout: 1});
             return;
         } else {
             this.setState({status: null, registrationState: newState });
@@ -969,11 +981,8 @@ class Sylk extends Component {
         this._callKeepManager.heartbeat();
 
         if (callState === 'established' || callState === 'established') {
-            if (this.state.isConference) {
-                this.changeRoute('/conference', 'correct call state');
-            } else {
-                this.changeRoute('/call', 'correct call state');
-            }
+            const nextRoute = this.isConference() ? '/conference' : '/call';
+            this.changeRoute(nextRoute, 'correct call state');
         }
     }
 
@@ -987,6 +996,16 @@ class Sylk extends Component {
             clearTimeout(this.goToReadyTimer);
             this.goToReadyTimer = null;
         }
+    }
+
+    isConference(call) {
+        const _call = call || this.state.currentCall;
+
+        if (_call && _call.hasOwnProperty('_participants')) {
+            return true;
+        }
+
+        return false;
     }
 
     callStateChanged(oldState, newState, data) {
@@ -1140,7 +1159,7 @@ class Sylk extends Component {
 
                 this.resetGoToReadyTimer();
 
-                if (!this.state.isConference){
+                if (!this.isConference(call)){
                     if (Platform.OS === 'android') {
                         tracks = call.getLocalStreams()[0].getVideoTracks();
                         hasVideo = (tracks && tracks.length > 0) ? true : false;
@@ -1195,7 +1214,7 @@ class Sylk extends Component {
 
                 let callSuccesfull = false;
                 let reason = data.reason;
-                let play_busy_tone = !this.state.isConference;
+                let play_busy_tone = !this.isConference(call);
 
                 let CALLKEEP_REASON;
                 //utils.timestampedLog('Call state changed:', 'call', callUUID, 'terminated reason:', reason);
@@ -1269,7 +1288,7 @@ class Sylk extends Component {
                 }
 
                 if (play_busy_tone && oldState !== 'established' && direction === 'outgoing') {
-                    this._notificationCenter.postSystemNotification('Call ended:', {body: reason, timeout: callSuccesfull ? 5 : 10});
+                    this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
                 }
 
                 this.updateHistoryEntry(callUUID);
@@ -1542,7 +1561,7 @@ class Sylk extends Component {
             .catch((error) => {
                 utils.timestampedLog('Access to local media failed:', error);
                 clearTimeout(this.loadScreenTimer);
-                this._notificationCenter.postSystemNotification("Can't access camera or microphone", {timeout: 10});
+                this._notificationCenter.postSystemNotification("Can't access camera or microphone");
                 this.setState({
                     loading: null
                 });
@@ -1593,7 +1612,7 @@ class Sylk extends Component {
     }
 
     startCall(targetUri, options) {
-        this.setState({targetUri: targetUri, isConference: false});
+        this.setState({targetUri: targetUri});
         this.getLocalMedia(Object.assign({audio: true, video: options.video}, options), '/call');
     }
 
@@ -1622,8 +1641,6 @@ class Sylk extends Component {
         if (this.state.currentCall) {
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
         }
-
-        this.setState({isConference: false});
 
         let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
@@ -1840,23 +1857,13 @@ class Sylk extends Component {
 
     incomingConference(callUUID, to, from) {
         utils.timestampedLog('Incoming conference invite from', from, 'to room', to);
-        /*
-        if (!this.state.inFocus) {
-            utils.timestampedLog('We are not in focus');
-            this.addConferenceHistoryEntry(to, callUUID, direction='received', participants=[from]);
-            this._notificationCenter.postSystemNotification('Conference invite', {body: `from ${from}`, timeout: 10, silent: false});
-            this.backToForeground();
-            return;
-        }
-        */
-
         this.setState({incomingCallUUID: callUUID});
         this._callKeepManager.handleConference(callUUID, to, from);
     }
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
         utils.timestampedLog('New outgoing conference to room', targetUri);
-        this.setState({targetUri: targetUri, isConference: true});
+        this.setState({targetUri: targetUri});
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
     }
 
@@ -1879,7 +1886,7 @@ class Sylk extends Component {
     conferenceInviteFromWebSocket(data) {
         // comes from web socket
         utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
-        this._notificationCenter.postSystemNotification('Expecting conference invite', {body: `from ${data.originator.displayName || data.originator.uri}`, timeout: 5, silent: false});
+        this._notificationCenter.postSystemNotification('Expecting conference invite', {body: `from ${data.originator.displayName || data.originator.uri}`});
     }
 
     updateLinkingURL = (event) => {
@@ -1974,7 +1981,7 @@ class Sylk extends Component {
         if (this.state.blockedUris && this.state.blockedUris.indexOf(from) > -1) {
             utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
             this._callKeepManager.rejectCall(callUUID);
-            this._notificationCenter.postSystemNotification('Call rejected', {body: `from ${from}`, timeout: 5000, silent: true});
+            this._notificationCenter.postSystemNotification('Call rejected', {body: `from ${from}`});
             return true;
         }
 
@@ -1982,7 +1989,7 @@ class Sylk extends Component {
         if (this.state.blockedUris && this.state.blockedUris.indexOf(fromDomain) > -1) {
             utils.timestampedLog('Reject call', callUUID, 'from blocked domain', fromDomain);
             this._callKeepManager.rejectCall(callUUID);
-            this._notificationCenter.postSystemNotification('Call rejected', {body: `from domain ${fromDomain}`, timeout: 5000, silent: true});
+            this._notificationCenter.postSystemNotification('Call rejected', {body: `from domain ${fromDomain}`});
             return true;
         }
 
@@ -2003,9 +2010,9 @@ class Sylk extends Component {
             return true;
         }
 
-        if (this.state.currentCall && this.state.isConference) {
+        if (this.isConference()) {
             utils.timestampedLog('Reject call while in a conference', callUUID);
-            this._notificationCenter.postSystemNotification('Missed call from', {body: from, timeout: 5});
+            this._notificationCenter.postSystemNotification('Missed call from', {body: from});
             this._callKeepManager.rejectCall(callUUID);
             return true;
         }
@@ -2013,7 +2020,7 @@ class Sylk extends Component {
         if (this.state.currentCall && this.state.currentCall.state === 'progress' && this.state.currentCall.remoteIdentity.uri !== from) {
             utils.timestampedLog('Reject call while outgoing in progress', callUUID);
             this._callKeepManager.rejectCall(callUUID);
-            this._notificationCenter.postSystemNotification('Missed call from', {body: from, timeout: 5});
+            this._notificationCenter.postSystemNotification('Missed call from', {body: from});
             return true;
         }
 
@@ -2056,7 +2063,7 @@ class Sylk extends Component {
         let skipNativePanel = false;
 
         if (!this._callKeepManager._calls.get(callUUID) || (this.state.currentCall && this.state.currentCall.direction === 'outgoing')) {
-            this._notificationCenter.postSystemNotification('Incoming call', {body: `from ${from}`, timeout: 15, silent: false});
+            this._notificationCenter.postSystemNotification('Incoming call', {body: `from ${from}`});
             if (Platform.OS === 'android' && this.state.appState === 'foreground') {
                 skipNativePanel = true;
             }
@@ -2108,16 +2115,14 @@ class Sylk extends Component {
         if (!this.state.currentCall) {
             //utils.timestampedLog('Update snackbar');
             let from = data.originator.display_name || data.originator.uri;
-            this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`, timeout: 180, silent: false});
+            this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`});
         }
 
-        if (this.route === '/ready') {
-            this.updateServerHistory()
-        }
+        this.updateServerHistory()
     }
 
     updateServerHistory() {
-        //utils.timestampedLog('Update server history');
+        utils.timestampedLog('Update server history');
         this.setState({refreshHistory: !this.state.refreshHistory});
     }
 

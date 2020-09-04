@@ -145,7 +145,7 @@ class CallOverlay extends React.Component {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting the call...';
                 } else if (this.state.callState === 'terminated') {
-                    callDetail = this.finalDuration ? callDetail +  ' after ' + this.finalDuration : 'Call ended';
+                    callDetail = this.finalDuration ? 'Call ended after ' + this.finalDuration : 'Call ended';
                 } else {
                    callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
                 }

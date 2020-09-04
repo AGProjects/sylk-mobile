@@ -43,7 +43,7 @@ class InviteParticipantsModal extends Component {
 
     handleClipboardButton(event) {
         utils.copyToClipboard(this.state.roomUrl);
-        this.props.notificationCenter().postSystemNotification('Join conference', {body: 'Conference address copied to clipboard', timeout: 2});
+        this.props.notificationCenter().postSystemNotification('Join conference', {body: 'Conference address copied to clipboard'});
         this.props.close();
     }
 

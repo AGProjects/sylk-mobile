@@ -85,7 +85,6 @@ class VideoBox extends Component {
 
         if (this.state.call !== null && this.state.call.state === 'established') {
             this.state.call.sendDtmf(tone);
-            /*this.props.notificationCenter.postSystemNotification('Door opened', {timeout: 5});*/
         }
     }
 

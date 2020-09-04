@@ -31,7 +31,7 @@ class CallByUriBox extends Component {
 
     callStateChanged(oldState, newState, data) {
         if (newState === 'terminated') {
-            this._notificationCenter.postSystemNotification('Thanks for calling with Sylk!', {timeout: 10});
+            this._notificationCenter.postSystemNotification('Thanks for calling with Sylk!');
         }
     }
 

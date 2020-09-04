@@ -57,7 +57,6 @@ class HistoryTileBox extends Component {
     }
 
     componentDidMount() {
-        //this.getServerHistory();
         this.ended = false;
     }
 
@@ -148,8 +147,8 @@ class HistoryTileBox extends Component {
             this.setState({accountId: nextProps.account.id});
         }
 
-        const { refreshHistory } = this.props;
-        if (nextProps.refreshHistory !== refreshHistory) {
+        if (nextProps.refreshHistory !== this.state.refreshHistory) {
+            this.setState({refreshHistory: nextProps.refreshHistory});
             this.getServerHistory();
         }
     }
@@ -266,16 +265,17 @@ class HistoryTileBox extends Component {
     }
 
     getServerHistory() {
-        if (this.ended || !this.state.accountId) {
+        if (this.ended || !this.state.accountId || this.state.isRefreshing) {
             return;
         }
+
+        this.setState({isRefreshing: true});
+
         utils.timestampedLog('Requesting call history from server');
 
         let history = [];
         let localTime;
         let hasMissedCalls = false;
-
-        this.setState({isRefreshing: true});
 
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
@@ -407,6 +407,7 @@ class HistoryTileBox extends Component {
             console.log('Error getting call history from server', errorCode);
         });
 
+        this.setState({isRefreshing: false});
     }
 
     render() {
