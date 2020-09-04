@@ -29,7 +29,8 @@ class HistoryTileBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             isRefreshing: false,
-            myInvitedParties: this.props.myInvitedParties
+            myInvitedParties: this.props.myInvitedParties,
+            refreshHistory: this.props.refreshHistory
         }
 
         const echoTest = {
