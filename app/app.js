@@ -1695,6 +1695,10 @@ class Sylk extends Component {
              return;
         }
 
+        if (reason === 'user_press_hangup') {
+            this._callKeepManager.endCall(callUUID);
+        }
+
         if (reason === 'user_cancelled' ||
             reason === 'timeout' ||
             reason === 'stop_preview' ||
