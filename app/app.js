@@ -256,7 +256,8 @@ class Sylk extends Component {
                                                 this.startCallFromCallKeeper,
                                                 this.toggleMute,
                                                 this.getConnection,
-                                                this.addConferenceHistoryEntry);
+                                                this.addConferenceHistoryEntry,
+                                                this.changeRoute);
 
         if (InCallManager.recordPermission !== 'granted') {
             InCallManager.requestRecordPermission()
@@ -536,7 +537,7 @@ class Sylk extends Component {
                  })
         }
 
-        this.changeRoute('/login');
+        this.changeRoute('/login', 'start up');
 
         // prime the ref
         //logger.debug('NotificationCenter ref: %o', this._notificationCenter);
@@ -706,12 +707,33 @@ class Sylk extends Component {
     }
 
     _handleAndroidFocus = nextFocus => {
-        //utils.timestampedLog('---- APP is in focus');
+        utils.timestampedLog('--- APP is in focus');
         this.setState({inFocus: true});
+
+        if (!this.state.connection) {
+            utils.timestampedLog('Web socket does not exist');
+        } else if (!this.state.connection.state) {
+            utils.timestampedLog('Web socket waiting for connection');
+        } else {
+            utils.timestampedLog('Web socket state is', this.state.connection.state);
+            if (this.state.connection.state === 'closed') {
+                this.setState({connection: null});
+            }
+        }
+
+        if (this.state.account) {
+            utils.timestampedLog('Active account', this.state.account.id);
+        } else {
+            utils.timestampedLog('No active account');
+        }
+
+        if (this.state.accountId && !this.state.connection) {
+            this.handleRegistration(this.state.accountId, this.state.password);
+        }
     }
 
     _handleAndroidBlur = nextBlur => {
-        //utils.timestampedLog('---- APP is out of focus');
+        utils.timestampedLog('--- APP is out of focus');
         this.setState({inFocus: false});
     }
 
@@ -721,23 +743,23 @@ class Sylk extends Component {
         }
 
         if (this._callKeepManager.countCalls) {
-            //utils.timestampedLog('---- APP state changed, we have', this._callKeepManager.countCalls, 'calls');
+            //utils.timestampedLog('--- APP state changed, we have', this._callKeepManager.countCalls, 'calls');
         }
 
         if (this._callKeepManager.countPushCalls) {
-            //utils.timestampedLog('---- APP state changed, we have', this._callKeepManager.countPushCalls, 'push calls');
+            //utils.timestampedLog('--- APP state changed, we have', this._callKeepManager.countPushCalls, 'push calls');
         }
 
         if (this.startedByPush) {
-            //utils.timestampedLog('---- APP state changed, started by push');
+            //utils.timestampedLog('--- APP state changed, started by push');
         }
 
         if (this._callKeepManager.countCalls === 0 && !this.state.outgoingCallUUID) {
             /*
             if (this.state.connection) {
-                utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
+                utils.timestampedLog('--- APP state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
             } else {
-                utils.timestampedLog('---- APP state changed from', this.state.appState, 'to', nextAppState);
+                utils.timestampedLog('--- APP state changed from', this.state.appState, 'to', nextAppState);
             }
             */
 
@@ -779,31 +801,30 @@ class Sylk extends Component {
             return;
         }
 
-        if (!this.state.account) {
-            if (this.state.connection) {
-                utils.timestampedLog('Closing connection', Object.id(this.state.connection));
-                this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
-                this.state.connection.close();
-            }
+        if (!this.state.account && this.state.connection) {
+            //this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+            this.state.connection.close();
+            this.setState({connection: null, account: null});
+            utils.timestampedLog('Web socket', Object.id(this.state.connection), 'will close');
+        } else if (this.state.connection && this.state.account) {
+            this.state.connection.removeAccount(this.state.account,
+                (error) => {
+                    if (error) {
+                        utils.timestampedLog('Failed to remove account:', error);
+                    } else {
+                        utils.timestampedLog('Account removed');
+                    }
+
+                    if (this.state.connection) {
+                        utils.timestampedLog('Web socket', Object.id(this.state.connection), 'will close');
+                        this.state.connection.close();
+                    }
+                    this.setState({connection: null, account: null});
+                }
+            );
+        } else {
             this.setState({connection: null, account: null});
         }
-
-        this.state.connection.removeAccount(this.state.account,
-            (error) => {
-                if (error) {
-                    utils.timestampedLog('Failed to remove account:', error);
-                } else {
-                    utils.timestampedLog('Account removed');
-                }
-
-                if (this.state.connection) {
-                    utils.timestampedLog('Closing connection', Object.id(this.state.connection));
-                    this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
-                    this.state.connection.close();
-                }
-                this.setState({connection: null, account: null});
-            }
-        );
     }
 
     startCallFromCallKeeper(data) {
@@ -832,6 +853,10 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'closed':
+                if (this.state.connection) {
+                    utils.timestampedLog('Web socket was decomissioned');
+                    this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+                }
                 this.setState({connection: null, loading: null});
                 this._callKeepManager.setAvailable(false);
                 break;
@@ -841,6 +866,11 @@ class Sylk extends Component {
                 this._callKeepManager.setAvailable(true);
                 break;
             case 'disconnected':
+                if (this.registrationFailureTimer) {
+                    clearTimeout(this.registrationFailureTimer);
+                    this.registrationFailureTimer = null;
+                }
+
                 this._callKeepManager.setAvailable(false);
                 if (this.state.currentCall && this.state.currentCall.direction === 'outgoing') {
                     this.hangupCall(this.state.currentCall.id, 'outgoing_connection_failed');
@@ -1340,13 +1370,11 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password, remember=true) {
+        utils.timestampedLog('Handle registration for', accountId);
+
         if (this.state.account !== null) {
             //utils.timestampedLog('We are already registered with', accountId);
             return;
-        }
-
-        if (this.startedByPush) {
-            //this.changeRoute('/call', 'started by push');
         }
 
         this.setState({
@@ -1363,14 +1391,13 @@ class Sylk extends Component {
             }
 
             let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
-            utils.timestampedLog('Create Websocket connection', Object.id(connection));
+            utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
-            /*
+
             if (this.startedByPush) {
-                this.backToForeground();
+                this.changeRoute('/call', 'started by push');
             }
-            */
 
         } else {
             if (this.state.connection.state === 'ready') {
@@ -1387,7 +1414,7 @@ class Sylk extends Component {
             console.log('Error: Cannot process registration without connection');
             return;
         }
-        if (this.state.account !== null && this.state.connection) {
+        if (this.state.account && this.state.connection) {
             logger.debug('We already have an account, removing it');
             this.state.connection.removeAccount(this.state.account,
                 (error) => {
@@ -1419,6 +1446,7 @@ class Sylk extends Component {
                         account.on('incomingCall', this.incomingCallFromWebSocket);
                         account.on('missedCall', this.missedCall);
                         account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
+                        utils.timestampedLog('Web socket account', account.id, 'is ready');
                         this.setState({account: account});
                         this._sendPushToken();
                         account.register();
@@ -1632,7 +1660,6 @@ class Sylk extends Component {
     acceptCall(callUUID) {
         utils.timestampedLog('User accepted call', callUUID, 'on connection', Object.id(this.state.connection));
         this.hideInternalAlertPanel();
-        this._callKeepManager.setCurrentCallActive(callUUID);
 
         this.resetGoToReadyTimer();
 
@@ -2060,12 +2087,11 @@ class Sylk extends Component {
         }
 
         this.setState({targetUri: from});
-        this.changeRoute('/call');
 
         let skipNativePanel = false;
 
         if (!this._callKeepManager._calls.get(callUUID) || (this.state.currentCall && this.state.currentCall.direction === 'outgoing')) {
-            this._notificationCenter.postSystemNotification('Incoming call', {body: `from ${from}`});
+            //this._notificationCenter.postSystemNotification('Incoming call', {body: `from ${from}`});
             if (Platform.OS === 'android' && this.state.appState === 'foreground') {
                 skipNativePanel = true;
             }
@@ -2619,7 +2645,7 @@ class Sylk extends Component {
             this.state.account.unregister();
         }
 
-        if (this.state.account !== null) {
+        if (this.state.connection && this.state.account) {
             this.state.connection.removeAccount(this.state.account, (error) => {
                 if (error) {
                     logger.debug(error);

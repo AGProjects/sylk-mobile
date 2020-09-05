@@ -42,7 +42,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -68,6 +68,7 @@ export default class CallManager extends events.EventEmitter {
         this.timeoutCall = timeoutFunc;
         this.logMissedCall = missedCallFunc;
         this.getConnection = getConnectionFunct;
+        this.changeRoute = changeRouteFunc;
 
         this.toggleMute = muteFunc;
         this.conferenceCall = conferenceCallFunc;
@@ -251,8 +252,9 @@ export default class CallManager extends events.EventEmitter {
         let call = this._calls.get(callUUID);
 
         if (!call && !this._conferences.has(callUUID)) {
-            utils.timestampedLog('Callkeep: add call', callUUID, ' reject to the waitings list');
+            utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
+            this.changeRoute('/ready', 'new_call_rejected');
             return;
         }
 
@@ -279,6 +281,8 @@ export default class CallManager extends events.EventEmitter {
         } else {
             utils.timestampedLog('Callkeep: accept call', callUUID);
         }
+
+        this.setCurrentCallActive(callUUID);
 
         this._acceptedCalls.set(callUUID, Date.now());
 
