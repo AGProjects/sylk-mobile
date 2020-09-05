@@ -147,7 +147,18 @@ class CallOverlay extends React.Component {
                 } else if (this.state.callState === 'terminated') {
                     callDetail = this.finalDuration ? 'Call ended after ' + this.finalDuration : 'Call ended';
                 } else {
-                   callDetail = this.state.callState ? toTitleCase(this.state.callState) : 'Connecting...';
+                   if (this.state.callState) {
+                       if (this.state.callState === 'incoming') {
+                           callDetail = 'Waiting for incoming call...';
+                       } else {
+                           callDetail = toTitleCase(this.state.callState);
+                       }
+
+                   } else if (this.state.direction) {
+                       callDetail = 'Connecting', this.state.direction, 'call...';
+                   } else {
+                       callDetail = 'Connecting...';
+                   }
                 }
             }
 
