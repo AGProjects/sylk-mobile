@@ -136,7 +136,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       utils.timestampedLog('Callkeep: bring app to the foreground');
+       //utils.timestampedLog('Callkeep: bring app to the FOREGROUND');
        this.callKeep.backToForeground();
     }
 
