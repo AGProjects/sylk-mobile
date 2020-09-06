@@ -42,7 +42,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -69,6 +69,7 @@ export default class CallManager extends events.EventEmitter {
         this.logMissedCall = missedCallFunc;
         this.getConnection = getConnectionFunct;
         this.changeRoute = changeRouteFunc;
+        this.respawnConnection = respawnConnection;
 
         this.toggleMute = muteFunc;
         this.conferenceCall = conferenceCallFunc;
@@ -216,23 +217,26 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnActiveAudioSession() {
-        //utils.timestampedLog('Callkeep: activated audio call');
+        utils.timestampedLog('Callkeep: activated audio call');
     }
 
     _rnDeactiveAudioSession() {
-        //utils.timestampedLog('Callkeep: deactivated audio call');
+        utils.timestampedLog('Callkeep: deactivated audio call');
     }
 
     _rnAccept(data) {
         let callUUID = data.callUUID.toLowerCase();
+        utils.timestampedLog('Callkeep: accept callback', callUUID);
 
         if (this._pushCalls.has(callUUID)) {
             this._pushCalls.delete(callUUID);
         }
 
         if (!this._rejectedCalls.has(callUUID)) {
-            //utils.timestampedLog('Callkeep: accept callback', callUUID);
+            utils.timestampedLog('Callkeep: accept call', callUUID);
             this.acceptCall(callUUID);
+        } else {
+            utils.timestampedLog('Callkeep: cannot accept because we already rejected', callUUID);
         }
     }
 
@@ -311,9 +315,11 @@ export default class CallManager extends events.EventEmitter {
             this.backToForeground();
             utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
-            const connection = this.getConnection();
+            if (Platform.OS === 'ios') {
+                this.respawnConnection();
+            }
             this.webSocketActions.set(callUUID, 'accept');
-            utils.timestampedLog('Callkeep: check over 20 seconds if call', callUUID, 'arrived over web socket', connection);
+            utils.timestampedLog('Callkeep: check over 12 seconds if call', callUUID, 'arrived over web socket');
 
             setTimeout(() => {
                 const connection = this.getConnection();
@@ -327,7 +333,7 @@ export default class CallManager extends events.EventEmitter {
                 } else {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did arrive over web socket', connection);
                 }
-            }, 20000);
+            }, 12000);
         }
     }
 
@@ -468,6 +474,7 @@ export default class CallManager extends events.EventEmitter {
             if (this._calls.has(callUUID)) {
                 utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
             }
+            this.showAlertPanel(callUUID, from);
         } else {
             if (this._calls.has(callUUID) || force) {
                 // on Android display alert panel only after websocket call arrives
@@ -504,7 +511,7 @@ export default class CallManager extends events.EventEmitter {
         } else {
             if (accept) {
                 this.acceptCall(call.id);
-            } else if (!skipNativePanel){
+            } else if (!skipNativePanel && Platform.OS !== 'ios'){
                 this.showAlertPanelforCall(call);
             }
         }
