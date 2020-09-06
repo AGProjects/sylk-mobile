@@ -89,12 +89,6 @@ const mainStyle = StyleSheet.create({
  }
 });
 
-// Application modes
-const MODE_NORMAL           = Symbol('mode-normal');
-const MODE_PRIVATE          = Symbol('mode-private');
-const MODE_GUEST_CALL       = Symbol('mode-guest-call');
-const MODE_GUEST_CONFERENCE = Symbol('mode-guest-conference');
-
 
 (function() {
     if ( typeof Object.id == "undefined" ) {
@@ -190,7 +184,6 @@ class Sylk extends Component {
             targetUri: '',
             missedTargetUri: '',
             loading: null,
-            mode: MODE_PRIVATE,
             localMedia: null,
             generatedVideoTrack: false,
             contacts: [],
@@ -1439,47 +1432,18 @@ class Sylk extends Component {
             if (!error) {
                 account.on('outgoingCall', this.outgoingCall);
                 account.on('conferenceCall', this.outgoingConference);
-                switch (this.state.mode) {
-                    case MODE_PRIVATE:
-                    case MODE_NORMAL:
-                        account.on('registrationStateChanged', this.registrationStateChanged);
-                        account.on('incomingCall', this.incomingCallFromWebSocket);
-                        account.on('missedCall', this.missedCall);
-                        account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
-                        utils.timestampedLog('Web socket account', account.id, 'is ready');
-                        this.setState({account: account});
-                        this._sendPushToken();
-                        account.register();
-                        if (this.state.mode !== MODE_PRIVATE) {
-                            storage.set('account', {
-                                accountId: this.state.accountId,
-                                password: this.state.password
-                            });
-                        } else {
-                            // Wipe storage if private login
-                            //storage.remove('account'); // lets try this out
-                            // history.clear().then(() => {
-                            //     this.setState({history: []});
-                            // });
-                        }
-                        break;
-                    case MODE_GUEST_CALL:
-                        this.setState({account: account, loading: null, registrationState: 'registered'});
-                        logger.debug(`${accountId} (guest) signed in`);
-                        // Start the call immediately, this is call started with "Call by URI"
-                        this.startGuestCall(this.state.targetUri, {audio: true, video: true});
-                        break;
-                    case MODE_GUEST_CONFERENCE:
-                        this.setState({account: account, loading: null, registrationState: 'registered'});
-                        logger.debug(`${accountId} (conference guest) signed in`);
-                        // Start the call immediately, this is call started with "Conference by URI"
-                        this.startGuestConference(this.state.targetUri);
-                        break;
-                    default:
-                        logger.debug(`Unknown mode: ${this.state.mode}`);
-                        break;
-                }
-
+                account.on('registrationStateChanged', this.registrationStateChanged);
+                account.on('incomingCall', this.incomingCallFromWebSocket);
+                account.on('missedCall', this.missedCall);
+                account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
+                utils.timestampedLog('Web socket account', account.id, 'is ready');
+                this.setState({account: account});
+                this._sendPushToken();
+                account.register();
+                storage.set('account', {
+                    accountId: this.state.accountId,
+                    password: this.state.password
+                });
             } else {
                 this.showRegisterFailure(408);
             }
@@ -1507,7 +1471,7 @@ class Sylk extends Component {
         const constraints = Object.assign({}, mediaConstraints);
 
         if (constraints.video === true) {
-            if ((nextRoute === '/conference' ||  this.state.mode === MODE_GUEST_CONFERENCE)) {
+            if ((nextRoute === '/conference')) {
                 constraints.video = {
                     'width': {
                         'ideal': 640
@@ -1518,7 +1482,7 @@ class Sylk extends Component {
                 };
 
             // TODO: remove this, workaround so at least safari works when joining a video conference
-            } else if ((nextRoute === '/conference' ||  this.state.mode === MODE_GUEST_CONFERENCE) && isSafari) {
+            } else if (nextRoute === '/conference' && isSafari) {
                 constraints.video = false;
             } else {
                 // ask for 720p video
@@ -2304,32 +2268,30 @@ class Sylk extends Component {
     }
 
     addConferenceHistoryEntry(uri, callUUID, direction='placed', participants=[]) {
-        if (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE) {
-            let current_datetime = new Date();
-            let startTime = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+        let current_datetime = new Date();
+        let startTime = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
 
-            let item = {
-                        remoteParty: uri,
-                        direction: direction,
-                        type: 'history',
-                        conference: true,
-                        participants: participants,
-                        media: ['audio', 'video'],
-                        displayName: uri.split('@')[0],
-                        sessionId: callUUID,
-                        startTime: startTime,
-                        stopTime: startTime,
-                        startTimeObject: current_datetime,
-                        duration: 0,
-                        tags: ['history', 'local']
-                        };
+        let item = {
+                    remoteParty: uri,
+                    direction: direction,
+                    type: 'history',
+                    conference: true,
+                    participants: participants,
+                    media: ['audio', 'video'],
+                    displayName: uri.split('@')[0],
+                    sessionId: callUUID,
+                    startTime: startTime,
+                    stopTime: startTime,
+                    startTimeObject: current_datetime,
+                    duration: 0,
+                    tags: ['history', 'local']
+                    };
 
-            const historyItem = Object.assign({}, item);
-            let newHistory = this.state.localHistory;
-            newHistory.push(historyItem);
-            this.setState({localHistory: newHistory});
-            storage.set('history', newHistory);
-        }
+        const historyItem = Object.assign({}, item);
+        let newHistory = this.state.localHistory;
+        newHistory.push(historyItem);
+        this.setState({localHistory: newHistory});
+        storage.set('history', newHistory);
     }
 
     render() {
@@ -2641,7 +2603,7 @@ class Sylk extends Component {
     logout() {
         this._callKeepManager.setAvailable(false);
 
-        if (this.state.registrationState !== null && (this.state.mode === MODE_NORMAL || this.state.mode === MODE_PRIVATE)) {
+        if (this.state.registrationState !== null) {
             this.state.account.unregister();
         }
 
