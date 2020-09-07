@@ -751,8 +751,6 @@ class Sylk extends Component {
 
         if (this.startedByPush) {
             utils.timestampedLog('- APP state changed, started by push in', nextAppState, 'state');
-        } else {
-            utils.timestampedLog('- APP state changed, not started by push in', nextAppState, 'state');
         }
 
         if (this._callKeepManager.countCalls === 0 && !this.state.outgoingCallUUID) {
@@ -789,8 +787,12 @@ class Sylk extends Component {
             //utils.timestampedLog('Web socket waiting for connection');
         } else {
             utils.timestampedLog('Web socket', Object.id(this.state.connection), 'state is', this.state.connection.state);
-            if (this.state.connection.state === 'closed') {
+            if (Platform.OS === 'android' && this.state.connection.state === 'closed') {
                 this.setState({connection: null});
+            }
+            if (Platform.OS === 'ios') {
+                utils.timestampedLog('Web socket', Object.id(this.state.connection), 'reconnecting in state', this.state.connection.state);
+                this.state.connection.reconnect();
             }
         }
 
@@ -811,7 +813,6 @@ class Sylk extends Component {
     }
 
     shutdownConnection(state) {
-        utils.timestampedLog('Shut down connection in state', state);
         if (this.startedByPush) {
             return;
         }
@@ -829,13 +830,17 @@ class Sylk extends Component {
         }
 
         this.closeConnection('shutdown');
-
     }
 
     closeConnection(reason) {
-        //utils.timestampedLog('Closing connection because', reason);
+        if (Platform.OS === 'ios') {
+            return;
+        }
+
+        utils.timestampedLog('Closing connection because', reason);
 
         if (!this.state.connection) {
+            utils.timestampedLog('Connection already closed');
             return;
         }
 
@@ -898,9 +903,9 @@ class Sylk extends Component {
                 if (this.state.connection) {
                     utils.timestampedLog('Web socket was terminated');
                     this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+                    this._notificationCenter.postSystemNotification('Connection lost');
                 }
                 this.setState({connection: null, account: null});
-                this._callKeepManager.setAvailable(false);
                 if (this.state.inFocus) {
                     this.respawnConnection();
                 }
@@ -1200,18 +1205,18 @@ class Sylk extends Component {
             if (this.state.incomingCall.id === call.id) {
                 if (newState === 'terminated') {
                     this.startedByPush = false;
-                    //utils.timestampedLog("Incoming call was cancelled");
+                    utils.timestampedLog("Incoming call was cancelled");
                     this.setState({showIncomingModal: false});
                     this.hideInternalAlertPanel();
                     newincomingCall = null;
                     newCurrentCall = null;
                     readyDelay = 10;
                 } else if (newState === 'accepted') {
-                    //utils.timestampedLog("Incoming call was accepted");
+                    utils.timestampedLog("Incoming call was accepted");
                     this.hideInternalAlertPanel();
                     this.backToForeground();
                 } else if (newState === 'established') {
-                    //utils.timestampedLog("Incoming call media started");
+                    utils.timestampedLog("Incoming call media started");
                     this.hideInternalAlertPanel();
                 }
             }
@@ -1442,7 +1447,8 @@ class Sylk extends Component {
                 console.log('Phone number:', this.state.phoneNumber);
             }
 
-            let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
+            //let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
+            let connection = sylkrtc.createConnection({server: config.wsServer});
             utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
@@ -1453,7 +1459,7 @@ class Sylk extends Component {
 
         } else {
             if (this.state.connection.state === 'ready' && this.state.registrationState === null) {
-                utils.timestampedLog('Web socket', Object.id(connection), 'handle registration for', accountId);
+                utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password, '');
             }
         }

@@ -323,7 +323,9 @@ export default class CallManager extends events.EventEmitter {
 
             setTimeout(() => {
                 const connection = this.getConnection();
-                utils.timestampedLog('Callkeep: current calls:', this.callUUIDS);
+                if (this.callUUIDS) {
+                    utils.timestampedLog('Callkeep: current calls:', this.callUUIDS);
+                }
 
                 if (!this._calls.has(callUUID) && !this._terminatedCalls.has(callUUID)) {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive over web socket', connection);
@@ -509,9 +511,10 @@ export default class CallManager extends events.EventEmitter {
             this.webSocketActions.delete(call.id);
 
         } else {
+            utils.timestampedLog('Callkeep: must bring up alert panel');
             if (accept) {
                 this.acceptCall(call.id);
-            } else if (!skipNativePanel && Platform.OS !== 'ios'){
+            } else if (!skipNativePanel) {
                 this.showAlertPanelforCall(call);
             }
         }
