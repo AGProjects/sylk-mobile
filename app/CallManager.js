@@ -511,7 +511,6 @@ export default class CallManager extends events.EventEmitter {
             this.webSocketActions.delete(call.id);
 
         } else {
-            utils.timestampedLog('Callkeep: must bring up alert panel');
             if (accept) {
                 this.acceptCall(call.id);
             } else if (!skipNativePanel) {
