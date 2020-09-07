@@ -150,7 +150,7 @@ class Call extends Component {
             options.localStream = media;
             if (!this.answering) {
                 this.answering = true;
-                utils.timestampedLog('Call: answering call...');
+                //utils.timestampedLog('Call: answering call...');
                 this.state.call.answer(options);
             }
         } else {

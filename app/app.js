@@ -275,16 +275,16 @@ class Sylk extends Component {
 
         storage.get('history').then((history) => {
             if (history) {
-                console.log('Loaded', history.length, 'local history entries');
+                //console.log('Loaded', history.length, 'local history entries');
                 this.setState({localHistory: history});
             } else {
-                console.log('Loaded 0 local history entries');
+                //console.log('Loaded 0 local history entries');
             }
         });
 
         storage.get('cachedHistory').then((history) => {
             if (history) {
-                console.log('Loaded', history.length, 'cached history entries');
+                //console.log('Loaded', history.length, 'cached history entries');
                 this.cachedHistory = history;
             }
         });
@@ -789,7 +789,8 @@ class Sylk extends Component {
             if (Platform.OS === 'android' && this.state.connection.state === 'closed') {
                 this.setState({connection: null});
             }
-            if (Platform.OS === 'ios') {
+
+            if (Platform.OS === 'ios' && this.state.connection.state !== 'ready') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'reconnecting in state', this.state.connection.state);
                 this.state.connection.reconnect();
             }
@@ -834,6 +835,10 @@ class Sylk extends Component {
     closeConnection(reason) {
         if (Platform.OS === 'ios') {
             return;
+        }
+
+        if (this.state.connection) {
+            utils.timestampedLog('Web socket', Object.id(this.state.connection), 'will close');
         }
 
         utils.timestampedLog('Closing connection because', reason);
