@@ -18,6 +18,7 @@ class NavigationBar extends Component {
         this.state = {
             showAboutModal: false,
             showCallMeMaybeModal: false,
+            registrationState: this.props.account ? this.props.account.registrationState : null,
             mute: false,
             menuVisible: false,
             accountId: this.props.account ? this.props.account.id : null
@@ -31,6 +32,8 @@ class NavigationBar extends Component {
         if (nextProps.account !== null && nextProps.account.id !== this.state.accountId) {
             this.setState({accountId: nextProps.account.id});
         }
+
+        this.setState({registrationState: nextProps.account ? nextProps.account.registrationState : null});
     }
 
     handleMenu(event) {
@@ -71,20 +74,24 @@ class NavigationBar extends Component {
     }
 
     render() {
+        console.log('Nav state', this.state.registrationState);
         const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
 
         let statusIcon = null;
+        let statusColor = 'green';
 
         statusIcon = 'check-circle';
         if (!this.props.connection || this.props.connection.state !== 'ready') {
             statusIcon = 'alert-circle';
-        } else if (this.props.registrationState && this.props.registrationState !== 'registered') {
-            statusIcon = 'priority-high';
+            statusColor = 'red';
+        } else if (this.state.registrationState !== 'registered') {
+            statusIcon = 'alert-circle';
+            statusColor = 'orange';
         }
-//             <Appbar.Action icon={muteIcon} onPress={this.toggleMute} />
+
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
 
         let subtitle = 'Signed in as ' +  this.state.accountId;
@@ -104,7 +111,7 @@ class NavigationBar extends Component {
 
 
                 {statusIcon ?
-                    <Icon name={statusIcon} size={20} color="white" />
+                    <Icon name={statusIcon} size={20} color={statusColor} />
                 : null }
                 <Menu
                     visible={this.state.menuVisible}
