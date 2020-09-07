@@ -74,7 +74,6 @@ class NavigationBar extends Component {
     }
 
     render() {
-        console.log('Nav state', this.state.registrationState);
         const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
