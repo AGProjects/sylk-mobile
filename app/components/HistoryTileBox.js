@@ -446,10 +446,10 @@ class HistoryTileBox extends Component {
         }
 
         const known = [];
+        items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
         items = items.filter((elem) => {
             if (known.indexOf(elem.remoteParty) <= -1) {
                 known.push(elem.remoteParty);
-                //console.log(elem.remoteParty);
                 return elem;
             }
         });
@@ -508,7 +508,6 @@ class HistoryTileBox extends Component {
         });
 
         items = filteredItems;
-
         items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         if (items.length === 1) {
