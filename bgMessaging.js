@@ -3,7 +3,7 @@ import { NativeModules, AppState } from 'react-native';
 const { SylkNative } = NativeModules;
 
 export default async (remoteMessage) => {
-    console.log('Push notification received', remoteMessage.data.event, 'in state', AppState.currentState);
+    //console.log('Push notification received', remoteMessage.data.event, 'in state', AppState.currentState);
 
     if (AppState.currentState === "background") {
 
@@ -22,7 +22,7 @@ export default async (remoteMessage) => {
         }
 
         if (url) {
-            console.log('Wake up from push with URL', url);
+            //console.log('Wake up from push with URL', url);
             SylkNative.launchMainActivity(url);
         }
     }

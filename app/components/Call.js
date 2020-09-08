@@ -150,8 +150,11 @@ class Call extends Component {
             options.localStream = media;
             if (!this.answering) {
                 this.answering = true;
-                //utils.timestampedLog('Call: answering call...');
+                const connectionState = this.state.connection.state ? this.state.connection.state : null;
+                utils.timestampedLog('Call: answering call in connection state', connectionState);
                 this.state.call.answer(options);
+            } else {
+                utils.timestampedLog('Call: answering call in progress...');
             }
         } else {
             if (!media) {

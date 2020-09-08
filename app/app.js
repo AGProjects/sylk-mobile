@@ -504,7 +504,7 @@ class Sylk extends Component {
     }
 
     componentWillUnmount() {
-        console.log('App will unmount');
+        //console.log('App will unmount');
         AppState.removeEventListener('change', this._handleAppStateChange);
         this.shutdownConnection('exit');
         this._loaded = false;
@@ -512,7 +512,7 @@ class Sylk extends Component {
 
     async componentDidMount() {
         this._loaded = true;
-        console.log('App did mount');
+        //console.log('App did mount');
         // Start a timer that runs once after X milliseconds
         BackgroundTimer.runBackgroundTimer(() => {
             // this will be executed once after 10 seconds
@@ -641,12 +641,13 @@ class Sylk extends Component {
     }
 
     cancelIncomingCall(callUUID) {
-        utils.timestampedLog('Cancelling incoming call...', callUUID);
 
         if (this.callKeeper._acceptedCalls.has(callUUID)) {
-            utils.timestampedLog('Push call was already accepted', callUUID);
+            //utils.timestampedLog('Push call was already accepted', callUUID);
             return;
         }
+
+        utils.timestampedLog('Cancelling incoming call...', callUUID);
 
         let call = this.callKeeper._calls.get(callUUID);
         if (!call) {
@@ -666,7 +667,7 @@ class Sylk extends Component {
                 this.changeRoute('/ready', 'incoming_call_cancelled');
             }
         } else {
-            utils.timestampedLog('Call on web socket was already accepted', callUUID, call.state);
+            //utils.timestampedLog('Call on web socket was already accepted', callUUID, call.state);
         }
     }
 
@@ -724,39 +725,39 @@ class Sylk extends Component {
     }
 
     _handleAndroidFocus = nextFocus => {
-        utils.timestampedLog('--- APP is in focus');
+        //utils.timestampedLog('--- APP is in focus');
         this.setState({inFocus: true});
         this.respawnConnection();
     }
 
     _handleAndroidBlur = nextBlur => {
-        utils.timestampedLog('--- APP is out of focus');
+        //utils.timestampedLog('--- APP is out of focus');
         this.setState({inFocus: false});
     }
 
     _handleAppStateChange = nextAppState => {
-        //utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
 
         if (nextAppState === this.state.appState) {
             return;
         }
 
-        /*
-        if (this.callKeeper.countCalls) {
-            utils.timestampedLog('- APP state changed, we have', this.callKeeper.countCalls, 'calls');
-        }
-
-        if (this.callKeeper.countPushCalls) {
-            utils.timestampedLog('- APP state changed, we have', this.callKeeper.countPushCalls, 'push calls');
-        }
-        */
-
-        if (this.startedByPush) {
-            utils.timestampedLog('- APP state changed, started by push in', nextAppState, 'state');
-        }
-
         if (this.callKeeper.countCalls === 0 && !this.state.outgoingCallUUID) {
             /*
+
+            utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
+
+            if (this.callKeeper.countCalls) {
+                utils.timestampedLog('- APP state changed, we have', this.callKeeper.countCalls, 'calls');
+            }
+
+            if (this.callKeeper.countPushCalls) {
+                utils.timestampedLog('- APP state changed, we have', this.callKeeper.countPushCalls, 'push calls');
+            }
+
+            if (this.startedByPush) {
+                utils.timestampedLog('- APP state changed, started by push in', nextAppState, 'state');
+            }
+
             if (this.state.connection) {
                 utils.timestampedLog('- APP state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
             } else {
@@ -772,27 +773,36 @@ class Sylk extends Component {
         }
 
         this.setState({appState: nextAppState});
+
         if (Platform.OS !== 'android') {
             this.setState({inFocus: (nextAppState === 'active') ? true : false});
         }
     }
 
     respawnConnection(state) {
-        utils.timestampedLog('Respawning connection in state', state || this.state.appState);
+        utils.timestampedLog('Respawn connection in state', state || this.state.appState);
+
+        /*
+        if (!this.state.accountId) {
+            utils.timestampedLog('Loading account from storage...');
+            storage.get('account').then((account) => {
+                if (account) {
+                    this.setState({accountId: account.accountId, password: account.password});
+                }
+            });
+        }
+        */
 
         if (!this.state.connection) {
             utils.timestampedLog('Web socket does not exist');
         } else if (!this.state.connection.state) {
-            //utils.timestampedLog('Web socket waiting for connection');
+            utils.timestampedLog('Web socket is waiting for connecting....');
         } else {
             utils.timestampedLog('Web socket', Object.id(this.state.connection), 'state is', this.state.connection.state);
-            if (Platform.OS === 'android' && this.state.connection.state === 'closed') {
-                this.setState({connection: null});
-            }
-
-            if (Platform.OS === 'ios' && this.state.connection.state !== 'ready') {
-                utils.timestampedLog('Web socket', Object.id(this.state.connection), 'reconnecting in state', this.state.connection.state);
+            if (this.state.connection.state !== 'ready' && this.state.connection.state !== 'connecting') {
+                utils.timestampedLog('Web socket', Object.id(this.state.connection), 'reconnecting because is', this.state.connection.state);
                 this.state.connection.reconnect();
+                utils.timestampedLog('Web socket', Object.id(this.state.connection), 'new state is', this.state.connection.state);
             }
         }
 
@@ -1592,7 +1602,7 @@ class Sylk extends Component {
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
-            utils.timestampedLog('Local media acquired');
+            //utils.timestampedLog('Local media acquired');
             this.setState({localMedia: localStream});
             if (nextRoute !== null) {
                 this.changeRoute(nextRoute);
