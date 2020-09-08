@@ -43,7 +43,7 @@ class Call extends Component {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
             callUUID = this.props.callUUID;
-            direction = this.props.callUUID ? 'outgoing' : null;
+            direction = callUUID ? 'outgoing' : 'incoming';
         }
 
         if (this.props.connection) {
@@ -78,8 +78,10 @@ class Call extends Component {
         if (this.ended) {
             return;
         }
+        //console.log('Call got props...');
 
-        this.setState({accountId: nextProps.account ? nextProps.account.id : null});
+        this.setState({connection: nextProps.connection,
+                       accountId: nextProps.account ? nextProps.account.id : null});
 
         if (nextProps.call !== null) {
             if (this.state.call !== nextProps.call) {
@@ -175,6 +177,7 @@ class Call extends Component {
 
     componentWillUnmount() {
         this.ended = true;
+        this.answering = false;
 
         if (this.state.call) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
@@ -238,6 +241,8 @@ class Call extends Component {
         let remoteIsRecvOnly;
         let remoteIsInactive;
         let remoteStreams;
+
+        this.answering = false;
 
         if (newState === 'established') {
             this.setState({reconnectingCall: false});

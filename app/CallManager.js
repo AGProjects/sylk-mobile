@@ -315,9 +315,7 @@ export default class CallManager extends events.EventEmitter {
             this.backToForeground();
             utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
-            if (Platform.OS === 'ios') {
-                this.respawnConnection();
-            }
+            this.respawnConnection();
             this.webSocketActions.set(callUUID, 'accept');
             utils.timestampedLog('Callkeep: check over 12 seconds if call', callUUID, 'arrived over web socket');
 
@@ -514,7 +512,9 @@ export default class CallManager extends events.EventEmitter {
             if (accept) {
                 this.acceptCall(call.id);
             } else if (!skipNativePanel) {
-                this.showAlertPanelforCall(call);
+                if (Platform.OS === 'ios') {
+                    this.showAlertPanelforCall(call);
+                }
             }
         }
 
@@ -558,6 +558,7 @@ export default class CallManager extends events.EventEmitter {
 
     showAlertPanel(callUUID, uri, hasVideo=false) {
         if (this._alertedCalls.has(callUUID)) {
+            //utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
             return;
         }
 
