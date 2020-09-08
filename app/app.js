@@ -167,7 +167,7 @@ class Sylk extends Component {
         autoBind(this)
         this._loaded = false;
         this._initialState = {
-            appState: 'active',
+            appState: null,
             inFocus: false,
             accountId: '',
             password: '',
@@ -224,7 +224,6 @@ class Sylk extends Component {
         this.cachedHistory = []; // used for caching server history
 
         this.state = Object.assign({}, this._initialState);
-        this.runtime = Object();
 
         this.myParticipants = {};
 
@@ -532,8 +531,6 @@ class Sylk extends Component {
                  })
         }
 
-        this.changeRoute('/login', 'start up');
-
         // prime the ref
         //logger.debug('NotificationCenter ref: %o', this._notificationCenter);
 
@@ -551,21 +548,28 @@ class Sylk extends Component {
     }
 
     listenforPushNotifications() {
-        if (Object.id(this.runtime) > 1) {
+        if (this.state.appState === null) {
+            this.setState({appState: 'active'});
+        } else {
             return;
         }
 
-        utils.timestampedLog('---- Add push notifications listeners');
+        utils.timestampedLog('---- Add notifications listeners');
 
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
                 if (url) {
-                      utils.timestampedLog('Initial external URL: ' + url);
-                      this.eventFromUrl(url);
+                     utils.timestampedLog('Initial external URL: ' + url);
+                     this.eventFromUrl(url);
+                      this.changeRoute('/login', 'start up');
+               } else {
+                      utils.timestampedLog('No Initial external URL');
+                      this.changeRoute('/login', 'start up');
                 }
               }).catch(err => {
                 logger.error({ err }, 'Error getting external URL');
               });
+
 
             firebase.messaging().getToken()
             .then(fcmToken => {
@@ -577,6 +581,7 @@ class Sylk extends Component {
             Linking.addEventListener('url', this.updateLinkingURL);
 
         } else if (Platform.OS === 'ios') {
+            this.changeRoute('/login', 'start up');
 
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
             VoipPushNotification.registerVoipToken();
