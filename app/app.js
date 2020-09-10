@@ -1441,8 +1441,9 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password, remember=true) {
-        if (this.state.account !== null) {
-            //utils.timestampedLog('We are already registered with', accountId);
+        utils.timestampedLog('handleRegistration for', accountId);
+        if (this.state.account !== null && this.state.registrationState === 'registered' ) {
+            utils.timestampedLog('We are already registered with', accountId);
             return;
         }
 
@@ -1466,12 +1467,8 @@ class Sylk extends Component {
             connection.on('stateChanged', this.connectionStateChanged);
             this.setState({connection: connection});
 
-            if (this.startedByPush) {
-                this.changeRoute('/call', 'started by push');
-            }
-
         } else {
-            if (this.state.connection.state === 'ready' && this.state.registrationState === null) {
+            if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password, '');
             }
