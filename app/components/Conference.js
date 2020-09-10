@@ -227,6 +227,7 @@ class Conference extends React.Component {
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
                         call = {this.state.currentCall}
+                        audioOnly = {!this.props.proposedMedia.video}
                         reconnectingCall={this.state.reconnectingCall}
                         connection = {this.state.connection}
                         hangup = {this.hangup}
@@ -245,6 +246,7 @@ class Conference extends React.Component {
                         defaultDomain = {this.props.defaultDomain}
                         inFocus = {this.props.inFocus}
                         reconnectingCall={this.state.reconnectingCall}
+                        contacts={this.props.contacts}
                    />
                 );
             } else if (!this.state.startedByPush) {
@@ -294,7 +296,8 @@ Conference.propTypes = {
     defaultDomain           : PropTypes.string,
     startedByPush           : PropTypes.bool,
     inFocus                 : PropTypes.bool,
-    reconnectingCall        : PropTypes.bool
+    reconnectingCall        : PropTypes.bool,
+    contacts                : PropTypes.array
 };
 
 

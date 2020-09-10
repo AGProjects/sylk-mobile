@@ -128,6 +128,7 @@ class ConferenceMatrixParticipant extends Component {
                 style = styles.landscapeTabletContainer;
             }
         }
+
         return (
             <View style={[styles.container, this.props.large ? styles.soloContainer : null, this.props.pauseVideo ? {display: 'none'} : null, style]}>
                 {activeIcon}

@@ -123,6 +123,7 @@ class ConferenceParticipant extends React.Component {
         if (this.props.pauseVideo && this.props.display) {
             icon = <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}><View><UserIcon identity={this.props.participant.identity} carousel /></View></TouchableWithoutFeedback>;
         }
+
         return (
             <View style={[styles.container, this.props.display === 'false' ? {display: 'none'} : null]}>
                 {muteButton}

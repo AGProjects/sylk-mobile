@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {Component, Fragment} from 'react';
-import { View, Platform, TouchableWithoutFeedback, Dimensions } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -27,11 +27,23 @@ import ConferenceParticipant from './ConferenceParticipant';
 import ConferenceMatrixParticipant from './ConferenceMatrixParticipant';
 import ConferenceParticipantSelf from './ConferenceParticipantSelf';
 import InviteParticipantsModal from './InviteParticipantsModal';
+import ConferenceAudioParticipantList from './ConferenceAudioParticipantList';
+import ConferenceAudioParticipant from './ConferenceAudioParticipant';
 
 import styles from '../assets/styles/blink/_ConferenceBox.scss';
 
 const DEBUG = debug('blinkrtc:ConferenceBox');
 debug.enable('*');
+
+
+function toTitleCase(str) {
+    return str.replace(
+        /\w\S*/g,
+        function(txt) {
+            return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+        }
+    );
+}
 
 class ConferenceBox extends Component {
     constructor(props) {
@@ -77,6 +89,7 @@ class ConferenceBox extends Component {
         this.haveVideo = false;
         this.uploads = [];
         this.selectSpeaker = 1;
+        this.foundContacts = new Map();
 
         [
             'error',
@@ -122,6 +135,7 @@ class ConferenceBox extends Component {
                 if (p.identity._uri.search('guest.') === -1) {
                     // used for history item
                     this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
+                    this.lookupContact(p.identity._uri);
                 }
             });
             // this.changeResolution();
@@ -169,12 +183,57 @@ class ConferenceBox extends Component {
         }
     }
 
+    findObjectByKey(array, key, value) {
+        for (var i = 0; i < array.length; i++) {
+            if (array[i][key] === value) {
+                return array[i];
+            }
+        }
+        return null;
+    }
+
+    lookupContact(uri) {
+        let photo;
+        let displayName;
+        let username =  uri.split('@')[0];
+
+        if (this.props.contacts) {
+            let username = uri.split('@')[0];
+            let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+            if (isPhoneNumber) {
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
+            } else {
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', uri);
+            }
+
+            if (contact_obj) {
+                displayName = contact_obj.displayName;
+                photo = contact_obj.photo;
+                if (isPhoneNumber) {
+                    uri = username;
+                }
+            } else {
+                if (isPhoneNumber) {
+                    uri = username;
+                    displayName = toTitleCase(username);
+                }
+            }
+        }
+
+        const c = {photo: photo, displayName: displayName || toTitleCase(username)};
+        this.foundContacts.set(uri, c)
+    }
+
     onParticipantJoined(p) {
         DEBUG(`Participant joined: ${p.identity}`);
         if (p.identity._uri.search('guest.') === -1) {
             // used for history item
             this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
         }
+
+        this.lookupContact(p.identity._uri);
+
         // this.refs.audioPlayerParticipantJoined.play();
         p.on('stateChanged', this.onParticipantStateChanged);
         p.attach();
@@ -469,6 +528,10 @@ class ConferenceBox extends Component {
     }
 
     armOverlayTimer() {
+        if (this.props.audioOnly) {
+            return;
+        }
+
         clearTimeout(this.overlayTimer);
         this.overlayTimer = setTimeout(() => {
             this.setState({callOverlayVisible: false});
@@ -476,6 +539,9 @@ class ConferenceBox extends Component {
     }
 
     showOverlay() {
+        if (this.props.audioOnly) {
+            return;
+        }
         // if (!this.state.shareOverlayVisible && !this.state.showDrawer && !this.state.showFiles) {
         // if (!this.state.callOverlayVisible) {
                 this.setState({callOverlayVisible: !this.state.callOverlayVisible});
@@ -669,7 +735,85 @@ class ConferenceBox extends Component {
         );
         buttons.bottom = bottomButtons;
 
+        const audioParticipants = [];
+        let _contact;
+        let _identity;
+
+        if (this.props.audioOnly) {
+            _contact = this.foundContacts.get(this.props.call.localIdentity._uri);
+            if (_contact) {
+                _identity = {uri: this.props.call.localIdentity._uri,
+                             displayName: _contact.displayName,
+                             photo: _contact.photo
+                            };
+            } else {
+                _identity = this.props.call.localIdentity;
+            }
+
+            audioParticipants.push(
+                <ConferenceAudioParticipant
+                    key="myself"
+                    identity={_identity}
+                    isLocal={true}
+                />
+            );
+
+            this.state.participants.forEach((p) => {
+                _contact = this.foundContacts.get(p.identity._uri);
+                if (_contact) {
+                    _identity = {uri: p.identity._uri,
+                                 displayName: _contact.displayName,
+                                 photo: _contact.photo
+                                };
+
+                } else {
+                    _identity = p.identity;
+                }
+
+                audioParticipants.push(
+                    <ConferenceAudioParticipant
+                        key={p.id}
+                        identity={_identity}
+                        isLocal={false}
+                    />
+                );
+            });
+
+            return (
+                <View style={styles.container}>
+                    <View style={styles.conferenceContainer}>
+                        <ConferenceHeader
+                            show={true}
+                            remoteUri={remoteUri}
+                            participants={this.state.participants}
+                            reconnectingCall={this.state.reconnectingCall}
+                            buttons={buttons}
+                        />
+                    </View>
+
+                    <View style={styles.audioContainer}>
+                        <ConferenceAudioParticipantList >
+                            {audioParticipants}
+                        </ConferenceAudioParticipantList>
+                    </View>
+
+                    <InviteParticipantsModal
+                        show={this.state.showInviteModal && !this.state.reconnectingCall}
+                        inviteParticipants={this.inviteParticipants}
+                        previousParticipants={this.state.previousParticipants}
+                        currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
+                        close={this.toggleInviteModal}
+                        room={this.props.remoteUri.split('@')[0]}
+                        defaultDomain = {this.props.defaultDomain}
+                        notificationCenter = {this.props.notificationCenter}
+                    />
+
+                </View>
+            );
+        }
+
         const participants = [];
+        const drawerParticipants = [];
 
         if (this.state.participants.length > 0) {
             if (this.state.activeSpeakers.findIndex((element) => {return element.id === this.props.call.id}) === -1) {
@@ -685,7 +829,6 @@ class ConferenceBox extends Component {
             }
         }
 
-        const drawerParticipants = [];
         drawerParticipants.push(
             <ConferenceDrawerParticipant
                 key="myself1"
@@ -709,6 +852,7 @@ class ConferenceBox extends Component {
                         <ConferenceMatrixParticipant
                             key={p.id}
                             participant={p}
+                            pauseVideo={this.props.audioOnly}
                             large={activeSpeakers.length <= 1}
                             isLocal={p.id === this.props.call.id}
                         />
@@ -734,16 +878,16 @@ class ConferenceBox extends Component {
                             participant={p}
                         />
                     );
+
                 });
             } else {
-
                 this.state.participants.forEach((p, idx) => {
                     videos.push(
                         <ConferenceMatrixParticipant
                             key = {p.id}
                             participant = {p}
                             large = {this.state.participants.length <= 1}
-                            pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
+                            pauseVideo={(this.props.audioOnly || idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
                             isLandscape={this.props.isLandscape}
                             isTablet={this.props.isTablet}
                             useTwoRows={this.state.participants.length > 2}
@@ -766,6 +910,7 @@ class ConferenceBox extends Component {
                             participant={p}
                         />
                     );
+
                 });
             }
         }
@@ -868,7 +1013,9 @@ ConferenceBox.propTypes = {
     muted               : PropTypes.bool,
     defaultDomain       : PropTypes.string,
     inFocus             : PropTypes.bool,
-    reconnectingCall    : PropTypes.bool
+    reconnectingCall    : PropTypes.bool,
+    audioOnly           : PropTypes.bool,
+    contacts            : PropTypes.array
 };
 
 export default ConferenceBox;

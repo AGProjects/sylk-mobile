@@ -226,7 +226,7 @@ export default class CallManager extends events.EventEmitter {
 
     _rnAccept(data) {
         let callUUID = data.callUUID.toLowerCase();
-        utils.timestampedLog('Callkeep: accept callback', callUUID);
+        utils.timestampedLog('---- Callkeep: accept callback', callUUID);
 
         if (this._pushCalls.has(callUUID)) {
             this._pushCalls.delete(callUUID);
@@ -258,7 +258,6 @@ export default class CallManager extends events.EventEmitter {
         if (!call && !this._conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
-            this.changeRoute('/ready', 'new_call_rejected');
             return;
         }
 
@@ -486,6 +485,7 @@ export default class CallManager extends events.EventEmitter {
                 }
             } else {
                 utils.timestampedLog('Callkeep: waiting for call', callUUID, 'on web socket');
+                this.showAlertPanel(callUUID, from);
             }
         }
     }
