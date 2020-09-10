@@ -7525,6 +7525,23 @@ react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#31d91fe514bca1a26e250c15
     webrtc-adapter "^6.4.8"
     websocket "^1.0.28"
 
+react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#a3c1d858a2fa6dcaeebdcdc04125be3df003bb32:
+  version "1.4.5"
+  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/a3c1d858a2fa6dcaeebdcdc04125be3df003bb32"
+  dependencies:
+    "@rifflearning/attachmediastream" "^3.0.0"
+    async "^3.1.0"
+    blueimp-md5 "^2.13.0"
+    bowser "^2.7.0"
+    debug "^4.1.1"
+    dompurify "^2.0.10"
+    react-native-device-info "^5.5.4"
+    react-native-get-random-values "^1.4.0"
+    react-native-uuid "^1.4.9"
+    sdp-transform "^2.3.0"
+    webrtc-adapter "^6.4.8"
+    websocket "^1.0.28"
+
 react-native-uuid@^1.4.9:
   version "1.4.9"
   resolved "https://registry.yarnpkg.com/react-native-uuid/-/react-native-uuid-1.4.9.tgz#a526742f8fddfe6414500655212ca8d109c40229"
