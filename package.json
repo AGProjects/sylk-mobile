@@ -17,6 +17,7 @@
     "auto-bind": "^4.0.0",
     "react": "16.9.0",
     "react-native": "0.61.5",
+    "react-native-background-timer": "2.1.1",
     "react-native-callkeep": "nimbleape/react-native-callkeep-1#aaf508332ff0855f500bd522779ef87884b59621",
     "react-native-contacts": "^5.2.3",
     "react-native-debug": "^3.0.0",
@@ -38,8 +39,7 @@
     "react-native-vector-icons": "^6.6.0",
     "react-native-voip-push-notification": "2.1.0",
     "react-native-webrtc": "nimbleape/react-native-webrtc#2f716bed0cbcf4aa4441886f890c40cd5f8dff81",
-    "react-router-native": "^5.1.2",
-    "react-native-background-timer": "2.1.1"
+    "react-router-native": "^5.1.2"
   },
   "devDependencies": {
     "@babel/core": "^7.7.4",
@@ -76,7 +76,7 @@
     "react": "^16.9.0",
     "react-mixin": "^4.0.0",
     "react-native-sass-transformer": "^1.4.0",
-    "react-native-sylkrtc": "AGProjects/react-native-sylkrtc.js#31d91fe514bca1a26e250c1571b1ab65a7622a46",
+    "react-native-sylkrtc": "AGProjects/react-native-sylkrtc.js#a3c1d858a2fa6dcaeebdcdc04125be3df003bb32",
     "react-notification-system": "^0.2.17",
     "react-router-component": "^0.39.1",
     "react-test-renderer": "16.9.0",
