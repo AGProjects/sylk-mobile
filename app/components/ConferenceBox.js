@@ -90,6 +90,9 @@ class ConferenceBox extends Component {
         this.uploads = [];
         this.selectSpeaker = 1;
         this.foundContacts = new Map();
+        if (this.props.call) {
+            this.lookupContact(this.props.call.localIdentity._uri);
+        }
 
         [
             'error',

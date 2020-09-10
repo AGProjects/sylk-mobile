@@ -1853,13 +1853,11 @@ class Sylk extends Component {
 
         if (event === 'incoming_session') {
             utils.timestampedLog('Incoming call PUSH mobile notification for call', callUUID);
-            VoipPushNotification.presentLocalNotification({alertBody:'Call from', from});
             this.startedByPush = true;
             this.incomingCallFromPush(callUUID, from);
 
         } else if (event === 'incoming_conference_request') {
             utils.timestampedLog('Incoming conference PUSH mobile notification for call', callUUID);
-            VoipPushNotification.presentLocalNotification({alertBody:'Conference invite from', from});
             this.startedByPush = true;
             this.incomingConference(callUUID, to, from);
 
@@ -2012,7 +2010,7 @@ class Sylk extends Component {
     }
 
     autoRejectIncomingCall(callUUID, from) {
-        //utils.timestampedLog('Check auto reject call from', from);
+        utils.timestampedLog('Check auto reject call from', from);
         if (this.state.blockedUris && this.state.blockedUris.indexOf(from) > -1) {
             utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
             this.callKeeper.rejectCall(callUUID);
@@ -2150,6 +2148,7 @@ class Sylk extends Component {
             //utils.timestampedLog('Update snackbar');
             let from = data.originator.display_name || data.originator.uri;
             this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`});
+            VoipPushNotification.presentLocalNotification({alertBody:'Missed call from ' + from});
         }
 
         this.updateServerHistory()
