@@ -752,6 +752,7 @@ class ConferenceBox extends Component {
             audioParticipants.push(
                 <ConferenceAudioParticipant
                     key="myself"
+                    participant={null}
                     identity={_identity}
                     isLocal={true}
                 />
@@ -767,6 +768,7 @@ class ConferenceBox extends Component {
                 audioParticipants.push(
                     <ConferenceAudioParticipant
                         key={p.id}
+                        participant={p}
                         identity={_identity}
                         isLocal={false}
                     />
@@ -914,7 +916,7 @@ class ConferenceBox extends Component {
                             key = {p.id}
                             participant = {p}
                             large = {this.state.participants.length <= 1}
-                            pauseVideo={(this.props.audioOnly || idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
+                            pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
                             isLandscape={this.props.isLandscape}
                             isTablet={this.props.isTablet}
                             useTwoRows={this.state.participants.length > 2}
@@ -981,6 +983,39 @@ class ConferenceBox extends Component {
                     defaultDomain = {this.props.defaultDomain}
                     notificationCenter = {this.props.notificationCenter}
                 />
+                <ConferenceDrawer
+                    show={this.state.showDrawer && !this.state.reconnectingCall}
+                    close={this.toggleDrawer}
+                    isLandscape={this.props.isLandscape}
+                    title="Conference data"
+                >
+                    <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
+                        <View style={{flex: this.props.isLandscape ? 1 : 2}}>
+                            <ConferenceDrawerSpeakerSelectionWrapper
+                                selectSpeaker={this.startSpeakerSelection}
+                                activeSpeakers={this.state.activeSpeakers}
+                            />
+                            <ConferenceDrawerParticipantList style={styles.container}>
+                                {drawerParticipants}
+                            </ConferenceDrawerParticipantList>
+                        </View>
+                    </View>
+                </ConferenceDrawer>
+                <ConferenceDrawer
+                    show={this.state.showSpeakerSelection}
+                    close={this.toggleSpeakerSelection}
+                    isLandscape={this.props.isLandscape}
+                    showBackdrop={false}
+                    title={`Select speaker ${this.selectSpeaker}`}
+                >
+                    <ConferenceDrawerSpeakerSelection
+                        participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
+                        selected={this.handleActiveSpeakerSelected}
+                        activeSpeakers={this.state.activeSpeakers}
+                        selectSpeaker={this.selectSpeaker}
+                        key = {this.state.activeSpeakers}
+                    />
+                </ConferenceDrawer>
             </View>
         );
     }

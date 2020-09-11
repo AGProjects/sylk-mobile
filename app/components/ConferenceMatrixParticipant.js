@@ -30,7 +30,6 @@ class ConferenceMatrixParticipant extends Component {
         if (!props.isLocal) {
             props.participant.on('stateChanged', this.onParticipantStateChanged);
         }
-
     }
 
     componentDidMount() {
