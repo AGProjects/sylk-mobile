@@ -218,7 +218,6 @@ class Conference extends React.Component {
     }
 
     render() {
-        //console.log('Render conference');
         let box = null;
 
         if (this.state.localMedia !== null) {
@@ -249,7 +248,7 @@ class Conference extends React.Component {
                         contacts={this.props.contacts}
                    />
                 );
-            } else if (!this.state.startedByPush) {
+            } else {
                 box = (
                     <LocalMedia
                         call = {this.state.currentCall}
@@ -265,7 +264,7 @@ class Conference extends React.Component {
             }
 
         } else {
-            console.log('Error: render conference has no local media');
+            console.log('Error: cannot start conference without local media');
         }
 
         return box;
