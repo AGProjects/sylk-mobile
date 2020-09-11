@@ -6,9 +6,10 @@ import styles from '../assets/styles/blink/_ConferenceAudioParticipant.scss';
 
 
 const ConferenceAudioParticipantList = props => {
+//  <Title style={styles.title}>Participants</Title>
+
     return (
         <Fragment>
-            <Title style={styles.title}>Participants</Title>
             <FlatList
                 data={props.children}
                 renderItem={({item}) => {return (item)}}

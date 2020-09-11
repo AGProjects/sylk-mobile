@@ -744,14 +744,10 @@ class ConferenceBox extends Component {
 
         if (this.props.audioOnly) {
             _contact = this.foundContacts.get(this.props.call.localIdentity._uri);
-            if (_contact) {
-                _identity = {uri: this.props.call.localIdentity._uri,
-                             displayName: _contact.displayName,
-                             photo: _contact.photo
-                            };
-            } else {
-                _identity = this.props.call.localIdentity;
-            }
+            _identity = {uri: this.props.call.localIdentity._uri,
+                         displayName: _contact.displayName,
+                         photo: _contact.photo
+                        };
 
             audioParticipants.push(
                 <ConferenceAudioParticipant
@@ -763,15 +759,10 @@ class ConferenceBox extends Component {
 
             this.state.participants.forEach((p) => {
                 _contact = this.foundContacts.get(p.identity._uri);
-                if (_contact) {
-                    _identity = {uri: p.identity._uri,
-                                 displayName: _contact.displayName,
-                                 photo: _contact.photo
-                                };
-
-                } else {
-                    _identity = p.identity;
-                }
+                _identity = {uri: p.identity._uri.indexOf('@guest') > -1 ? 'From the web': p.identity._uri,
+                             displayName: (_contact && _contact.displayName != p.identity._displayName) ? _contact.displayName : p.identity._displayName,
+                             photo: _contact ? _contact.photo: null
+                            };
 
                 audioParticipants.push(
                     <ConferenceAudioParticipant
@@ -810,6 +801,39 @@ class ConferenceBox extends Component {
                         defaultDomain = {this.props.defaultDomain}
                         notificationCenter = {this.props.notificationCenter}
                     />
+                <ConferenceDrawer
+                    show={this.state.showDrawer && !this.state.reconnectingCall}
+                    close={this.toggleDrawer}
+                    isLandscape={this.props.isLandscape}
+                    title="Conference data"
+                >
+                    <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
+                        <View style={{flex: this.props.isLandscape ? 1 : 2}}>
+                            <ConferenceDrawerSpeakerSelectionWrapper
+                                selectSpeaker={this.startSpeakerSelection}
+                                activeSpeakers={this.state.activeSpeakers}
+                            />
+                            <ConferenceDrawerParticipantList style={styles.container}>
+                                {drawerParticipants}
+                            </ConferenceDrawerParticipantList>
+                        </View>
+                    </View>
+                </ConferenceDrawer>
+                <ConferenceDrawer
+                    show={this.state.showSpeakerSelection}
+                    close={this.toggleSpeakerSelection}
+                    isLandscape={this.props.isLandscape}
+                    showBackdrop={false}
+                    title={`Select speaker ${this.selectSpeaker}`}
+                >
+                    <ConferenceDrawerSpeakerSelection
+                        participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
+                        selected={this.handleActiveSpeakerSelected}
+                        activeSpeakers={this.state.activeSpeakers}
+                        selectSpeaker={this.selectSpeaker}
+                        key = {this.state.activeSpeakers}
+                    />
+                </ConferenceDrawer>
 
                 </View>
             );
@@ -957,43 +981,6 @@ class ConferenceBox extends Component {
                     defaultDomain = {this.props.defaultDomain}
                     notificationCenter = {this.props.notificationCenter}
                 />
-
-                <ConferenceDrawer
-                    show={this.state.showDrawer && !this.state.reconnectingCall}
-                    close={this.toggleDrawer}
-                    isLandscape={this.props.isLandscape}
-                    title="Conference data"
-                >
-                    <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
-                        <View style={{flex: this.props.isLandscape ? 1 : 2}}>
-                            <ConferenceDrawerSpeakerSelectionWrapper
-                                selectSpeaker={this.startSpeakerSelection}
-                                activeSpeakers={this.state.activeSpeakers}
-                            />
-                            <ConferenceDrawerParticipantList style={styles.container}>
-                                {drawerParticipants}
-                            </ConferenceDrawerParticipantList>
-                        </View>
-                        <View style={styles.container}>
-                            <ConferenceDrawerLog log={this.state.eventLog} />
-                        </View>
-                    </View>
-                </ConferenceDrawer>
-                <ConferenceDrawer
-                    show={this.state.showSpeakerSelection}
-                    close={this.toggleSpeakerSelection}
-                    isLandscape={this.props.isLandscape}
-                    showBackdrop={false}
-                    title={`Select speaker ${this.selectSpeaker}`}
-                >
-                    <ConferenceDrawerSpeakerSelection
-                        participants={this.state.participants.concat([{id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity}])}
-                        selected={this.handleActiveSpeakerSelected}
-                        activeSpeakers={this.state.activeSpeakers}
-                        selectSpeaker={this.selectSpeaker}
-                        key = {this.state.activeSpeakers}
-                    />
-                </ConferenceDrawer>
             </View>
         );
     }
