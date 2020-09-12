@@ -518,6 +518,20 @@ class Sylk extends Component {
             this.heartbeat();
         }, 5000);
 
+        try {
+            await RNCallKeep.supportConnectionService ();
+            utils.timestampedLog('Connection service is enabled');
+        } catch(err) {
+            utils.timestampedLog(err);
+        }
+
+        try {
+            await RNCallKeep.hasPhoneAccount();
+            utils.timestampedLog('Phone account is enabled');
+        } catch(err) {
+            utils.timestampedLog(err);
+        }
+
         if (Platform.OS === 'android') {
             RNDrawOverlay.askForDispalayOverOtherAppsPermission()
                  .then(res => {
