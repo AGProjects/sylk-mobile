@@ -795,6 +795,7 @@ class Sylk extends Component {
     }
 
     respawnConnection(state) {
+        utils.timestampedLog('Respawn connection for', state, 'state');
         if (!this.state.connection) {
             utils.timestampedLog('Web socket does not exist');
         } else if (!this.state.connection.state) {
@@ -1366,6 +1367,7 @@ class Sylk extends Component {
 
                 this.updateHistoryEntry(callUUID);
 
+                /*
                 if (newState === 'established' || newState === 'accepted') {
                     // restore the correct UI state if it has transitioned illegally to /ready state
                     if (call.hasOwnProperty('_participants')) {
@@ -1374,6 +1376,7 @@ class Sylk extends Component {
                         this.changeRoute('/call', 'correct call state');
                     }
                 }
+                */
 
                 break;
             default:
@@ -1391,17 +1394,18 @@ class Sylk extends Component {
         });
 
         if (this.state.currentCall || this.state.incomingCall) {
-            //console.log('New call state:');
+            utils.timestampedLog('We still have calls ongoing');
 
         } else {
             if (!this.state.reconnectingCall) {
-                //utils.timestampedLog('Will go to ready in 4 seconds');
-
-                this.goToReadyTimer = setTimeout(() => {
-
+                if (this.state.inFocus) {
+                    utils.timestampedLog('Will go to ready in 4 seconds, inFocus =', this.state.inFocus);
+                    this.goToReadyTimer = setTimeout(() => {
+                        this.changeRoute('/ready', 'no_more_calls');
+                    }, readyDelay);
+                } else {
                     this.changeRoute('/ready', 'no_more_calls');
-
-                }, readyDelay);
+                }
             }
         }
 
