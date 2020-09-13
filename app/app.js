@@ -168,6 +168,7 @@ class Sylk extends Component {
         this._loaded = false;
         this._initialState = {
             appState: null,
+            autoLogin: true,
             inFocus: false,
             accountId: '',
             password: '',
@@ -209,10 +210,11 @@ class Sylk extends Component {
             muted: false,
             participantsToInvite: null,
             myInvitedParties: null,
-            defaultDomain: config.defaultDomain
+            defaultDomain: config.defaultDomain,
         };
 
         this.tokenSent = false;
+        this.mustLogout = false;
         this.currentRoute = null;
         this.pushtoken = null;
         this.pushkittoken = null;
@@ -712,7 +714,6 @@ class Sylk extends Component {
             this.startCall(targetUri, options);
         }
     }
-
     _sleep(ms) {
       return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -728,7 +729,7 @@ class Sylk extends Component {
     }
 
     _sendPushToken() {
-        if (this.state.account && this.pushtoken && !this.tokenSent) {
+        if ((this.state.account && this.pushtoken && !this.tokenSent)) {
             let token = null;
 
             if (Platform.OS === 'ios') {
@@ -741,6 +742,7 @@ class Sylk extends Component {
             this.tokenSent = true;
         }
     }
+
 
     _handleAndroidFocus = nextFocus => {
         //utils.timestampedLog('--- APP is in focus');
@@ -793,8 +795,6 @@ class Sylk extends Component {
     }
 
     respawnConnection(state) {
-        utils.timestampedLog('Respawn connection in state', state || this.state.appState);
-
         if (!this.state.connection) {
             utils.timestampedLog('Web socket does not exist');
         } else if (!this.state.connection.state) {
@@ -963,7 +963,7 @@ class Sylk extends Component {
         }
 
         if (!this.state.account) {
-            utils.timestampedLog('Registration account has vanished');
+            utils.timestampedLog('Account disabled');
             return;
         }
 
@@ -978,14 +978,12 @@ class Sylk extends Component {
             this.showRegisterFailure(reason);
 
             if (this.state.registrationKeepalive === true) {
-                if (this.state.connection !== null) {
+                if (this.state.connection !== null && this.state.connection.state === 'ready') {
                     utils.timestampedLog('Retry to register...');
-                    //this.setState({loading: 'Register...'});
-                    this._notificationCenter.postSystemNotification('Registering', {body: 'now'});
                     this.state.account.register();
                 } else {
                     // add a timer to retry register after awhile
-                    utils.timestampedLog('Retry to register after a delay...');
+                    utils.timestampedLog('Retry to register after 5 seconds delay...');
                     setTimeout(this.state.account.register(), 5000);
                 }
             }
@@ -1007,6 +1005,10 @@ class Sylk extends Component {
             return;
         } else {
             this.setState({status: null, registrationState: newState });
+        }
+
+        if (this.mustLogout) {
+            this.logout();
         }
     }
 
@@ -2162,7 +2164,9 @@ class Sylk extends Component {
             //utils.timestampedLog('Update snackbar');
             let from = data.originator.display_name || data.originator.uri;
             this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`});
-            VoipPushNotification.presentLocalNotification({alertBody:'Missed call from ' + from});
+            if (Platform.OS === 'ios') {
+                VoipPushNotification.presentLocalNotification({alertBody:'Missed call from ' + from});
+            }
         }
 
         this.updateServerHistory()
@@ -2626,6 +2630,7 @@ class Sylk extends Component {
     login() {
         let registerBox;
         let statusBox;
+        this.mustLogout = false;
 
         if (this.state.status !== null) {
             statusBox = (
@@ -2641,7 +2646,7 @@ class Sylk extends Component {
                 <RegisterBox
                     registrationInProgress = {this.state.registrationState !== null && this.state.registrationState !== 'failed'}
                     handleRegistration = {this.handleRegistration}
-                    autoLogin={true}
+                    autoLogin={this.state.autoLogin}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
                     phoneNumber= {this.state.phoneNumber}
@@ -2660,10 +2665,15 @@ class Sylk extends Component {
     logout() {
         this.callKeeper.setAvailable(false);
 
-        if (this.state.registrationState !== null) {
-            this.state.account.unregister();
+        if (!this.mustLogout && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
+            // remove token from server
+            this.mustLogout = true;
+            this.state.account.setDeviceToken('None', Platform.OS, deviceId, true, bundleId);
+            this.state.account.register();
+            return;
         }
 
+        this.tokenSent = false;
         if (this.state.connection && this.state.account) {
             this.state.connection.removeAccount(this.state.account, (error) => {
                 if (error) {
@@ -2671,17 +2681,22 @@ class Sylk extends Component {
                 }
             });
         }
-        storage.set('account', {accountId: this.state.accountId, password: ''});
+
+        storage.set('account', {accountId: this.state.accountId,
+                                password: this.state.password});
+
         this.serverHistory = [];
         this.setState({account: null,
                        registrationState: null,
                        registrationKeepalive: false,
                        status: null,
+                       autoLogin: false,
                        history: [],
                        localHistory: [],
                        cachedHistory: [],
                        defaultDomain: config.defaultDomain
                        });
+
         this.changeRoute('/login');
         return null;
     }
