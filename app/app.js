@@ -1980,22 +1980,23 @@ class Sylk extends Component {
                 callUUID  = url_parts[4];
                 from      = url_parts[5];
                 to        = url_parts[6];
-            } else {
+                this.setState({targetUri: from});
+            } else if (scheme === 'https:') {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
                 // https://webrtc.sipthor.net/call/alice@example.com from external web link
                 direction = 'outgoing';
                 event = url_parts[3];
+                to = url_parts[4];
                 callUUID = uuid.v4();
-                from = url_parts[4];
 
-                if (from.indexOf('@') === -1 && event === 'conference') {
-                    from = url_parts[4] + '@' + config.defaultConferenceDomain;
-                } else if (from.indexOf('@') === -1 && event === 'call') {
-                    from = url_parts[4] + '@' + this.state.defaultDomain;
+                if (to.indexOf('@') === -1 && event === 'conference') {
+                    to = url_parts[4] + '@' + config.defaultConferenceDomain;
+                } else if (to.indexOf('@') === -1 && event === 'call') {
+                    to = url_parts[4] + '@' + this.state.defaultDomain;
                 }
+                this.setState({targetUri: to});
             }
 
-            this.setState({targetUri: from});
             this.startedByPush = true;
 
             if (direction === 'outgoing' && event === 'conference' && to) {

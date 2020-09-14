@@ -42,8 +42,8 @@ class ReadyBox extends Component {
         this.setState({myInvitedParties: nextProps.myInvitedParties});
     }
 
-    getTargetUri() {
-        return utils.normalizeUri(this.state.targetUri, this.props.defaultDomain);
+    getTargetUri(uri) {
+        return utils.normalizeUri(uri, this.props.defaultDomain);
     }
 
     async componentDidMount() {
@@ -97,14 +97,17 @@ class ReadyBox extends Component {
             return;
         }
         // the user pressed enter, start a video call by default
-        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
+
+        let uri = this.state.targetUri.toLowerCase();
+
+        if (uri.endsWith(`@${config.defaultConferenceDomain}`)) {
             let participants;
-            if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(this.state.targetUri)) {
-                participants = this.state.myInvitedParties[this.state.targetUri];
+            if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
+                participants = this.state.myInvitedParties[uri];
             }
-            this.props.startConference(this.state.targetUri, {audio: true, video: true, participants: this.state.participants});
+            this.props.startConference(uri, {audio: true, video: true, participants: this.state.participants});
         } else {
-            this.props.startCall(this.getTargetUri(), {audio: true, video: true});
+            this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
         }
     }
 
@@ -112,30 +115,47 @@ class ReadyBox extends Component {
         event.preventDefault();
         this.setState({showConferenceModal: true});
         return;
-
-        if (this.state.targetUri.length !== 0) {
-            const uri = `${this.state.targetUri.split('@')[0].replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
-            this.handleConferenceCall(uri.toLowerCase());
-        } else {
-            this.setState({showConferenceModal: true});
-        }
     }
 
     handleAudioCall(event) {
         event.preventDefault();
-        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri, {audio: true, video: false});
+        let uri = this.state.targetUri.toLowerCase();
+        var uri_parts = uri.split("/");
+        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+            // https://webrtc.sipthor.net/call/alice@example.com from external web link
+            let event = uri_parts[3];
+            uri = uri_parts[4];
+            if (event === 'conference') {
+                uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+            }
+        }
+
+        if (uri.endsWith(`@${config.defaultConferenceDomain}`)) {
+            this.props.startConference(uri, {audio: true, video: false});
         } else {
-            this.props.startCall(this.getTargetUri(), {audio: true, video: false});
+            this.props.startCall(this.getTargetUri(uri), {audio: true, video: false});
         }
     }
 
     handleVideoCall(event) {
         event.preventDefault();
-        if (this.state.targetUri.endsWith(`@${config.defaultConferenceDomain}`)) {
-            this.props.startConference(this.state.targetUri, {audio: true, video: false});
+        let uri = this.state.targetUri.toLowerCase();
+        var uri_parts = uri.split("/");
+        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+            // https://webrtc.sipthor.net/call/alice@example.com from external web link
+            let event = uri_parts[3];
+            uri = uri_parts[4];
+            if (event === 'conference') {
+                uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+            }
+        }
+
+        if (uri.endsWith(`@${config.defaultConferenceDomain}`)) {
+            this.props.startConference(uri, {audio: true, video: true});
         } else {
-            this.props.startCall(this.getTargetUri(), {audio: true, video: true});
+            this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
         }
     }
 
@@ -150,6 +170,17 @@ class ReadyBox extends Component {
             return false;
         }
 
+        let uri = this.state.targetUri.toLowerCase();
+        var uri_parts = uri.split("/");
+        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+            // https://webrtc.sipthor.net/call/alice@example.com from external web link
+            let event = uri_parts[3];
+            if (event === 'call') {
+                return false;
+            }
+        }
+
         if (this.state.targetUri.match(/^(\+)(\d+)$/)) {
             return false;
         }
@@ -157,11 +188,22 @@ class ReadyBox extends Component {
         return true;
     }
 
-
     render() {
         let uriClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
+
+        let uri = this.state.targetUri.toLowerCase();
+        var uri_parts = uri.split("/");
+        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+            // https://webrtc.sipthor.net/call/alice@example.com from external web link
+            let event = uri_parts[3];
+            uri = uri_parts[4];
+            if (event === 'conference') {
+                uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+            }
+        }
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
@@ -272,7 +314,7 @@ class ReadyBox extends Component {
                 </View>
                 <ConferenceModal
                     show={this.state.showConferenceModal}
-                    targetUri={this.state.targetUri}
+                    targetUri={uri}
                     myInvitedParties={this.state.myInvitedParties}
                     selectedContact={this.state.selectedContact}
                     handleConferenceCall={this.handleConferenceCall}
