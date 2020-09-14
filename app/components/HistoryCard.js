@@ -37,6 +37,12 @@ const renderItem = ({ item }) => (
  <Item nr={item.nr} uri={item.uri} displayName={item.displayName}/>
 );
 
+function isIp(ipaddress) {
+  if (/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ipaddress)) {
+    return (true)
+  }
+  return (false)
+}
 
 
 class HistoryCard extends Component {
@@ -62,7 +68,6 @@ class HistoryCard extends Component {
             confirmed: false,
             showEditConferenceModal: false
         }
-
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -158,6 +163,9 @@ class HistoryCard extends Component {
 
         let uri =  this.state.uri;
         let username =  uri.split('@')[0];
+        let domain =  uri.split('@')[1];
+        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
         let displayName = this.state.displayName;
 
         let buttonMode = 'text';
@@ -174,14 +182,6 @@ class HistoryCard extends Component {
         let undoTextbutton = 'Undo';
         let deleteTextbutton = 'Delete';
         let participantsData = [];
-
-        if (utils.isAnonymous(uri)) {
-            //uri = 'anonymous@anonymous.invalid';
-            displayName = 'Anonymous';
-            showFavoriteButton = false;
-            showBlockButton = true;
-            showBlockDomainButton = true;
-        }
 
         if (this.state.favorite) {
             favoriteTextbutton = this.state.confirmed ? 'Confirm' : 'Remove';
@@ -226,6 +226,37 @@ class HistoryCard extends Component {
 
         if (displayName === uri) {
             title = toTitleCase(username);
+        }
+
+       if (isPhoneNumber && isIp(domain)) {
+           title = 'Tel ' + username;
+           subtitle = 'From @' + domain;
+           showBlockDomainButton = true;
+           showFavoriteButton = false;
+       }
+
+        if (utils.isAnonymous(uri)) {
+            //uri = 'anonymous@anonymous.invalid';
+            displayName = 'Anonymous';
+            if (uri.indexOf('@guest.') > -1) {
+                subtitle = 'From the Web';
+            }
+            showFavoriteButton = false;
+            showBlockDomainButton = true;
+            if (!this.state.blocked) {
+                showBlockButton = false;
+            }
+            blockDomainTextbutton = 'Block Web calls';
+        }
+
+        if (!username || username.length === 0) {
+            if (isIp(domain)) {
+                title = 'IP domain';
+            } else if (domain.indexOf('guest.') > -1) {
+                title = 'Calls from the Web';
+            } else {
+                title = 'Domain';
+            }
         }
 
         if (this.props.contact.tags.indexOf('history') > -1) {
