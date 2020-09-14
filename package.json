@@ -21,6 +21,7 @@
     "react-native-callkeep": "nimbleape/react-native-callkeep-1#aaf508332ff0855f500bd522779ef87884b59621",
     "react-native-contacts": "^5.2.3",
     "react-native-debug": "^3.0.0",
+    "react-native-deep-linking": "^2.2.0",
     "react-native-device-info": "^5.5.4",
     "react-native-draw-overlay": "^1.0.1",
     "react-native-dtmf": "nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9",

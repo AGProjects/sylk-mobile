@@ -15,6 +15,7 @@ import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import Contacts from 'react-native-contacts';
 import BackgroundTimer from 'react-native-background-timer';
+import DeepLinking from 'react-native-deep-linking'
 
 registerGlobals();
 
@@ -59,6 +60,10 @@ const theme = {
     },
 };
 
+const URL_SCHEMES = [
+  'sylk://',
+];
+
 const ONE_SECOND_IN_MS = 1000;
 
 const VIBRATION_PATTERN = [
@@ -76,7 +81,7 @@ const version = '1.0.0';
 
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
-    // bundleId = `${bundleId}.dev`;
+    //bundleId = 'com.agprojects.sylk-ios.dev';
 }
 
 const mainStyle = StyleSheet.create({
@@ -321,7 +326,11 @@ class Sylk extends Component {
             }
         });
 
-    }
+        for (let scheme of URL_SCHEMES) {
+            DeepLinking.addScheme(scheme);
+        }
+
+   }
 
     async loadContacts() {
         Contacts.checkPermission((err, permission) => {
@@ -1955,6 +1964,7 @@ class Sylk extends Component {
         // this handles the use case where the app is running in the background and is activated by the listener...
         //console.log('Updated Linking url', event.url);
         this.eventFromUrl(event.url);
+        DeepLinking.evaluateUrl(event.url);
     }
 
     eventFromUrl(url) {
