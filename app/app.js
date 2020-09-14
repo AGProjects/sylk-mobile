@@ -645,13 +645,14 @@ class Sylk extends Component {
                     const callUUID = message.data['session-id'];
                     const from = message.data['from_uri'];
                     const to = message.data['to_uri'];
+                    const displayName = message.data['from_display_name'];
 
                     if (event === 'incoming_conference_request') {
                         utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
                         this.incomingConference(callUUID, to, from);
                     } else if (event === 'incoming_session') {
                         utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
-                        this.incomingCallFromPush(callUUID, from);
+                        this.incomingCallFromPush(callUUID, from, displayName);
                     } else if (event === 'cancel') {
                         this.cancelIncomingCall(callUUID);
                     }
@@ -1394,12 +1395,11 @@ class Sylk extends Component {
         });
 
         if (this.state.currentCall || this.state.incomingCall) {
-            utils.timestampedLog('We still have calls ongoing');
-
+            //utils.timestampedLog('We still have calls ongoing');
         } else {
             if (!this.state.reconnectingCall) {
                 if (this.state.inFocus) {
-                    utils.timestampedLog('Will go to ready in 4 seconds, inFocus =', this.state.inFocus);
+                    utils.timestampedLog('Will go to ready in 4 seconds');
                     this.goToReadyTimer = setTimeout(() => {
                         this.changeRoute('/ready', 'no_more_calls');
                     }, readyDelay);
@@ -1860,6 +1860,7 @@ class Sylk extends Component {
         const callUUID = notificationContent['session-id'];
         const to = notificationContent['to_uri'];
         const from = notificationContent['from_uri'];
+        const displayName = notificationContent['from_display_name'];
 
           /*
            * Local Notification Payload
@@ -1874,7 +1875,7 @@ class Sylk extends Component {
         if (event === 'incoming_session') {
             utils.timestampedLog('Incoming call PUSH mobile notification for call', callUUID);
             this.startedByPush = true;
-            this.incomingCallFromPush(callUUID, from);
+            this.incomingCallFromPush(callUUID, from, displayName);
 
         } else if (event === 'incoming_conference_request') {
             utils.timestampedLog('Incoming conference PUSH mobile notification for call', callUUID);
@@ -2018,7 +2019,7 @@ class Sylk extends Component {
             } else if (direction === 'incoming' && from) {
                 this.backToForeground();
                 utils.timestampedLog('Incoming call from', from);
-                this.incomingCallFromPush(callUUID, from, true);
+                this.incomingCallFromPush(callUUID, from, from, true);
 
             } else if (direction === 'cancel' && callUUID) {
                 this.cancelIncomingCall(callUUID);
@@ -2098,8 +2099,8 @@ class Sylk extends Component {
         return false;
     }
 
-    incomingCallFromPush(callUUID, from, force) {
-        utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from);
+    incomingCallFromPush(callUUID, from, displayName, force) {
+        utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.autoRejectIncomingCall(callUUID, from)) {
             return;
@@ -2122,7 +2123,7 @@ class Sylk extends Component {
             }
         }
 
-        this.callKeeper.incomingCallFromPush(callUUID, from, force, skipNativePanel);
+        this.callKeeper.incomingCallFromPush(callUUID, from, displayName, force, skipNativePanel);
 
     }
 
@@ -2164,6 +2165,10 @@ class Sylk extends Component {
     }
 
     missedCall(data) {
+        if (data.originator.indexOf('@guest') > -1) {
+            return;
+        }
+
         utils.timestampedLog('Missed call from ' + data.originator);
         if (!this.state.currentCall) {
             //utils.timestampedLog('Update snackbar');

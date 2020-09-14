@@ -343,6 +343,10 @@ class HistoryTileBox extends Component {
                         elem.photo = null;
                     }
 
+                    if (elem.remoteParty.indexOf('@guest.') > -1) {
+                        elem.remoteParty = elem.displayName.toLowerCase() + '_from_the_web@' + elem.remoteParty.split('@')[1];
+                    }
+
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {
                         elem.displayName = elem.remoteParty.split('@')[0];
                         elem.remoteParty = elem.remoteParty.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;

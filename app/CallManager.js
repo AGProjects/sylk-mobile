@@ -432,7 +432,7 @@ export default class CallManager extends events.EventEmitter {
         this._calls.set(call.id, call);
     }
 
-    incomingCallFromPush(callUUID, from, force=false, skipNativePanel=false) {
+    incomingCallFromPush(callUUID, from, displayName, force=false, skipNativePanel=false) {
         utils.timestampedLog('Callkeep: handle new incoming push call', callUUID, 'from', from);
 
         if (this._pushCalls.has(callUUID)) {
@@ -473,19 +473,19 @@ export default class CallManager extends events.EventEmitter {
             if (this._calls.has(callUUID)) {
                 utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
             }
-            this.showAlertPanel(callUUID, from);
+            this.showAlertPanel(callUUID, from, displayName);
         } else {
             if (this._calls.has(callUUID) || force) {
                 // on Android display alert panel only after websocket call arrives
                 // force is required when Android is locked, if we do not bring up the panel, the app will not wake up
                 if (!skipNativePanel || force) {
-                    this.showAlertPanel(callUUID, from);
+                    this.showAlertPanel(callUUID, from, displayName);
                 } else {
                     utils.timestampedLog('Callkeep: call', callUUID, 'skipped display of native panel');
                 }
             } else {
                 utils.timestampedLog('Callkeep: waiting for call', callUUID, 'on web socket');
-                this.showAlertPanel(callUUID, from);
+                this.showAlertPanel(callUUID, from, displayName);
             }
         }
     }
@@ -545,35 +545,33 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showAlertPanelforCall(call, force=false) {
-        const callUUID = call.id;
-        const uri = call.remoteIdentity.uri;
-
-        const username = uri.split('@')[0];
-        const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-        const from = isPhoneNumber ? username: uri;
-
         const hasVideo = call.mediaTypes && call.mediaTypes.video;
-        this.showAlertPanel(callUUID, from, hasVideo);
+        this.showAlertPanel(call.id, call.remoteIdentity.uri, call.remoteIdentity.displayName, hasVideo);
     }
 
-    showAlertPanel(callUUID, uri, hasVideo=false) {
+    showAlertPanel(callUUID, from, displayName, hasVideo=false) {
         if (this._alertedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
             return;
         }
 
-        const username = uri.split('@')[0];
+        let panelFrom = from;
+        const username = from.split('@')[0];
         const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-        const from = isPhoneNumber ? username: uri;
+        if (isPhoneNumber) {
+            panelFrom = isPhoneNumber;
+        } else {
+            panelFrom = from.indexOf('@guest.') > -1 ? displayName : from;
+        }
 
-        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from);
+        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
 
         this._alertedCalls.set(callUUID, Date.now());
 
         if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(callUUID, from, from, 'email', hasVideo);
+            this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
-            this.callKeep.displayIncomingCall(callUUID, from, from);
+            this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName);
         }
     }
 

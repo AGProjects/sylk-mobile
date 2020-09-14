@@ -165,6 +165,10 @@ class ReadyBox extends Component {
     }
 
     conferenceButtonActive() {
+        if (this.state.targetUri.indexOf('@guest.') > -1) {
+            return false;
+        }
+
         if (this.state.targetUri.indexOf('@') > -1 &&
             this.state.targetUri.indexOf(config.defaultConferenceDomain) === -1) {
             return false;
@@ -244,14 +248,14 @@ class ReadyBox extends Component {
                                 <IconButton
                                     style={buttonClass}
                                     size={34}
-                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1}
+                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1 || this.state.targetUri.indexOf('@guest') > -1}
                                     onPress={this.handleAudioCall}
                                     icon="phone"
                                 />
                                 <IconButton
                                     style={buttonClass}
                                     size={34}
-                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1}
+                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1 || this.state.targetUri.indexOf('@guest') > -1}
                                     onPress={this.handleVideoCall}
                                     icon="video"
                                 />
