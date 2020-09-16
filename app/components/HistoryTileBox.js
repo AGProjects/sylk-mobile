@@ -344,7 +344,7 @@ class HistoryTileBox extends Component {
                     }
 
                     if (elem.remoteParty.indexOf('@guest.') > -1) {
-                        elem.remoteParty = elem.displayName.toLowerCase() + '_from_the_web@' + elem.remoteParty.split('@')[1];
+                        elem.remoteParty = elem.displayName.toLowerCase().replace(' ', '') + '@' + elem.remoteParty.split('@')[1];
                     }
 
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {
