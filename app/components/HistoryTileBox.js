@@ -419,6 +419,7 @@ class HistoryTileBox extends Component {
         let history = [];
         let searchExtraItems = [];
         let items = [];
+        let matchedContacts = [];
 
         if (this.props.filter === 'favorite') {
             let favoriteContacts = this.getFavoriteContacts();
@@ -439,7 +440,6 @@ class HistoryTileBox extends Component {
 
             items = history.filter(historyItem => historyItem.remoteParty.startsWith(this.props.targetUri));
 
-            let matchedContacts = [];
             if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
                 matchedContacts = searchExtraItems.filter(contact => (contact.remoteParty.toLowerCase().indexOf(this.props.targetUri) > -1 || contact.displayName.toLowerCase().indexOf(this.props.targetUri) > -1));
             } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
@@ -454,6 +454,9 @@ class HistoryTileBox extends Component {
         items = items.filter((elem) => {
             if (known.indexOf(elem.remoteParty) <= -1) {
                 known.push(elem.remoteParty);
+                if (!elem.startTime) {
+                    elem.startTime = '1970-01-01 01:01:01'
+                }
                 return elem;
             }
         });
