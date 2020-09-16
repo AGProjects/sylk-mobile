@@ -1968,6 +1968,7 @@ class Sylk extends Component {
     }
 
     eventFromUrl(url) {
+        url = decodeURI(url);
         utils.timestampedLog('Received event from external URL:', url);
 
         try {
@@ -1976,6 +1977,7 @@ class Sylk extends Component {
             let callUUID;
             let from;
             let to;
+            let displayName;
 
             var url_parts = url.split("/");
             let scheme = url_parts[0];
@@ -1991,6 +1993,7 @@ class Sylk extends Component {
                 callUUID  = url_parts[4];
                 from      = url_parts[5];
                 to        = url_parts[6];
+                displayName = url_parts[7];
                 this.setState({targetUri: from});
             } else if (scheme === 'https:') {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
@@ -2029,7 +2032,7 @@ class Sylk extends Component {
             } else if (direction === 'incoming' && from) {
                 this.backToForeground();
                 utils.timestampedLog('Incoming call from', from);
-                this.incomingCallFromPush(callUUID, from, from, true);
+                this.incomingCallFromPush(callUUID, from, displayName, true);
 
             } else if (direction === 'cancel' && callUUID) {
                 this.cancelIncomingCall(callUUID);
@@ -2175,14 +2178,9 @@ class Sylk extends Component {
     }
 
     missedCall(data) {
-        if (data.originator.indexOf('@guest') > -1) {
-            return;
-        }
-
-        utils.timestampedLog('Missed call from ' + data.originator);
+        utils.timestampedLog('Missed call from ' + data.originator.uri, '(', data.originator.displayName, ')');
         if (!this.state.currentCall) {
-            //utils.timestampedLog('Update snackbar');
-            let from = data.originator.display_name || data.originator.uri;
+            let from = data.originator.displayName ||  data.originator.uri;
             this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`});
             if (Platform.OS === 'ios') {
                 VoipPushNotification.presentLocalNotification({alertBody:'Missed call from ' + from});

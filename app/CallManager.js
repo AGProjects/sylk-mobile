@@ -576,7 +576,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
-        utils.timestampedLog("Callkeep: STARTED CALL", data.callUUID);
+        utils.timestampedLog("Callkeep: STARTED NATIVE CALL", data.callUUID);
         if (!this._calls.has(data.callUUID)) {
             // call has started from OS native dialer
             this.startCallFromOutside(data);
