@@ -63,7 +63,7 @@ const ConferenceHeader = (props) => {
                     title={`Conference: ${room}`}
                     subtitle={callDetail}
                 />
-                {props.buttons.top.right}
+                {props.audioOnly ? null : props.buttons.top.right}
             </Appbar.Header>
         );
 
@@ -87,7 +87,8 @@ ConferenceHeader.propTypes = {
     remoteUri: PropTypes.string.isRequired,
     participants: PropTypes.array.isRequired,
     buttons: PropTypes.object.isRequired,
-    reconnectingCall: PropTypes.bool
+    reconnectingCall: PropTypes.bool,
+    audioOnly: PropTypes.bool
 };
 
 

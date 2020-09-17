@@ -783,6 +783,7 @@ class ConferenceBox extends Component {
                             participants={this.state.participants}
                             reconnectingCall={this.state.reconnectingCall}
                             buttons={buttons}
+                            audioOnly={this.props.audioOnly}
                         />
                     </View>
 
@@ -959,6 +960,7 @@ class ConferenceBox extends Component {
                         participants={this.state.participants}
                         reconnectingCall={this.state.reconnectingCall}
                         buttons={buttons}
+                        audioOnly={this.props.audioOnly}
                     />
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
                         <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
