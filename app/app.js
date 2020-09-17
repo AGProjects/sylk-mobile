@@ -655,10 +655,11 @@ class Sylk extends Component {
                     const from = message.data['from_uri'];
                     const to = message.data['to_uri'];
                     const displayName = message.data['from_display_name'];
+                    const outgoingMedia = {audio: true, video: message.data['media-type'] === 'video'};
 
                     if (event === 'incoming_conference_request') {
                         utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
-                        this.incomingConference(callUUID, to, from);
+                        this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
                     } else if (event === 'incoming_session') {
                         utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
                         this.incomingCallFromPush(callUUID, from, displayName);
@@ -1646,10 +1647,12 @@ class Sylk extends Component {
                        participantsToInvite: participants
                        });
 
+        const media = options.video ? 'video' : 'audio';
+
         if (participants) {
-            utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri, 'with', participants);
+            utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri, 'with', participants);
         } else {
-            utils.timestampedLog('CallKeep will start conference', callUUID, 'to', targetUri);
+            utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri);
         }
 
         this.respawnConnection();
@@ -1870,6 +1873,7 @@ class Sylk extends Component {
         const to = notificationContent['to_uri'];
         const from = notificationContent['from_uri'];
         const displayName = notificationContent['from_display_name'];
+        const outgoingMedia = {audio: true, video: notificationContent['media-type'] === 'video'};
 
           /*
            * Local Notification Payload
@@ -1889,7 +1893,7 @@ class Sylk extends Component {
         } else if (event === 'incoming_conference_request') {
             utils.timestampedLog('Incoming conference PUSH mobile notification for call', callUUID);
             this.startedByPush = true;
-            this.incomingConference(callUUID, to, from);
+            this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
 
         } else if (event === 'cancel') {
             utils.timestampedLog('Cancel PUSH mobile notification for call', callUUID);
@@ -1922,14 +1926,16 @@ class Sylk extends Component {
         }
     }
 
-    incomingConference(callUUID, to, from) {
-        utils.timestampedLog('Incoming conference invite from', from, 'to room', to);
+    incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}) {
+        const media = options.video ? 'video' : 'audio';
+
+        utils.timestampedLog('Incoming', media, 'conference invite from', from, 'to room', to);
         if (this.autoRejectIncomingCall(callUUID, from)) {
             return;
         }
 
         this.setState({incomingCallUUID: callUUID});
-        this.callKeeper.handleConference(callUUID, to, from);
+        this.callKeeper.handleConference(callUUID, to, from, displayName, outgoingMedia);
     }
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
@@ -2022,7 +2028,7 @@ class Sylk extends Component {
                 utils.timestampedLog('Incoming conference from', from);
                 // allow app to wake up
                 this.backToForeground();
-                this.incomingConference(callUUID, to, from);
+                this.incomingConference(callUUID, to, from, displayName);
 
             } else if (direction === 'outgoing' && event === 'call' && from) {
                 utils.timestampedLog('Outgoing call to', from);

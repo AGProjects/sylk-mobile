@@ -72,7 +72,10 @@ export default class CallManager extends events.EventEmitter {
         this.respawnConnection = respawnConnection;
 
         this.toggleMute = muteFunc;
+
         this.conferenceCall = conferenceCallFunc;
+        this.outgoingMedia = {audio: true, video: true}
+
         this.startCallFromOutside = startCallFromCallKeeper;
 
         this._boundRnAccept = this._rnAccept.bind(this);
@@ -303,7 +306,7 @@ export default class CallManager extends events.EventEmitter {
             this.backToForeground();
 
             utils.timestampedLog('Callkeep: will start conference to', conference.room);
-            this.conferenceCall(conference.room);
+            this.conferenceCall(conference.room, this.outgoingMedia);
             this._conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {
@@ -522,17 +525,18 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    handleConference(callUUID, room, from_uri) {
+    handleConference(callUUID, room, from_uri, displayName, outgoingMedia) {
 
         if (this._conferences.has(callUUID)) {
             return;
         }
 
         this._conferences.set(callUUID, {room: room, from: from_uri});
+        this.outgoingMedia = outgoingMedia;
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
 
-        this.showAlertPanel(callUUID, from_uri);
+        this.showAlertPanel(callUUID, from_uri, displayName);
 
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: conference timeout', callUUID);

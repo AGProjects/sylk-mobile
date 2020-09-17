@@ -129,7 +129,7 @@ class InviteParticipantsModal extends Component {
                         </View>
 
                         <Text style={styles.body}>
-                             Or share the conference link by:
+                             Share the conference link:
                         </Text>
 
                         <View style={styles.iconContainer}>
