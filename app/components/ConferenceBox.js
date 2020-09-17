@@ -91,7 +91,7 @@ class ConferenceBox extends Component {
         this.selectSpeaker = 1;
         this.foundContacts = new Map();
         if (this.props.call) {
-            this.lookupContact(this.props.call.localIdentity._uri);
+            this.lookupContact(this.props.call.localIdentity._uri, this.props.call.localIdentity._displayName);
         }
 
         [
@@ -138,7 +138,7 @@ class ConferenceBox extends Component {
                 if (p.identity._uri.search('guest.') === -1) {
                     // used for history item
                     this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
-                    this.lookupContact(p.identity._uri);
+                    this.lookupContact(p.identity._uri, p.identity._displayName);
                 }
             });
             // this.changeResolution();
@@ -195,9 +195,8 @@ class ConferenceBox extends Component {
         return null;
     }
 
-    lookupContact(uri) {
+    lookupContact(uri, displayName) {
         let photo;
-        let displayName;
         let username =  uri.split('@')[0];
 
         if (this.props.contacts) {
@@ -235,7 +234,7 @@ class ConferenceBox extends Component {
             this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
         }
 
-        this.lookupContact(p.identity._uri);
+        this.lookupContact(p.identity._uri, p.identity._displayName);
 
         // this.refs.audioPlayerParticipantJoined.play();
         p.on('stateChanged', this.onParticipantStateChanged);

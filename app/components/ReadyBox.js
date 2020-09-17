@@ -160,7 +160,7 @@ class ReadyBox extends Component {
     }
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
-        this.props.startConference(targetUri, {audio: true, video: options.video, participants: options.participants});
+        this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants});
         this.setState({showConferenceModal: false});
     }
 
