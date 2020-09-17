@@ -1927,7 +1927,7 @@ class Sylk extends Component {
     }
 
     incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}) {
-        const media = options.video ? 'video' : 'audio';
+        const media = outgoingMedia.video ? 'video' : 'audio';
 
         utils.timestampedLog('Incoming', media, 'conference invite from', from, 'to room', to);
         if (this.autoRejectIncomingCall(callUUID, from)) {
