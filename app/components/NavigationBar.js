@@ -18,7 +18,8 @@ class NavigationBar extends Component {
         this.state = {
             showAboutModal: false,
             showCallMeMaybeModal: false,
-            registrationState: this.props.account ? this.props.account.registrationState : null,
+            registrationState: this.props.registrationState,
+            connection: this.props.connection,
             mute: false,
             menuVisible: false,
             accountId: this.props.account ? this.props.account.id : null
@@ -33,7 +34,8 @@ class NavigationBar extends Component {
             this.setState({accountId: nextProps.account.id});
         }
 
-        this.setState({registrationState: nextProps.account ? nextProps.account.registrationState : null});
+        this.setState({registrationState: nextProps.registrationState,
+                       connection: nextProps.connection});
     }
 
     handleMenu(event) {
@@ -83,7 +85,7 @@ class NavigationBar extends Component {
         let statusColor = 'green';
 
         statusIcon = 'check-circle';
-        if (!this.props.connection || this.props.connection.state !== 'ready') {
+        if (!this.state.connection || this.state.connection.state !== 'ready') {
             statusIcon = 'alert-circle';
             statusColor = 'red';
         } else if (this.state.registrationState !== 'registered') {
@@ -92,7 +94,6 @@ class NavigationBar extends Component {
         }
 
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
-
         let subtitle = 'Signed in as ' +  this.state.accountId;
 
         return (
@@ -152,6 +153,7 @@ NavigationBar.propTypes = {
     logout             : PropTypes.func.isRequired,
     preview            : PropTypes.func.isRequired,
     account            : PropTypes.object,
+    connection         : PropTypes.object,
     toggleMute         : PropTypes.func,
     orientation        : PropTypes.string,
     isTablet           : PropTypes.bool

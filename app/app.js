@@ -2479,7 +2479,7 @@ class Sylk extends Component {
                     logout = {this.logout}
                     preview = {this.startPreview}
                     connection = {this.state.connection}
-                    registration = {this.state.registrationState}
+                    registrationState = {this.state.registrationState}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
                 />
