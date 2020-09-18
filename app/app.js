@@ -1977,6 +1977,9 @@ class Sylk extends Component {
     conferenceInviteFromWebSocket(data) {
         // comes from web socket
         utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
+        if (this.isConference()) {
+            return;
+        }
         this._notificationCenter.postSystemNotification('Expecting conference invite', {body: `from ${data.originator.displayName || data.originator.uri}`});
     }
 
