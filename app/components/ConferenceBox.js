@@ -108,6 +108,57 @@ class ConferenceBox extends Component {
                 }
             );
         });
+
+        this.invitedParticipants = new Map();
+
+        props.initialParticipants.forEach((uri) => {
+            this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
+            this.lookupContact(uri);
+        });
+
+        this.participantsTimer = setInterval(() => {
+             this.updateParticipantsStatus();
+        }, 5000);
+
+    }
+
+    updateParticipantsStatus() {
+        let participants_uris = [];
+
+        this.state.participants.forEach((p) => {
+            participants_uris.push(p.identity._uri);
+        });
+
+        const invitedParties = Array.from(this.invitedParticipants.keys());
+        //console.log('Invited participants', invitedParties);
+        //console.log('Current participants', participants_uris);
+
+        let p;
+        let interval;
+        invitedParties.forEach((_uri) => {
+            if (participants_uris.indexOf(_uri) > 0) {
+                this.invitedParticipants.delete(_uri);
+            }
+
+            p = this.invitedParticipants.get(_uri);
+            interval = Math.floor((Date.now() - p.timestamp) / 1000);
+            console.log(_uri, 'was invited', interval, 'seconds ago');
+
+            if (interval >= 60) {
+                this.invitedParticipants.delete(_uri);
+                this.forceUpdate();
+            }
+
+            if (p.status.indexOf('Invited') > -1) {
+                if (interval > 45) {
+                    p.status = 'No answer';
+                } else {
+                    const dot = p.status.indexOf('.') > -1 ? '.' : ' .';
+                    p.status = p.status + dot;
+                }
+                this.forceUpdate();
+            }
+        });
     }
 
     componentDidMount() {
@@ -158,6 +209,7 @@ class ConferenceBox extends Component {
 
     componentWillUnmount() {
         clearTimeout(this.overlayTimer);
+        clearTimeout(this.participantsTimer);
         this.uploads.forEach((upload) => {
             this.props.notificationCenter().removeNotification(upload[1]);
             upload[0].abort();
@@ -229,13 +281,15 @@ class ConferenceBox extends Component {
 
     onParticipantJoined(p) {
         DEBUG(`Participant joined: ${p.identity}`);
-        if (p.identity._uri.search('guest.') === -1) {
+        if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri ) {
             // used for history item
             this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
         }
 
         this.lookupContact(p.identity._uri, p.identity._displayName);
-
+        if (this.invitedParticipants.has(p.identity._uri)) {
+            this.invitedParticipants.delete(p.identity._uri);
+        }
         // this.refs.audioPlayerParticipantJoined.play();
         p.on('stateChanged', this.onParticipantStateChanged);
         p.attach();
@@ -573,6 +627,15 @@ class ConferenceBox extends Component {
 
     inviteParticipants(uris) {
         this.props.call.inviteParticipants(uris);
+        uris.forEach((uri) => {
+            if (this.props.call.localIdentity._uri === uri) {
+                return;
+            }
+            this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
+            this.lookupContact(uri);
+        });
+
+        this.forceUpdate()
     }
 
     render() {
@@ -740,6 +803,7 @@ class ConferenceBox extends Component {
         const audioParticipants = [];
         let _contact;
         let _identity;
+        let participants_uris = [];
 
         if (this.props.audioOnly) {
             _contact = this.foundContacts.get(this.props.call.localIdentity._uri);
@@ -747,6 +811,8 @@ class ConferenceBox extends Component {
                          displayName: _contact.displayName,
                          photo: _contact.photo
                         };
+
+            participants_uris.push(this.props.call.localIdentity._uri);
 
             audioParticipants.push(
                 <ConferenceAudioParticipant
@@ -764,12 +830,38 @@ class ConferenceBox extends Component {
                              photo: _contact ? _contact.photo: null
                             };
 
+                participants_uris.push(p.identity._uri);
+
                 audioParticipants.push(
                     <ConferenceAudioParticipant
                         key={p.id}
                         participant={p}
                         identity={_identity}
                         isLocal={false}
+                    />
+                );
+            });
+
+            const invitedParties = Array.from(this.invitedParticipants.keys());
+            let p;
+            invitedParties.forEach((_uri) => {
+                if (participants_uris.indexOf(_uri) > 0) {
+                    return;
+                }
+
+                p = this.invitedParticipants.get(_uri);
+                _contact = this.foundContacts.get(_uri);
+                _identity = {uri: _uri,
+                             displayName: (_contact && _contact.displayName ) ? _contact.displayName : _uri,
+                             photo: _contact ? _contact.photo: null
+                            };
+
+                audioParticipants.push(
+                    <ConferenceAudioParticipant
+                        key={_uri}
+                        identity={_identity}
+                        isLocal={false}
+                        status={p.status}
                     />
                 );
             });
@@ -1041,7 +1133,8 @@ ConferenceBox.propTypes = {
     inFocus             : PropTypes.bool,
     reconnectingCall    : PropTypes.bool,
     audioOnly           : PropTypes.bool,
-    contacts            : PropTypes.array
+    contacts            : PropTypes.array,
+    initialParticipants : PropTypes.array
 };
 
 export default ConferenceBox;

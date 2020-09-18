@@ -246,6 +246,7 @@ class Conference extends React.Component {
                         inFocus = {this.props.inFocus}
                         reconnectingCall={this.state.reconnectingCall}
                         contacts={this.props.contacts}
+                        initialParticipants={this.props.participantsToInvite}
                    />
                 );
             } else {

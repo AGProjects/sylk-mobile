@@ -17,7 +17,7 @@ class ConferenceAudioParticipant extends Component {
             stream: null
         }
 
-        if (!props.isLocal) {
+        if (!props.isLocal && props.participant) {
             props.participant.on('stateChanged', this.onParticipantStateChanged);
         }
     }
@@ -27,7 +27,7 @@ class ConferenceAudioParticipant extends Component {
     }
 
     componentWillUnmount() {
-        if (!this.props.isLocal) {
+        if (!this.props.isLocal && this.props.participant) {
             this.props.participant.removeListener('stateChanged', this.onParticipantStateChanged);
         }
     }
@@ -52,7 +52,7 @@ class ConferenceAudioParticipant extends Component {
     }
 
     render() {
-        const tag = this.props.isLocal ? 'Myself' : null;
+        const tag = this.props.isLocal ? 'Myself' : this.props.status;
         let identity = this.props.identity;
 
         return (
@@ -76,7 +76,8 @@ class ConferenceAudioParticipant extends Component {
 ConferenceAudioParticipant.propTypes = {
     identity: PropTypes.object.isRequired,
     participant: PropTypes.object,
-    isLocal: PropTypes.bool
+    isLocal: PropTypes.bool,
+    status: PropTypes.string
 };
 
 

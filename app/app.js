@@ -1646,10 +1646,19 @@ class Sylk extends Component {
         let participants = options.participants || null;
         this.addConferenceHistoryEntry(targetUri, callUUID);
 
+        let participantsToInvite = [];
+
+        participants.forEach((participant_uri) => {
+            if (participant_uri === this.state.accountId) {
+                return;
+            }
+            participantsToInvite.push(participant_uri);
+        });
+
         this.setState({outgoingCallUUID: callUUID,
                        outgoingMedia: options,
                        reconnectingCall: false,
-                       participantsToInvite: participants
+                       participantsToInvite: participantsToInvite
                        });
 
         const media = options.video ? 'video' : 'audio';
