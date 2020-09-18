@@ -112,6 +112,7 @@ class HistoryTileBox extends Component {
             <HistoryCard
             id={item.id}
             contact={item.item}
+            filter={this.props.filter}
             invitedParties={invitedParties}
             setFavoriteUri={this.setFavoriteUri}
             saveInvitedParties={this.saveInvitedParties}
@@ -193,6 +194,9 @@ class HistoryTileBox extends Component {
         let contacts= this.props.contacts
         contacts = contacts.concat(this.videoTest);
         contacts = contacts.concat(this.echoTest);
+
+        //console.log('this.state.favoriteUris', this.state.favoriteUris);
+        //console.log('this.state.myInvitedParties', this.state.myInvitedParties);
 
         this.state.favoriteUris.forEach((uri) => {
             uri = uri.toLowerCase();

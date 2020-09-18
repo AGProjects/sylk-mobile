@@ -54,6 +54,7 @@ class HistoryCard extends Component {
             id: this.props.contact.id,
             contact: this.props.contact,
             displayName: this.props.contact.displayName,
+            filter: this.props.filter,
             uri: this.props.contact.remoteParty,
             invitedParties: this.props.invitedParties,
             participants: this.props.contact.participants,
@@ -270,7 +271,11 @@ class HistoryCard extends Component {
             }
 
             if (this.state.conference) {
-                let participants = (this.state.invitedParties && this.state.invitedParties.length > 0) ? this.state.invitedParties: this.state.participants;
+                let participants = this.state.participants;
+                if (this.state.filter === 'favorite' && this.state.invitedParties && this.state.invitedParties.length > 0 ) {
+                    participants = this.state.invitedParties;
+                }
+
                 if (participants && participants.length > 0) {
                     const p_text = participants.length > 1 ? 'participants' : 'participant';
                     subtitle = 'With ' + participants.length + ' ' + p_text;
