@@ -61,25 +61,34 @@ class ConferenceModal extends Component {
                 participants = this.state.selectedContact.participants.toString();
             }
 
-            participants.split(',').forEach((item) => {
-                item = item.trim().toLowerCase();
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
-                }
-
-                username = item.split('@')[0];
-                domain = item.split('@')[1];
-
-                if (username && username !== ',') {
-                    if (domain === this.props.defaultDomain) {
-                        sanitizedParticipants.push(username);
-                    } else {
-                        sanitizedParticipants.push(item);
+            if (participants) {
+                participants.split(',').forEach((item) => {
+                    item = item.trim().toLowerCase();
+                    if (item.indexOf('@') === -1) {
+                        item = `${item}@${this.props.defaultDomain}`;
                     }
-                }
-            });
+
+                    username = item.split('@')[0];
+                    domain = item.split('@')[1];
+
+                    if (username && username !== ',') {
+                        if (domain === this.props.defaultDomain) {
+                            sanitizedParticipants.push(username);
+                        } else {
+                            sanitizedParticipants.push(item);
+                        }
+                    }
+                });
+            }
         }
-        this.setState({targetUri: targetUri, participants: sanitizedParticipants.toString()});
+
+        if (targetUri) {
+            this.setState({targetUri: targetUri});
+        }
+
+        if (sanitizedParticipants.length > 0) {
+            this.setState({participants: sanitizedParticipants.toString()});
+        }
     }
 
     joinAudio(event) {
@@ -136,10 +145,10 @@ class ConferenceModal extends Component {
                             autoCapitalize="none"
                             label="Enter the room you wish to join"
                             placeholder="Conference room"
-                            onChangeText={this.handleConferenceTargetChange}
+                            onChangeText={(text) => {this.handleConferenceTargetChange(text);}}
                             name="uri"
                             required
-                            value={this.state.targetUri}
+                            defaultValue={this.state.targetUri}
                         />
                         <TextInput
                             style={styles.body}
