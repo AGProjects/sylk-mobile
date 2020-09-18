@@ -982,9 +982,11 @@ class Sylk extends Component {
         if (newState === 'failed') {
             let reason = data.reason;
 
-            if (reason.match(/904|408/)) {
+            if (reason === 904) {
                 // Sofia SIP: WAT
                 reason = 'Wrong account or password';
+            } else if (reason === 408) {
+                reason = 'Timeout';
             }
 
             this.showRegisterFailure(reason);
@@ -1489,7 +1491,10 @@ class Sylk extends Component {
             return;
         }
 
-        this.registrationFailureTimer = setTimeout(this.showRegisterFailure, 10000, 'Register timeout');
+        this.registrationFailureTimer  = setTimeout(() => {
+                this.showRegisterFailure('Register timeout');
+                this.processRegistration(accountId, password, displayName);
+        }, 10000);
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
