@@ -79,7 +79,7 @@ class EditConferenceModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>{this.props.room}</Dialog.Title>
                           <Dialog.Content>
-                            <Paragraph>People you wish to invite automatically to the conference when you join the room:</Paragraph>
+                            <Paragraph>People you wish to invite when you join the room:</Paragraph>
                           </Dialog.Content>
                         <TextInput
                             mode="flat"

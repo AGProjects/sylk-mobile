@@ -7,6 +7,34 @@
 .video {
 }
 
+.title {
+    padding-top: 20px;
+    font-size: 18px;
+    text-align: center;
+    color: white;
+}
+
+.description {
+    padding: 12px;
+    font-size: 16px;
+    text-align: center;
+    color: white;
+}
+
+.savebutton {
+    margin: 10px;
+    width: 150;
+}
+
+.backbutton {
+    margin: 10px;
+    width: 150;
+}
+
+.hangupbutton {
+    background-color: rgba(#a94442, .8);
+}
+
 .tabletButtonContainer {
     position: absolute;
     bottom: 60;
@@ -18,14 +46,15 @@
 
 .buttonContainer {
     position: absolute;
-    bottom: 40;
+    bottom: 60;
     width: 100%;
     z-index: 99;
     justify-content: center;
     align-items: center;
 }
 
-.button {
-    background-color: rgba(#a94442, .8);
+.buttonRow {
+    flex-direction: row;
+    justify-content: center;
 }
 

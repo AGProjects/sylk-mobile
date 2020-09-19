@@ -98,6 +98,21 @@ class HistoryCard extends Component {
         this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
     }
 
+    setFavoriteUri() {
+        if (this.state.favorite) {
+            if (this.state.confirmed) {
+                let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
+                this.setState({favorite: newFavoriteState, action: null, confirmed: false});
+                this.props.setTargetUri(this.state.uri);
+            } else {
+                this.setState({confirmed: true});
+            }
+        } else {
+            let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
+            this.setState({favorite: newFavoriteState});
+        }
+    }
+
     saveInvitedParties(uris) {
         this.setState({invitedParties: uris});
         this.props.saveInvitedParties(this.state.uri.split('@')[0], uris);

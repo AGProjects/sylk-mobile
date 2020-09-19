@@ -165,6 +165,10 @@ class HistoryTileBox extends Component {
         history = history.filter((elem) => {
             uri = elem.remoteParty.toLowerCase();
 
+            if (uri.indexOf('@videoconference') === -1) {
+                return;
+            }
+
             if (known.indexOf(uri) <= -1) {
                 elem.type = 'history';
                 if (!elem.tags) {
@@ -199,6 +203,9 @@ class HistoryTileBox extends Component {
         //console.log('this.state.myInvitedParties', this.state.myInvitedParties);
 
         this.state.favoriteUris.forEach((uri) => {
+            if (!uri) {
+                return;
+            }
             uri = uri.toLowerCase();
             const contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
             displayName = contact_obj ? contact_obj.displayName : uri;
@@ -348,7 +355,7 @@ class HistoryTileBox extends Component {
                     }
 
                     if (elem.remoteParty.indexOf('@guest.') > -1) {
-                        elem.remoteParty = elem.displayName.toLowerCase().replace(' ', '') + '@' + elem.remoteParty.split('@')[1];
+                        elem.remoteParty = elem.displayName.toLowerCase().replace(/ /g, '') + '@' + elem.remoteParty.split('@')[1];
                     }
 
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {

@@ -32,7 +32,6 @@ class CallOverlay extends React.Component {
             direction: this.props.call ? this.props.call.direction: null,
             remoteUri: this.props.remoteUri,
             remoteDisplayName: this.props.remoteDisplayName,
-            photo: this.props.photo,
             reconnectingCall: this.props.reconnectingCall
         }
 
@@ -191,8 +190,6 @@ CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string,
     remoteDisplayName: PropTypes.string,
-    photo: PropTypes.object,
-    accountId: PropTypes.string,
     call: PropTypes.object,
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool

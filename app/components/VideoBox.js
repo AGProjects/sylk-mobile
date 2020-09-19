@@ -162,13 +162,13 @@ class VideoBox extends Component {
 
     hangupCall(event) {
         event.preventDefault();
-        this.props.hangupCall('user_press_hangup');
+        this.props.hangupCall('user_hangup_call');
         this.userHangup = true;
     }
 
     cancelCall(event) {
         event.preventDefault();
-        this.props.hangupCall('user_cancelled');
+        this.props.hangupCall('user_cancelled_call');
     }
 
     escalateToConference(participants) {

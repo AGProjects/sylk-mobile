@@ -323,6 +323,7 @@ class ReadyBox extends Component {
                     selectedContact={this.state.selectedContact}
                     handleConferenceCall={this.handleConferenceCall}
                     defaultDomain={this.props.defaultDomain}
+                    accountId={this.props.account ? this.props.account.id: null}
                 />
             </Fragment>
         );

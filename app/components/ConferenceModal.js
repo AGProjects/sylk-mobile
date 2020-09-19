@@ -40,7 +40,8 @@ class ConferenceModal extends Component {
 
         this.setState({targetUri: uri,
                       myInvitedParties: nextProps.myInvitedParties,
-                      selectedContact: nextProps.selectedContact
+                      selectedContact: nextProps.selectedContact,
+                      participants: nextProps.participants
                       });
         this.handleConferenceTargetChange(uri);
     }
@@ -64,6 +65,11 @@ class ConferenceModal extends Component {
             if (participants) {
                 participants.split(',').forEach((item) => {
                     item = item.trim().toLowerCase();
+
+                    if (item === this.props.accountId) {
+                        return;
+                    }
+
                     if (item.indexOf('@') === -1) {
                         item = `${item}@${this.props.defaultDomain}`;
                     }
@@ -98,7 +104,7 @@ class ConferenceModal extends Component {
 
         if (this.state.participants) {
             this.state.participants.split(',').forEach((item) => {
-                item = item.trim().toLowerCase();
+                item = item.trim().toLowerCase().replace(' ', '');
                 if (item.indexOf('@') === -1) {
                     item = `${item}@${this.props.defaultDomain}`;
                 }
@@ -116,7 +122,7 @@ class ConferenceModal extends Component {
 
         if (this.state.participants) {
             this.state.participants.split(',').forEach((item) => {
-                item = item.trim().toLowerCase();
+                item = item.trim().toLowerCase().replace(' ', '');
                 if (item.indexOf('@') === -1) {
                     item = `${item}@${this.props.defaultDomain}`;
                 }
@@ -187,6 +193,7 @@ ConferenceModal.propTypes = {
     show: PropTypes.bool.isRequired,
     handleConferenceCall: PropTypes.func.isRequired,
     myInvitedParties: PropTypes.object,
+    accountId: PropTypes.string,
     selectedContact: PropTypes.object,
     targetUri: PropTypes.string.isRequired,
     defaultDomain: PropTypes.string

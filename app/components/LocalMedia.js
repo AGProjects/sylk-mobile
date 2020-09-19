@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View, Dimensions } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
-import { IconButton } from 'react-native-paper';
+import { IconButton, Button, Text} from 'react-native-paper';
 
 import CallOverlay from './CallOverlay';
 import styles from '../assets/styles/blink/_LocalMedia.scss';
@@ -18,6 +18,8 @@ class LocalMedia extends Component {
 
         this.state = {
             localMedia: this.props.localMedia,
+            historyEntry: this.props.historyEntry,
+            participants: this.props.participants
         };
 
     }
@@ -26,16 +28,23 @@ class LocalMedia extends Component {
         this.props.mediaPlaying();
     }
 
-    hangupCall(event) {
-        event.preventDefault();
-        this.props.hangupCall('stop_preview');
-    }
-
     //getDerivedStateFromProps(nextProps, state)
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.localMedia && nextProps.localMedia !== this.state.localMedia) {
             this.props.mediaPlaying();
         }
+
+        this.setState({historyEntry: nextProps.historyEntry, participants: nextProps.participants});
+    }
+
+    saveConference(event) {
+        event.preventDefault();
+        this.props.saveConference();
+    }
+
+    hangupCall(event) {
+        event.preventDefault();
+        this.props.hangupCall('user_hangup_conference_confirmed');
     }
 
     render() {
@@ -55,15 +64,38 @@ class LocalMedia extends Component {
                     show = {true}
                     remoteUri={this.props.remoteUri}
                     remoteDisplayName={this.props.remoteDisplayName}
-                    photo={this.props.photo}
                     call = {this.props.call}
                     connection={this.props.connection}
-                    accountId={this.props.accountId}
                 />
-                <View style={buttonContainerClass}>
-                    <IconButton style={styles.button} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={buttonSize} />
-                </View>
 
+                {this.props.showSaveDialog() ?
+                    <View style={styles.buttonContainer}>
+
+                    <Text style={styles.title}>Would you like to save the participants {this.state.participants.toString().replace(/,/g, ', ')} for having another conference later?</Text>
+                    <Text style={styles.description}>You can find later it by selecting Favorites. </Text>
+
+                    <View style={styles.buttonRow}>
+
+                    <Button
+                        mode="contained"
+                        style={styles.savebutton}
+                        onPress={this.saveConference}
+                        icon="content-save"
+                    >Save</Button>
+
+                    <Button
+                        mode="contained"
+                        style={styles.backbutton}
+                        onPress={this.hangupCall}
+                        icon=""
+                    > Back</Button>
+                    </View>
+                    </View>
+                :
+                <View style={buttonContainerClass}>
+                <IconButton style={styles.hangupbutton} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={buttonSize} />
+                </View>
+                }
                 <View style={styles.container}>
                     <RTCView objectFit="cover"
                              style={[styles.video, videoStyle]}
@@ -80,17 +112,16 @@ class LocalMedia extends Component {
 
 LocalMedia.propTypes = {
     call                : PropTypes.object,
-    hangupCall          : PropTypes.func,
-    localMedia          : PropTypes.object.isRequired,
     remoteUri           : PropTypes.string,
     remoteDisplayName   : PropTypes.string,
-    photo               : PropTypes.string,
+    localMedia          : PropTypes.object.isRequired,
     mediaPlaying        : PropTypes.func.isRequired,
-    generatedVideoTrack : PropTypes.bool,
+    hangupCall          : PropTypes.func,
+    showSaveDialog      : PropTypes.func,
+    saveConference      : PropTypes.func,
+    reconnectingCall    : PropTypes.bool,
     connection          : PropTypes.object,
-    accountId           : PropTypes.string,
-    orientation         : PropTypes.string,
-    isTablet            : PropTypes.bool
+    participants        : PropTypes.array
 };
 
 

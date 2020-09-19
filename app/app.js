@@ -215,7 +215,7 @@ class Sylk extends Component {
             muted: false,
             participantsToInvite: null,
             myInvitedParties: null,
-            defaultDomain: config.defaultDomain,
+            defaultDomain: config.defaultDomain
         };
 
         this.tokenSent = false;
@@ -1063,14 +1063,6 @@ class Sylk extends Component {
         }
 
         this.callKeeper.heartbeat();
-
-        /*
-
-        if (callState === 'established' || callState === 'established') {
-            const nextRoute = this.isConference() ? '/conference' : '/call';
-            this.changeRoute(nextRoute, 'correct call state');
-        }
-        */
     }
 
     stopRingback() {
@@ -1250,7 +1242,6 @@ class Sylk extends Component {
                         tracks = call.getLocalStreams()[0].getVideoTracks();
                         hasVideo = (tracks && tracks.length > 0) ? true : false;
                     }
-                    //utils.timestampedLog('Play ringback tone');
                     InCallManager.startRingback('_BUNDLE_');
                 }
 
@@ -1268,7 +1259,6 @@ class Sylk extends Component {
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
 
-                //utils.timestampedLog('Start InCall manager:', mediaType);
                 InCallManager.start({media: mediaType});
 
                 if (mediaType === 'video') {
@@ -1285,7 +1275,6 @@ class Sylk extends Component {
                 if (direction === 'outgoing') {
                     this.stopRingback();
                 }
-
                 break;
 
             case 'terminated':
@@ -1302,9 +1291,7 @@ class Sylk extends Component {
                 let callSuccesfull = false;
                 let reason = data.reason;
                 let play_busy_tone = !this.isConference(call);
-
                 let CALLKEEP_REASON;
-                //utils.timestampedLog('Call state changed:', 'call', callUUID, 'terminated reason:', reason);
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState === 'progress' && direction === 'outgoing') {
@@ -1380,17 +1367,6 @@ class Sylk extends Component {
 
                 this.updateHistoryEntry(callUUID);
 
-                /*
-                if (newState === 'established' || newState === 'accepted') {
-                    // restore the correct UI state if it has transitioned illegally to /ready state
-                    if (call.hasOwnProperty('_participants')) {
-                        this.changeRoute('/conference', 'correct call state');
-                    } else {
-                        this.changeRoute('/call', 'correct call state');
-                    }
-                }
-                */
-
                 break;
             default:
                 break;
@@ -1416,7 +1392,9 @@ class Sylk extends Component {
                         this.changeRoute('/ready', 'no_more_calls');
                     }, readyDelay);
                 } else {
-                    this.changeRoute('/ready', 'no_more_calls');
+                    if (this.currentRoute !== '/conference') {
+                        this.changeRoute('/ready', 'no_more_calls');
+                    }
                 }
             }
         }
@@ -1771,19 +1749,24 @@ class Sylk extends Component {
             this.callKeeper.endCall(callUUID);
         }
 
-        if (reason === 'user_cancelled' ||
+        if (reason === 'user_cancelled_call' ||
             reason === 'timeout' ||
             reason === 'stop_preview' ||
-            reason === 'user_press_hangup' ||
+            reason === 'user_hangup_call' ||
             reason === 'accept_new_call' ||
-            reason === 'timeout'
+            reason === 'timeout' ||
+            reason === 'user_hangup_conference_confirmed'
             ) {
             this.changeRoute('/ready', reason);
+        } else if (reason === 'user_hangup_conference') {
+            utils.timestampedLog('Save conference maybe?');
+        } else if (reason === 'user_cancelled_conference') {
+            utils.timestampedLog('Save conference maybe?');
         } else {
             if (reason !== 'escalate_to_conference') {
                 setTimeout(() => {
                      //utils.timestampedLog('Will go to ready in 4 seconds');
-                     this.changeRoute('/ready', 'remote ended');
+                     this.changeRoute('/ready', 'call_ended_by_remote');
                 }, 4000);
             }
         }
@@ -2238,7 +2221,6 @@ class Sylk extends Component {
             } else {
                 historyItem.participants = [];
             }
-            //console.log('Save history', historyItem);
             this.setState({localHistory: newHistory});
             storage.set('history', newHistory);
         }
@@ -2252,7 +2234,6 @@ class Sylk extends Component {
         if (idx === -1) {
             favoriteUris.push(uri);
             ret = true;
-
         } else {
             let removed = favoriteUris.splice(idx, 1);
             ret = false;
@@ -2325,7 +2306,7 @@ class Sylk extends Component {
 
     saveInvitedParties(room, uris) {
         room = room.split('@')[0];
-        console.log('Save invited parties', uris, 'for room', room);
+        //console.log('Save invited parties', uris, 'for room', room);
 
         if (!this.myInvitedParties) {
             this.myInvitedParties = new Object();
@@ -2585,12 +2566,7 @@ class Sylk extends Component {
                 let uris = this.myInvitedParties[room];
                 if (uris) {
                     uris.forEach((uri) => {
-                        if (uri.search(this.state.defaultDomain) > -1) {
-                            let user = uri.split('@')[0];
-                            _previousParticipants.add(user);
-                        } else {
-                            _previousParticipants.add(uri);
-                        }
+                        _previousParticipants.add(uri);
                     });
                 }
             }
@@ -2608,6 +2584,7 @@ class Sylk extends Component {
                 registrationState = {this.state.registrationState}
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
+                myInvitedParties = {this.state.myInvitedParties}
                 saveInvitedParties = {this.saveInvitedParties}
                 previousParticipants = {previousParticipants}
                 participantsToInvite = {this.state.participantsToInvite}
@@ -2627,6 +2604,8 @@ class Sylk extends Component {
                 inFocus = {this.state.inFocus}
                 reconnectingCall = {this.state.reconnectingCall}
                 contacts = {this.contacts}
+                setFavoriteUri = {this.setFavoriteUri}
+                favoriteUris = {this.state.favoriteUris}
             />
         )
     }

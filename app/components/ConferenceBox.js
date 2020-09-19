@@ -52,6 +52,7 @@ class ConferenceBox extends Component {
 
         this.state = {
             callOverlayVisible: true,
+            ended: false,
             audioMuted: this.props.muted,
             videoMuted: !this.props.inFocus,
             videoMutedbyUser: false,
@@ -68,7 +69,8 @@ class ConferenceBox extends Component {
             largeVideoStream: null,
             previousParticipants: this.props.previousParticipants,
             inFocus:  this.props.inFocus,
-            reconnectingCall: this.props.reconnectingCall
+            reconnectingCall: this.props.reconnectingCall,
+            terminated: this.props.terminated
         };
 
         const friendlyName = this.props.remoteUri.split('@')[0];
@@ -186,7 +188,7 @@ class ConferenceBox extends Component {
             });
         } else {
             this.state.participants.forEach((p) => {
-                if (p.identity._uri.search('guest.') === -1) {
+                if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri) {
                     // used for history item
                     this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
                     this.lookupContact(p.identity._uri, p.identity._displayName);
@@ -236,6 +238,8 @@ class ConferenceBox extends Component {
         if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
+
+        this.setState({terminated: nextProps.terminated});
     }
 
     findObjectByKey(array, key, value) {
@@ -281,7 +285,7 @@ class ConferenceBox extends Component {
 
     onParticipantJoined(p) {
         DEBUG(`Participant joined: ${p.identity}`);
-        if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri ) {
+        if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri) {
             // used for history item
             this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
         }
@@ -580,7 +584,7 @@ class ConferenceBox extends Component {
         for (let participant of this.state.participants) {
             participant.detach();
         }
-        this.props.hangup();
+        this.props.hangup('user_hangup_conference');
     }
 
     armOverlayTimer() {
@@ -628,10 +632,12 @@ class ConferenceBox extends Component {
     inviteParticipants(uris) {
         this.props.call.inviteParticipants(uris);
         uris.forEach((uri) => {
+            uri = uri.replace(/ /g, '');
             if (this.props.call.localIdentity._uri === uri) {
                 return;
             }
             this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
+            this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], uri);
             this.lookupContact(uri);
         });
 
@@ -759,6 +765,7 @@ class ConferenceBox extends Component {
                 key="muteAudioButton"
             />
         );
+
         if (this.haveVideo) {
             bottomButtons.push(
                 <IconButton
@@ -771,6 +778,7 @@ class ConferenceBox extends Component {
                 />
             );
         }
+
         if (!this.state.reconnectingCall) {
             bottomButtons.push(
                 <IconButton
@@ -889,6 +897,7 @@ class ConferenceBox extends Component {
                         show={this.state.showInviteModal && !this.state.reconnectingCall}
                         inviteParticipants={this.inviteParticipants}
                         previousParticipants={this.state.previousParticipants}
+                        alreadyInvitedParticipants={Array.from(this.invitedParticipants.keys())}
                         currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
                         close={this.toggleInviteModal}
                         room={this.props.remoteUri.split('@')[0]}

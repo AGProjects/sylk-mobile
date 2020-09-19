@@ -18,7 +18,13 @@ class InviteParticipantsModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+        //console.log('currentParticipants', this.props.currentParticipants);
+        //console.log('previousParticipants', this.props.previousParticipants);
         let difference = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
+        //console.log('difference1', difference);
+        difference = difference.filter(x => !this.props.alreadyInvitedParticipants.includes(x));
+        //console.log('difference2', difference);
+        //console.log('alreadyInvitedParticipants', this.props.alreadyInvitedParticipants);
 
         this.state = {
             participants: difference.toString(),
@@ -34,8 +40,10 @@ class InviteParticipantsModal extends Component {
         }
 
         let difference = nextProps.previousParticipants.filter(x => !nextProps.currentParticipants.includes(x));
+        difference = difference.filter(x => !nextProps.alreadyInvitedParticipants.includes(x));
         this.setState({
             participants: difference.toString(),
+            alreadyInvitedParticipants: nextProps.alreadyInvitedParticipants,
             previousParticipants: nextProps.previousParticipants,
             currentParticipants: nextProps.currentParticipants
         });
@@ -165,6 +173,7 @@ InviteParticipantsModal.propTypes = {
     inviteParticipants: PropTypes.func,
     currentParticipants: PropTypes.array,
     previousParticipants: PropTypes.array,
+    alreadyInvitedParticipants: PropTypes.array,
     room: PropTypes.string,
     defaultDomain: PropTypes.string
 };

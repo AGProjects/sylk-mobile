@@ -24,25 +24,33 @@ class Conference extends React.Component {
         this.waitInterval = this.defaultWaitInterval;
 
         this.userHangup = false;
-        this.confCall = null;
         this.ended = false;
         this.started = false;
+        this.participants = [];
 
         this.state = {
               currentCall: null,
+              targetUri: this.props.targetUri,
               callUUID: this.props.callUUID,
               localMedia: this.props.localMedia,
               connection: this.props.connection,
               account: this.props.account,
               registrationState: this.props.registrationState,
               startedByPush: this.props.startedByPush,
-              reconnectingCall: this.props.reconnectingCall
+              reconnectingCall: this.props.reconnectingCall,
+              myInvitedParties: this.props.myInvitedParties,
+              isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1
               }
 
         if (this.props.connection) {
             this.props.connection.on('stateChanged', this.connectionStateChanged);
         }
 
+        this.props.participantsToInvite.forEach((p) => {
+            if (this.participants.indexOf(p) === -1) {
+                this.participants.push(p);
+            }
+        });
     }
 
     componentWillUnmount() {
@@ -107,6 +115,10 @@ class Conference extends React.Component {
 
             this.startCallWhenReady();
         }
+
+        this.setState({myInvitedParties: nextProps.myInvitedParties,
+                       isFavorite: nextProps.favoriteUris.indexOf(this.props.targetUri) > -1
+                       });
     }
 
     mediaPlaying() {
@@ -157,7 +169,7 @@ class Conference extends React.Component {
 
         while (this.waitCounter < this.waitInterval) {
             if (this.userHangup) {
-                this.props.hangupCall(this.state.callUUID, 'user_cancelled');
+                this.props.hangupCall(this.state.callUUID, 'user_cancelled_conference');
                 return;
             }
 
@@ -208,9 +220,83 @@ class Conference extends React.Component {
         }
     }
 
-    hangup() {
-        this.props.hangupCall(this.state.callUUID, 'user_press_hangup');
+    saveParticipant(callUUID, room, uri) {
+        console.log('Save saveParticipant', uri);
+        if (this.participants.indexOf(uri) === -1) {
+            this.participants.push(uri);
+        }
+        this.props.saveParticipant(callUUID, room, uri);
+    }
+
+    showSaveDialog() {
+        if (!this.userHangup) {
+            //console.log('No show dialog because user did not hangup')
+            return false;
+        }
+
+        if (this.state.reconnectingCall) {
+            console.log('No show dialog because call is reconnecting')
+            return false;
+        }
+
+        if (this.participants.length === 0) {
+            console.log('No show dialog because there are no participants')
+            return false;
+        }
+
+        if (this.state.isFavorite) {
+            let room = this.state.targetUri.split('@')[0];
+            let must_display = false;
+            if (this.props.myInvitedParties.hasOwnProperty(room)) {
+                let old_participants = this.state.myInvitedParties[room];
+                console.log('old participants', old_participants);
+                this.participants.forEach((p) => {
+                    if (old_participants.indexOf(p) === -1) {
+                        console.log(p, 'is not in', old_participants);
+                        must_display = true;
+                    }
+                });
+            }
+
+            return must_display;
+
+            console.log('No show dialog because is already favorite with same participants')
+            console.log('new participants', this.participants);
+        }
+
+        return true;
+    }
+
+    saveConference() {
+        if (!this.state.isFavorite) {
+            this.props.setFavoriteUri(this.props.targetUri);
+        }
+
+        let room = this.state.targetUri.split('@')[0];
+        if (this.props.myInvitedParties.hasOwnProperty(room)) {
+            let participants = this.state.myInvitedParties[room];
+            this.participants.forEach((p) => {
+                if (participants.indexOf(p) === -1) {
+                    participants.push(p);
+                }
+            });
+
+            this.props.saveInvitedParties(this.props.targetUri, participants);
+        } else {
+            this.props.saveInvitedParties(this.props.targetUri, this.participants);
+        }
+
+        this.props.hangupCall(this.state.callUUID, 'user_hangup_conference_confirmed');
+    }
+
+    hangup(reason='user_hangup_conference') {
         this.userHangup = true;
+
+        if (!this.showSaveDialog()) {
+            reason = 'user_hangup_conference_confirmed';
+        }
+
+        this.props.hangupCall(this.state.callUUID, reason);
 
         if (this.waitCounter > 0) {
             this.waitCounter = this.waitInterval;
@@ -221,7 +307,7 @@ class Conference extends React.Component {
         let box = null;
 
         if (this.state.localMedia !== null) {
-            if (this.state.currentCall != null && this.state.currentCall.state === 'established') {
+            if (this.state.currentCall != null && (this.state.currentCall.state === 'established')) {
                 box = (
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
@@ -230,7 +316,7 @@ class Conference extends React.Component {
                         reconnectingCall={this.state.reconnectingCall}
                         connection = {this.state.connection}
                         hangup = {this.hangup}
-                        saveParticipant = {this.props.saveParticipant}
+                        saveParticipant = {this.saveParticipant}
                         saveInvitedParties = {this.props.saveInvitedParties}
                         previousParticipants = {this.props.previousParticipants}
                         remoteUri = {this.props.targetUri}
@@ -253,13 +339,15 @@ class Conference extends React.Component {
                 box = (
                     <LocalMedia
                         call = {this.state.currentCall}
-                        connection = {this.state.connection}
                         remoteUri = {this.props.targetUri}
                         remoteDisplayName = {this.props.targetUri}
                         localMedia = {this.state.localMedia}
                         mediaPlaying = {this.mediaPlaying}
                         hangupCall = {this.hangup}
-                        generatedVideoTrack = {this.props.generatedVideoTrack}
+                        showSaveDialog={this.showSaveDialog}
+                        saveConference={this.saveConference}
+                        connection={this.state.connection}
+                        participants={this.participants}
                     />
                 );
             }
@@ -296,8 +384,11 @@ Conference.propTypes = {
     defaultDomain           : PropTypes.string,
     startedByPush           : PropTypes.bool,
     inFocus                 : PropTypes.bool,
+    setFavoriteUri          : PropTypes.func,
+    saveInvitedParties      : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
-    contacts                : PropTypes.array
+    contacts                : PropTypes.array,
+    favoriteUris            : PropTypes.array
 };
 
 
