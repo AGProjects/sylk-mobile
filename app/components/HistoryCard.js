@@ -311,22 +311,25 @@ class HistoryCard extends Component {
 
                 let dn;
                 if (participantsData.length > 4 || participantsData.length < 2) {
-                    title = username.length > 10 ? 'Conference' : 'Conference ' + toTitleCase(username);
+                    title = username.length > 10 ? 'Conference' : toTitleCase(username);
                 } else if (participantsData.length > 1 || participantsData.length <= 4 ) {
                     let j = 0;
-                    title = '';
-                    participantsData.forEach((participant) => {
-                        if (participant.displayName === participant.uri) {
-                            dn = toTitleCase(participant.uri.split('@')[0]);
-                        } else {
-                            dn = participant.displayName.split(' ')[0];
-                        }
-                        title = title + dn;
-                        if (j < participantsData.length - 1) {
-                            title = title + ' & ';
-                        }
-                        j = j + 1;
-                    });
+                    if (username.length < 10) {
+                        title = toTitleCase(username);
+                    } else {
+                        participantsData.forEach((participant) => {
+                            if (participant.displayName === participant.uri) {
+                                dn = toTitleCase(participant.uri.split('@')[0]);
+                            } else {
+                                dn = participant.displayName.split(' ')[0];
+                            }
+                            title = title + dn;
+                            if (j < participantsData.length - 1) {
+                                title = title + ' & ';
+                            }
+                            j = j + 1;
+                        });
+                    }
                 }
             }
 
