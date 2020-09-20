@@ -189,7 +189,7 @@ class HistoryCard extends Component {
         let showBlockDomainButton = false;
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
-        let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite ) ? true: false;
+        let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite) ? true: false;
         let showEditButton = (this.state.conference && this.state.favorite && !this.state.confirmed ) ? true: false;
         let blockTextbutton = 'Block';
         let blockDomainTextbutton = 'Block domain';

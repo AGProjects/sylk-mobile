@@ -74,21 +74,16 @@ class HistoryTileBox extends Component {
             return;
         }
 
-        let must_update_favorites = false;
-
         if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
             this.setState({myInvitedParties: nextProps.myInvitedParties});
-            must_update_favorites = true;
         }
 
         if (nextProps.contacts !== this.state.contacts) {
             this.setState({contacts: nextProps.contacts});
-            must_update_favorites = true;
         }
 
         if (nextProps.favoriteUris !== this.state.favoriteUris) {
             this.setState({favoriteUris: nextProps.favoriteUris});
-            must_update_favorites = true;
         }
 
         if (nextProps.account !== null && nextProps.account !== this.props.account) {
@@ -100,9 +95,7 @@ class HistoryTileBox extends Component {
             this.getServerHistory();
         }
 
-        if (must_update_favorites) {
-            this.getFavoriteContacts();
-        }
+        this.getFavoriteContacts();
     }
 
     setTargetUri(uri, contact) {
@@ -210,7 +203,7 @@ class HistoryTileBox extends Component {
     }
 
     getFavoriteContacts() {
-        console.log('Get favorite contacts');
+        console.log('Update favorite contacts');
         let favoriteContacts = [];
         let displayName;
         let label;
