@@ -74,6 +74,7 @@ class LocalMedia extends Component {
                     remoteDisplayName={this.props.remoteDisplayName}
                     call = {this.props.call}
                     connection={this.props.connection}
+                    terminated={this.props.terminated}
                 />
 
                 {this.showSaveDialog() ?
@@ -130,7 +131,8 @@ LocalMedia.propTypes = {
     saveConference      : PropTypes.func,
     reconnectingCall    : PropTypes.bool,
     connection          : PropTypes.object,
-    participants        : PropTypes.array
+    participants        : PropTypes.array,
+    terminated          : PropTypes.bool
 };
 
 

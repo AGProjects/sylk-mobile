@@ -48,7 +48,7 @@ class ConferenceModal extends Component {
 
     handleConferenceTargetChange(value) {
         let targetUri = value;
-        let participants = '';
+        let participants = [];
         let sanitizedParticipants = [];
         let username;
         let domain;

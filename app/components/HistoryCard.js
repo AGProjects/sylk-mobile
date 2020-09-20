@@ -398,6 +398,7 @@ class HistoryCard extends Component {
                     saveInvitedParties={this.saveInvitedParties}
                     close={this.toggleEditConferenceModal}
                     defaultDomain={this.props.defaultDomain}
+                    accountId={this.props.accountId}
                 />
                 </Fragment>
 
@@ -448,7 +449,8 @@ HistoryCard.propTypes = {
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool,
     contacts       : PropTypes.array,
-    defaultDomain  : PropTypes.string
+    defaultDomain  : PropTypes.string,
+    accountId      : PropTypes.string
 };
 
 

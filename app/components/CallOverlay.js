@@ -85,7 +85,7 @@ class CallOverlay extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        if (newState === 'established' && this._isMounted) {
+        if (newState === 'established' && this._isMounted && !this.props.terminated) {
             this.startTimer();
         }
 
@@ -128,6 +128,12 @@ class CallOverlay extends React.Component {
     render() {
         let header = null;
 
+        if (this.props.terminated) {
+            clearTimeout(this.timer);
+            this.duration = null;
+            this.timer = null;
+        }
+
         let displayName = this.state.remoteUri;
 
         if (this.state.remoteDisplayName && this.state.remoteDisplayName !== this.state.remoteUri) {
@@ -143,6 +149,8 @@ class CallOverlay extends React.Component {
             } else {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting the call...';
+                } else if (this.props.terminated) {
+                    callDetail = 'Call ended';
                 } else if (this.state.callState === 'terminated') {
                     callDetail = this.finalDuration ? 'Call ended after ' + this.finalDuration : 'Call ended';
                 } else {
@@ -192,7 +200,8 @@ CallOverlay.propTypes = {
     remoteDisplayName: PropTypes.string,
     call: PropTypes.object,
     connection: PropTypes.object,
-    reconnectingCall: PropTypes.bool
+    reconnectingCall: PropTypes.bool,
+    terminated : PropTypes.bool
 };
 
 

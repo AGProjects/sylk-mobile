@@ -890,6 +890,7 @@ class ConferenceBox extends Component {
                             reconnectingCall={this.state.reconnectingCall}
                             buttons={buttons}
                             audioOnly={this.props.audioOnly}
+                            terminated={this.state.terminated}
                         />
                     </View>
 
@@ -1072,6 +1073,7 @@ class ConferenceBox extends Component {
                         reconnectingCall={this.state.reconnectingCall}
                         buttons={buttons}
                         audioOnly={this.props.audioOnly}
+                        terminated={this.state.terminated}
                     />
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
                         <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
@@ -1154,7 +1156,8 @@ ConferenceBox.propTypes = {
     reconnectingCall    : PropTypes.bool,
     audioOnly           : PropTypes.bool,
     contacts            : PropTypes.array,
-    initialParticipants : PropTypes.array
+    initialParticipants : PropTypes.array,
+    terminated          : PropTypes.bool
 };
 
 export default ConferenceBox;

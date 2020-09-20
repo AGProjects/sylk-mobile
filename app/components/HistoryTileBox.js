@@ -156,6 +156,7 @@ class HistoryTileBox extends Component {
             isTablet={this.props.isTablet}
             contacts={this.state.contacts}
             defaultDomain={this.props.defaultDomain}
+            accountId={this.state.accountId}
             />);
     }
 

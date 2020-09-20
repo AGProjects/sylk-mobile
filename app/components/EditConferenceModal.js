@@ -10,35 +10,61 @@ const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 import config from '../config';
 import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
 
+
 class EditConferenceModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
 
-        let users = '';
+        let participants = [];
         if (this.props.invitedParties && this.props.invitedParties.length > 0) {
-            users = this.props.invitedParties;
+            participants = this.props.invitedParties;
         } else if (this.props.selectedContact && this.props.selectedContact.participants) {
-            users = this.props.selectedContact.participants;
+            participants = this.props.selectedContact.participants;
         }
 
         this.state = {
-            users: users.toString(),
+            participants: this.sanitizedParticipants(participants),
             selectedContact: this.props.selectedContact,
             invitedParties: this.props.invitedParties
         }
     }
 
+    sanitizedParticipants(participants) {
+        sanitizedParticipants = [];
+        participants.forEach((item) => {
+            item = item.trim().toLowerCase();
+
+            if (item === this.props.accountId) {
+                return;
+            }
+
+            if (item.indexOf('@') === -1) {
+                sanitizedParticipants.push(item);
+            } else {
+                const domain = item.split('@')[1];
+                if (domain === this.props.defaultDomain) {
+                    sanitizedParticipants.push(item.split('@')[0]);
+                } else {
+                    sanitizedParticipants.push(item);
+                }
+            }
+        });
+
+        return sanitizedParticipants.toString().replace(/,/g, ", ");
+    }
+
+
     UNSAFE_componentWillReceiveProps(nextProps) {
-        let users = '';
+        let participants = [];
         if (nextProps.invitedParties && nextProps.invitedParties.length > 0) {
-            users = nextProps.invitedParties;
+            participants = nextProps.invitedParties;
         } else if (nextProps.selectedContact && nextProps.selectedContact.participants) {
-            users = nextProps.selectedContact.participants;
+            participants = nextProps.selectedContact.participants;
         }
 
         this.setState({
-            users: users.toString(),
+            participants: this.sanitizedParticipants(participants),
             selectedContact: nextProps.selectedContact,
             invitedParties: nextProps.invitedParties
         });
@@ -47,11 +73,15 @@ class EditConferenceModal extends Component {
     saveParticipants(event) {
         event.preventDefault();
         const uris = [];
-        if (this.state.users) {
-            this.state.users.split(',').forEach((item) => {
+        if (this.state.participants) {
+            this.state.participants.split(',').forEach((item) => {
                 item = item.trim();
                 if (item.indexOf('@') === -1) {
                     item = `${item}@${this.props.defaultDomain}`;
+                }
+
+                if (item === this.props.accountId) {
+                    return;
                 }
 
                 let username = item.split('@')[0];
@@ -63,13 +93,13 @@ class EditConferenceModal extends Component {
 
         if (uris) {
             this.props.saveInvitedParties(uris);
-            this.setState({users: null});
+            this.setState({participants: null});
         }
         this.props.close();
     }
 
     onInputChange(value) {
-        this.setState({users: value});
+        this.setState({participants: value});
     }
 
     render() {
@@ -83,10 +113,10 @@ class EditConferenceModal extends Component {
                           </Dialog.Content>
                         <TextInput
                             mode="flat"
-                            name="users"
+                            name="participants"
                             label="People"
                             onChangeText={this.onInputChange}
-                            value={this.state.users}
+                            value={this.state.participants}
                             placeholder="Enter accounts separated by ,"
                             required
                             autoCapitalize="none"
@@ -108,13 +138,14 @@ class EditConferenceModal extends Component {
 }
 
 EditConferenceModal.propTypes = {
-    show: PropTypes.bool.isRequired,
-    close: PropTypes.func.isRequired,
-    saveInvitedParties: PropTypes.func,
-    invitedParties: PropTypes.array,
-    room: PropTypes.string,
-    selectedContact: PropTypes.object,
-    defaultDomain: PropTypes.string
+    show               : PropTypes.bool.isRequired,
+    close              : PropTypes.func.isRequired,
+    saveInvitedParties : PropTypes.func,
+    invitedParties     : PropTypes.array,
+    room               : PropTypes.string,
+    selectedContact    : PropTypes.object,
+    defaultDomain      : PropTypes.string,
+    accountId          : PropTypes.string
 };
 
 export default EditConferenceModal;

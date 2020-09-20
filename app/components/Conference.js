@@ -30,6 +30,7 @@ class Conference extends React.Component {
 
         this.state = {
               currentCall: null,
+              callState: null,
               targetUri: this.props.targetUri,
               callUUID: this.props.callUUID,
               localMedia: this.props.localMedia,
@@ -72,6 +73,7 @@ class Conference extends React.Component {
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
         }
+        this.setState({callState: newState});
     }
 
     connectionStateChanged(oldState, newState) {
@@ -313,12 +315,12 @@ class Conference extends React.Component {
         let box = null;
 
         if (this.state.localMedia !== null) {
-            if (this.state.currentCall != null && (this.state.currentCall.state === 'established')) {
+            if (this.state.currentCall != null && (this.state.callState === 'established')) {
                 box = (
                     <ConferenceBox
                         notificationCenter = {this.props.notificationCenter}
                         call = {this.state.currentCall}
-                        audioOnly = {!this.props.proposedMedia.video}
+                        audioOnly = {this.props.proposedMedia ? !this.props.proposedMedia.video: false}
                         reconnectingCall={this.state.reconnectingCall}
                         connection = {this.state.connection}
                         hangup = {this.hangup}
@@ -339,6 +341,7 @@ class Conference extends React.Component {
                         reconnectingCall={this.state.reconnectingCall}
                         contacts={this.props.contacts}
                         initialParticipants={this.props.participantsToInvite}
+                        terminated={this.userHangup}
                    />
                 );
             } else {
@@ -354,6 +357,7 @@ class Conference extends React.Component {
                         saveConference={this.saveConference}
                         connection={this.state.connection}
                         participants={this.participants}
+                        terminated={this.userHangup}
                     />
                 );
             }

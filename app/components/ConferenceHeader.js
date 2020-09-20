@@ -53,6 +53,8 @@ const ConferenceHeader = (props) => {
 
         if (props.reconnectingCall) {
             callDetail = 'Reconnecting call...';
+        } else if (props.terminated) {
+            callDetail = 'Call ended';
         } else {
             callDetail = `Duration: ${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
         }
@@ -88,7 +90,8 @@ ConferenceHeader.propTypes = {
     participants: PropTypes.array.isRequired,
     buttons: PropTypes.object.isRequired,
     reconnectingCall: PropTypes.bool,
-    audioOnly: PropTypes.bool
+    audioOnly: PropTypes.bool,
+    terminated: PropTypes.bool
 };
 
 
