@@ -19,11 +19,29 @@ class InviteParticipantsModal extends Component {
         super(props);
         autoBind(this);
 
-        let difference = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
-        difference = difference.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
+        let participants = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
+        participants = participants.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
+        const sanitizedParticipants = [];
+
+        console.log(participants);
+
+        participants.forEach((item) => {
+            item = item.trim().toLowerCase();
+
+            if (item.indexOf('@') === -1) {
+                sanitizedParticipants.push(item);
+            } else {
+                const domain = item.split('@')[1];
+                if (domain === this.props.defaultDomain) {
+                    sanitizedParticipants.push(item.split('@')[0]);
+                } else {
+                    sanitizedParticipants.push(item);
+                }
+            }
+        });
 
         this.state = {
-            participants: difference.toString(),
+            participants: sanitizedParticipants.toString().replace(/,/g, ", "),
             previousParticipants: this.props.previousParticipants,
             currentParticipants: this.props.currentParticipants,
             roomUrl: config.publicUrl + '/conference/' + this.props.room
@@ -114,7 +132,7 @@ class InviteParticipantsModal extends Component {
                         <TextInput
                             mode="flat"
                             name="people"
-                            label="Accounts"
+                            label="People"
                             onChangeText={this.onInputChange}
                             defaultValue={this.state.participants}
                             placeholder="Enter accounts separated by ,"
@@ -132,22 +150,22 @@ class InviteParticipantsModal extends Component {
                         </View>
 
                         <Text style={styles.body}>
-                             Share the conference link:
+                             Or share the conference link:
                         </Text>
 
                         <View style={styles.iconContainer}>
                             <IconButton
-                                size={34}
+                                size={30}
                                 onPress={this.handleClipboardButton}
                                 icon="content-copy"
                             />
                             <IconButton
-                                size={34}
+                                size={30}
                                 onPress={this.handleEmailButton}
                                 icon="email"
                             />
                             <IconButton
-                                size={34}
+                                size={30}
                                 onPress={this.handleShareButton}
                                 icon="share-variant"
                             />

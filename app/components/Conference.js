@@ -46,11 +46,13 @@ class Conference extends React.Component {
             this.props.connection.on('stateChanged', this.connectionStateChanged);
         }
 
-        this.props.participantsToInvite.forEach((p) => {
-            if (this.participants.indexOf(p) === -1) {
-                this.participants.push(p);
-            }
-        });
+        if (this.props.participantsToInvite) {
+            this.props.participantsToInvite.forEach((p) => {
+                if (this.participants.indexOf(p) === -1) {
+                    this.participants.push(p);
+                }
+            });
+        }
     }
 
     componentWillUnmount() {
@@ -230,12 +232,12 @@ class Conference extends React.Component {
 
     showSaveDialog() {
         if (!this.userHangup) {
-            //console.log('No show dialog because user did not hangup')
+            console.log('No save dialog because user did not hangup')
             return false;
         }
 
         if (this.state.reconnectingCall) {
-            console.log('No show dialog because call is reconnecting')
+            console.log('No save dialog because call is reconnecting')
             return false;
         }
 
@@ -249,7 +251,6 @@ class Conference extends React.Component {
             let must_display = false;
             if (this.props.myInvitedParties.hasOwnProperty(room)) {
                 let old_participants = this.state.myInvitedParties[room];
-                console.log('old participants', old_participants);
                 this.participants.forEach((p) => {
                     if (old_participants.indexOf(p) === -1) {
                         console.log(p, 'is not in', old_participants);
@@ -258,12 +259,17 @@ class Conference extends React.Component {
                 });
             }
 
-            return must_display;
-
-            console.log('No show dialog because is already favorite with same participants')
-            console.log('new participants', this.participants);
+            if (must_display) {
+                console.log('Show save dialog because we have new participants');
+                return true;
+            } else {
+                console.log('No save dialog because is already favorite with same participants')
+                return false;
+            }
+        } else {
+            console.log('Show save dialog because is not in favorites');
+            return true;
         }
-
         return true;
     }
 

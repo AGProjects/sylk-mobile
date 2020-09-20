@@ -144,19 +144,22 @@ class ConferenceBox extends Component {
 
             p = this.invitedParticipants.get(_uri);
             interval = Math.floor((Date.now() - p.timestamp) / 1000);
-            console.log(_uri, 'was invited', interval, 'seconds ago');
+            //console.log(_uri, 'was invited', interval, 'seconds ago');
 
             if (interval >= 60) {
                 this.invitedParticipants.delete(_uri);
                 this.forceUpdate();
             }
 
-            if (p.status.indexOf('Invited') > -1) {
+            if (p.status.indexOf('Invited') > -1 && interval > 5) {
+                p.status = '..';
+            }
+
+            if (p.status.indexOf('.') > -1) {
                 if (interval > 45) {
                     p.status = 'No answer';
                 } else {
-                    const dot = p.status.indexOf('.') > -1 ? '.' : ' .';
-                    p.status = p.status + dot;
+                    p.status = p.status + '..';
                 }
                 this.forceUpdate();
             }
@@ -168,6 +171,7 @@ class ConferenceBox extends Component {
             p.on('stateChanged', this.onParticipantStateChanged);
             p.attach();
         }
+
         this.props.call.on('participantJoined', this.onParticipantJoined);
         this.props.call.on('participantLeft', this.onParticipantLeft);
         this.props.call.on('roomConfigured', this.onConfigureRoom);

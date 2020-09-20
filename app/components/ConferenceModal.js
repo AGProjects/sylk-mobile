@@ -93,7 +93,7 @@ class ConferenceModal extends Component {
         }
 
         if (sanitizedParticipants.length > 0) {
-            this.setState({participants: sanitizedParticipants.toString()});
+            this.setState({participants: sanitizedParticipants.toString().replace(/,/g, ", ")});
         }
     }
 

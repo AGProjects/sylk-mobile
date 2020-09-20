@@ -1760,8 +1760,14 @@ class Sylk extends Component {
             this.changeRoute('/ready', reason);
         } else if (reason === 'user_hangup_conference') {
             utils.timestampedLog('Save conference maybe?');
+            setTimeout(() => {
+                 this.changeRoute('/ready', 'conference_really_ended');
+            }, 15000);
         } else if (reason === 'user_cancelled_conference') {
             utils.timestampedLog('Save conference maybe?');
+            setTimeout(() => {
+                 this.changeRoute('/ready', 'conference_really_ended');
+            }, 15000);
         } else {
             if (reason !== 'escalate_to_conference') {
                 setTimeout(() => {

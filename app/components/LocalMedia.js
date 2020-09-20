@@ -71,8 +71,9 @@ class LocalMedia extends Component {
                 {this.props.showSaveDialog() ?
                     <View style={styles.buttonContainer}>
 
-                    <Text style={styles.title}>Would you like to save the participants {this.state.participants.toString().replace(/,/g, ', ')} for having another conference later?</Text>
-                    <Text style={styles.description}>You can find later it by selecting Favorites. </Text>
+                    <Text style={styles.title}>Save conference maybe?</Text>
+                    <Text style={styles.subtitle}>Would you like to save participants {this.state.participants.toString().replace(/,/g, ', ')} for having another conference later?</Text>
+                    <Text style={styles.description}>You can find later it in your Favorites. </Text>
 
                     <View style={styles.buttonRow}>
 
