@@ -119,8 +119,6 @@ class HistoryTileBox extends Component {
         return this.props.setFavoriteUri(uri);
     }
 
-    //invitedParties = Array.from(this.invitedParticipants.keys());
-
     saveInvitedParties(room, uris) {
         if (this.ended) {
             return;
