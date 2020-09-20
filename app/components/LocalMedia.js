@@ -42,6 +42,14 @@ class LocalMedia extends Component {
         this.props.saveConference();
     }
 
+    showSaveDialog() {
+        if (!this.props.showSaveDialog) {
+            return false;
+        }
+
+        return this.props.showSaveDialog();
+    }
+
     hangupCall(event) {
         event.preventDefault();
         this.props.hangupCall('user_hangup_conference_confirmed');
@@ -68,7 +76,7 @@ class LocalMedia extends Component {
                     connection={this.props.connection}
                 />
 
-                {this.props.showSaveDialog() ?
+                {this.showSaveDialog() ?
                     <View style={styles.buttonContainer}>
 
                     <Text style={styles.title}>Save conference maybe?</Text>

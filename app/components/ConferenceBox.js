@@ -878,6 +878,8 @@ class ConferenceBox extends Component {
                 );
             });
 
+            const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
+
             return (
                 <View style={styles.container}>
                     <View style={styles.conferenceContainer}>
@@ -901,7 +903,7 @@ class ConferenceBox extends Component {
                         show={this.state.showInviteModal && !this.state.reconnectingCall}
                         inviteParticipants={this.inviteParticipants}
                         previousParticipants={this.state.previousParticipants}
-                        alreadyInvitedParticipants={Array.from(this.invitedParticipants.keys())}
+                        alreadyInvitedParticipants={alreadyInvitedParticipants}
                         currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
                         close={this.toggleInviteModal}
                         room={this.props.remoteUri.split('@')[0]}
@@ -1057,6 +1059,9 @@ class ConferenceBox extends Component {
         //     />
         // );
 
+        const currentParticipants = this.state.participants.map((p) => {return p.identity.uri})
+        const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
+
         return (
             <View style={styles.container}>
                 <View style={styles.conferenceContainer}>
@@ -1084,7 +1089,8 @@ class ConferenceBox extends Component {
                     show={this.state.showInviteModal && !this.state.reconnectingCall}
                     inviteParticipants={this.inviteParticipants}
                     previousParticipants={this.state.previousParticipants}
-                    currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
+                    currentParticipants={currentParticipants}
+                    alreadyInvitedParticipants={alreadyInvitedParticipants}
                     close={this.toggleInviteModal}
                     room={this.props.remoteUri.split('@')[0]}
                     defaultDomain = {this.props.defaultDomain}

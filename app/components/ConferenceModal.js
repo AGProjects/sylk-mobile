@@ -57,44 +57,36 @@ class ConferenceModal extends Component {
             let uri = `${targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
             uri = uri.split('@')[0];
             if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
-                participants = this.props.myInvitedParties[uri].toString();
+                participants = this.props.myInvitedParties[uri];
             } else if (this.state.selectedContact && this.state.selectedContact.participants) {
-                participants = this.state.selectedContact.participants.toString();
+                participants = this.state.selectedContact.participants;
             }
 
-            if (participants) {
-                participants.split(',').forEach((item) => {
-                    item = item.trim().toLowerCase();
+            participants.forEach((item) => {
+                item = item.trim().toLowerCase();
 
-                    if (item === this.props.accountId) {
-                        return;
+                if (item === this.props.accountId) {
+                    return;
+                }
+
+                if (item.indexOf('@') === -1) {
+                    sanitizedParticipants.push(item);
+                } else {
+                    const domain = item.split('@')[1];
+                    if (domain === this.props.defaultDomain) {
+                        sanitizedParticipants.push(item.split('@')[0]);
+                    } else {
+                        sanitizedParticipants.push(item);
                     }
-
-                    if (item.indexOf('@') === -1) {
-                        item = `${item}@${this.props.defaultDomain}`;
-                    }
-
-                    username = item.split('@')[0];
-                    domain = item.split('@')[1];
-
-                    if (username && username !== ',') {
-                        if (domain === this.props.defaultDomain) {
-                            sanitizedParticipants.push(username);
-                        } else {
-                            sanitizedParticipants.push(item);
-                        }
-                    }
-                });
-            }
+                }
+            });
         }
 
         if (targetUri) {
             this.setState({targetUri: targetUri});
         }
 
-        if (sanitizedParticipants.length > 0) {
-            this.setState({participants: sanitizedParticipants.toString().replace(/,/g, ", ")});
-        }
+        this.setState({participants: sanitizedParticipants.toString().replace(/,/g, ", ")});
     }
 
     joinAudio(event) {
