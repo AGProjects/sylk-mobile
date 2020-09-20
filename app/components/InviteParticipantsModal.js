@@ -18,13 +18,9 @@ class InviteParticipantsModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        //console.log('currentParticipants', this.props.currentParticipants);
-        //console.log('previousParticipants', this.props.previousParticipants);
+
         let difference = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
-        //console.log('difference1', difference);
-        difference = difference.filter(x => !this.props.alreadyInvitedParticipants.includes(x));
-        //console.log('difference2', difference);
-        //console.log('alreadyInvitedParticipants', this.props.alreadyInvitedParticipants);
+        difference = difference.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
 
         this.state = {
             participants: difference.toString(),
@@ -40,7 +36,7 @@ class InviteParticipantsModal extends Component {
         }
 
         let difference = nextProps.previousParticipants.filter(x => !nextProps.currentParticipants.includes(x));
-        difference = difference.filter(x => !nextProps.alreadyInvitedParticipants.includes(x));
+        difference = difference.filter(x => !nextProps.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
         this.setState({
             participants: difference.toString(),
             alreadyInvitedParticipants: nextProps.alreadyInvitedParticipants,
@@ -110,7 +106,6 @@ class InviteParticipantsModal extends Component {
     }
 
     render() {
-
         return (
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
@@ -121,7 +116,7 @@ class InviteParticipantsModal extends Component {
                             name="people"
                             label="Accounts"
                             onChangeText={this.onInputChange}
-                            value={this.state.participants}
+                            defaultValue={this.state.participants}
                             placeholder="Enter accounts separated by ,"
                             required
                             autoCapitalize="none"
@@ -175,7 +170,8 @@ InviteParticipantsModal.propTypes = {
     previousParticipants: PropTypes.array,
     alreadyInvitedParticipants: PropTypes.array,
     room: PropTypes.string,
-    defaultDomain: PropTypes.string
+    defaultDomain: PropTypes.string,
+    accountId: PropTypes.string
 };
 
 export default InviteParticipantsModal;
