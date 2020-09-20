@@ -77,7 +77,7 @@ class CallMeMaybeModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Call me, maybe?</Dialog.Title>
                         <Text style={styles.body}>
-                            Others can call you using SIP at
+                            Others can call you by using a SIP phone at
                         </Text>
                         <Text style={styles.address}>
                          {sipUri}
@@ -89,7 +89,7 @@ class CallMeMaybeModal extends Component {
                             {this.props.callUrl}
                         </Text>
                         <Text style={styles.body}>
-                             Share them with others:
+                             Share your addresses with others:
                         </Text>
                         <View style={styles.iconContainer}>
                             <IconButton
