@@ -213,8 +213,8 @@ class Sylk extends Component {
             initialUrl: null,
             reconnectingCall: false,
             muted: false,
-            participantsToInvite: null,
-            myInvitedParties: null,
+            participantsToInvite: [],
+            myInvitedParties: {},
             defaultDomain: config.defaultDomain
         };
 
@@ -305,7 +305,7 @@ class Sylk extends Component {
         storage.get('myInvitedParties').then((myInvitedParties) => {
             if (myInvitedParties) {
                 if (Array.isArray(myInvitedParties)) {
-                    myInvitedParties = null;
+                    myInvitedParties = {};
                 }
                 this.myInvitedParties = myInvitedParties;
                 //console.log('My invited parties', this.myInvitedParties);
@@ -1611,7 +1611,7 @@ class Sylk extends Component {
         return this.state.connection ? Object.id(this.state.connection): null;
     }
 
-    callKeepStartConference(targetUri, options={audio: true, video: true, participants: null}) {
+    callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}) {
         if (!targetUri) {
             return;
         }
@@ -1626,12 +1626,14 @@ class Sylk extends Component {
 
         let participantsToInvite = [];
 
-        participants.forEach((participant_uri) => {
-            if (participant_uri === this.state.accountId) {
-                return;
-            }
-            participantsToInvite.push(participant_uri);
-        });
+        if (participants) {
+            participants.forEach((participant_uri) => {
+                if (participant_uri === this.state.accountId) {
+                    return;
+                }
+                participantsToInvite.push(participant_uri);
+            });
+        }
 
         this.setState({outgoingCallUUID: callUUID,
                        outgoingMedia: options,
