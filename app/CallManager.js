@@ -240,6 +240,7 @@ export default class CallManager extends events.EventEmitter {
             this.acceptCall(callUUID);
         } else {
             utils.timestampedLog('Callkeep: cannot accept because we already rejected', callUUID);
+            this.endCall(callUUID);
         }
     }
 
