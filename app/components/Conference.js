@@ -234,7 +234,6 @@ class Conference extends React.Component {
 
     showSaveDialog() {
         if (!this.userHangup) {
-            console.log('No save dialog because user did not hangup')
             return false;
         }
 

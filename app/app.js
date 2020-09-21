@@ -1998,16 +1998,17 @@ class Sylk extends Component {
 
             if (scheme === 'sylk:') {
                 //sylk://outgoing/call/callUUID/to/displayName - from system dialer/history
-                //sylk://incoming/conference/callUUID/from/to - when Android is asleep
+                //sylk://incoming/conference/callUUID/from/to/media - when Android is asleep
                 //sylk://incoming/call/callUUID/from/to - when Android is asleep
                 //sylk://cancel/call/callUUID/from/to - when Android is asleep
 
-                direction = url_parts[2];
-                event     = url_parts[3];
-                callUUID  = url_parts[4];
-                from      = url_parts[5];
-                to        = url_parts[6];
+                direction   = url_parts[2];
+                event       = url_parts[3];
+                callUUID    = url_parts[4];
+                from        = url_parts[5];
+                to          = url_parts[6];
                 displayName = url_parts[7];
+                mediaType   = url_parts[8];
                 this.setState({targetUri: from});
             } else if (scheme === 'https:') {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
@@ -2036,7 +2037,8 @@ class Sylk extends Component {
                 utils.timestampedLog('Incoming conference from', from);
                 // allow app to wake up
                 this.backToForeground();
-                this.incomingConference(callUUID, to, from, displayName);
+                const media = {audio: true, video: mediaType === 'video'}
+                this.incomingConference(callUUID, to, from, displayName, media);
 
             } else if (direction === 'outgoing' && event === 'call' && from) {
                 utils.timestampedLog('Outgoing call to', from);
@@ -2275,8 +2277,6 @@ class Sylk extends Component {
     }
 
     saveParticipant(callUUID, room, uri) {
-        console.log('Save participant', uri, 'for conference', room);
-
         if (this._historyConferenceParticipants.has(callUUID)) {
             let old_participants = this._historyConferenceParticipants.get(callUUID);
             if (old_participants.indexOf(uri) === -1) {

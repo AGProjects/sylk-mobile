@@ -19,13 +19,13 @@ class InviteParticipantsModal extends Component {
         super(props);
         autoBind(this);
 
-        console.log('this.props.previousParticipants', this.props.previousParticipants);
-        console.log('this.props.currentParticipants', this.props.currentParticipants);
-        console.log('this.props.alreadyInvitedParticipants', this.props.alreadyInvitedParticipants);
-
-        let participants = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
-        participants = participants.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
         const sanitizedParticipants = [];
+        let participants = [];
+
+        if (this.props.previousParticipants && this.props.currentParticipants && this.props.alreadyInvitedParticipants) {
+            participants = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
+            participants = participants.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
+        }
 
         participants.forEach((item) => {
             item = item.trim().toLowerCase();

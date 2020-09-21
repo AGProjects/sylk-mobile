@@ -9,13 +9,14 @@ export default async (remoteMessage) => {
 
         let event = remoteMessage.data.event;
         let callUUID = remoteMessage.data['session-id'];
-        let to = remoteMessage.data['to_uri']
-        let from = remoteMessage.data['from_uri']
-        let displayName = remoteMessage.data['from_display_name']
+        let to = remoteMessage.data['to_uri'];
+        let from = remoteMessage.data['from_uri'];
+        let displayName = remoteMessage.data['from_display_name'];
+        let mediaType = remoteMessage.data['media-type'];
         let url;
 
         if (event === 'incoming_conference_request') {
-            url = 'sylk://incoming/conference/' + callUUID + '/' + from + '/' + to;
+            url = 'sylk://incoming/conference/' + callUUID + '/' + from + '/' + to + '/' + displayName + '/' + mediaType;
         } else if (event === 'incoming_session') {
             url = 'sylk://incoming/call/' + callUUID + '/' + from + '/' + to + '/' + displayName;
         } else if (event === 'cancel') {

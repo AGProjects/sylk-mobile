@@ -45,7 +45,6 @@ class ConferenceAudioParticipant extends Component {
 
         const streams = this.props.participant.streams;
         if (streams.length > 0) {
-            console.log('Attach stream');
             this.props.participant.pauseVideo();
             this.setState({stream: streams[0]});
         }

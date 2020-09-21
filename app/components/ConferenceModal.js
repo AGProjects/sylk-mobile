@@ -56,8 +56,9 @@ class ConferenceModal extends Component {
         if (targetUri) {
             let uri = `${targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
             uri = uri.split('@')[0];
+
             if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
-                participants = this.props.myInvitedParties[uri];
+                participants = this.state.myInvitedParties[uri];
             } else if (this.state.selectedContact && this.state.selectedContact.participants) {
                 participants = this.state.selectedContact.participants;
             }

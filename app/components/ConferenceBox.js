@@ -152,14 +152,14 @@ class ConferenceBox extends Component {
             }
 
             if (p.status.indexOf('Invited') > -1 && interval > 5) {
-                p.status = '..';
+                p.status = '.';
             }
 
             if (p.status.indexOf('.') > -1) {
                 if (interval > 45) {
                     p.status = 'No answer';
                 } else {
-                    p.status = p.status + '..';
+                    p.status = p.status + '.';
                 }
                 this.forceUpdate();
             }
@@ -206,10 +206,7 @@ class ConferenceBox extends Component {
         }
 
         if (this.state.videoMuted) {
-            console.log('Started video muted');
             this._muteVideo();
-        } else {
-            console.log('Started video active');
         }
     }
 
