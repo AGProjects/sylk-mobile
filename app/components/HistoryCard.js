@@ -287,7 +287,7 @@ class HistoryCard extends Component {
 
             if (this.state.conference) {
                 let participants = this.state.participants;
-                if (this.state.filter === 'favorite' && this.state.invitedParties && this.state.invitedParties.length > 0 ) {
+                if (this.state.invitedParties && this.state.invitedParties.length > 0 ) {
                     participants = this.state.invitedParties;
                 }
 
