@@ -204,7 +204,7 @@ class HistoryTileBox extends Component {
     }
 
     getFavoriteContacts() {
-        console.log('Update favorite contacts');
+        //console.log('Update favorite contacts');
         let favoriteContacts = [];
         let displayName;
         let label;
