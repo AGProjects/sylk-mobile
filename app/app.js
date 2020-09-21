@@ -2699,6 +2699,8 @@ class Sylk extends Component {
             this.state.account.setDeviceToken('None', Platform.OS, deviceId, true, bundleId);
             this.state.account.register();
             return;
+        } else if (this.mustLogout && this.state.connection && this.state.account) {
+            this.state.account.unregister();
         }
 
         this.tokenSent = false;
