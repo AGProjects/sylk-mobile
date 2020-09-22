@@ -390,16 +390,21 @@ class HistoryCard extends Component {
                         </View>
                         : null}
                 </Card>
+                { this.state.showEditConferenceModal ?
                 <EditConferenceModal
                     show={this.state.showEditConferenceModal}
                     room={title}
                     invitedParties={this.state.invitedParties}
                     selectedContact={this.state.contact}
+                    setFavoriteUri={this.props.setFavoriteUri}
                     saveInvitedParties={this.saveInvitedParties}
                     close={this.toggleEditConferenceModal}
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.props.accountId}
+                    setFavoriteUri={this.props.setFavoriteUri}
+                    favoriteUris={this.props.favoriteUris}
                 />
+                : null}
                 </Fragment>
 
             );
@@ -450,7 +455,8 @@ HistoryCard.propTypes = {
     isTablet       : PropTypes.bool,
     contacts       : PropTypes.array,
     defaultDomain  : PropTypes.string,
-    accountId      : PropTypes.string
+    accountId      : PropTypes.string,
+    favoriteUris   : PropTypes.array
 };
 
 

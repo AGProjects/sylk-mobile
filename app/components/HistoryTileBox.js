@@ -32,7 +32,8 @@ class HistoryTileBox extends Component {
             isRefreshing: false,
             contacts: this.props.contacts,
             myInvitedParties: this.props.myInvitedParties,
-            refreshHistory: this.props.refreshHistory
+            refreshHistory: this.props.refreshHistory,
+            selectedContact: this.props.selectedContact || null
         }
 
         const echoTest = {
@@ -94,6 +95,8 @@ class HistoryTileBox extends Component {
             this.setState({refreshHistory: nextProps.refreshHistory});
             this.getServerHistory();
         }
+
+        this.setState({selectedContact: nextProps.selectedContact || null});
 
         this.getFavoriteContacts();
     }
@@ -157,6 +160,7 @@ class HistoryTileBox extends Component {
             contacts={this.state.contacts}
             defaultDomain={this.props.defaultDomain}
             accountId={this.state.accountId}
+            favoriteUris={this.state.favoriteUris}
             />);
     }
 
@@ -454,7 +458,7 @@ class HistoryTileBox extends Component {
             return true;
         }
 
-        if (contact.metadata && filter.length > 2 && contact.metadata.indexOf(filter) > -1) {
+        if (!this.state.selectedContact && contact.conference && contact.metadata && filter.length > 2 && contact.metadata.indexOf(filter) > -1) {
             return true;
         }
 
@@ -486,10 +490,10 @@ class HistoryTileBox extends Component {
 
             items = history.filter(historyItem => this.matchContact(historyItem, this.props.targetUri));
 
-            if (this.props.targetUri && this.props.targetUri.length > 2 && !this.props.selectedContact) {
+            if (this.props.targetUri && this.props.targetUri.length > 2 && !this.state.selectedContact) {
                 matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.props.targetUri));
-            } else if (this.props.selectedContact && this.props.selectedContact.type === 'contact') {
-                matchedContacts.push(this.props.selectedContact);
+            } else if (this.state.selectedContact && this.state.selectedContact.type === 'contact') {
+                matchedContacts.push(this.state.selectedContact);
             }
 
             items = items.concat(matchedContacts);
