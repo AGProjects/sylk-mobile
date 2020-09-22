@@ -1935,7 +1935,7 @@ class Sylk extends Component {
         const media = outgoingMedia.video ? 'video' : 'audio';
 
         utils.timestampedLog('Incoming', media, 'conference invite from', from, 'to room', to);
-        if (this.autoRejectIncomingCall(callUUID, from)) {
+        if (this.autoRejectIncomingCall(callUUID, from, to)) {
             return;
         }
 
@@ -2060,7 +2060,7 @@ class Sylk extends Component {
         }
     }
 
-    autoRejectIncomingCall(callUUID, from) {
+    autoRejectIncomingCall(callUUID, from, to) {
         utils.timestampedLog('Check auto reject call from', from);
         if (this.state.blockedUris && this.state.blockedUris.indexOf(from) > -1) {
             utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
@@ -2096,7 +2096,9 @@ class Sylk extends Component {
 
         if (this.isConference()) {
             utils.timestampedLog('Reject call while in a conference', callUUID);
-            this._notificationCenter.postSystemNotification('Missed call from', {body: from});
+            if (to !== this.state.targetUri) {
+                this._notificationCenter.postSystemNotification('Missed call from', {body: from});
+            }
             this.callKeeper.rejectCall(callUUID);
             return true;
         }
