@@ -16,14 +16,23 @@ class EditDisplayNameModal extends Component {
         autoBind(this);
 
         this.state = {
-            displayName: this.props.displayName
+            displayName: this.props.displayName,
+            show: this.props.show
         }
+    }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        this.setState({show: nextProps.show});
     }
 
     saveDisplayName(event) {
         event.preventDefault();
         this.props.saveDisplayName(this.state.displayName);
-        this.props.close();
+        if (!this.props.myself) {
+            this.props.close();
+        } else if (this.props.displayName) {
+            this.props.close();
+        }
     }
 
     onInputChange(value) {
@@ -33,10 +42,10 @@ class EditDisplayNameModal extends Component {
     render() {
         return (
             <Portal>
-                <DialogType visible={this.props.show} onDismiss={this.props.close}>
+                <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>{this.props.uri}</Dialog.Title>
-                        {this.props.uri === this.props.accountId ?
+                        {this.props.myself ?
                          <Text style={styles.body}>
                              Please set your name seen by others when you call them
                         </Text>
@@ -74,7 +83,7 @@ EditDisplayNameModal.propTypes = {
     close              : PropTypes.func.isRequired,
     displayName        : PropTypes.string,
     uri                : PropTypes.string,
-    accountId          : PropTypes.string,
+    myself             : PropTypes.bool,
     saveDisplayName    : PropTypes.func
 };
 

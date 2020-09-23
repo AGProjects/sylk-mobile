@@ -420,6 +420,7 @@ class HistoryCard extends Component {
                     show={this.state.showEditDisplayNameModal}
                     close={this.toggleEdit}
                     uri={this.state.uri}
+                    myself={false}
                     displayName={this.state.displayName}
                     saveDisplayName={this.saveDisplayName}
                 />
