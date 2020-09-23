@@ -8,6 +8,7 @@ import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import config from '../config';
 import AboutModal from './AboutModal';
 import CallMeMaybeModal from './CallMeMaybeModal';
+import EditDisplayNameModal from './EditDisplayNameModal';
 import styles from '../assets/styles/blink/_NavigationBar.scss';
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
@@ -18,11 +19,13 @@ class NavigationBar extends Component {
         this.state = {
             showAboutModal: false,
             showCallMeMaybeModal: false,
+            showEditDisplayNameModal: false,
             registrationState: this.props.registrationState,
             connection: this.props.connection,
             mute: false,
             menuVisible: false,
-            accountId: this.props.account ? this.props.account.id : null
+            accountId: this.props.account ? this.props.account.id : null,
+            displayName: this.props.displayName
         }
 
         this.menuRef = React.createRef();
@@ -35,7 +38,9 @@ class NavigationBar extends Component {
         }
 
         this.setState({registrationState: nextProps.registrationState,
-                       connection: nextProps.connection});
+                       connection: nextProps.connection,
+                       displayName: nextProps.displayName
+                       });
     }
 
     handleMenu(event) {
@@ -46,6 +51,9 @@ class NavigationBar extends Component {
                 break;
             case 'callMeMaybe':
                 this.toggleCallMeMaybeModal();
+                break;
+            case 'displayName':
+                this.toggleEditDisplayNameModal();
                 break;
             case 'logOut':
                 this.props.logout();
@@ -62,6 +70,10 @@ class NavigationBar extends Component {
         this.setState({menuVisible: false});
     }
 
+    saveDisplayName(displayName) {
+        this.props.saveDisplayName(this.state.accountId, displayName);
+    }
+
     toggleMute() {
         this.setState(prevState => ({mute: !prevState.mute}));
         this.props.toggleMute();
@@ -75,8 +87,12 @@ class NavigationBar extends Component {
         this.setState({showCallMeMaybeModal: !this.state.showCallMeMaybeModal});
     }
 
+    toggleEditDisplayNameModal() {
+        this.setState({showEditDisplayNameModal: !this.state.showEditDisplayNameModal});
+    }
+
     render() {
-        const muteIcon = this.state.mute ? 'bell-off' : 'bell';
+         const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
@@ -103,7 +119,7 @@ class NavigationBar extends Component {
                     title="Sylk"
                     titleStyle={titleStyle}
                     subtitleStyle={subtitleStyle}
-                    subtitle={this.props.isTablet? null: this.state.accountId}
+                    subtitle={this.props.isTablet? null: (this.state.accountId + ' (' + this.state.displayName + ')')}
                 />
                 {this.props.isTablet?
                 <Text style={subtitleStyle}>{subtitle}</Text>
@@ -129,6 +145,7 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk" />
                     <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
+                    <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                     <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings" />
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                 </Menu>
@@ -143,6 +160,13 @@ class NavigationBar extends Component {
                     callUrl={callUrl}
                     notificationCenter={this.props.notificationCenter}
                 />
+                <EditDisplayNameModal
+                    show={this.state.showEditDisplayNameModal}
+                    close={this.toggleEditDisplayNameModal}
+                    uri={this.state.accountId}
+                    displayName={this.state.displayName}
+                    saveDisplayName={this.saveDisplayName}
+                />
             </Appbar.Header>
         );
     }
@@ -152,6 +176,8 @@ NavigationBar.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
     logout             : PropTypes.func.isRequired,
     preview            : PropTypes.func.isRequired,
+    saveDisplayName    : PropTypes.func.isRequired,
+    displayName        : PropTypes.string,
     account            : PropTypes.object,
     connection         : PropTypes.object,
     toggleMute         : PropTypes.func,

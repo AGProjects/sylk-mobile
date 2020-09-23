@@ -206,7 +206,6 @@ class Sylk extends Component {
             isTablet: isTablet(),
             refreshHistory: false,
             refreshFavorites: false,
-            myDisplayName: null,
             myPhoneNumber: null,
             localHistory: [],
             favoriteUris: [],
@@ -313,6 +312,11 @@ class Sylk extends Component {
                 //console.log('My invited parties', this.myInvitedParties);
                 this.setState({myInvitedParties: this.myInvitedParties});
             }
+        });
+
+        storage.get('displayName').then((displayName) => {
+            console.log('My display name is', displayName);
+            this.setState({displayName: displayName});
         });
 
         storage.get('myDisplayNames').then((myDisplayNames) => {
@@ -427,13 +431,6 @@ class Sylk extends Component {
                 }
 
               this.contacts = contact_cards;
-
-              if (this.state.myPhoneNumber) {
-                  var myContact = this.findObjectByKey(contact_cards, 'remoteParty', this.state.myPhoneNumber);
-                  if (myContact) {
-                      this.setState({myDisplayName: myContact.displayName});
-                  }
-              }
             }
           })
     }
@@ -921,7 +918,7 @@ class Sylk extends Component {
                 break;
             case 'ready':
                 this._notificationCenter.removeNotification();
-                this.processRegistration(this.state.accountId, this.state.password, this.state.displayName);
+                this.processRegistration(this.state.accountId, this.state.password);
                 this.callKeeper.setAvailable(true);
                 break;
             case 'disconnected':
@@ -1444,13 +1441,13 @@ class Sylk extends Component {
         } else {
             if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
-                this.processRegistration(accountId, password, '');
+                this.processRegistration(accountId, password);
             }
         }
     }
 
-    processRegistration(accountId, password, displayName) {
-        utils.timestampedLog('Process registration for', accountId);
+    processRegistration(accountId, password) {
+        utils.timestampedLog('Process registration for', accountId, '(', this.state.displayName, ')');
         this.updateServerHistory();
         if (!this.state.connection) {
             utils.timestampedLog('Process registration aborted');
@@ -1468,7 +1465,7 @@ class Sylk extends Component {
         const options = {
             account: accountId,
             password: password,
-            displayName: displayName
+            displayName: this.state.displayName || ''
         };
 
         if (this.state.connection._accounts.has(options.account)) {
@@ -1477,8 +1474,9 @@ class Sylk extends Component {
 
         this.registrationFailureTimer  = setTimeout(() => {
                 this.showRegisterFailure('Register timeout');
-                this.processRegistration(accountId, password, displayName);
+                this.processRegistration(accountId, password);
         }, 10000);
+
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
@@ -2334,6 +2332,12 @@ class Sylk extends Component {
         myDisplayNames[uri] = displayName;
         storage.set('myDisplayNames', myDisplayNames);
         this.setState({myDisplayNames: myDisplayNames});
+        if (uri === this.state.accountId) {
+            console.log('Set my display name to', displayName);
+            storage.set('displayName', displayName);
+            this.processRegistration(this.state.accountId, this.state.password);
+            this.setState({displayName: displayName});
+        }
     }
 
     saveInvitedParties(room, uris) {
@@ -2495,6 +2499,8 @@ class Sylk extends Component {
                     registrationState = {this.state.registrationState}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
+                    saveDisplayName = {this.saveDisplayName}
+                    displayName = {this.state.displayName}
                 />
                 <ReadyBox
                     account = {this.state.account}

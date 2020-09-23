@@ -60,7 +60,6 @@ class HistoryTileBox extends Component {
 
         this.videoTest = Object.assign({}, videoTest);
         this.ended = false;
-        console.log('Init history');
     }
 
     componentDidMount() {
@@ -80,7 +79,6 @@ class HistoryTileBox extends Component {
 
         if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
             this.setState({myInvitedParties: nextProps.myInvitedParties});
-            console.log('myInvitedParties has changed');
         }
 
         if (nextProps.contacts !== this.state.contacts) {
@@ -483,8 +481,6 @@ class HistoryTileBox extends Component {
     }
 
     matchContact(contact, filter='') {
-        //console.log('---> matchContact', contact.remoteParty, 'with', filter);
-
         if (contact.remoteParty.toLowerCase().startsWith(filter.toLowerCase())) {
             return true;
         }
