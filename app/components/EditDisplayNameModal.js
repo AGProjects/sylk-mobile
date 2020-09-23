@@ -50,6 +50,7 @@ class EditDisplayNameModal extends Component {
                         <Button
                             mode="contained"
                             style={styles.button}
+                            disabled={!this.state.displayName}
                             onPress={this.saveDisplayName}
                             icon="content-save">Save
                         </Button>

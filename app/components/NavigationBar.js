@@ -71,6 +71,11 @@ class NavigationBar extends Component {
     }
 
     saveDisplayName(displayName) {
+        if (!displayName) {
+            return;
+        }
+
+        this.setState({displayName: displayName});
         this.props.saveDisplayName(this.state.accountId, displayName);
     }
 
@@ -161,7 +166,7 @@ class NavigationBar extends Component {
                     notificationCenter={this.props.notificationCenter}
                 />
                 <EditDisplayNameModal
-                    show={this.state.showEditDisplayNameModal}
+                    show={this.state.showEditDisplayNameModal || !this.state.displayName}
                     close={this.toggleEditDisplayNameModal}
                     uri={this.state.accountId}
                     displayName={this.state.displayName}

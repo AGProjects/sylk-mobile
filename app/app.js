@@ -2332,10 +2332,12 @@ class Sylk extends Component {
         myDisplayNames[uri] = displayName;
         storage.set('myDisplayNames', myDisplayNames);
         this.setState({myDisplayNames: myDisplayNames});
-        if (uri === this.state.accountId) {
+        if (displayName && uri === this.state.accountId) {
             console.log('Set my display name to', displayName);
             storage.set('displayName', displayName);
-            this.processRegistration(this.state.accountId, this.state.password);
+            if (this.state.account && displayName !== this.state.account.displayName) {
+                this.processRegistration(this.state.accountId, this.state.password);
+            }
             this.setState({displayName: displayName});
         }
     }
