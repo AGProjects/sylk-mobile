@@ -1446,8 +1446,11 @@ class Sylk extends Component {
         }
     }
 
-    processRegistration(accountId, password) {
-        utils.timestampedLog('Process registration for', accountId, '(', this.state.displayName, ')');
+    processRegistration(accountId, password, displayName) {
+        if (!displayName) {
+            displayName = this.state.displayName;
+        }
+        utils.timestampedLog('Process registration for', accountId, '(', displayName, ')');
         this.updateServerHistory();
         if (!this.state.connection) {
             utils.timestampedLog('Process registration aborted');
@@ -1465,7 +1468,7 @@ class Sylk extends Component {
         const options = {
             account: accountId,
             password: password,
-            displayName: this.state.displayName || ''
+            displayName: displayName || ''
         };
 
         if (this.state.connection._accounts.has(options.account)) {
@@ -2320,7 +2323,8 @@ class Sylk extends Component {
     }
 
     saveDisplayName(uri, displayName) {
-        console.log('Save display name for', uri, displayName);
+        displayName = displayName.trim();
+
         let myDisplayNames;
 
         if (!this.state.myDisplayNames) {
@@ -2333,12 +2337,13 @@ class Sylk extends Component {
         storage.set('myDisplayNames', myDisplayNames);
         this.setState({myDisplayNames: myDisplayNames});
         if (displayName && uri === this.state.accountId) {
-            console.log('Set my display name to', displayName);
             storage.set('displayName', displayName);
-            if (this.state.account && displayName !== this.state.account.displayName) {
-                this.processRegistration(this.state.accountId, this.state.password);
-            }
+
             this.setState({displayName: displayName});
+
+            if (this.state.account && displayName !== this.state.account.displayName) {
+                this.processRegistration(this.state.accountId, this.state.password, displayName);
+            }
         }
     }
 
