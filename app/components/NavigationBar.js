@@ -169,6 +169,7 @@ class NavigationBar extends Component {
                     show={this.state.showEditDisplayNameModal || !this.state.displayName}
                     close={this.toggleEditDisplayNameModal}
                     uri={this.state.accountId}
+                    accountId={this.state.accountId}
                     displayName={this.state.displayName}
                     saveDisplayName={this.saveDisplayName}
                 />

@@ -7,7 +7,7 @@ import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
-import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
+import styles from '../assets/styles/blink/_EditDisplayNameModal.scss';
 
 
 class EditDisplayNameModal extends Component {
@@ -36,7 +36,12 @@ class EditDisplayNameModal extends Component {
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>{this.props.uri}</Dialog.Title>
-                        <TextInput
+                        {this.props.uri === this.props.accountId ?
+                         <Text style={styles.body}>
+                             Please set your name seen by others when you call them
+                        </Text>
+                        : null}
+                       <TextInput
                             mode="flat"
                             name="display_name"
                             label="Display name"
@@ -45,14 +50,15 @@ class EditDisplayNameModal extends Component {
                             required
                             autoCapitalize="none"
                         />
-
                         <View style={styles.buttonRow}>
                         <Button
                             mode="contained"
                             style={styles.button}
                             disabled={!this.state.displayName}
                             onPress={this.saveDisplayName}
-                            icon="content-save">Save
+                            icon="content-save"
+                            accessibilityLabel="Save display name"
+                            >Save
                         </Button>
                         </View>
                     </Surface>
@@ -68,6 +74,7 @@ EditDisplayNameModal.propTypes = {
     close              : PropTypes.func.isRequired,
     displayName        : PropTypes.string,
     uri                : PropTypes.string,
+    accountId          : PropTypes.string,
     saveDisplayName    : PropTypes.func
 };
 

@@ -308,7 +308,7 @@ class HistoryCard extends Component {
                     participants.forEach((participant) => {
                         contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
                         dn = contact_obj ? contact_obj.displayName : participant;
-                        if (participant === dn && this.props.myDisplayNames.hasOwnProperty(participant)) {
+                        if (participant === dn && this.props.myDisplayNames && this.props.myDisplayNames.hasOwnProperty(participant)) {
                             dn = this.props.myDisplayNames[participant];
                         }
                         _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
