@@ -205,6 +205,7 @@ class Sylk extends Component {
             phoneNumber: '',
             isTablet: isTablet(),
             refreshHistory: false,
+            refreshFavorites: false,
             myDisplayName: null,
             myPhoneNumber: null,
             localHistory: [],
@@ -215,6 +216,7 @@ class Sylk extends Component {
             muted: false,
             participantsToInvite: [],
             myInvitedParties: {},
+            myDisplayNames: {},
             defaultDomain: config.defaultDomain
         };
 
@@ -311,6 +313,10 @@ class Sylk extends Component {
                 //console.log('My invited parties', this.myInvitedParties);
                 this.setState({myInvitedParties: this.myInvitedParties});
             }
+        });
+
+        storage.get('myDisplayNames').then((myDisplayNames) => {
+            this.setState({myDisplayNames: myDisplayNames});
         });
 
         storage.get('favoriteUris').then((favoriteUris) => {
@@ -2252,7 +2258,8 @@ class Sylk extends Component {
         }
 
         storage.set('favoriteUris', favoriteUris);
-        this.setState({favoriteUris: favoriteUris});
+        this.setState({favoriteUris: favoriteUris,
+                       refreshFavorites: !this.state.refreshFavorites});
         return ret;
     }
 
@@ -2312,6 +2319,21 @@ class Sylk extends Component {
         }
 
         storage.set('myParticipants', this.myParticipants);
+    }
+
+    saveDisplayName(uri, displayName) {
+        console.log('Save display name for', uri, displayName);
+        let myDisplayNames;
+
+        if (!this.state.myDisplayNames) {
+            myDisplayNames = new Object();
+        } else {
+            myDisplayNames = this.state.myDisplayNames;
+        }
+
+        myDisplayNames[uri] = displayName;
+        storage.set('myDisplayNames', myDisplayNames);
+        this.setState({myDisplayNames: myDisplayNames});
     }
 
     saveInvitedParties(room, uris) {
@@ -2486,6 +2508,7 @@ class Sylk extends Component {
                     isTablet = {this.state.isTablet}
                     localHistory = {this.state.localHistory}
                     refreshHistory = {this.state.refreshHistory}
+                    refreshFavorites = {this.state.refreshFavorites}
                     cacheHistory = {this.saveHistoryForLater}
                     serverHistory = {this.cachedHistory}
                     myDisplayName = {this.state.myDisplayName}
@@ -2498,6 +2521,8 @@ class Sylk extends Component {
                     favoriteUris = {this.state.favoriteUris}
                     blockedUris = {this.state.blockedUris}
                     defaultDomain = {this.state.defaultDomain}
+                    saveDisplayName = {this.saveDisplayName}
+                    myDisplayNames = {this.state.myDisplayNames}
                 />
             </Fragment>
         );

@@ -33,7 +33,9 @@ class HistoryTileBox extends Component {
             contacts: this.props.contacts,
             myInvitedParties: this.props.myInvitedParties,
             refreshHistory: this.props.refreshHistory,
-            selectedContact: this.props.selectedContact || null
+            refreshFavorites: this.props.refreshFavorites,
+            selectedContact: this.props.selectedContact || null,
+            myDisplayNames: this.props.myDisplayNames
         }
 
         const echoTest = {
@@ -58,11 +60,12 @@ class HistoryTileBox extends Component {
 
         this.videoTest = Object.assign({}, videoTest);
         this.ended = false;
+        console.log('Init history');
     }
 
     componentDidMount() {
         this.ended = false;
-        this.getFavoriteContacts();
+        this.updateFavorites();
     }
 
     componentWillUnmount() {
@@ -77,6 +80,7 @@ class HistoryTileBox extends Component {
 
         if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
             this.setState({myInvitedParties: nextProps.myInvitedParties});
+            console.log('myInvitedParties has changed');
         }
 
         if (nextProps.contacts !== this.state.contacts) {
@@ -96,9 +100,18 @@ class HistoryTileBox extends Component {
             this.getServerHistory();
         }
 
-        this.setState({selectedContact: nextProps.selectedContact || null});
+        if (nextProps.refreshFavorites !== this.state.refreshFavorites) {
+            this.setState({refreshFavorites: nextProps.refreshFavorites});
+            this.updateFavorites();
+        }
 
-        this.getFavoriteContacts();
+        if (nextProps.selectedContact !== this.state.selectedContact) {
+            this.setState({selectedContact: nextProps.selectedContact});
+        };
+
+        if (nextProps.myDisplayNames !== this.state.myDisplayNames) {
+            this.setState({myDisplayNames: nextProps.myDisplayNames});
+        };
     }
 
     setTargetUri(uri, contact) {
@@ -134,14 +147,24 @@ class HistoryTileBox extends Component {
     }
 
     renderItem(item) {
-
         let invitedParties = [];
         let uri = item.item.remoteParty;
+        let myDisplayName;
 
         let username = uri.split('@')[0];
 
+        if (this.state.myDisplayNames && this.state.myDisplayNames.hasOwnProperty(uri)) {
+            myDisplayName = this.state.myDisplayNames[uri];
+        }
+
         if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(username)) {
             invitedParties = this.state.myInvitedParties[username];
+        }
+
+        if (myDisplayName) {
+            if (item.item.displayName === item.item.remoteParty || item.item.displayName !== myDisplayName) {
+                item.item.displayName = myDisplayName;
+            }
         }
 
         return(
@@ -161,6 +184,8 @@ class HistoryTileBox extends Component {
             defaultDomain={this.props.defaultDomain}
             accountId={this.state.accountId}
             favoriteUris={this.state.favoriteUris}
+            saveDisplayName={this.props.saveDisplayName}
+            myDisplayNames={this.state.myDisplayNames}
             />);
     }
 
@@ -207,8 +232,7 @@ class HistoryTileBox extends Component {
         return history;
     }
 
-    getFavoriteContacts() {
-        //console.log('Update favorite contacts');
+    updateFavorites() {
         let favoriteContacts = [];
         let displayName;
         let label;
@@ -218,6 +242,15 @@ class HistoryTileBox extends Component {
         let contacts = this.state.contacts;
         contacts = contacts.concat(this.videoTest);
         contacts = contacts.concat(this.echoTest);
+
+        let currentFavoriteContacts = this.favoriteContacts;
+
+        currentFavoriteContacts.forEach((contact) => {
+            if (this.state.favoriteUris.indexOf(contact.remoteParty) === -1) {
+                let idx = this.favoriteContacts.indexOf(contact);
+                this.favoriteContacts.splice(idx, 1);
+            }
+        });
 
         this.state.favoriteUris.forEach((uri) => {
             if (!uri) {
@@ -450,6 +483,8 @@ class HistoryTileBox extends Component {
     }
 
     matchContact(contact, filter='') {
+        //console.log('---> matchContact', contact.remoteParty, 'with', filter);
+
         if (contact.remoteParty.toLowerCase().startsWith(filter.toLowerCase())) {
             return true;
         }
@@ -607,6 +642,7 @@ HistoryTileBox.propTypes = {
     setTargetUri    : PropTypes.func,
     isTablet        : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
+    refreshFavorites: PropTypes.bool,
     cacheHistory    : PropTypes.func,
     serverHistory   : PropTypes.array,
     localHistory    : PropTypes.array,
@@ -621,7 +657,9 @@ HistoryTileBox.propTypes = {
     blockedUris     : PropTypes.array,
     setMissedCalls  : PropTypes.func,
     filter          : PropTypes.string,
-    defaultDomain   : PropTypes.string
+    defaultDomain   : PropTypes.string,
+    saveDisplayName : PropTypes.func,
+    myDisplayNames  : PropTypes.object
 };
 
 

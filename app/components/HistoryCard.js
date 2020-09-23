@@ -8,6 +8,7 @@ import { Card, IconButton, Button, Caption, Title, Subheading, List, Text} from 
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
 import EditConferenceModal from './EditConferenceModal';
+import EditDisplayNameModal from './EditDisplayNameModal';
 import styles from '../assets/styles/blink/_HistoryCard.scss';
 import UserIcon from './UserIcon';
 
@@ -67,7 +68,8 @@ class HistoryCard extends Component {
             favorite: (this.props.contact.tags.indexOf('favorite') > -1)? true : false,
             blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false,
             confirmed: false,
-            showEditConferenceModal: false
+            showEditConferenceModal: false,
+            showEditDisplayNameModal: false
         }
     }
 
@@ -94,11 +96,16 @@ class HistoryCard extends Component {
         return true;
     }
 
-    toggleEditConferenceModal() {
-        this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
+    toggleEdit() {
+        if (this.state.conference) {
+            this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
+        } else {
+            this.setState({showEditDisplayNameModal: !this.state.showEditDisplayNameModal});
+        }
     }
 
     setFavoriteUri() {
+        console.log('Card setFavoriteUri', this.state.uri);
         if (this.state.favorite) {
             if (this.state.confirmed) {
                 let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
@@ -140,16 +147,16 @@ class HistoryCard extends Component {
         this.setState({blocked: newBlockedState});
     }
 
-    editConference() {
-         this.toggleEditConferenceModal();
-    }
-
     deleteHistoryEntry() {
         this.props.deleteHistoryEntry(this.state.uri);
     }
 
     undo() {
         this.setState({confirmed: false, action: null});
+    }
+
+    saveDisplayName(displayName) {
+        this.props.saveDisplayName(this.state.uri, displayName);
     }
 
     setFavoriteUri() {
@@ -190,7 +197,7 @@ class HistoryCard extends Component {
         let showFavoriteButton = true;
         let showUndoButton = this.state.confirmed ? true : false;
         let showDeleteButton = (this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite) ? true: false;
-        let showEditButton = (this.state.conference && this.state.favorite && !this.state.confirmed ) ? true: false;
+        let showEditButton = (this.state.favorite && !this.state.confirmed ) ? true: false;
         let blockTextbutton = 'Block';
         let blockDomainTextbutton = 'Block domain';
         let editTextbutton = 'Edit';
@@ -301,6 +308,9 @@ class HistoryCard extends Component {
                     participants.forEach((participant) => {
                         contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
                         dn = contact_obj ? contact_obj.displayName : participant;
+                        if (participant === dn && this.props.myDisplayNames.hasOwnProperty(participant)) {
+                            dn = this.props.myDisplayNames[participant];
+                        }
                         _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
                         participantsData.push(_item);
                         i = i + 1;
@@ -380,7 +390,7 @@ class HistoryCard extends Component {
                     {showActions ?
                         <View style={styles.buttonContainer}>
                         <Card.Actions>
-                           {showEditButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.editConference()}}>{editTextbutton}</Button>: null}
+                           {showEditButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.toggleEdit()}}>{editTextbutton}</Button>: null}
                            {showDeleteButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteHistoryEntry()}}>{deleteTextbutton}</Button>: null}
                            {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
                            {showBlockDomainButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedDomain()}}>{blockDomainTextbutton}</Button>: null}
@@ -398,11 +408,20 @@ class HistoryCard extends Component {
                     selectedContact={this.state.contact}
                     setFavoriteUri={this.props.setFavoriteUri}
                     saveInvitedParties={this.saveInvitedParties}
-                    close={this.toggleEditConferenceModal}
+                    close={this.toggleEdit}
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.props.accountId}
                     setFavoriteUri={this.props.setFavoriteUri}
                     favoriteUris={this.props.favoriteUris}
+                />
+                : null}
+                { this.state.showEditDisplayNameModal ?
+                <EditDisplayNameModal
+                    show={this.state.showEditDisplayNameModal}
+                    close={this.toggleEdit}
+                    uri={this.state.uri}
+                    displayName={this.state.displayName}
+                    saveDisplayName={this.saveDisplayName}
                 />
                 : null}
                 </Fragment>
@@ -456,7 +475,8 @@ HistoryCard.propTypes = {
     contacts       : PropTypes.array,
     defaultDomain  : PropTypes.string,
     accountId      : PropTypes.string,
-    favoriteUris   : PropTypes.array
+    favoriteUris   : PropTypes.array,
+    myDisplayNames : PropTypes.object
 };
 
 

@@ -39,6 +39,7 @@ class ReadyBox extends Component {
         if (this.ended) {
             return;
         }
+
         this.setState({myInvitedParties: nextProps.myInvitedParties});
     }
 
@@ -282,6 +283,7 @@ class ReadyBox extends Component {
                             password={this.props.password}
                             config={this.props.config}
                             refreshHistory={this.props.refreshHistory}
+                            refreshFavorites={this.props.refreshFavorites}
                             localHistory={this.props.localHistory}
                             cacheHistory={this.props.cacheHistory}
                             serverHistory={this.props.serverHistory}
@@ -292,10 +294,12 @@ class ReadyBox extends Component {
                             saveInvitedParties={this.props.saveInvitedParties}
                             myInvitedParties = {this.state.myInvitedParties}
                             setBlockedUri={this.props.setBlockedUri}
-                            favoriteUris={this.state.favoriteUris}
-                            blockedUris={this.state.blockedUris}
+                            favoriteUris={this.props.favoriteUris}
+                            blockedUris={this.props.blockedUris}
                             filter={this.state.historyFilter}
                             defaultDomain={this.props.defaultDomain}
+                            saveDisplayName={this.props.saveDisplayName}
+                            myDisplayNames = {this.props.myDisplayNames}
                         />
                     </View>
                     {((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
@@ -341,6 +345,7 @@ ReadyBox.propTypes = {
     orientation     : PropTypes.string,
     isTablet        : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
+    refreshFavorites: PropTypes.bool,
     cacheHistory    : PropTypes.func,
     serverHistory  : PropTypes.array,
     localHistory    : PropTypes.array,
@@ -352,7 +357,8 @@ ReadyBox.propTypes = {
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
-    defaultDomain   : PropTypes.string
+    defaultDomain   : PropTypes.string,
+    saveDisplayName : PropTypes.func
 };
 
 
