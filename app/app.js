@@ -684,11 +684,13 @@ class Sylk extends Component {
 
         let call = this.callKeeper._calls.get(callUUID);
         if (!call) {
-            utils.timestampedLog('Cancel incoming call that did not arrive on web socket', callUUID);
-            this.callKeeper.endCall(callUUID, 2);
-            this.startedByPush = false;
-            if (this.startedByPush) {
-                this.changeRoute('/ready', 'incoming_call_cancelled');
+            if (!this.callKeeper._cancelledCalls.has(callUUID)) {
+                utils.timestampedLog('Cancel incoming call that did not arrive on web socket', callUUID);
+                this.callKeeper.endCall(callUUID, 2);
+                this.startedByPush = false;
+                if (this.startedByPush) {
+                    this.changeRoute('/ready', 'incoming_call_cancelled');
+                }
             }
             return;
         }
@@ -1248,10 +1250,9 @@ class Sylk extends Component {
                 this.resetGoToReadyTimer();
 
                 if (direction === 'outgoing') {
+                    this.callKeeper.setCurrentCallActive(callUUID);
                     this.stopRingback();
                 }
-
-                this.callKeeper.setCurrentCallActive(callUUID);
 
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
@@ -1995,21 +1996,24 @@ class Sylk extends Component {
 
             var url_parts = url.split("/");
             let scheme = url_parts[0];
+            //console.log(url_parts);
 
             if (scheme === 'sylk:') {
-                //sylk://outgoing/call/callUUID/to/displayName - from system dialer/history
-                //sylk://incoming/conference/callUUID/from/to/media - when Android is asleep
-                //sylk://incoming/call/callUUID/from/to - when Android is asleep
-                //sylk://cancel/call/callUUID/from/to - when Android is asleep
+                //sylk://conference/incoming/callUUID/from/to/media - when Android is asleep
+                //sylk://call/outgoing/callUUID/to/displayName - from system dialer/history
+                //sylk://call/incoming/callUUID/from/to/displayName - when Android is asleep
+                //sylk://call/cancel//callUUID - when Android is asleep
 
-                direction   = url_parts[2];
-                event       = url_parts[3];
+                event       = url_parts[2];
+                direction   = url_parts[3];
                 callUUID    = url_parts[4];
                 from        = url_parts[5];
                 to          = url_parts[6];
                 displayName = url_parts[7];
                 mediaType   = url_parts[8];
+
                 this.setState({targetUri: from});
+
             } else if (scheme === 'https:') {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
                 // https://webrtc.sipthor.net/call/alice@example.com from external web link
@@ -2026,34 +2030,39 @@ class Sylk extends Component {
                 this.setState({targetUri: to});
             }
 
-            this.startedByPush = true;
+            if (event === 'conference') {
+                utils.timestampedLog('Conference from external URL:', url);
+                this.startedByPush = true;
 
-            if (direction === 'outgoing' && event === 'conference' && to) {
-                utils.timestampedLog('Outgoing conference to', to);
-                this.backToForeground();
-                this.callKeepStartConference(to);
+                if (direction === 'outgoing' && to) {
+                    utils.timestampedLog('Outgoing conference to', to);
+                    this.backToForeground();
+                    this.callKeepStartConference(to);
+                } else if (direction === 'incoming' && from) {
+                    utils.timestampedLog('Incoming conference from', from);
+                    // allow app to wake up
+                    this.backToForeground();
+                    const media = {audio: true, video: mediaType === 'video'}
+                    this.incomingConference(callUUID, to, from, displayName, media);
+                }
 
-            } else if (direction === 'incoming' && event === 'conference' && from) {
-                utils.timestampedLog('Incoming conference from', from);
-                // allow app to wake up
-                this.backToForeground();
-                const media = {audio: true, video: mediaType === 'video'}
-                this.incomingConference(callUUID, to, from, displayName, media);
+            } else if (event === 'call') {
+                utils.timestampedLog('Call from external URL:', url);
+                this.startedByPush = true;
+                if (direction === 'outgoing') {
+                    utils.timestampedLog('Outgoing call to', from);
+                    this.backToForeground();
+                    this.callKeepStartCall(from, {audio: true, video: false, callUUID: callUUID});
+                } else if (direction === 'incoming') {
+                    this.backToForeground();
+                    utils.timestampedLog('Incoming call from', from);
+                    this.incomingCallFromPush(callUUID, from, displayName, true);
+                } else if (direction === 'cancel') {
+                    this.cancelIncomingCall(callUUID);
+                }
 
-            } else if (direction === 'outgoing' && event === 'call' && from) {
-                utils.timestampedLog('Outgoing call to', from);
-                this.backToForeground();
-                this.callKeepStartCall(from, {audio: true, video: false, callUUID: callUUID});
-
-            } else if (direction === 'incoming' && from) {
-                this.backToForeground();
-                utils.timestampedLog('Incoming call from', from);
-                this.incomingCallFromPush(callUUID, from, displayName, true);
-
-            } else if (direction === 'cancel' && callUUID) {
-                this.cancelIncomingCall(callUUID);
             } else {
-                 utils.timestampedLog('Error: Invalid external URL structure', url);
+                 utils.timestampedLog('Error: Invalid external URL event', event);
             }
         } catch (err) {
             utils.timestampedLog('Error parsing URL', url, ":", err);

@@ -16,11 +16,11 @@ export default async (remoteMessage) => {
         let url;
 
         if (event === 'incoming_conference_request') {
-            url = 'sylk://incoming/conference/' + callUUID + '/' + from + '/' + to + '/' + displayName + '/' + mediaType;
+            url = 'sylk://conference/incoming/' + callUUID + '/' + from + '/' + to + '/' + displayName + '/' + mediaType;
         } else if (event === 'incoming_session') {
-            url = 'sylk://incoming/call/' + callUUID + '/' + from + '/' + to + '/' + displayName;
+            url = 'sylk://call/incoming/' + callUUID + '/' + from + '/' + to + '/' + displayName;
         } else if (event === 'cancel') {
-            url = 'sylk://cancel/call/' + callUUID;
+            url = 'sylk://call/cancel/' + callUUID;
         }
 
         if (url) {
