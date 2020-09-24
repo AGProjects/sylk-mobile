@@ -145,7 +145,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     startOutgoingCall(callUUID, targetUri, hasVideo) {
-        utils.timestampedLog('Callkeep: WILL START CALL outgoing', callUUID);
+        utils.timestampedLog('Callkeep: will start outgoing', callUUID);
         if (Platform.OS === 'ios') {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
@@ -175,9 +175,9 @@ export default class CallManager extends events.EventEmitter {
 
     endCall(callUUID, reason) {
         if (reason) {
-            utils.timestampedLog('Callkeep: END CALL', callUUID, 'with reason', reason);
+            utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
         } else {
-            utils.timestampedLog('Callkeep: END CALL', callUUID);
+            utils.timestampedLog('Callkeep: end call', callUUID);
         }
 
         if (this._pushCalls.has(callUUID)) {
@@ -432,7 +432,7 @@ export default class CallManager extends events.EventEmitter {
         if (this._calls.has(call.id)) {
             return;
         }
-        utils.timestampedLog('Callkeep: added call', call.id, 'for connection', connection);
+        //utils.timestampedLog('Callkeep: added call', call.id, 'for connection', connection);
         this._calls.set(call.id, call);
     }
 
@@ -581,7 +581,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
-        utils.timestampedLog("Callkeep: STARTED NATIVE CALL", data.callUUID);
+        //utils.timestampedLog("Callkeep: STARTED NATIVE CALL", data.callUUID);
         if (!this._calls.has(data.callUUID)) {
             // call has started from OS native dialer
             this.startCallFromOutside(data);

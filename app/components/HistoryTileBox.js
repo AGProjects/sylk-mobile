@@ -337,7 +337,7 @@ class HistoryTileBox extends Component {
 
         this.setState({isRefreshing: true});
 
-        utils.timestampedLog('Requesting call history from server');
+        //utils.timestampedLog('Requesting call history from server');
 
         let history = [];
         let localTime;

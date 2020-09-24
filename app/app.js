@@ -315,7 +315,7 @@ class Sylk extends Component {
         });
 
         storage.get('displayName').then((displayName) => {
-            console.log('My display name is', displayName);
+            //console.log('My display name is', displayName);
             this.setState({displayName: displayName});
         });
 
@@ -534,14 +534,14 @@ class Sylk extends Component {
 
         try {
             await RNCallKeep.supportConnectionService ();
-            utils.timestampedLog('Connection service is enabled');
+            //utils.timestampedLog('Connection service is enabled');
         } catch(err) {
             utils.timestampedLog(err);
         }
 
         try {
             await RNCallKeep.hasPhoneAccount();
-            utils.timestampedLog('Phone account is enabled');
+            //utils.timestampedLog('Phone account is enabled');
         } catch(err) {
             utils.timestampedLog(err);
         }
@@ -581,7 +581,7 @@ class Sylk extends Component {
             return;
         }
 
-        utils.timestampedLog('---- Add notifications listeners');
+        //utils.timestampedLog('---- Add notifications listeners');
 
         if (Platform.OS === 'android') {
             Linking.getInitialURL().then((url) => {
@@ -590,7 +590,7 @@ class Sylk extends Component {
                      this.eventFromUrl(url);
                       this.changeRoute('/login', 'start up');
                } else {
-                      utils.timestampedLog('No Initial external URL');
+                      //utils.timestampedLog('No Initial external URL');
                       this.changeRoute('/login', 'start up');
                 }
               }).catch(err => {
@@ -630,11 +630,11 @@ class Sylk extends Component {
         if (Platform.OS === 'ios') {
             this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
             this._boundOnLocalNotificationReceivedBackground = this._onLocalNotificationReceivedBackground.bind(this);
-            utils.timestampedLog('Adding iOS push notifications listeners');
+            //utils.timestampedLog('Adding iOS push notifications listeners');
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
             VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
         } else if (Platform.OS === 'android') {
-            utils.timestampedLog('Adding Android push notifications listeners');
+            //utils.timestampedLog('Adding Android push notifications listeners');
             AppState.addEventListener('focus', this._handleAndroidFocus);
             AppState.addEventListener('blur', this._handleAndroidBlur);
 
@@ -661,10 +661,10 @@ class Sylk extends Component {
                     const outgoingMedia = {audio: true, video: message.data['media-type'] === 'video'};
 
                     if (event === 'incoming_conference_request') {
-                        utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
+                        //utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
                         this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
                     } else if (event === 'incoming_session') {
-                        utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
+                        //utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
                         this.incomingCallFromPush(callUUID, from, displayName);
                     } else if (event === 'cancel') {
                         this.cancelIncomingCall(callUUID);
@@ -675,7 +675,6 @@ class Sylk extends Component {
     }
 
     cancelIncomingCall(callUUID) {
-
         if (this.callKeeper._acceptedCalls.has(callUUID)) {
             //utils.timestampedLog('Push call was already accepted', callUUID);
             return;
@@ -733,12 +732,12 @@ class Sylk extends Component {
     }
 
     _onPushkitRegistered(token) {
-        utils.timestampedLog('Set VoIP pushkit token', token);
+        //utils.timestampedLog('Set VoIP pushkit token', token);
         this.pushkittoken = token;
     }
 
     _onPushRegistered(token) {
-        utils.timestampedLog('Set background push token', token);
+        //utils.timestampedLog('Set background push token', token);
         this.pushtoken = token;
     }
 
@@ -751,12 +750,11 @@ class Sylk extends Component {
             } else if (Platform.OS === 'android') {
                 token = this.pushtoken;
             }
-            utils.timestampedLog('Push token', 'sent to server');
+            //utils.timestampedLog('Push token sent to server');
             this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
             this.tokenSent = true;
         }
     }
-
 
     _handleAndroidFocus = nextFocus => {
         //utils.timestampedLog('--- APP is in focus');
@@ -809,13 +807,13 @@ class Sylk extends Component {
     }
 
     respawnConnection(state) {
-        utils.timestampedLog('Respawn connection for', state, 'state');
+        //utils.timestampedLog('Respawn connection for', state, 'state');
         if (!this.state.connection) {
             utils.timestampedLog('Web socket does not exist');
         } else if (!this.state.connection.state) {
             utils.timestampedLog('Web socket is waiting for connection...');
         } else {
-            utils.timestampedLog('Web socket', Object.id(this.state.connection), 'state is', this.state.connection.state);
+            //utils.timestampedLog('Web socket', Object.id(this.state.connection), 'state is', this.state.connection.state);
             if (this.state.connection.state !== 'ready' && this.state.connection.state !== 'connecting') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'reconnecting because is', this.state.connection.state);
                 this.state.connection.reconnect();
@@ -828,7 +826,7 @@ class Sylk extends Component {
                 utils.timestampedLog('Active account without connection removed');
                 this.setState({account: null});
             } else {
-                utils.timestampedLog('Active account', this.state.account.id);
+                //utils.timestampedLog('Active account', this.state.account.id);
             }
         } else {
             utils.timestampedLog('No active account');
@@ -900,11 +898,7 @@ class Sylk extends Component {
         }
 
         if (oldState) {
-            if (Object.id(this.state.connection)) {
-                utils.timestampedLog('Web socket state changed:', Object.id(this.state.connection), oldState, '->' , newState);
-            } else {
-                utils.timestampedLog('Web socket state changed:', oldState, '->' , newState);
-            }
+            utils.timestampedLog('Web socket state changed:', oldState, '->' , newState);
         }
 
         switch (newState) {
@@ -1412,12 +1406,12 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password, remember=true) {
-        utils.timestampedLog('handleRegistration for', accountId);
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
-            utils.timestampedLog('We are already registered with', accountId);
+            //utils.timestampedLog('We are already registered with', accountId);
             return;
         }
 
+        //utils.timestampedLog('handleRegistration for', accountId);
         this.setState({
             accountId : accountId,
             password  : password,
@@ -1489,7 +1483,7 @@ class Sylk extends Component {
                 account.on('incomingCall', this.incomingCallFromWebSocket);
                 account.on('missedCall', this.missedCall);
                 account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
-                utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
+                //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
                 this.setState({account: account});
                 this._sendPushToken();
                 account.register();
@@ -1520,7 +1514,7 @@ class Sylk extends Component {
 
     getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null) {    // eslint-disable-line space-infix-ops
         let callType = mediaConstraints.video ? 'video': 'audio';
-        utils.timestampedLog('Get local media for', callType);
+        utils.timestampedLog('Get local media for', callType, 'call');
         const constraints = Object.assign({}, mediaConstraints);
 
         if (constraints.video === true) {
@@ -1731,7 +1725,7 @@ class Sylk extends Component {
     }
 
     hangupCall(callUUID, reason) {
-        utils.timestampedLog('Hangup call', callUUID, 'reason:', reason);
+        utils.timestampedLog('Call', callUUID, 'hangup:', reason);
 
         let call = this.callKeeper._calls.get(callUUID);
         let direction = null;
@@ -1990,7 +1984,6 @@ class Sylk extends Component {
 
     eventFromUrl(url) {
         url = decodeURI(url);
-        utils.timestampedLog('Received event from external URL:', url);
 
         try {
             let direction;
@@ -2068,7 +2061,7 @@ class Sylk extends Component {
     }
 
     autoRejectIncomingCall(callUUID, from, to) {
-        utils.timestampedLog('Check auto reject call from', from);
+        //utils.timestampedLog('Check auto reject call from', from);
         if (this.state.blockedUris && this.state.blockedUris.indexOf(from) > -1) {
             utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
             this.callKeeper.rejectCall(callUUID);
@@ -2138,7 +2131,7 @@ class Sylk extends Component {
     }
 
     incomingCallFromPush(callUUID, from, displayName, force) {
-        utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
+        //utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.autoRejectIncomingCall(callUUID, from)) {
             return;
@@ -2172,7 +2165,7 @@ class Sylk extends Component {
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
 
-        utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
+        //utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
 
         // because of limitation in Sofia stack, we cannot have more then two calls at a time
         // we can have one outgoing call and one incoming call but not two incoming calls
