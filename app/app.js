@@ -470,6 +470,11 @@ class Sylk extends Component {
         }
 
         if (route === '/ready') {
+            if (reason === 'conference_really_ended' && this.callKeeper.countCalls) {
+                utils.timestampedLog('Change route cancelled because we still have calls');
+                return;
+            }
+
             this.startedByPush = false;
             this.setState({
                             outgoingMedia: null,
