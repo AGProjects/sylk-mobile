@@ -143,6 +143,9 @@ class ConferenceBox extends Component {
             }
 
             p = this.invitedParticipants.get(_uri);
+            if (!p) {
+                return;
+            }
             interval = Math.floor((Date.now() - p.timestamp) / 1000);
             //console.log(_uri, 'was invited', interval, 'seconds ago');
 
