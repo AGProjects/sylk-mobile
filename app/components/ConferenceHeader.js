@@ -59,6 +59,10 @@ const ConferenceHeader = (props) => {
             callDetail = `Duration: ${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
         }
 
+        if (props.speed) {
+            callDetail = callDetail + ' - ' + props.speed + ' kbit/s';
+        }
+
         videoHeader = (
             <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
                 <Appbar.Content
@@ -91,7 +95,8 @@ ConferenceHeader.propTypes = {
     buttons: PropTypes.object.isRequired,
     reconnectingCall: PropTypes.bool,
     audioOnly: PropTypes.bool,
-    terminated: PropTypes.bool
+    terminated: PropTypes.bool,
+    speed: PropTypes.string
 };
 
 

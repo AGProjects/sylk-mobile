@@ -50,6 +50,19 @@ class ConferenceBox extends Component {
         super(props);
         autoBind(this);
 
+        this.audioBytesReceived = new Map();
+        this.audioBandwidth = new Map();
+        this.bandwidth = 0;
+
+        this.videoBytesReceived = new Map();
+        this.videoBandwidth = new Map();
+
+        this.audioPacketLoss = new Map();
+        this.videoPacketLoss = new Map();
+        this.packetLoss = new Map();
+
+        this.mediaLost = new Map();
+
         this.state = {
             callOverlayVisible: true,
             ended: false,
@@ -131,6 +144,8 @@ class ConferenceBox extends Component {
             participants_uris.push(p.identity._uri);
         });
 
+        this.getConnectionStats();
+
         const invitedParties = Array.from(this.invitedParticipants.keys());
         //console.log('Invited participants', invitedParties);
         //console.log('Current participants', participants_uris);
@@ -164,9 +179,11 @@ class ConferenceBox extends Component {
                 } else {
                     p.status = p.status + '.';
                 }
-                this.forceUpdate();
             }
+
         });
+
+        this.forceUpdate();
     }
 
     componentDidMount() {
@@ -287,8 +304,140 @@ class ConferenceBox extends Component {
         this.foundContacts.set(uri, c)
     }
 
-    onParticipantJoined(p) {
-        DEBUG(`Participant joined: ${p.identity}`);
+    getConnectionStats() {
+         let audioPackets = 0;
+         let videoPackets = 0;
+
+         let audioPacketsLost = 0;
+         let videoPacketsLost = 0;
+
+         let audioPacketLoss = 0;
+         let videoPacketLoss = 0;
+
+         let totalPackets = 0;
+         let totalPacketsLost = 0;
+         let totalPacketLoss = 0;
+
+         let totalAudioBandwidth = 0;
+         let totalVideoBandwidth = 0;
+         let totalSpeed = 0;
+
+         let mediaType;
+
+         if (this.state.participants.length === 0) {
+             this.bandwidth = 0;
+             this.videoBandwidth.set('total', 0);
+             this.audioBandwidth.set('total', 0);
+             return;
+         }
+
+         this.state.participants.forEach((p) => {
+             if (!p._pc) {
+                 return;
+             }
+
+             p._pc.getStats(null).then(stats => {
+                 audioPackets = 0;
+                 videoPackets = 0;
+
+                 audioPacketsLost = 0;
+                 videoPacketsLost = 0;
+
+                 audioPacketLoss = 0;
+                 videoPacketLoss = 0;
+
+                 stats.forEach(report => {
+                     if (report.type === "ssrc") {
+
+                         report.values.forEach(object => { if (object.mediaType) {
+                                 mediaType = object.mediaType;
+                             }
+                         });
+
+                         report.values.forEach(object => {
+                             if (object.bytesReceived) {
+                                 const bytesReceived = Math.floor(object.bytesReceived);
+                                 if (mediaType === 'audio') {
+                                     if (this.audioBytesReceived.has(p.id)) {
+                                         const lastBytes = this.audioBytesReceived.get(p.id);
+                                         const diff = bytesReceived - lastBytes;
+                                         const speed = Math.floor(diff / 5 * 8 / 1000);
+                                         totalAudioBandwidth = totalAudioBandwidth + speed;
+                                         totalSpeed = totalSpeed + speed;
+                                         console.log('Audio bandwidth', speed, 'kbit/s from', p.identity.uri);
+                                         this.audioBandwidth.set(p.id, speed);
+                                     }
+                                     this.audioBytesReceived.set(p.id, bytesReceived);
+                                 } else if (mediaType === 'video') {
+                                     if (this.videoBytesReceived.has(p.id)) {
+                                         const lastBytes = this.videoBytesReceived.get(p.id);
+                                         const diff = bytesReceived - lastBytes;
+                                         const speed = Math.floor(diff / 5 * 8 / 1000);
+                                         totalVideoBandwidth = totalVideoBandwidth + speed;
+                                         totalSpeed = totalSpeed + speed;
+                                         console.log('Video bandwidth', speed, 'kbit/s from', p.identity.uri);
+                                         this.videoBandwidth.set(p.id, speed);
+                                     }
+                                     this.videoBytesReceived.set(p.id, bytesReceived);
+                                 }
+                             } else if (object.audioOutputLevel) {
+                                 console.log('Level', object.audioOutputLevel, 'from', p.identity.uri);
+                                 this.mediaLost.set(p.id, object.audioOutputLevel === "0" ? true : false);
+                             } else if (object.packetsLost) {
+                                 totalPackets = totalPackets + Math.floor(object.packetsLost);
+                                 totalPacketsLost = totalPacketsLost + Math.floor(object.packetsLost);
+
+                                 if (mediaType === 'audio') {
+                                     audioPackets = audioPackets + Math.floor(object.packetsLost);
+                                     audioPacketsLost =  audioPacketsLost + Math.floor(object.packetsLost);
+                                 } else if (mediaType === 'video') {
+                                     videoPackets = videoPackets + Math.floor(object.packetsLost);
+                                     videoPacketsLost =  videoPacketsLost + Math.floor(object.packetsLost);
+                                 }
+                             } else if (object.packetsReceived) {
+                                 totalPackets =  totalPackets + Math.floor(object.packetsReceived);
+
+                                 if (mediaType === 'audio') {
+                                     audioPackets = audioPackets + Math.floor(object.packetsReceived);
+                                 } else if (mediaType === 'video') {
+                                     videoPackets = videoPackets + Math.floor(object.packetsReceived);
+                                 }
+                             }
+                            //console.log(object);
+                     });
+
+                     if (videoPackets > 0) {
+                         videoPacketLoss = Math.floor(videoPacketsLost / videoPackets * 100);
+                     }
+
+                     if (audioPackets > 0) {
+                         audioPacketLoss = Math.floor(audioPacketsLost / audioPackets * 100);
+                     }
+
+                     if (totalPackets > 0) {
+                         totalPacketLoss = Math.floor(totalPacketsLost / totalPackets * 100);
+                     }
+
+                     this.audioPacketLoss.set(p.id, audioPacketLoss);
+                     this.videoPacketLoss.set(p.id, videoPacketLoss);
+                     this.packetLoss.set(p.id, totalPacketLoss);
+
+                 }});
+
+                 this.bandwidth = totalVideoBandwidth + totalAudioBandwidth;
+
+                 this.videoBandwidth.set('total', totalVideoBandwidth);
+                 this.audioBandwidth.set('total', totalAudioBandwidth);
+
+                 //console.log('audio bandwidth', totalAudioBandwidth);
+                 //console.log('video bandwidth', totalVideoBandwidth);
+                 //console.log('total bandwidth', this.bandwidth);
+             });
+        });
+     };
+
+     onParticipantJoined(p) {
+        //console.log(p.identity.uri, 'joined the conference');
         if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri) {
             // used for history item
             this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], p.identity._uri);
@@ -313,9 +462,21 @@ class ConferenceBox extends Component {
     }
 
     onParticipantLeft(p) {
-        DEBUG(`Participant left: ${p.identity}`);
-        // this.refs.audioPlayerParticipantLeft.play();
+        //console.log(p.identity.uri, 'left the conference');
         const participants = this.state.participants.slice();
+
+        this.audioBandwidth.delete(p.id);
+        this.videoBandwidth.delete(p.id);
+
+        this.audioBytesReceived.delete(p.id);
+        this.videoBytesReceived.delete(p.id);
+
+        this.audioPacketLoss.delete(p.id);
+        this.videoPacketLoss.delete(p.id);
+
+        this.packetLoss.delete(p.id);
+        this.mediaLost.delete(p.id);
+
         const idx = participants.indexOf(p);
         if (idx !== -1) {
             participants.splice(idx, 1);
@@ -832,6 +993,7 @@ class ConferenceBox extends Component {
                     participant={null}
                     identity={_identity}
                     isLocal={true}
+                    supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                 />
             );
 
@@ -844,12 +1006,22 @@ class ConferenceBox extends Component {
 
                 participants_uris.push(p.identity._uri);
 
+                let status;
+                if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
+                    status = 'Media lost';
+                } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 2) {
+                    status = this.packetLoss.get(p.id) + '% loss';
+                } else if (this.audioBandwidth.has(p.id)) {
+                    status = this.audioBandwidth.get(p.id) + ' kbit/s';
+                }
                 audioParticipants.push(
                     <ConferenceAudioParticipant
                         key={p.id}
                         participant={p}
                         identity={_identity}
                         isLocal={false}
+                        status={status}
+                        supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                     />
                 );
             });
@@ -874,6 +1046,7 @@ class ConferenceBox extends Component {
                         identity={_identity}
                         isLocal={false}
                         status={p.status}
+                        supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                     />
                 );
             });
@@ -891,6 +1064,7 @@ class ConferenceBox extends Component {
                             buttons={buttons}
                             audioOnly={this.props.audioOnly}
                             terminated={this.state.terminated}
+                            speed={this.bandwidth}
                         />
                     </View>
 
@@ -990,7 +1164,6 @@ class ConferenceBox extends Component {
                         <ConferenceMatrixParticipant
                             key={p.id}
                             participant={p}
-                            pauseVideo={this.props.audioOnly}
                             large={activeSpeakers.length <= 1}
                             isLocal={p.id === this.props.call.id}
                         />
@@ -1074,6 +1247,7 @@ class ConferenceBox extends Component {
                         buttons={buttons}
                         audioOnly={this.props.audioOnly}
                         terminated={this.state.terminated}
+                        speed={this.bandwidth}
                     />
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
                         <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>

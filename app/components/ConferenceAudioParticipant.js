@@ -45,7 +45,10 @@ class ConferenceAudioParticipant extends Component {
 
         const streams = this.props.participant.streams;
         if (streams.length > 0) {
-            this.props.participant.pauseVideo();
+            if (!this.props.participant.videoPaused && this.props.supportsVideo) {
+                console.log(' Pause video for', this.props.identity.uri);
+                this.props.participant.pauseVideo();
+            }
             this.setState({stream: streams[0]});
         }
     }
@@ -53,6 +56,14 @@ class ConferenceAudioParticipant extends Component {
     render() {
         const tag = this.props.isLocal ? 'Myself' : this.props.status;
         let identity = this.props.identity;
+
+        let rightStyle = styles.right ;
+
+        if (tag === 'Media lost') {
+            rightStyle = styles.rightOrange;
+        } else if (tag && tag.indexOf('kbit') > -1) {
+            rightStyle = styles.rightGreen;
+        }
 
         return (
             <List.Item
@@ -63,7 +74,7 @@ class ConferenceAudioParticipant extends Component {
                 descriptionStyle={styles.uri}
                 left={props => <View style={styles.userIconContainer}><UserIcon identity={identity} /></View>}
                 right={props => <View>
-                                <Text style={styles.right}>{tag}</Text>
+                                <Text style={rightStyle}>{tag}</Text>
                                 <RTCView streamURL={this.state.stream ? this.state.stream.toURL() : null}/>
                                 </View>
                                 }
@@ -76,6 +87,7 @@ ConferenceAudioParticipant.propTypes = {
     identity: PropTypes.object.isRequired,
     participant: PropTypes.object,
     isLocal: PropTypes.bool,
+    supportsVideo: PropTypes.bool,
     status: PropTypes.string
 };
 
