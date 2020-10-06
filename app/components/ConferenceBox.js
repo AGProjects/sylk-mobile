@@ -382,7 +382,7 @@ class ConferenceBox extends Component {
                                  }
                              } else if (object.audioOutputLevel) {
                                  console.log('Level', object.audioOutputLevel, 'from', p.identity.uri);
-                                 this.mediaLost.set(p.id, object.audioOutputLevel === "0" ? true : false);
+                                 this.mediaLost.set(p.id, Math.floor(object.audioOutputLevel) < 5 ? true : false);
                              } else if (object.packetsLost) {
                                  totalPackets = totalPackets + Math.floor(object.packetsLost);
                                  totalPacketsLost = totalPacketsLost + Math.floor(object.packetsLost);
@@ -1008,7 +1008,7 @@ class ConferenceBox extends Component {
 
                 let status;
                 if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-                    status = 'Media lost';
+                    status = 'Muted';
                 } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 2) {
                     status = this.packetLoss.get(p.id) + '% loss';
                 } else if (this.audioBandwidth.has(p.id)) {

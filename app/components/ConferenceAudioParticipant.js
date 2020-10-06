@@ -45,8 +45,7 @@ class ConferenceAudioParticipant extends Component {
 
         const streams = this.props.participant.streams;
         if (streams.length > 0) {
-            if (!this.props.participant.videoPaused && this.props.supportsVideo) {
-                console.log(' Pause video for', this.props.identity.uri);
+            if (!this.props.participant.videoPaused) {
                 this.props.participant.pauseVideo();
             }
             this.setState({stream: streams[0]});
@@ -59,7 +58,7 @@ class ConferenceAudioParticipant extends Component {
 
         let rightStyle = styles.right ;
 
-        if (tag === 'Media lost') {
+        if (tag === 'Muted') {
             rightStyle = styles.rightOrange;
         } else if (tag && tag.indexOf('kbit') > -1) {
             rightStyle = styles.rightGreen;
