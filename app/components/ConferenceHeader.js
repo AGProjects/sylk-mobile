@@ -28,6 +28,7 @@ const useInterval = (callback, delay) => {
     }, [delay]);
 }
 
+
 const ConferenceHeader = (props) => {
     let [seconds, setSeconds] = useState(0);
 
@@ -56,16 +57,16 @@ const ConferenceHeader = (props) => {
         } else if (props.terminated) {
             callDetail = 'Call ended';
         } else {
-            callDetail = `Duration: ${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
+            callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
         }
 
         if (props.speed) {
-            callDetail = callDetail + ' - ' + props.speed + ' kbit/s';
+            callDetail = callDetail + ' - ' + props.speed;
         }
 
         videoHeader = (
             <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
-                <Appbar.Content
+                 <Appbar.Content
                     title={`Conference: ${room}`}
                     subtitle={callDetail}
                 />

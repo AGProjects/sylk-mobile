@@ -60,6 +60,7 @@ class ConferenceParticipant extends React.Component {
                 track.enabled = true;
                 this.setState({audioMuted: false});
             } else {
+                console.log('Mute audio');
                 track.enabled = false;
                 this.setState({audioMuted: true});
             }
@@ -142,7 +143,8 @@ ConferenceParticipant.propTypes = {
     participant: PropTypes.object.isRequired,
     display: PropTypes.bool,
     pauseVideo: PropTypes.bool,
-    selected: PropTypes.func
+    selected: PropTypes.func,
+    status: PropTypes.string
 };
 
 export default ConferenceParticipant;

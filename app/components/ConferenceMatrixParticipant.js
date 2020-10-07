@@ -106,7 +106,7 @@ class ConferenceMatrixParticipant extends Component {
 
         const participantInfo = (
             <LinearGradient start={{x: 0, y: .55}}  end={{x: 0, y: 1}} colors={['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, .5)']} style={styles.controls}>
-                <Title style={styles.lead}>{this.props.participant.identity.displayName || this.props.participant.identity.uri}</Title>
+                <Title style={styles.lead}>{this.props.participant.identity.displayName || this.props.participant.identity.uri} {this.props.status}</Title>
             </LinearGradient>
         );
 
@@ -145,7 +145,8 @@ ConferenceMatrixParticipant.propTypes = {
     large: PropTypes.bool,
     isLocal: PropTypes.bool,
     isTablet: PropTypes.bool,
-    isLandscape: PropTypes.bool
+    isLandscape: PropTypes.bool,
+    status: PropTypes.string
 };
 
 export default ConferenceMatrixParticipant;
