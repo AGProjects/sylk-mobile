@@ -1,0 +1,10 @@
+ * Fixed failed media after a partipant leaves the conference
+ * Show used bandwitch in conferences
+ * Fixed going to ready screen when prompted for save conference
+ * Fixed cancelling incoming calls when phone is asleep
+ * Added own display name management
+ * Added display name management for favorite contacts
+ * Added save of favorites from conference participants
+ * Added in search contacts matching for conference participants
+
+

@@ -7513,26 +7513,9 @@ react-native-swipe-list-view@^3.2.3:
   resolved "https://registry.yarnpkg.com/react-native-swipe-list-view/-/react-native-swipe-list-view-3.2.3.tgz#2b4aa361f26b6e55efe38a829ce122dff6c00292"
   integrity sha512-f0B92eZiO0mCk7ZFtn8tbLz4lb+mR8xzcfjFqCVSDeXnuNw7GenUMsccGnclIOhnxnip5BHvUHavlD41peGqig==
 
-react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#94af71e5794c222cd7f22d4ae749c597fcabb978:
+react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#ab044cad1df5a0f35677937012314b8d198fdc45:
   version "1.4.8"
-  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/94af71e5794c222cd7f22d4ae749c597fcabb978"
-  dependencies:
-    "@rifflearning/attachmediastream" "^3.0.0"
-    async "^3.1.0"
-    blueimp-md5 "^2.13.0"
-    bowser "^2.7.0"
-    debug "^4.1.1"
-    dompurify "^2.0.10"
-    react-native-device-info "^5.5.4"
-    react-native-get-random-values "^1.4.0"
-    react-native-uuid "^1.4.9"
-    sdp-transform "^2.3.0"
-    webrtc-adapter "^6.4.8"
-    websocket "^1.0.28"
-
-react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#a3c1d858a2fa6dcaeebdcdc04125be3df003bb32:
-  version "1.4.5"
-  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/a3c1d858a2fa6dcaeebdcdc04125be3df003bb32"
+  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/ab044cad1df5a0f35677937012314b8d198fdc45"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"
