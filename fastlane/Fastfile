@@ -64,7 +64,7 @@ platform :android do
     })
 
 
-    upload_to_play_store(track: 'beta', package_name: 'com.agprojects.sylk', skip_upload_apk: true)
+    upload_to_play_store(track: 'beta', package_name: 'com.agprojects.sylk', skip_upload_apk: true, timeout: 5000)
 
   end
 end
