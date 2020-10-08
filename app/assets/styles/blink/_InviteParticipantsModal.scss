@@ -4,15 +4,22 @@
 }
 
 .title {
-    padding: 5px;
+    padding: 3px;
     font-size: 24px;
     text-align: center;
 }
 
-.body {
-    padding: 10px;
-    font-size: 18px;
+.shareText {
+    padding: 3px;
+    font-size: 16px;
     text-align: center;
+}
+
+.participants {
+    padding: 0px;
+    font-size: 14px;
+    text-align: center;
+    width: 100%;
 }
 
 .button {
@@ -20,17 +27,14 @@
     width: 120;
 }
 
-.participantButton {
-    margin: 10px;
-    width: 190;
-}
-
 .buttonRow {
     flex-direction: row;
     justify-content: center;
+    padding-bottom: 10px;
 }
 
 .iconContainer {
+    padding-top: 5px;
     flex-direction: row;
     justify-content: center;
 }

@@ -1,21 +1,32 @@
 .container {
     padding: 5px;
-    margin: 10px;
+    margin: 0px;
     flex-direction: column;
     justify-content: center;
     align-items: center;
 }
 
 .title {
-    padding: 5px;
+    padding: 3px;
     font-size: 24px;
     text-align: center;
 }
 
-.body {
-    padding: 10px;
+.room {
+    padding: 5px;
     font-size: 18px;
     width: 100%;
+}
+
+.participants {
+    padding: 5px;
+    font-size: 14px;
+    text-align: center;
+    width: 100%;
+}
+
+.buttonRow {
+    flex-direction: row;
 }
 
 .button {
@@ -23,8 +34,4 @@
     width: 130;
 }
 
-.buttonRow {
-    flex-direction: row;
-    justify-content: center;
-}
 

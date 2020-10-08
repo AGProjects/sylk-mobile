@@ -132,6 +132,7 @@ class InviteParticipantsModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title>Invite to conference</Dialog.Title>
                         <TextInput
+                            style={styles.participants}
                             mode="flat"
                             name="people"
                             label="People"
@@ -140,9 +141,9 @@ class InviteParticipantsModal extends Component {
                             placeholder="Enter accounts separated by ,"
                             required
                             autoCapitalize="none"
+                            clearButtonMode="always"
                         />
                         <View style={styles.buttonRow}>
-
                         <Button
                             mode="contained"
                             style={styles.button}
@@ -151,7 +152,7 @@ class InviteParticipantsModal extends Component {
                         </Button>
                         </View>
 
-                        <Text style={styles.body}>
+                        <Text style={styles.shareText}>
                              Or share the conference link:
                         </Text>
 

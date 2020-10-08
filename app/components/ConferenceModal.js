@@ -139,7 +139,7 @@ class ConferenceModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Join Conference</Dialog.Title>
                         <TextInput
-                            style={styles.body}
+                            style={styles.room}
                             mode="flat"
                             autoCapitalize="none"
                             label="Enter the room you wish to join"
@@ -150,14 +150,16 @@ class ConferenceModal extends Component {
                             defaultValue={this.state.targetUri}
                         />
                         <TextInput
-                            style={styles.body}
+                            style={styles.participants}
                             mode="flat"
                             autoCapitalize="none"
                             name="users"
+                            numberOfLines="1"
                             label="Invite people"
                             onChangeText={(value) => {this.setState({participants: value});}}
                             value={this.state.participants}
                             placeholder="Enter accounts separated by ,"
+                            clearButtonMode="always"
                         />
                         <View style={styles.buttonRow}>
                         <Button
