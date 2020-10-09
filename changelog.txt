@@ -1,0 +1,81 @@
+r54 / Fri Oct  9 11:36:31 -03 2020
+
+ * Added early media (PSTN calls)
+ * Added UI feedback when inviting participants to audio conference
+ * Added blocked domains feature
+ * Added deep linking to open the app using sylk://
+ * Added display name management for favorite contacts
+ * Added in search contacts matching for conference participants
+ * Added initial statistics for bandwidth usage and packet loss
+ * Added option to save participants after conference ends
+ * Added own display name management
+ * Added refresh history from server by swiping down the list
+ * Added refreshHistory to history state
+ * Added save of favorites from conference participants
+ * Added share links to conferences and propagate cancel from push
+ * Added management of participants for conference favorites
+ * Added persistent group calls / edit conference favorite entries
+ * Added audio only conferences
+ * Added handling of a new incoming call while in a call
+ * Better display of incoming call status
+ * Do not notify a missed call when same conference was already accepted
+ * Do not raise incoming notifications about a new conference when in a conference
+ * Don't go to /ready after delay if there is a call in progress
+ * Fixed audio only conferencing bugs
+ * Fixed cancelling going to ready when a new call stars
+ * Fixed cancelling incoming calls
+ * Fixed cancelling incoming calls when Android is asleep
+ * Fixed closing edit display name dialog
+ * Fixed conference lookup for own account
+ * Fixed crash when going to background
+ * Fixed duplicate Android connections when transitioning to the foreground
+ * Fixed escalate to conference
+ * Fixed handling of cancel for incoming calls when in the background
+ * Fixed handling second incoming call
+ * Fixed lookup of display name in conference calls
+ * Fixed mangling guest usernames in history
+ * Fixed receiving calls on iOS when phone is locked
+ * Fixed reconnecting outgoing calls
+ * Fixed refreshing favorites
+ * Fixed reseting answering in Call
+ * Fixed retry registration when account is wrong
+ * Fixed retrying register when server timeout
+ * Fixed sequence for incoming call on Android when app is swipped out
+ * Fixed sorting history when matching contacts
+ * Fixed starting conference from push
+ * Fixed starting the app from external link to https://webrtc.sipthor.net
+ * Fixed storting history entries
+ * Fixed update registration after display name changed
+ * Fixed updating conference contacts
+ * Fixed updating the Navigator bar state icon
+ * Fixes for answering calls when the devices wakes up from background
+ * Fixes for conferences
+ * Fixes for incoming conference requests
+ * Handle better phone numbers in alert panel
+ * Hide conference menu when is audio only
+ * Honor the media type proposed by conference invite
+ * Imediattely close callkeep call when user presses hangup
+ * Improve addressbook management
+ * Improve audio only conferences
+ * Improve call me maybe text
+ * Improve connect status icon
+ * Improve dislay and redial of conference history items
+ * Improve display of display name in audio calls
+ * Improve experience to reconnect audio call
+ * Improve handling of incoming calls when phone is locked
+ * Improve invite participants modals
+ * Improve reconnecting failed calls
+ * Improve saving conference and invite progress
+ * Improve setting of display name
+ * Improved display of bandwidth usage
+ * Improved inviting previous participants to conferences
+ * Improved starting calls from external URLs
+ * Increased fastlane upload timeout
+ * On logout remove push token and preserve account data in login screen
+ * Propagate lookedup contact photo to all call components
+ * Request camera and mic permission at start on Android
+ * Show last conference number of participants in history view
+ * Stop alert panel if call already rejected
+ * Unregister explicitely on logout route
+ * Use default domain from account
+
