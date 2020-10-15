@@ -36,6 +36,7 @@ class VideoBox extends Component {
             showEscalateConferenceModal: false,
             localStream: this.props.call.getLocalStreams()[0],
             remoteStream: this.props.call.getRemoteStreams()[0],
+            bandwidth: this.props.bandwidth,
             showDtmfModal: false,
             doorOpened: false
         };
@@ -50,6 +51,10 @@ class VideoBox extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.hasOwnProperty('bandwidth')) {
+            this.setState({bandwidth: nextProps.bandwidth});
         }
 
         if (nextProps.call && nextProps.call !== this.state.call) {
@@ -306,6 +311,7 @@ class VideoBox extends Component {
                     call = {this.state.call}
                     connection = {this.props.connection}
                     accountId = {this.props.accountId}
+                    bandwidth={this.state.bandwidth}
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
@@ -365,6 +371,7 @@ VideoBox.propTypes = {
     remoteDisplayName       : PropTypes.string,
     localMedia              : PropTypes.object,
     hangupCall              : PropTypes.func,
+    bandwidth               : PropTypes.string,
     shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,
     generatedVideoTrack     : PropTypes.bool,

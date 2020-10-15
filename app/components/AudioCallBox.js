@@ -11,6 +11,9 @@ import UserIcon from './UserIcon';
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
 import utils from '../utils';
 
+import TrafficStats from './BarChart';
+
+
 function toTitleCase(str) {
     return str.replace(
         /\w\S*/g,
@@ -35,7 +38,11 @@ class AudioCallBox extends Component {
             showDtmfModal               : false,
             showEscalateConferenceModal : false,
             call                        : this.props.call,
-            reconnectingCall            : this.props.reconnectingCall
+            reconnectingCall            : this.props.reconnectingCall,
+            bandwidth                   : this.props.bandwidth,
+            packetLossQueue             : [],
+            audioBandwidthQueue         : [],
+            latencyQueue                : []
         };
 
         this.remoteAudio = React.createRef();
@@ -94,6 +101,22 @@ class AudioCallBox extends Component {
 
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.hasOwnProperty('bandwidth')) {
+            this.setState({bandwidth: nextProps.bandwidth});
+        }
+
+        if (nextProps.hasOwnProperty('packetLossQueue')) {
+            this.setState({packetLossQueue: nextProps.packetLossQueue});
+        }
+
+        if (nextProps.hasOwnProperty('audioBandwidthQueue')) {
+            this.setState({audioBandwidthQueue: nextProps.audioBandwidthQueue});
+        }
+
+        if (nextProps.hasOwnProperty('latencyQueue')) {
+            this.setState({latencyQueue: nextProps.latencyQueue});
         }
 
         this.setState({remoteUri: nextProps.remoteUri,
@@ -205,6 +228,16 @@ class AudioCallBox extends Component {
                 null
                 }
 
+                <TrafficStats
+                    packetLossQueue = {this.state.packetLossQueue}
+                    latencyQueue = {this.state.latencyQueue}
+                    audioBandwidthQueue = {this.state.audioBandwidthQueue}
+                    videoBandwidthQueue = {this.state.videoBandwidthQueue}
+                    isTablet = {this.props.isTablet}
+                    orientation = {this.props.orientation}
+                    media = 'audio'
+                />
+
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) ?
                     <View style={buttonContainerClass}>
                     <IconButton
@@ -281,6 +314,7 @@ AudioCallBox.propTypes = {
     connection              : PropTypes.object,
     accountId               : PropTypes.string,
     escalateToConference    : PropTypes.func,
+    bandwidth               : PropTypes.string,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
     callKeepSendDtmf        : PropTypes.func,
@@ -290,8 +324,11 @@ AudioCallBox.propTypes = {
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
-    muted                   : PropTypes.bool
-
+    muted                   : PropTypes.bool,
+    packetLossQueue         : PropTypes.array,
+    videoBandwidthQueue     : PropTypes.array,
+    audioBandwidthQueue     : PropTypes.array,
+    latencyQueue            : PropTypes.array
 };
 
 export default AudioCallBox;

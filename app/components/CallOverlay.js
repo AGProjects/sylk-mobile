@@ -169,6 +169,10 @@ class CallOverlay extends React.Component {
                 }
             }
 
+            if (this.props.bandwidth) {
+                callDetail = callDetail + ' - ' + this.props.bandwidth;
+            }
+
             if (this.state.remoteUri && this.state.remoteUri.search('videoconference') > -1) {
                 displayName = this.state.remoteUri.split('@')[0];
 
@@ -201,7 +205,8 @@ CallOverlay.propTypes = {
     call: PropTypes.object,
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool,
-    terminated : PropTypes.bool
+    terminated : PropTypes.bool,
+    bandwidth: PropTypes.string
 };
 
 

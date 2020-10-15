@@ -60,8 +60,8 @@ const ConferenceHeader = (props) => {
             callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
         }
 
-        if (props.speed) {
-            callDetail = callDetail + ' - ' + props.speed;
+        if (props.bandwidth) {
+            callDetail = callDetail + ' - ' + props.bandwidth;
         }
 
         videoHeader = (
@@ -97,7 +97,7 @@ ConferenceHeader.propTypes = {
     reconnectingCall: PropTypes.bool,
     audioOnly: PropTypes.bool,
     terminated: PropTypes.bool,
-    speed: PropTypes.string
+    bandwidth: PropTypes.string
 };
 
 
