@@ -154,7 +154,6 @@ class ConferenceModal extends Component {
                             mode="flat"
                             autoCapitalize="none"
                             name="users"
-                            numberOfLines="1"
                             label="Invite people"
                             onChangeText={(value) => {this.setState({participants: value});}}
                             value={this.state.participants}
