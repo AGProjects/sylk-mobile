@@ -13,6 +13,7 @@ import EscalateConferenceModal from './EscalateConferenceModal';
 import DTMFModal from './DTMFModal';
 import config from '../config';
 import styles from '../assets/styles/blink/_VideoBox.scss';
+//import TrafficStats from './BarChart';
 
 const DEBUG = debug('blinkrtc:Video');
 debug.enable('*');
@@ -36,9 +37,12 @@ class VideoBox extends Component {
             showEscalateConferenceModal: false,
             localStream: this.props.call.getLocalStreams()[0],
             remoteStream: this.props.call.getRemoteStreams()[0],
-            bandwidth: this.props.bandwidth,
+            info: this.props.info,
             showDtmfModal: false,
-            doorOpened: false
+            doorOpened: false,
+            packetLossQueue             : [],
+            audioBandwidthQueue         : [],
+            latencyQueue                : []
         };
 
         this.overlayTimer = null;
@@ -53,8 +57,20 @@ class VideoBox extends Component {
             this.setState({audioMuted: nextProps.muted});
         }
 
-        if (nextProps.hasOwnProperty('bandwidth')) {
-            this.setState({bandwidth: nextProps.bandwidth});
+        if (nextProps.hasOwnProperty('info')) {
+            this.setState({info: nextProps.info});
+        }
+
+        if (nextProps.hasOwnProperty('packetLossQueue')) {
+            this.setState({packetLossQueue: nextProps.packetLossQueue});
+        }
+
+        if (nextProps.hasOwnProperty('audioBandwidthQueue')) {
+            this.setState({audioBandwidthQueue: nextProps.audioBandwidthQueue});
+        }
+
+        if (nextProps.hasOwnProperty('latencyQueue')) {
+            this.setState({latencyQueue: nextProps.latencyQueue});
         }
 
         if (nextProps.call && nextProps.call !== this.state.call) {
@@ -311,7 +327,7 @@ class VideoBox extends Component {
                     call = {this.state.call}
                     connection = {this.props.connection}
                     accountId = {this.props.accountId}
-                    bandwidth={this.state.bandwidth}
+                    info={this.state.info}
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
@@ -371,7 +387,7 @@ VideoBox.propTypes = {
     remoteDisplayName       : PropTypes.string,
     localMedia              : PropTypes.object,
     hangupCall              : PropTypes.func,
-    bandwidth               : PropTypes.string,
+    info                    : PropTypes.string,
     shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,
     generatedVideoTrack     : PropTypes.bool,

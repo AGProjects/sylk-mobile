@@ -36,7 +36,13 @@ const ConferenceHeader = (props) => {
         setSeconds(seconds + 1);
     }, 1000);
 
-    const duration = moment.duration(seconds, 'seconds').format('hh:mm:ss', {trim: false});
+    let duration = moment.duration(seconds, 'seconds');
+
+    if (duration > 3600) {
+        duration = duration.format('hh:mm:ss', {trim: false});
+    } else {
+        duration = duration.format('mm:ss', {trim: false});
+    }
 
     let videoHeader;
     let callButtons;
@@ -60,8 +66,8 @@ const ConferenceHeader = (props) => {
             callDetail = `${duration} - ${participantCount} participant${participantCount > 1 ? 's' : ''}`;
         }
 
-        if (props.bandwidth) {
-            callDetail = callDetail + ' - ' + props.bandwidth;
+        if (props.info) {
+            callDetail = callDetail + ' - ' + props.info;
         }
 
         videoHeader = (
@@ -97,7 +103,7 @@ ConferenceHeader.propTypes = {
     reconnectingCall: PropTypes.bool,
     audioOnly: PropTypes.bool,
     terminated: PropTypes.bool,
-    bandwidth: PropTypes.string
+    info: PropTypes.string
 };
 
 

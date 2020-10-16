@@ -209,7 +209,7 @@ class Call extends Component {
                       direction: direction,
                       callUUID: callUUID,
                       reconnectingCall: this.props.reconnectingCall,
-                      bandwidth: '',
+                      info: '',
                       packetLossQueue: [],
                       audioBandwidthQueue: [],
                       videoBandwidthQueue: [],
@@ -438,6 +438,10 @@ class Call extends Component {
 
          //this.packetLoss = randomIntFromInterval(2, 10);
 
+         if (this.packetLoss < 3) {
+             this.packetLoss = 0;
+         }
+
          if (this.packetLossQueue.length < this.samples) {
              var n = this.samples;
              while (n > 0) {
@@ -461,7 +465,7 @@ class Call extends Component {
          this.audioPacketLoss = audioPacketLoss;
          this.videoPacketLoss = videoPacketLoss;
 
-        let bandwidth;
+        let info;
         let suffix = ' kbit/s';
 
         if (foundVideo) {
@@ -471,26 +475,30 @@ class Call extends Component {
         }
 
         if (bandwidthDownload > 0 && bandwidthUpload > 0) {
-            bandwidth = '⇣' + bandwidthDownload + ' ⇡' + bandwidthUpload;
+            info = '⇣' + bandwidthDownload + ' ⇡' + bandwidthUpload;
         } else if (bandwidthDownload > 0) {
-            bandwidth = '⇣' + bandwidthDownload;
+            info = '⇣' + bandwidthDownload;
         } else if (bandwidthUpload > 0) {
-            bandwidth = '⇡' + this.bandwidthUpload;
+            info = '⇡' + this.bandwidthUpload;
         }
 
-        if (bandwidth) {
-            bandwidth = bandwidth + suffix;
+        if (info) {
+            info = info + suffix;
         }
 
         if (this.packetLoss > 2) {
-            bandwidth = bandwidth + ' - ' + Math.ceil(this.packetLoss) + '% loss';
+            info = info + ' - ' + Math.ceil(this.packetLoss) + '% loss';
+        }
+
+        if (delay > 150) {
+            info = info + ' - ' + Math.ceil(this.delay) + ' ms';
         }
 
         this.setState({packetLossQueue: this.packetLossQueue,
                        latencyQueue: this.latencyQueue,
                        videoBandwidthQueue: this.videoBandwidthQueue,
                        audioBandwidthQueue: this.audioBandwidthQueue,
-                       bandwidth: bandwidth
+                       info: info
                         });
          });
      };
@@ -806,7 +814,7 @@ class Call extends Component {
                         videoBandwidthQueue = {this.state.videoBandwidthQueue}
                         audioBandwidthQueue = {this.state.audioBandwidthQueue}
                         latencyQueue = {this.state.latencyQueue}
-                        bandwidth = {this.state.bandwidth}
+                        info = {this.state.info}
                     />
                 );
             } else {
@@ -834,7 +842,7 @@ class Call extends Component {
                             isTablet = {this.props.isTablet}
                             reconnectingCall = {this.state.reconnectingCall}
                             muted = {this.props.muted}
-                            bandwidth = {this.state.bandwidth}
+                            info = {this.state.info}
                         />
                     );
                 } else {
@@ -880,7 +888,7 @@ class Call extends Component {
                     isTablet = {this.props.isTablet}
                     reconnectingCall = {this.state.reconnectingCall}
                     muted = {this.props.muted}
-                    bandwidth = {this.state.bandwidth}
+                    info = {this.state.info}
                 />
             );
 

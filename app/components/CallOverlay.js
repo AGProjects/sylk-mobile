@@ -115,10 +115,15 @@ class CallOverlay extends React.Component {
         // TODO: consider using window.requestAnimationFrame
 
         const startTime = new Date();
-        this.duration = moment.duration(new Date() - startTime).format('hh:mm:ss', {trim: false});
-
         this.timer = setInterval(() => {
-            this.duration = moment.duration(new Date() - startTime).format('hh:mm:ss', {trim: false});
+            const duration = moment.duration(new Date() - startTime);
+
+            if (this.duration > 3600) {
+                this.duration = duration.format('hh:mm:ss', {trim: false});
+            } else {
+                this.duration = duration.format('mm:ss', {trim: false});
+            }
+
             if (this.props.show) {
                 this.forceUpdate();
             }
@@ -169,8 +174,8 @@ class CallOverlay extends React.Component {
                 }
             }
 
-            if (this.props.bandwidth) {
-                callDetail = callDetail + ' - ' + this.props.bandwidth;
+            if (this.props.info) {
+                callDetail = callDetail + ' - ' + this.props.info;
             }
 
             if (this.state.remoteUri && this.state.remoteUri.search('videoconference') > -1) {
@@ -206,7 +211,7 @@ CallOverlay.propTypes = {
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool,
     terminated : PropTypes.bool,
-    bandwidth: PropTypes.string
+    info: PropTypes.string
 };
 
 

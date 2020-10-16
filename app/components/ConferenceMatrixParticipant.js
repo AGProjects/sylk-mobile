@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 // const hark              = require('hark');
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { Title, Badge } from 'react-native-paper';
+import { Title, Badge, Text } from 'react-native-paper';
 import LinearGradient from 'react-native-linear-gradient';
 import { RTCView } from 'react-native-webrtc';
 import { View } from 'react-native';
@@ -21,7 +21,8 @@ class ConferenceMatrixParticipant extends Component {
             hasVideo: false,
             sharesScreen: false,
             audioMuted: false,
-            stream: null
+            stream: null,
+            status: this.props.status
         }
         this.speechEvents = null;
 
@@ -29,6 +30,12 @@ class ConferenceMatrixParticipant extends Component {
 
         if (!props.isLocal) {
             props.participant.on('stateChanged', this.onParticipantStateChanged);
+        }
+    }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.hasOwnProperty('status')) {
+            this.setState({status: nextProps.status});
         }
     }
 
@@ -104,9 +111,12 @@ class ConferenceMatrixParticipant extends Component {
         //     'conference-active' : this.state.active
         // });
 
+        //console.log('Participant', this.props.participant.identity.uri, 'status', this.state.status);
+
         const participantInfo = (
             <LinearGradient start={{x: 0, y: .55}}  end={{x: 0, y: 1}} colors={['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, .5)']} style={styles.controls}>
-                <Title style={styles.lead}>{this.props.participant.identity.displayName || this.props.participant.identity.uri} {this.props.status}</Title>
+                <Title style={styles.lead}>{this.props.participant.identity.displayName || this.props.participant.identity.uri}</Title>
+                <Text style={styles.status}>{this.state.status}</Text>
             </LinearGradient>
         );
 

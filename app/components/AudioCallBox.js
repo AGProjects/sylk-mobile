@@ -39,7 +39,7 @@ class AudioCallBox extends Component {
             showEscalateConferenceModal : false,
             call                        : this.props.call,
             reconnectingCall            : this.props.reconnectingCall,
-            bandwidth                   : this.props.bandwidth,
+            info                        : this.props.info,
             packetLossQueue             : [],
             audioBandwidthQueue         : [],
             latencyQueue                : []
@@ -103,8 +103,8 @@ class AudioCallBox extends Component {
             this.setState({audioMuted: nextProps.muted});
         }
 
-        if (nextProps.hasOwnProperty('bandwidth')) {
-            this.setState({bandwidth: nextProps.bandwidth});
+        if (nextProps.hasOwnProperty('info')) {
+            this.setState({info: nextProps.info});
         }
 
         if (nextProps.hasOwnProperty('packetLossQueue')) {
@@ -314,7 +314,7 @@ AudioCallBox.propTypes = {
     connection              : PropTypes.object,
     accountId               : PropTypes.string,
     escalateToConference    : PropTypes.func,
-    bandwidth               : PropTypes.string,
+    info                    : PropTypes.string,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
     callKeepSendDtmf        : PropTypes.func,
