@@ -327,7 +327,7 @@ PODS:
     - RNFBApp
   - RNShare (3.3.3):
     - React
-  - RNSVG (10.1.0):
+  - RNSVG (12.1.0):
     - React
   - RNVectorIcons (6.6.0):
     - React
@@ -542,7 +542,7 @@ SPEC CHECKSUMS:
   RNFBApp: 7d4006751de8bb5cafa2e8d2e7d94ee250df81db
   RNFBMessaging: 51cc7f6beaf4c4feac6f18ea941bba5854e3d9c6
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
-  RNSVG: 069864be08c9fe065a2cf7e63656a34c78653c99
+  RNSVG: ce9d996113475209013317e48b05c21ee988d42e
   RNVectorIcons: 0bb4def82230be1333ddaeee9fcba45f0b288ed4
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36
   Yoga: f2a7cd4280bfe2cca5a7aed98ba0eb3d1310f18b
