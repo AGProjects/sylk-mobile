@@ -1,0 +1,2 @@
+ * Fixed conference invite bug
+ * Added packet loss and latency info
