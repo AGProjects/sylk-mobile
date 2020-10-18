@@ -69,7 +69,7 @@ class Conference extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        utils.timestampedLog('Conference: callStateChanged', oldState, '->', newState);
+        //utils.timestampedLog('Conference: callStateChanged', oldState, '->', newState);
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
         }
@@ -187,7 +187,7 @@ class Conference extends React.Component {
             }
 
             if (!this.canConnect()) {
-                //console.log('Waiting', this.waitCounter);
+                console.log('Retrying for', (this.waitInterval - this.waitCounter), 'seconds');
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;
@@ -357,6 +357,7 @@ class Conference extends React.Component {
                         connection={this.state.connection}
                         participants={this.participants}
                         terminated={this.userHangup}
+                        reconnectingCall={this.state.reconnectingCall}
                     />
                 );
             }

@@ -19,7 +19,8 @@ class LocalMedia extends Component {
         this.state = {
             localMedia: this.props.localMedia,
             historyEntry: this.props.historyEntry,
-            participants: this.props.participants
+            participants: this.props.participants,
+            reconnectingCall: this.props.reconnectingCall
         };
 
     }
@@ -34,7 +35,9 @@ class LocalMedia extends Component {
             this.props.mediaPlaying();
         }
 
-        this.setState({historyEntry: nextProps.historyEntry, participants: nextProps.participants});
+        this.setState({historyEntry: nextProps.historyEntry,
+                      participants: nextProps.participants,
+                      reconnectingCall: nextProps.reconnectingCall});
     }
 
     saveConference(event) {
@@ -75,6 +78,8 @@ class LocalMedia extends Component {
                     call = {this.props.call}
                     connection={this.props.connection}
                     terminated={this.props.terminated}
+                    reconnectingCall={this.state.reconnectingCall}
+
                 />
 
                 {this.showSaveDialog() ?

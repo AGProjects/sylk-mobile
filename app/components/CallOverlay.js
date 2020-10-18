@@ -51,6 +51,17 @@ class CallOverlay extends React.Component {
         }
     }
 
+    componentWillUnmount() {
+        this._isMounted = false;
+
+        if (this.state.call) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
+        }
+
+        clearTimeout(this.timer);
+    }
+
+
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (!this._isMounted) {
@@ -71,17 +82,8 @@ class CallOverlay extends React.Component {
             this.setState({call: nextProps.call});
         }
 
-        this.setState({remoteDisplayName: nextProps.remoteDisplayName, remoteUri: nextProps.remoteUri});
-    }
-
-    componentWillUnmount() {
-        this._isMounted = false;
-
-        if (this.state.call) {
-            this.state.call.removeListener('stateChanged', this.callStateChanged);
-        }
-
-        clearTimeout(this.timer);
+        this.setState({remoteDisplayName: nextProps.remoteDisplayName,
+                       remoteUri: nextProps.remoteUri});
     }
 
     callStateChanged(oldState, newState, data) {
@@ -162,6 +164,8 @@ class CallOverlay extends React.Component {
                    if (this.state.callState) {
                        if (this.state.callState === 'incoming') {
                            callDetail = 'Waiting for incoming call...';
+                       } else if (this.state.callState === 'accepted') {
+                           callDetail = 'Accepted. Waiting for media...';
                        } else {
                            callDetail = toTitleCase(this.state.callState);
                        }
@@ -213,6 +217,5 @@ CallOverlay.propTypes = {
     terminated : PropTypes.bool,
     info: PropTypes.string
 };
-
 
 export default CallOverlay;

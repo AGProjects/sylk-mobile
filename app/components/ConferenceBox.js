@@ -71,6 +71,7 @@ class ConferenceBox extends Component {
 
         this.state = {
             callOverlayVisible: true,
+            call: this.props.call,
             ended: false,
             audioMuted: this.props.muted,
             videoMuted: !this.props.inFocus,
@@ -266,6 +267,10 @@ class ConferenceBox extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.call !== null && nextProps.call !== this.state.call) {
+            this.setState({call: nextProps.call});
         }
 
         if (nextProps.inFocus !== this.state.inFocus) {
@@ -491,14 +496,20 @@ class ConferenceBox extends Component {
 
                      if (videoPackets > 0) {
                          videoPacketLoss = Math.floor(videoPacketsLost / videoPackets * 100);
+                     } else {
+                         videoPacketLoss = 100;
                      }
 
                      if (audioPackets > 0) {
                          audioPacketLoss = Math.floor(audioPacketsLost / audioPackets * 100);
+                     } else {
+                         audioPacketLoss = 100;
                      }
 
                      if (totalPackets > 0) {
                          totalPacketLoss = Math.floor(totalPacketsLost / totalPackets * 100);
+                     } else {
+                         totalPacketLoss = 100;
                      }
 
                      this.audioPacketLoss.set(p.id, audioPacketLoss);
@@ -506,7 +517,7 @@ class ConferenceBox extends Component {
                      this.packetLoss.set(p.id, totalPacketLoss);
                  }});
 
-                 console.log(identity, 'audio loss', audioPacketLoss, '%, video loss', videoPacketLoss, '%, total loss', totalPacketLoss, '%');
+                 //console.log(identity, p.id, 'audio loss', audioPacketLoss, '%, video loss', videoPacketLoss, '%, total loss', totalPacketLoss, '%');
 
                  const bandwidthDownload = totalVideoBandwidth + totalAudioBandwidth;
                  this.bandwidthDownload = Math.ceil(bandwidthDownload / 1000 * 100) / 100;
@@ -900,6 +911,9 @@ class ConferenceBox extends Component {
     }
 
     render() {
+        //console.log('Conference box this.state.reconnectingCall', this.state.reconnectingCall);
+        let participantsCount = this.state.participants.length + 1;
+
         if (this.props.call === null) {
             return (<View></View>);
         }
@@ -1100,11 +1114,15 @@ class ConferenceBox extends Component {
                 if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
                     status = 'Muted';
                 } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-                    status = this.packetLoss.get(p.id) + '% loss';
-                } else if (this.latency.has(p.id) && this.latency.get(p.id) > 200) {
+                    if (this.packetLoss.get(p.id) === 100) {
+                        status = 'No media';
+                        participantsCount = participantsCount - 1;
+                        return;
+                    } else {
+                        status = this.packetLoss.get(p.id) + '% loss';
+                    }
+                } else if (this.latency.has(p.id) && this.latency.get(p.id) > 150) {
                     status = this.latency.get(p.id) + ' ms delay';
-                //} else if (this.audioBandwidth.has(p.id)) {
-                //    status = this.audioBandwidth.get(p.id) + ' kbit/s';
                 }
 
                 audioParticipants.push(
@@ -1151,8 +1169,10 @@ class ConferenceBox extends Component {
                     <View style={styles.conferenceContainer}>
                         <ConferenceHeader
                             show={true}
+                            call={this.state.call}
+                            isTablet={this.props.isTablet}
                             remoteUri={remoteUri}
-                            participants={this.state.participants}
+                            participants={participantsCount}
                             reconnectingCall={this.state.reconnectingCall}
                             buttons={buttons}
                             audioOnly={this.props.audioOnly}
@@ -1259,17 +1279,26 @@ class ConferenceBox extends Component {
                     if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
                         status = 'Muted';
                     } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-                        status = this.packetLoss.get(p.id) + '% loss';
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
+
                     } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
                         status = this.latency.get(p.id) + ' ms delay';
                     }
 
                     if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
                         status = 'Muted';
-                    } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 2) {
-                        status = this.packetLoss.get(p.id) + '% loss';
-                    //} else if (this.audioBandwidth.has(p.id)) {
-                    //    status = this.audioBandwidth.get(p.id) + ' kbit/s';
+                    } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
                     }
 
                     videos.push(
@@ -1288,7 +1317,13 @@ class ConferenceBox extends Component {
                     if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
                         status = 'Muted';
                     } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-                        status = this.packetLoss.get(p.id) + '% loss';
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            participantsCount = participantsCount - 1;
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
                     } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
                         status = this.latency.get(p.id) + ' ms delay';
                     }
@@ -1317,11 +1352,16 @@ class ConferenceBox extends Component {
             } else {
                 this.state.participants.forEach((p, idx) => {
                     status = '';
-                    console.log(this.packetLoss);
                     if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
                         status = 'Muted';
                     } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-                        status = this.packetLoss.get(p.id) + '% loss';
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            participantsCount = participantsCount - 1;
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
                     } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
                         status = this.latency.get(p.id) + ' ms';
                     }
@@ -1377,7 +1417,9 @@ class ConferenceBox extends Component {
                     <ConferenceHeader
                         show={this.state.callOverlayVisible}
                         remoteUri={remoteUri}
-                        participants={this.state.participants}
+                        isTablet={this.props.isTablet}
+                        call={this.state.call}
+                        participants={participantsCount}
                         reconnectingCall={this.state.reconnectingCall}
                         buttons={buttons}
                         audioOnly={this.props.audioOnly}
