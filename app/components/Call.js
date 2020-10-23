@@ -421,7 +421,7 @@ class Call extends Component {
          videoPacketLoss = 0;
          if (videoPackets > 0) {
              videoPacketLoss = Math.floor(videoPacketsLost / videoPackets * 100);
-             if (videoPacketLoss > 0) {
+             if (videoPacketLoss > 1) {
                  console.log('Video packet loss', videoPacketLoss, '%');
              }
          }
@@ -429,7 +429,7 @@ class Call extends Component {
          audioPacketLoss = 0;
          if (audioPackets > 0) {
              audioPacketLoss = Math.floor(audioPacketsLost / audioPackets * 100);
-             if (audioPacketLoss > 0) {
+             if (audioPacketLoss > 1) {
                  console.log('Audio packet loss', videoPacketLoss, '%');
              }
          }
@@ -466,10 +466,10 @@ class Call extends Component {
          this.videoPacketLoss = videoPacketLoss;
 
         let info;
-        let suffix = ' kbit/s';
+        let suffix = 'kbit/s';
 
-        if (foundVideo) {
-            suffix = ' Mbit/s';
+        if (foundVideo && (bandwidthUpload > 0 || bandwidthDownload > 0)) {
+            suffix = 'Mbit/s';
             bandwidthUpload = Math.ceil(bandwidthUpload / 1000 * 100) / 100;
             bandwidthDownload = Math.ceil(bandwidthDownload / 1000 * 100) / 100;
         }
@@ -483,7 +483,7 @@ class Call extends Component {
         }
 
         if (info) {
-            info = info + suffix;
+            info = info + ' ' + suffix;
         }
 
         if (this.packetLoss > 2) {
@@ -491,7 +491,7 @@ class Call extends Component {
         }
 
         if (delay > 150) {
-            info = info + ' - ' + Math.ceil(this.delay) + ' ms';
+            info = info + ' - ' + Math.ceil(delay) + ' ms';
         }
 
         this.setState({packetLossQueue: this.packetLossQueue,
