@@ -568,6 +568,8 @@ class Call extends Component {
             remoteDisplayName = 'Video Test';
         } else if (remoteUri.indexOf('4444@') > -1) {
             remoteDisplayName = 'Echo Test';
+        } else if (this.props.myDisplayNames.hasOwnProperty(remoteUri)) {
+            remoteDisplayName = this.props.myDisplayNames[remoteUri];
         } else if (this.props.contacts) {
             let username = remoteUri.split('@')[0];
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
@@ -918,7 +920,8 @@ Call.propTypes = {
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
-    muted                   : PropTypes.bool
+    muted                   : PropTypes.bool,
+    myDisplayNames          : PropTypes.object
 };
 
 

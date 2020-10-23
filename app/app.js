@@ -2589,6 +2589,7 @@ class Sylk extends Component {
                 isTablet = {this.state.isTablet}
                 reconnectingCall = {this.state.reconnectingCall}
                 muted = {this.state.muted}
+                myDisplayNames = {this.state.myDisplayNames}
             />
         )
     }
@@ -2661,6 +2662,8 @@ class Sylk extends Component {
                 contacts = {this.contacts}
                 setFavoriteUri = {this.setFavoriteUri}
                 favoriteUris = {this.state.favoriteUris}
+                myDisplayNames = {this.state.myDisplayNames}
+
             />
         )
     }

@@ -341,6 +341,7 @@ class Conference extends React.Component {
                         contacts={this.props.contacts}
                         initialParticipants={this.props.participantsToInvite}
                         terminated={this.userHangup}
+                        myDisplayNames = {this.props.myDisplayNames}
                    />
                 );
             } else {
@@ -398,7 +399,8 @@ Conference.propTypes = {
     saveInvitedParties      : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
     contacts                : PropTypes.array,
-    favoriteUris            : PropTypes.array
+    favoriteUris            : PropTypes.array,
+    myDisplayNames          : PropTypes.object
 };
 
 
