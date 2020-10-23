@@ -344,6 +344,7 @@ export default class CallManager extends events.EventEmitter {
 
         if (this._rejectedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: already rejected call', callUUID);
+            this.endCall(callUUID);
             return;
         }
 
