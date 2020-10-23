@@ -34,10 +34,12 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>57</string>
+	<string>58</string>
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<false/>
 	<key>FirebaseScreenReportingEnabled</key>
+	<false/>
+	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string></string>
@@ -115,7 +117,5 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
-        <key>ITSAppUsesNonExemptEncryption</key>
-        <false/>
 </dict>
 </plist>
