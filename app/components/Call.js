@@ -220,8 +220,6 @@ class Call extends Component {
              this.getConnectionStats();
         }, this.sampleInterval * 1000);
 
-        this.resetStats();
-
     }
 
     resetStats() {
@@ -536,6 +534,8 @@ class Call extends Component {
     }
 
     componentDidMount() {
+        this.resetStats();
+
         this.lookupContact();
         if (this.state.direction === 'outgoing' && this.state.callUUID) {
             this.startCallWhenReady(this.state.callUUID);
