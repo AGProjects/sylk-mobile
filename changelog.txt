@@ -1,3 +1,12 @@
+iOS 1.3.5 / Thu Oct 29 08:42:04 -03 2020
+
+ * Propagate display name from favorites
+ * Close call in one more corner case
+ * Improve conference statistics and remove dead participants from view
+ * Added network statistics to conferences participants
+ * Added packet loss and bandwidth usage info
+
+
 r54 / Fri Oct  9 11:36:31 -03 2020
 
  * Added early media (PSTN calls)
