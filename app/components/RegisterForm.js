@@ -46,11 +46,11 @@ class RegisterForm extends Component {
     }
 
     handleAccountIdChange(value) {
-        this.setState({accountId: value});
+        this.setState({accountId: value.trim()});
     }
 
     handlePasswordChange(value) {
-        this.setState({password: value});
+        this.setState({password: value.trim()});
     }
 
     handleSubmit(event) {
