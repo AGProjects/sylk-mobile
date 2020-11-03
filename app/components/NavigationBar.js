@@ -1,5 +1,5 @@
 import React, { Component } from 'react';
-import { Linking, Image, View } from 'react-native';
+import { Linking, Image, Platform, View } from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text } from 'react-native-paper';
@@ -60,6 +60,13 @@ class NavigationBar extends Component {
                 break;
             case 'preview':
                 this.props.preview();
+                break;
+            case 'checkUpdate':
+                if (Platform.OS === 'android') {
+                    Linking.openURL('https://play.google.com/store/apps/details?id=com.agprojects.sylk');
+                } else {
+                    Linking.openURL('https://apps.apple.com/us/app/id1489960733');
+                }
                 break;
             case 'settings':
                 Linking.openURL(config.serverSettingsUrl);
@@ -151,6 +158,7 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                     <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                     <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings" />
+                    <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Install update" />
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                 </Menu>
 
