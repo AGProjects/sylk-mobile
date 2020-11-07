@@ -491,19 +491,26 @@ class Sylk extends Component {
                             });
 
             if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
+
                 if (reason !== 'user_press_hangup') {
                     this.stopRingback();
                     InCallManager.stop();
                 }
 
-                if (reason !== 'accept_new_call') {
-                    this.closeLocalMedia();
-                }
+                this.closeLocalMedia();
 
-                if (this.state.account && reason !== 'accept_new_call' && this._loaded) {
-                    setTimeout(() => {
-                        this.updateServerHistory()
-                    }, 1500);
+                if (reason === 'accept_new_call') {
+                    if (this.state.incomingCall) {
+                        // then answer the new call if any
+                        let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
+                        this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
+                    }
+                } else {
+                    if (this.state.account && this._loaded) {
+                        setTimeout(() => {
+                            this.updateServerHistory()
+                        }, 1500);
+                    }
                 }
             }
 
@@ -1702,10 +1709,10 @@ class Sylk extends Component {
 
         if (this.state.currentCall) {
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
+        } else {
+            let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
+            this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
         }
-
-        let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
-        this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
     }
 
     rejectCall(callUUID) {
