@@ -433,7 +433,7 @@ export default class CallManager extends events.EventEmitter {
         if (this._calls.has(call.id)) {
             return;
         }
-        //utils.timestampedLog('Callkeep: added call', call.id, 'for connection', connection);
+        utils.timestampedLog('Callkeep: added websocket call', call.id, 'for connection', connection);
         this._calls.set(call.id, call);
     }
 

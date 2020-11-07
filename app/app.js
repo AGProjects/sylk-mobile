@@ -470,6 +470,8 @@ class Sylk extends Component {
         }
 
         if (route === '/ready') {
+             Vibration.cancel();
+
             if (reason === 'conference_really_ended' && this.callKeeper.countCalls) {
                 utils.timestampedLog('Change route cancelled because we still have calls');
                 return;
@@ -1033,6 +1035,9 @@ class Sylk extends Component {
     showInternalAlertPanel() {
         this.setState({showIncomingModal: true});
         Vibration.vibrate(VIBRATION_PATTERN, true);
+        setTimeout(() => {
+             Vibration.cancel();
+        }, 30000);
     }
 
     hideInternalAlertPanel() {
