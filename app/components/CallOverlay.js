@@ -62,7 +62,6 @@ class CallOverlay extends React.Component {
         clearTimeout(this.timer);
     }
 
-
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (!this._isMounted) {
@@ -158,7 +157,7 @@ class CallOverlay extends React.Component {
                 callDetail = 'Duration: ' + this.duration;
             } else {
                 if (this.state.reconnectingCall) {
-                    callDetail = 'Reconnecting the call...';
+                    callDetail = 'Reconnecting call...';
                 } else if (this.props.terminated) {
                     callDetail = 'Call ended';
                 } else if (this.state.callState === 'terminated') {

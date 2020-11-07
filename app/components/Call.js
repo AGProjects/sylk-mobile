@@ -223,6 +223,10 @@ class Call extends Component {
     }
 
     resetStats() {
+         if (this.ended) {
+             return;
+         }
+
          this.setState({
                       bandwidth: '',
                       packetLossQueue: [],
@@ -238,7 +242,6 @@ class Call extends Component {
         if (this.ended) {
             return;
         }
-        //console.log('Call got props...');
 
         this.setState({connection: nextProps.connection,
                        accountId: nextProps.account ? nextProps.account.id : null});
@@ -297,7 +300,10 @@ class Call extends Component {
     }
 
     getConnectionStats() {
-         //console.log('getConnectionStats');
+         if (this.ended) {
+             return;
+         }
+
          let speed = 0;
          let diff = 0;
 
@@ -420,15 +426,15 @@ class Call extends Component {
          if (videoPackets > 0) {
              videoPacketLoss = Math.floor(videoPacketsLost / videoPackets * 100);
              if (videoPacketLoss > 1) {
-                 console.log('Video packet loss', videoPacketLoss, '%');
+                 //console.log('Video packet loss', videoPacketLoss, '%');
              }
          }
 
          audioPacketLoss = 0;
          if (audioPackets > 0) {
              audioPacketLoss = Math.floor(audioPacketsLost / audioPackets * 100);
-             if (audioPacketLoss > 1) {
-                 console.log('Audio packet loss', videoPacketLoss, '%');
+             if (audioPacketLoss > 3) {
+                 //console.log('Audio packet loss', audioPacketLoss, '%');
              }
          }
 
