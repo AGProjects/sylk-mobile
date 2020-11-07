@@ -28,6 +28,7 @@ class CallOverlay extends React.Component {
 
         this.state = {
             call: this.props.call,
+            media: this.props.media ? this.props.media : 'audio',
             callState: this.props.call ? this.props.call.state : null,
             direction: this.props.call ? this.props.call.direction: null,
             remoteUri: this.props.remoteUri,
@@ -83,7 +84,9 @@ class CallOverlay extends React.Component {
         }
 
         this.setState({remoteDisplayName: nextProps.remoteDisplayName,
-                       remoteUri: nextProps.remoteUri});
+                       remoteUri: nextProps.remoteUri,
+                       media: nextProps.media
+                       });
     }
 
     callStateChanged(oldState, newState, data) {
@@ -165,7 +168,7 @@ class CallOverlay extends React.Component {
                        if (this.state.callState === 'incoming') {
                            callDetail = 'Waiting for incoming call...';
                        } else if (this.state.callState === 'accepted') {
-                           callDetail = 'Accepted. Waiting for media...';
+                           callDetail = 'Waiting for ' + this.state.media + '...';
                        } else {
                            callDetail = toTitleCase(this.state.callState);
                        }
@@ -215,6 +218,7 @@ CallOverlay.propTypes = {
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool,
     terminated : PropTypes.bool,
+    media: PropTypes.string,
     info: PropTypes.string
 };
 

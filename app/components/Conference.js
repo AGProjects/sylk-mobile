@@ -314,6 +314,11 @@ class Conference extends React.Component {
         let box = null;
 
         if (this.state.localMedia !== null) {
+            let media = 'audio'
+            if (this.props.proposedMedia && this.props.proposedMedia.video === true) {
+                media = 'audio and video';
+            }
+
             if (this.state.currentCall != null && (this.state.callState === 'established')) {
                 box = (
                     <ConferenceBox
@@ -359,7 +364,9 @@ class Conference extends React.Component {
                         participants={this.participants}
                         terminated={this.userHangup}
                         reconnectingCall={this.state.reconnectingCall}
+                        media={media}
                     />
+
                 );
             }
 

@@ -79,7 +79,7 @@ class LocalMedia extends Component {
                     connection={this.props.connection}
                     terminated={this.props.terminated}
                     reconnectingCall={this.state.reconnectingCall}
-
+                    media={this.props.media}
                 />
 
                 {this.showSaveDialog() ?
@@ -137,6 +137,7 @@ LocalMedia.propTypes = {
     reconnectingCall    : PropTypes.bool,
     connection          : PropTypes.object,
     participants        : PropTypes.array,
+    media               : PropTypes.string,
     terminated          : PropTypes.bool
 };
 

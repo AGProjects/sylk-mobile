@@ -214,6 +214,7 @@ class AudioCallBox extends Component {
                     reconnectingCall={this.state.reconnectingCall}
                     connection={this.props.connection}
                     accountId={this.props.accountId}
+                    media='audio'
                 />
                 <View style={userIconContainerClass}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
