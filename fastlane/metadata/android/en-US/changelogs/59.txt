@@ -1,0 +1,5 @@
+ * Print media type in waiting for media line
+ * Fixed answering new call while in a call
+ * Make sure between calls vibration is always cancelled
+ * Trim username and password strings in sign-in form
+ * Added menu link for version update

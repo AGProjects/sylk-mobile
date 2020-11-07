@@ -1,0 +1,3 @@
+ * Fixed display of packet loss
+ * Propagate display name from favorites
+ * Close call in one more corner case

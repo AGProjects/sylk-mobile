@@ -1,2 +1,2 @@
- * Improve display of call and confernce statistics
+ * Improve display of call and conference statistics
  * Remove dead participants from conference view
