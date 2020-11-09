@@ -867,10 +867,11 @@ class Call extends Component {
                                 mediaPlaying = {this.mediaPlaying}
                                 hangupCall = {this.hangupCall}
                                 generatedVideoTrack = {this.props.generatedVideoTrack}
-                                accountId={this.state.accountId}
+                                accountId = {this.state.accountId}
                                 connection = {this.props.connection}
                                 orientation = {this.props.orientation}
                                 isTablet = {this.props.isTablet}
+                                media = 'audio and video'
                             />
                         );
                     }
