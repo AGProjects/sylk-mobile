@@ -683,7 +683,6 @@ class Sylk extends Component {
                     } else if (event === 'cancel') {
                         this.cancelIncomingCall(callUUID);
                     }
-
                 });
         }
     }
@@ -1008,10 +1007,18 @@ class Sylk extends Component {
                 if (this.state.connection !== null && this.state.connection.state === 'ready') {
                     utils.timestampedLog('Retry to register...');
                     this.state.account.register();
-                } else {
-                    // add a timer to retry register after awhile
+                }
+            } else {
+                // add a timer to retry register after awhile
+                if (reason >= 500 || reason === 408) {
                     utils.timestampedLog('Retry to register after 5 seconds delay...');
                     setTimeout(this.state.account.register(), 5000);
+                } else {
+                    if (this.registrationFailureTimer) {
+                        utils.timestampedLog('Cancel registration timer...');
+                        clearTimeout(this.registrationFailureTimer);
+                        this.registrationFailureTimer = null;
+                    }
                 }
             }
         } else if (newState === 'registered') {
