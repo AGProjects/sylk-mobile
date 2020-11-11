@@ -1,3 +1,17 @@
+iOS 1.3.7 / Wed Nov 11 11:13:58 -03 2020
+
+ * Improve display of call and conference statistics
+ * Remove dead participants from conference view
+ * Fixed display of packet loss
+ * Propagate display name from favorites
+ * Close call in one more corner case
+ * Print media type in waiting for media line
+ * Fixed answering new call while in a call
+ * Make sure between calls vibration is always cancelled
+ * Trim username and password strings in sign-in form
+ * Added menu link for version update
+
+
 iOS 1.3.5 / Thu Oct 29 08:42:04 -03 2020
 
  * Propagate display name from favorites
