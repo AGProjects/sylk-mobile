@@ -102,7 +102,6 @@ class ConferenceHeader extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        console.log('callStateChanged', newState);
         if (newState === 'established' && this._isMounted && !this.props.terminated) {
             this.startTimer();
         }
@@ -182,7 +181,7 @@ ConferenceHeader.propTypes = {
     remoteUri: PropTypes.string.isRequired,
     call: PropTypes.object,
     isTablet: PropTypes.bool,
-    participants: PropTypes.integer,
+    participants: PropTypes.number,
     buttons: PropTypes.object.isRequired,
     reconnectingCall: PropTypes.bool,
     audioOnly: PropTypes.bool,

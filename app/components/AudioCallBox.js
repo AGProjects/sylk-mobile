@@ -66,8 +66,6 @@ class AudioCallBox extends Component {
                     this.state.call.on('stateChanged', this.callStateChanged);
                     break;
             }
-        } else {
-            this.props.mediaPlaying();
         }
     }
 
@@ -83,8 +81,6 @@ class AudioCallBox extends Component {
             if (nextProps.call.state === 'established') {
                 this.attachStream(nextProps.call);
                 this.setState({reconnectingCall: false});
-            } else if (nextProps.call.state === 'incoming') {
-                this.props.mediaPlaying();
             }
 
             nextProps.call.on('stateChanged', this.callStateChanged);
@@ -155,7 +151,7 @@ class AudioCallBox extends Component {
 
     cancelCall(event) {
         event.preventDefault();
-        this.props.hangupCall('user_cancelled_call');
+        this.props.hangupCall('user_cancel_call');
     }
 
     muteAudio(event) {

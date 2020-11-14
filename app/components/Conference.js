@@ -217,6 +217,9 @@ class Conference extends React.Component {
             initialParticipants: this.props.participantsToInvite
         };
         utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.state.callUUID, 'to', this.props.targetUri.toLowerCase());
+        if (this.props.participantsToInvite) {
+            utils.timestampedLog('Initial participants', this.props.participantsToInvite);
+        }
         confCall = this.state.account.joinConference(this.props.targetUri.toLowerCase(), options);
         if (confCall) {
             confCall.on('stateChanged', this.callStateChanged);
@@ -268,7 +271,7 @@ class Conference extends React.Component {
                 return false;
             }
         } else {
-            console.log('Show save dialog because is not in favorites');
+            console.log('Show save dialog because room', this.state.targetUri, 'is not in favorites');
             return true;
         }
         return true;

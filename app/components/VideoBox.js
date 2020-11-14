@@ -14,6 +14,7 @@ import DTMFModal from './DTMFModal';
 import config from '../config';
 import styles from '../assets/styles/blink/_VideoBox.scss';
 //import TrafficStats from './BarChart';
+import utils from '../utils';
 
 const DEBUG = debug('blinkrtc:Video');
 debug.enable('*');
@@ -189,7 +190,7 @@ class VideoBox extends Component {
 
     cancelCall(event) {
         event.preventDefault();
-        this.props.hangupCall('user_cancelled_call');
+        this.props.hangupCall('user_cancel_call');
     }
 
     escalateToConference(participants) {

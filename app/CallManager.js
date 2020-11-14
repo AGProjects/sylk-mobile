@@ -164,7 +164,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setCurrentCallActive(callUUID) {
-        utils.timestampedLog('Callkeep: CALL ACTIVE', callUUID);
+        utils.timestampedLog('Callkeep: active call', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
     }
 
@@ -209,10 +209,14 @@ export default class CallManager extends events.EventEmitter {
     }
 
     terminateCall(callUUID) {
-        if (this._calls.has(callUUID)) {
-           this._calls.delete(callUUID);
-        }
+        //utils.timestampedLog('Callkeep: call terminated', callUUID);
+
         this._terminatedCalls.set(callUUID, Date.now());
+
+        if (this._calls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: removed websocket call', callUUID);
+            this._calls.delete(callUUID);
+        }
 
         if (this._pushCalls.has(callUUID)) {
             this._pushCalls.delete(callUUID);
@@ -235,13 +239,13 @@ export default class CallManager extends events.EventEmitter {
             this._pushCalls.delete(callUUID);
         }
 
-        if (!this._rejectedCalls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: accept call', callUUID);
-            this.acceptCall(callUUID);
-        } else {
+        if (this._rejectedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: cannot accept because we already rejected', callUUID);
-            this.endCall(callUUID);
+            //this.endCall(callUUID);
+            return;
         }
+
+        this.acceptCall(callUUID);
     }
 
     _rnEnd(data) {
@@ -249,12 +253,13 @@ export default class CallManager extends events.EventEmitter {
         let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('Callkeep: end callback', callUUID);
 
-        if (this._pushCalls.has(callUUID)) {
-            this._pushCalls.delete(callUUID);
+        if (this._terminatedCalls.has(callUUID)) {
+            //utils.timestampedLog('Callkeep: call', callUUID, 'already terminated');
+            return;
         }
 
-        if (this._terminatedCalls.has(callUUID)) {
-            return;
+        if (this._pushCalls.has(callUUID)) {
+            this._pushCalls.delete(callUUID);
         }
 
         let call = this._calls.get(callUUID);
@@ -275,21 +280,25 @@ export default class CallManager extends events.EventEmitter {
                 this.logMissedCall(conference.room, callUUID, direction='received', participants=[conference.from]);
                 this._conferences.delete(callUUID);
             } else {
-                this.sylkHangupCall(callUUID, 'user_press_hangup');
+                this.sylkHangupCall(callUUID, 'callkeep_hangup_call');
             }
         }
     }
 
     acceptCall(callUUID) {
         if (this._acceptedCalls.has(callUUID)) {
-            //utils.timestampedLog('Callkeep: already accepted call', callUUID);
-            utils.timestampedLog('Callkeep: accept call again', callUUID);
-            //return;
+            utils.timestampedLog('Callkeep: already accepted call', callUUID);
+            this.endCall(callUUID);
+            return;
         } else {
             utils.timestampedLog('Callkeep: accept call', callUUID);
         }
 
-        this.setCurrentCallActive(callUUID);
+        if (this._terminatedCalls.has(callUUID)) {
+            utils.timestampedLog('Callkeep: call', callUUID, 'was already terminated');
+            this.endCall(callUUID);
+            return;
+        }
 
         this._acceptedCalls.set(callUUID, Date.now());
 
@@ -302,8 +311,7 @@ export default class CallManager extends events.EventEmitter {
             let conference = this._conferences.get(callUUID);
 
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
-
-            this.endCall(callUUID, 4);
+            this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
             this.backToForeground();
 
             utils.timestampedLog('Callkeep: will start conference to', conference.room);
@@ -324,14 +332,12 @@ export default class CallManager extends events.EventEmitter {
 
             setTimeout(() => {
                 const connection = this.getConnection();
-                if (this.callUUIDS) {
-                    utils.timestampedLog('Callkeep: current calls:', this.callUUIDS);
-                }
+                utils.timestampedLog('Callkeep: current calls:', this.callUUIDS);
 
                 if (!this._calls.has(callUUID) && !this._terminatedCalls.has(callUUID)) {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive over web socket', connection);
                     this.webSocketActions.delete(callUUID);
-                    this.endCall(callUUID, 1);
+                    this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.FAILED);
                     this.sylkHangupCall(callUUID, 'timeout');
                 } else {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did arrive over web socket', connection);
@@ -341,10 +347,9 @@ export default class CallManager extends events.EventEmitter {
     }
 
     rejectCall(callUUID) {
-
         if (this._rejectedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: already rejected call', callUUID);
-            this.endCall(callUUID);
+            //this.endCall(callUUID);
             return;
         }
 
@@ -367,9 +372,10 @@ export default class CallManager extends events.EventEmitter {
         } else if (this._calls.has(callUUID)) {
             let call = this._calls.get(callUUID);
             if (call.state === 'incoming') {
-                this.sylkRejectCall(callUUID);
+                this.sylkRejectCall(callUUID, 'user_reject_call');
             } else {
-                this.sylkHangupCall(callUUID, 'user_press_hangup');
+                // how can we end up here for a rejected call?
+                this.sylkHangupCall(callUUID, 'user_reject_call');
             }
         } else {
             // We rejected the call before it arrived on web socket
@@ -382,12 +388,12 @@ export default class CallManager extends events.EventEmitter {
                 if (!this._calls.has(callUUID)) {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive on web socket');
                     this.webSocketActions.delete(callUUID);
-                    this.endCall(callUUID, 1);
+                    this.endCall(callUUID);
                 }
             }, 20000);
         }
 
-        this.endCall(callUUID);
+        //this.endCall(callUUID);
     }
 
     setMutedCall(callUUID, mute=false) {
@@ -438,7 +444,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     incomingCallFromPush(callUUID, from, displayName, force=false, skipNativePanel=false) {
-        utils.timestampedLog('Callkeep: handle new incoming push call', callUUID, 'from', from);
+        utils.timestampedLog('Callkeep: incoming push call', callUUID, 'from', from);
 
         if (this._pushCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: push call already handled', callUUID);
@@ -498,7 +504,7 @@ export default class CallManager extends events.EventEmitter {
     incomingCallFromWebSocket(call, accept=false, skipNativePanel=false) {
         this.addWebsocketCall(call);
 
-        utils.timestampedLog('Callkeep: handle incoming websocket call', call.id);
+        utils.timestampedLog('Callkeep: incoming websocket call', call.id);
 
         // if the call came via push and was already accepted or rejected
         if (this.webSocketActions.get(call.id)) {
@@ -516,11 +522,18 @@ export default class CallManager extends events.EventEmitter {
         } else {
             if (accept) {
                 this.acceptCall(call.id);
+            } else {
+                this.showAlertPanelforCall(call);
+            }
+
+/*
             } else if (!skipNativePanel) {
                 if (Platform.OS === 'ios') {
                     this.showAlertPanelforCall(call);
                 }
             }
+*/
+
         }
 
         // Emit event.

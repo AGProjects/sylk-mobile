@@ -222,6 +222,33 @@ class Call extends Component {
 
     }
 
+    componentDidMount() {
+        this.resetStats();
+
+        this.lookupContact();
+
+        if (this.state.direction === 'outgoing' && this.state.callUUID) {
+            this.startCallWhenReady(this.state.callUUID);
+        }
+
+        if (this.state.call === null) {
+            this.mediaPlaying();
+        }
+    }
+
+    componentWillUnmount() {
+        this.ended = true;
+        this.answering = false;
+
+        if (this.state.call) {
+            this.state.call.removeListener('stateChanged', this.callStateChanged);
+        }
+
+        if (this.state.connection) {
+            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+        }
+    }
+
     resetStats() {
          if (this.ended) {
              return;
@@ -246,24 +273,19 @@ class Call extends Component {
         this.setState({connection: nextProps.connection,
                        accountId: nextProps.account ? nextProps.account.id : null});
 
-        if (nextProps.call !== null) {
-            if (this.state.call !== nextProps.call) {
-                nextProps.call.on('stateChanged', this.callStateChanged);
+        if (this.state.call === null && nextProps.call !== null) {
+            //utils.timestampedLog('Call: Sylkrtc call has been set');
+            nextProps.call.on('stateChanged', this.callStateChanged);
 
-                this.setState({
-                               call: nextProps.call,
-                               remoteUri: nextProps.call.remoteIdentity.uri,
-                               direction: nextProps.call.direction,
-                               callUUID: nextProps.call.id,
-                               remoteDisplayName: nextProps.call.remoteIdentity.displayName
-                               });
+            this.setState({
+                           call: nextProps.call,
+                           remoteUri: nextProps.call.remoteIdentity.uri,
+                           direction: nextProps.call.direction,
+                           callUUID: nextProps.call.id,
+                           remoteDisplayName: nextProps.call.remoteIdentity.displayName
+                           });
 
-                if (nextProps.call.direction === 'incoming') {
-                    this.mediaPlaying();
-                }
-
-                this.lookupContact();
-            }
+            this.lookupContact();
         } else {
             if (nextProps.callUUID !== null && this.state.callUUID !== nextProps.callUUID) {
                 this.setState({'callUUID': nextProps.callUUID,
@@ -285,7 +307,9 @@ class Call extends Component {
 
         this.setState({registrationState: nextProps.registrationState});
 
-        if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia) {
+        if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia && this.state.direction === 'outgoing') {
+            utils.timestampedLog('Call: media for outgoing call has been changed');
+
             let audioOnly = false;
 
             if (nextProps.localMedia.getVideoTracks().length === 0) {
@@ -295,7 +319,7 @@ class Call extends Component {
             this.setState({localMedia: nextProps.localMedia,
                            audioOnly: audioOnly});
 
-            this.mediaPlaying(nextProps.localMedia);
+            //this.mediaPlaying(nextProps.localMedia);
         }
     }
 
@@ -508,6 +532,10 @@ class Call extends Component {
      };
 
     mediaPlaying(localMedia) {
+        if (this.state.call) {
+            utils.timestampedLog('Call:', this.state.call.id);
+        }
+
         if (this.state.direction === 'incoming') {
             const media = localMedia ? localMedia : this.state.localMedia;
             this.answerCall(media);
@@ -524,40 +552,30 @@ class Call extends Component {
             if (!this.answering) {
                 this.answering = true;
                 const connectionState = this.state.connection.state ? this.state.connection.state : null;
-                utils.timestampedLog('Call: answering call in connection state', connectionState);
-                this.state.call.answer(options);
+                utils.timestampedLog('Call: answering call', this.state.call.id, 'in connection state', connectionState);
+                try {
+                    this.state.call.answer(options);
+                    utils.timestampedLog('Call: answered');
+                } catch (error) {
+                    utils.timestampedLog('Call: failed to answer', error);
+                    this.hangupCall('answer_failed')
+                }
             } else {
                 utils.timestampedLog('Call: answering call in progress...');
             }
         } else {
+            if (!this.state.call) {
+                utils.timestampedLog('Call: no Sylkrtc call present');
+                this.hangupCall('answer_failed');
+            }
+
+            if (!this.state.call.state !== 'incoming') {
+                utils.timestampedLog('Call: state is not incoming');
+            }
+
             if (!media) {
                 utils.timestampedLog('Call: waiting for local media');
             }
-            if (!this.state.call) {
-                utils.timestampedLog('Call: waiting for incoming call data');
-            }
-        }
-    }
-
-    componentDidMount() {
-        this.resetStats();
-
-        this.lookupContact();
-        if (this.state.direction === 'outgoing' && this.state.callUUID) {
-            this.startCallWhenReady(this.state.callUUID);
-        }
-    }
-
-    componentWillUnmount() {
-        this.ended = true;
-        this.answering = false;
-
-        if (this.state.call) {
-            this.state.call.removeListener('stateChanged', this.callStateChanged);
-        }
-
-        if (this.state.connection) {
-            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
         }
     }
 
@@ -702,7 +720,9 @@ class Call extends Component {
         }
 
         if (!this.mediaIsPlaying) {
-            console.log('Call: media is not playing');
+            if (this.waitCounter > 0) {
+                console.log('Call: media is not yet playing');
+            }
             return false;
         }
 
@@ -740,7 +760,9 @@ class Call extends Component {
                     return;
                 }
 
-                console.log('Wait', this.waitCounter);
+                if (this.waitCounter > 0) {
+                    console.log('Wait', this.waitCounter);
+                }
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;

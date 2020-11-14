@@ -31,9 +31,11 @@ class LocalMedia extends Component {
 
     //getDerivedStateFromProps(nextProps, state)
     UNSAFE_componentWillReceiveProps(nextProps) {
+/*
         if (nextProps.localMedia && nextProps.localMedia !== this.state.localMedia) {
             this.props.mediaPlaying();
         }
+*/
 
         this.setState({historyEntry: nextProps.historyEntry,
                       participants: nextProps.participants,

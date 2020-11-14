@@ -200,7 +200,6 @@ class Sylk extends Component {
             Width_Layout : '',
             outgoingCallUUID: null,
             incomingCallUUID: null,
-            outgoingMedia: null,
             hardware: '',
             phoneNumber: '',
             isTablet: isTablet(),
@@ -219,6 +218,8 @@ class Sylk extends Component {
             defaultDomain: config.defaultDomain
         };
 
+        this.outgoingMedia = null;
+        this.participantsToInvite = [];
         this.tokenSent = false;
         this.mustLogout = false;
         this.currentRoute = null;
@@ -470,7 +471,9 @@ class Sylk extends Component {
         }
 
         if (route === '/ready') {
-             Vibration.cancel();
+            Vibration.cancel();
+
+            this.speakerphoneOff()
 
             if (reason === 'conference_really_ended' && this.callKeeper.countCalls) {
                 utils.timestampedLog('Change route cancelled because we still have calls');
@@ -479,20 +482,18 @@ class Sylk extends Component {
 
             this.startedByPush = false;
             this.setState({
-                            outgoingMedia: null,
                             outgoingCallUUID: null,
                             currentCall: null,
-                            incomingCall: (reason === 'accept_new_call' || reason === 'user_press_hangup') ? this.state.incomingCall: null,
+                            incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
                             targetUri: '',
                             reconnectingCall: false,
                             localMedia: null,
-                            muted: false,
-                            participantsToInvite: null
+                            muted: false
                             });
 
             if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
 
-                if (reason !== 'user_press_hangup') {
+                if (reason !== 'user_hangup_call') {
                     this.stopRingback();
                     InCallManager.stop();
                 }
@@ -505,6 +506,13 @@ class Sylk extends Component {
                         let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
                         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
                     }
+                } else if (reason === 'escalate_to_conference') {
+                    const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
+                    const options = {audio: this.outgoingMedia ? this.outgoingMedia.audio: true,
+                                     video: this.outgoingMedia ? this.outgoingMedia.video: true,
+                                     participants: this.participantsToInvite}
+
+                    this.callKeepStartConference(uri.toLowerCase(), options);
                 } else {
                     if (this.state.account && this._loaded) {
                         setTimeout(() => {
@@ -675,12 +683,13 @@ class Sylk extends Component {
                     const outgoingMedia = {audio: true, video: message.data['media-type'] === 'video'};
 
                     if (event === 'incoming_conference_request') {
-                        //utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
+                        utils.timestampedLog('Push notification: incoming conference', callUUID);
                         this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
                     } else if (event === 'incoming_session') {
-                        //utils.timestampedLog('Handle Firebase', event, 'PUSH notification for call', callUUID);
+                        utils.timestampedLog('Push notification: incoming call', callUUID);
                         this.incomingCallFromPush(callUUID, from, displayName);
                     } else if (event === 'cancel') {
+                        utils.timestampedLog('Push notification: cancel call', callUUID);
                         this.cancelIncomingCall(callUUID);
                     }
                 });
@@ -693,13 +702,13 @@ class Sylk extends Component {
             return;
         }
 
-        utils.timestampedLog('Cancelling incoming call...', callUUID);
+        utils.timestampedLog('Cancelling incoming call', callUUID);
 
         let call = this.callKeeper._calls.get(callUUID);
         if (!call) {
             if (!this.callKeeper._cancelledCalls.has(callUUID)) {
                 utils.timestampedLog('Cancel incoming call that did not arrive on web socket', callUUID);
-                this.callKeeper.endCall(callUUID, 2);
+                this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
                 this.startedByPush = false;
                 if (this.startedByPush) {
                     this.changeRoute('/ready', 'incoming_call_cancelled');
@@ -710,7 +719,7 @@ class Sylk extends Component {
 
         if (call.state === 'incoming') {
             utils.timestampedLog('Cancel incoming call that was not yet accepted', callUUID);
-            this.callKeeper.endCall(callUUID, 2);
+            this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
             if (this.startedByPush) {
                 this.changeRoute('/ready', 'incoming_call_cancelled');
             }
@@ -731,10 +740,6 @@ class Sylk extends Component {
 
     startCallWhenReady(targetUri, options) {
         this.resetGoToReadyTimer();
-
-        if (options.video) {
-            this.speakerphoneOn();
-        }
 
         if (options.conference) {
             this.startConference(targetUri, options);
@@ -765,7 +770,7 @@ class Sylk extends Component {
             } else if (Platform.OS === 'android') {
                 token = this.pushtoken;
             }
-            //utils.timestampedLog('Push token sent to server');
+            utils.timestampedLog('Push notification: token sent to server');
             this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
             this.tokenSent = true;
         }
@@ -1015,7 +1020,7 @@ class Sylk extends Component {
                     setTimeout(this.state.account.register(), 5000);
                 } else {
                     if (this.registrationFailureTimer) {
-                        utils.timestampedLog('Cancel registration timer...');
+                        utils.timestampedLog('Cancel registration timer');
                         clearTimeout(this.registrationFailureTimer);
                         this.registrationFailureTimer = null;
                     }
@@ -1033,7 +1038,9 @@ class Sylk extends Component {
                            defaultDomain: this.state.account ? this.state.account.id.split('@')[1]: null
                            });
 
-            if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
+            //if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
+            // TODO if the call does not arrive, we never get back to ready
+            if (this.currentRoute === '/login') {
                 this.changeRoute('/ready', 'registered');
             }
             return;
@@ -1048,7 +1055,7 @@ class Sylk extends Component {
 
     showInternalAlertPanel() {
         this.setState({showIncomingModal: true});
-        Vibration.vibrate(VIBRATION_PATTERN, true);
+        //Vibration.vibrate(VIBRATION_PATTERN, true);
         setTimeout(() => {
              Vibration.cancel();
         }, 30000);
@@ -1128,7 +1135,6 @@ class Sylk extends Component {
 
         if (!call) {
             utils.timestampedLog("callStateChanged error: call", data.id, 'not found in callkeep manager');
-            console.log(data);
             return;
         }
 
@@ -1256,41 +1262,49 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
+                this.callKeeper.setCurrentCallActive(callUUID);
                 this.backToForeground();
 
                 this.resetGoToReadyTimer();
 
+                tracks = call.getLocalStreams()[0].getVideoTracks();
+                mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
+
+                if (mediaType === 'video') {
+                    this.speakerphoneOn();
+                }
+
                 if (!this.isConference(call)){
-                    if (Platform.OS === 'android') {
-                        tracks = call.getLocalStreams()[0].getVideoTracks();
-                        hasVideo = (tracks && tracks.length > 0) ? true : false;
-                    }
                     InCallManager.startRingback('_BUNDLE_');
                 }
 
                 break;
+
             case 'established':
+                this.callKeeper.setCurrentCallActive(callUUID);
+
                 this.backToForeground();
                 this.resetGoToReadyTimer();
-
-                if (direction === 'outgoing') {
-                    this.callKeeper.setCurrentCallActive(callUUID);
-                    this.stopRingback();
-                }
 
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
 
                 InCallManager.start({media: mediaType});
 
-                if (mediaType === 'video') {
-                    this.speakerphoneOn();
+                if (direction === 'outgoing') {
+                    this.stopRingback();
+                    if (this.state.speakerPhoneEnabled) {
+                        this.speakerphoneOn();
+                    }
                 } else {
-                    this.speakerphoneOff();
+                    if (mediaType === 'video') {
+                        this.speakerphoneOn();
+                    }
                 }
 
                 break;
             case 'accepted':
+                this.callKeeper.setCurrentCallActive(callUUID);
                 this.backToForeground();
                 this.resetGoToReadyTimer();
 
@@ -1332,7 +1346,7 @@ class Sylk extends Component {
                     reason = 'Payment required';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/403/)) {
-                    reason = 'This domain is not served here';
+                    //reason = 'Forbidden';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/404/)) {
                     reason = 'User not found';
@@ -1374,12 +1388,9 @@ class Sylk extends Component {
 
                 this.stopRingback();
 
-                this.callKeeper.terminateCall(callUUID);
-
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
 
                 if (this.state.currentCall === null) {
-                    //utils.timestampedLog('Call state changed:', 'Turn off speakerphone');
                     this.speakerphoneOff();
                 }
 
@@ -1404,15 +1415,15 @@ class Sylk extends Component {
             incomingCall: newincomingCall
         });
 
-        if (this.state.currentCall || this.state.incomingCall) {
-            //utils.timestampedLog('We still have calls ongoing');
-        } else {
+        if (!this.state.currentCall && !this.state.incomingCall) {
             if (!this.state.reconnectingCall) {
                 if (this.state.inFocus) {
-                    utils.timestampedLog('Will go to ready in 4 seconds');
-                    this.goToReadyTimer = setTimeout(() => {
-                        this.changeRoute('/ready', 'no_more_calls');
-                    }, readyDelay);
+                    if (this.currentRoute !== '/ready') {
+                        utils.timestampedLog('Will go to ready in 4 seconds (terminated)', callUUID);
+                        this.goToReadyTimer = setTimeout(() => {
+                            this.changeRoute('/ready', 'no_more_calls');
+                        }, readyDelay);
+                    }
                 } else {
                     if (this.currentRoute !== '/conference') {
                         this.changeRoute('/ready', 'no_more_calls');
@@ -1432,11 +1443,9 @@ class Sylk extends Component {
 
     handleRegistration(accountId, password, remember=true) {
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
-            //utils.timestampedLog('We are already registered with', accountId);
             return;
         }
 
-        //utils.timestampedLog('handleRegistration for', accountId);
         this.setState({
             accountId : accountId,
             password  : password,
@@ -1451,7 +1460,6 @@ class Sylk extends Component {
                 console.log('Phone number:', this.state.phoneNumber);
             }
 
-            //let connection = sylkrtc.createConnection({server: config.wsServer, userAgent: {name: userAgent, version: version}});
             let connection = sylkrtc.createConnection({server: config.wsServer});
             utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
             connection.on('stateChanged', this.connectionStateChanged);
@@ -1494,6 +1502,7 @@ class Sylk extends Component {
             return;
         }
 
+        //utils.timestampedLog('Add register 10 sec timer');
         this.registrationFailureTimer  = setTimeout(() => {
                 this.showRegisterFailure('Register timeout');
                 this.processRegistration(accountId, password);
@@ -1539,6 +1548,7 @@ class Sylk extends Component {
 
     getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null) {    // eslint-disable-line space-infix-ops
         let callType = mediaConstraints.video ? 'video': 'audio';
+
         utils.timestampedLog('Get local media for', callType, 'call');
         const constraints = Object.assign({}, mediaConstraints);
 
@@ -1645,7 +1655,6 @@ class Sylk extends Component {
         this.resetGoToReadyTimer();
 
         let callUUID = options.callUUID || uuid.v4();
-        this.callKeeper.setCurrentCallActive(callUUID);
 
         let participants = options.participants || null;
         this.addConferenceHistoryEntry(targetUri, callUUID);
@@ -1661,16 +1670,17 @@ class Sylk extends Component {
             });
         }
 
+        this.outgoingMedia = options;
+
         this.setState({outgoingCallUUID: callUUID,
-                       outgoingMedia: options,
                        reconnectingCall: false,
                        participantsToInvite: participantsToInvite
                        });
 
         const media = options.video ? 'video' : 'audio';
 
-        if (participants) {
-            utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri, 'with', participants);
+        if (participantsToInvite) {
+            utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri, 'with', participantsToInvite);
         } else {
             utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri);
         }
@@ -1693,6 +1703,19 @@ class Sylk extends Component {
         this.getLocalMedia(Object.assign({audio: true, video: options.video}, options), '/call');
     }
 
+    timeoutCall(callUUID, uri) {
+        utils.timestampedLog('Timeout answering call', callUUID);
+        this.addConferenceHistoryEntry(uri, callUUID, direction='received');
+        this.forceUpdate();
+    }
+
+    closeLocalMedia() {
+        if (this.state.localMedia != null) {
+            utils.timestampedLog('Close local media');
+            sylkrtc.utils.closeMediaStream(this.state.localMedia);
+        }
+    }
+
     callKeepAcceptCall(callUUID) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
@@ -1709,14 +1732,17 @@ class Sylk extends Component {
     }
 
     acceptCall(callUUID) {
-        utils.timestampedLog('User accepted call', callUUID, 'on connection', Object.id(this.state.connection));
+        utils.timestampedLog('User accepted call', callUUID);
         this.hideInternalAlertPanel();
 
         this.resetGoToReadyTimer();
 
         if (this.state.currentCall) {
+            utils.timestampedLog('Will hangup current call first');
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
+            // call will continue after transition to /ready
         } else {
+            utils.timestampedLog('Will get local media now');
             let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
             this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
         }
@@ -1726,31 +1752,19 @@ class Sylk extends Component {
         // called by Call Keep when user rejects call
         utils.timestampedLog('User rejected call', callUUID);
         this.hideInternalAlertPanel();
+
         if (!this.state.currentCall) {
-            this.changeRoute('/ready', 'reject call');
+            this.changeRoute('/ready', 'rejected');
         }
 
         if (this.state.incomingCall && this.state.incomingCall.id === callUUID) {
+            utils.timestampedLog('Sylkrtc terminate call', callUUID, 'in', this.state.incomingCall.state, 'state');
             this.state.incomingCall.terminate();
-            utils.timestampedLog('Sylkrtc reject call', callUUID);
-        }
-    }
-
-    timeoutCall(callUUID, uri) {
-        utils.timestampedLog('Timeout answering call', callUUID);
-        this.addConferenceHistoryEntry(uri, callUUID, direction='received');
-        this.forceUpdate();
-    }
-
-    closeLocalMedia() {
-        if (this.state.localMedia != null) {
-            sylkrtc.utils.closeMediaStream(this.state.localMedia);
-            //utils.timestampedLog('Close local media');
         }
     }
 
     hangupCall(callUUID, reason) {
-        utils.timestampedLog('Call', callUUID, 'hangup:', reason);
+        utils.timestampedLog('Call', callUUID, 'hangup with reason:', reason);
 
         let call = this.callKeeper._calls.get(callUUID);
         let direction = null;
@@ -1758,7 +1772,7 @@ class Sylk extends Component {
 
         if (call) {
             let direction = call.direction;
-            targetUri = call.remoteIdentity.uri;
+            utils.timestampedLog('Sylkrtc terminate call', callUUID, 'in', call.state, 'state');
             call.terminate();
         }
 
@@ -1768,22 +1782,19 @@ class Sylk extends Component {
         }
 
         if (reason === 'outgoing_connection_failed') {
-             this.setState({reconnectingCall: true,
-                            outgoingCallUUID: uuid.v4()});
+             this.setState({reconnectingCall: true, outgoingCallUUID: uuid.v4()});
              return;
         }
 
-        if (reason === 'user_press_hangup') {
-            this.callKeeper.endCall(callUUID);
-        }
-
-        if (reason === 'user_cancelled_call' ||
-            reason === 'timeout' ||
-            reason === 'stop_preview' ||
+        if (reason === 'user_cancel_call' ||
             reason === 'user_hangup_call' ||
+            reason === 'answer_failed' ||
+            reason === 'callkeep_hangup_call' ||
             reason === 'accept_new_call' ||
-            reason === 'timeout' ||
-            reason === 'user_hangup_conference_confirmed'
+            reason === 'stop_preview' ||
+            reason === 'escalate_to_conference' ||
+            reason === 'user_hangup_conference_confirmed' ||
+            reason === 'timeout'
             ) {
             this.changeRoute('/ready', reason);
         } else if (reason === 'user_hangup_conference') {
@@ -1797,12 +1808,10 @@ class Sylk extends Component {
                  this.changeRoute('/ready', 'conference_really_ended');
             }, 15000);
         } else {
-            if (reason !== 'escalate_to_conference') {
-                setTimeout(() => {
-                     //utils.timestampedLog('Will go to ready in 4 seconds');
-                     this.changeRoute('/ready', 'call_ended_by_remote');
-                }, 4000);
-            }
+            utils.timestampedLog('Will go to ready in 4 seconds (hangup)');
+            setTimeout(() => {
+                 this.changeRoute('/ready', reason);
+            }, 4000);
         }
     }
 
@@ -1833,13 +1842,13 @@ class Sylk extends Component {
     }
 
     speakerphoneOn() {
-        //utils.timestampedLog('Speakerphone On');
+        utils.timestampedLog('Speakerphone On');
         this.setState({speakerPhoneEnabled: true});
         InCallManager.setForceSpeakerphoneOn(true);
     }
 
     speakerphoneOff() {
-        //utils.timestampedLog('Speakerphone Off');
+        utils.timestampedLog('Speakerphone Off');
         this.setState({speakerPhoneEnabled: false});
         InCallManager.setForceSpeakerphoneOn(false);
     }
@@ -1917,19 +1926,19 @@ class Sylk extends Component {
            */
 
         if (event === 'incoming_session') {
-            utils.timestampedLog('Incoming call PUSH mobile notification for call', callUUID);
+            utils.timestampedLog('Push notification: incoming call', callUUID);
             this.startedByPush = true;
             this.incomingCallFromPush(callUUID, from, displayName);
 
         } else if (event === 'incoming_conference_request') {
-            utils.timestampedLog('Incoming conference PUSH mobile notification for call', callUUID);
+            utils.timestampedLog('Push notification: incoming conference', callUUID);
             this.startedByPush = true;
             this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
 
         } else if (event === 'cancel') {
-            utils.timestampedLog('Cancel PUSH mobile notification for call', callUUID);
+            utils.timestampedLog('Push notification: cancel call', callUUID);
             VoipPushNotification.presentLocalNotification({alertBody:'Call cancelled'});
-            this.callKeeper.endCall(callUUID, 2);
+            this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
         }
 
         /*
@@ -1961,6 +1970,13 @@ class Sylk extends Component {
         const media = outgoingMedia.video ? 'video' : 'audio';
 
         utils.timestampedLog('Incoming', media, 'conference invite from', from, 'to room', to);
+
+        if (this.state.account && from === this.state.account.id) {
+            utils.timestampedLog('Reject conference call from myself', callUUID);
+            this.callKeeper.rejectCall(callUUID);
+            return;
+        }
+
         if (this.autoRejectIncomingCall(callUUID, from, to)) {
             return;
         }
@@ -1976,19 +1992,33 @@ class Sylk extends Component {
     }
 
     escalateToConference(participants) {
-        const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
-        utils.timestampedLog('Escalate call to conference', uri, 'with participants', participants);
+        let outgoingMedia = {audio: true, video: true};
+        let mediaType = 'video';
+        let call;
 
         if (this.state.currentCall) {
-            this.hangupCall(this.state.currentCall.id, 'escalate_to_conference');
-            this.setState({currentCall: null});
+            call = this.state.currentCall;
+        } else if (this.state.incomingCall) {
+            call = this.state.currentCall;
+        } else {
+            console.log('No call to escalate');
+            return
         }
 
-        if (this.state.incomingCall) {
-            this.hangupCall(this.state.incomingCall.id, 'escalate_to_conference');
+        const localStreams = call.getLocalStreams();
+        if (localStreams.length > 0) {
+            const localStream = call.getLocalStreams()[0];
+            if (localStream.getVideoTracks().length == 0) {
+                outgoingMedia.video = false;
+                mediaType = 'audio';
+            }
         }
 
-        this.callKeepStartConference(uri, {audio: true, video: true, participants: participants});
+        this.outgoingMedia = outgoingMedia;
+        this.participantsToInvite = participants;
+
+        console.log('Escalate', mediaType, 'call', call.id, 'to conference with', participants.toString());
+        this.hangupCall(call.id, 'escalate_to_conference');
     }
 
     conferenceInviteFromWebSocket(data) {
@@ -2649,6 +2679,7 @@ class Sylk extends Component {
 
         let previousParticipants = Array.from(_previousParticipants);
 
+
         return (
             <Conference
                 notificationCenter = {this.notificationCenter}
@@ -2670,7 +2701,7 @@ class Sylk extends Component {
                 toggleSpeakerPhone = {this.toggleSpeakerPhone}
                 speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
                 callUUID = {this.state.outgoingCallUUID}
-                proposedMedia = {this.state.outgoingMedia}
+                proposedMedia = {this.outgoingMedia}
                 isLandscape = {this.state.orientation === 'landscape'}
                 isTablet = {this.state.isTablet}
                 muted = {this.state.muted}
