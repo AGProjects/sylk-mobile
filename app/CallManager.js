@@ -149,7 +149,7 @@ export default class CallManager extends events.EventEmitter {
         if (Platform.OS === 'ios') {
             this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
         } else if (Platform.OS === 'android') {
-            this.callKeep.startCall(callUUID, targetUri, targetUri);
+            this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
         }
     }
 
@@ -443,8 +443,9 @@ export default class CallManager extends events.EventEmitter {
         this._calls.set(call.id, call);
     }
 
-    incomingCallFromPush(callUUID, from, displayName, force=false, skipNativePanel=false) {
-        utils.timestampedLog('Callkeep: incoming push call', callUUID, 'from', from);
+    incomingCallFromPush(callUUID, from, displayName, mediaType, force=false, skipNativePanel=false) {
+        utils.timestampedLog('Callkeep: incoming', mediaType, 'push call', callUUID, 'from', from);
+        const hasVideo = mediaType === 'video' ? true : false;
 
         if (this._pushCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: push call already handled', callUUID);
@@ -484,19 +485,19 @@ export default class CallManager extends events.EventEmitter {
             if (this._calls.has(callUUID)) {
                 utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
             }
-            this.showAlertPanel(callUUID, from, displayName);
+            this.showAlertPanel(callUUID, from, displayName, hasVideo);
         } else {
             if (this._calls.has(callUUID) || force) {
                 // on Android display alert panel only after websocket call arrives
                 // force is required when Android is locked, if we do not bring up the panel, the app will not wake up
                 if (!skipNativePanel || force) {
-                    this.showAlertPanel(callUUID, from, displayName);
+                    this.showAlertPanel(callUUID, from, displayName, hasVideo);
                 } else {
                     utils.timestampedLog('Callkeep: call', callUUID, 'skipped display of native panel');
                 }
             } else {
                 utils.timestampedLog('Callkeep: waiting for call', callUUID, 'on web socket');
-                this.showAlertPanel(callUUID, from, displayName);
+                this.showAlertPanel(callUUID, from, displayName, hasVideo);
             }
         }
     }
@@ -540,18 +541,18 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    handleConference(callUUID, room, from_uri, displayName, outgoingMedia) {
-
+    handleConference(callUUID, room, from_uri, displayName, mediaType, outgoingMedia) {
         if (this._conferences.has(callUUID)) {
             return;
         }
+        const hasVideo = mediaType === 'video' ? true : false;
 
         this._conferences.set(callUUID, {room: room, from: from_uri});
         this.outgoingMedia = outgoingMedia;
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
 
-        this.showAlertPanel(callUUID, from_uri, displayName);
+        this.showAlertPanel(callUUID, from_uri, displayName, hasVideo);
 
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: conference timeout', callUUID);
@@ -578,7 +579,7 @@ export default class CallManager extends events.EventEmitter {
         const username = from.split('@')[0];
         const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
         if (isPhoneNumber) {
-            panelFrom = isPhoneNumber;
+            panelFrom = username;
         } else {
             panelFrom = from.indexOf('@guest.') > -1 ? displayName : from;
         }
@@ -587,11 +588,9 @@ export default class CallManager extends events.EventEmitter {
 
         this._alertedCalls.set(callUUID, Date.now());
 
-        if (Platform.OS === 'ios') {
-            this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, 'email', hasVideo);
-        } else if (Platform.OS === 'android') {
-            this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName);
-        }
+        const handleType = Platform.OS === 'ios' ? 'email': 'sip';
+
+        this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, handleType, hasVideo);
     }
 
    _startedCall(data) {

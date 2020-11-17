@@ -682,13 +682,14 @@ class Sylk extends Component {
                     const to = message.data['to_uri'];
                     const displayName = message.data['from_display_name'];
                     const outgoingMedia = {audio: true, video: message.data['media-type'] === 'video'};
+                    const mediaType = message.data['media-type'] || 'audio';
 
                     if (event === 'incoming_conference_request') {
                         utils.timestampedLog('Push notification: incoming conference', callUUID);
                         this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
                     } else if (event === 'incoming_session') {
                         utils.timestampedLog('Push notification: incoming call', callUUID);
-                        this.incomingCallFromPush(callUUID, from, displayName);
+                        this.incomingCallFromPush(callUUID, from, displayName, mediaType);
                     } else if (event === 'cancel') {
                         utils.timestampedLog('Push notification: cancel call', callUUID);
                         this.cancelIncomingCall(callUUID);
@@ -1924,6 +1925,7 @@ class Sylk extends Component {
         const from = notificationContent['from_uri'];
         const displayName = notificationContent['from_display_name'];
         const outgoingMedia = {audio: true, video: notificationContent['media-type'] === 'video'};
+        const mediaType = notificationContent['media-type'] || 'audio';
 
           /*
            * Local Notification Payload
@@ -1938,7 +1940,7 @@ class Sylk extends Component {
         if (event === 'incoming_session') {
             utils.timestampedLog('Push notification: incoming call', callUUID);
             this.startedByPush = true;
-            this.incomingCallFromPush(callUUID, from, displayName);
+            this.incomingCallFromPush(callUUID, from, displayName, mediaType);
 
         } else if (event === 'incoming_conference_request') {
             utils.timestampedLog('Push notification: incoming conference', callUUID);
@@ -1977,9 +1979,9 @@ class Sylk extends Component {
     }
 
     incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}) {
-        const media = outgoingMedia.video ? 'video' : 'audio';
+        const mediaType = outgoingMedia.video ? 'video' : 'audio';
 
-        utils.timestampedLog('Incoming', media, 'conference invite from', from, 'to room', to);
+        utils.timestampedLog('Incoming', mediaType, 'conference invite from', from, 'to room', to);
 
         if (this.state.account && from === this.state.account.id) {
             utils.timestampedLog('Reject conference call from myself', callUUID);
@@ -1992,7 +1994,7 @@ class Sylk extends Component {
         }
 
         this.setState({incomingCallUUID: callUUID});
-        this.callKeeper.handleConference(callUUID, to, from, displayName, outgoingMedia);
+        this.callKeeper.handleConference(callUUID, to, from, displayName, mediaType, outgoingMedia);
     }
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
@@ -2120,7 +2122,7 @@ class Sylk extends Component {
                 } else if (direction === 'incoming') {
                     this.backToForeground();
                     utils.timestampedLog('Incoming call from', from);
-                    this.incomingCallFromPush(callUUID, from, displayName, true);
+                    this.incomingCallFromPush(callUUID, from, displayName, mediaType, true);
                 } else if (direction === 'cancel') {
                     this.cancelIncomingCall(callUUID);
                 }
@@ -2203,7 +2205,7 @@ class Sylk extends Component {
         return false;
     }
 
-    incomingCallFromPush(callUUID, from, displayName, force) {
+    incomingCallFromPush(callUUID, from, displayName, mediaType, force) {
         //utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.autoRejectIncomingCall(callUUID, from)) {
@@ -2227,7 +2229,7 @@ class Sylk extends Component {
             }
         }
 
-        this.callKeeper.incomingCallFromPush(callUUID, from, displayName, force, skipNativePanel);
+        this.callKeeper.incomingCallFromPush(callUUID, from, displayName, mediaType, force, skipNativePanel);
 
     }
 

@@ -184,6 +184,8 @@ class AudioCallBox extends Component {
                               photo: this.state.photo
                               };
 
+        const username = this.state.remoteUri.split('@')[0];
+        const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
 
         let displayName = this.state.remoteUri ? toTitleCase(this.state.remoteUri.split('@')[0]) : '';
 
@@ -258,6 +260,7 @@ class AudioCallBox extends Component {
                         icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                         onPress={this.props.toggleSpeakerPhone}
                     />
+                    {isPhoneNumber ?
                     <IconButton
                         size={buttonSize}
                         style={buttonClass}
@@ -265,6 +268,8 @@ class AudioCallBox extends Component {
                         onPress={this.showDtmfModal}
                         disabled={!(this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
                     />
+                    : null
+                    }
                     <IconButton
                         size={buttonSize}
                         style={[buttonClass, styles.hangupButton]}
