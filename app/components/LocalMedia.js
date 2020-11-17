@@ -20,7 +20,8 @@ class LocalMedia extends Component {
             localMedia: this.props.localMedia,
             historyEntry: this.props.historyEntry,
             participants: this.props.participants,
-            reconnectingCall: this.props.reconnectingCall
+            reconnectingCall: this.props.reconnectingCall,
+            declineReason: this.props.declineReason
         };
 
     }
@@ -39,7 +40,8 @@ class LocalMedia extends Component {
 
         this.setState({historyEntry: nextProps.historyEntry,
                       participants: nextProps.participants,
-                      reconnectingCall: nextProps.reconnectingCall});
+                      reconnectingCall: nextProps.reconnectingCall,
+                      declineReason: nextProps.declineReason});
     }
 
     saveConference(event) {
@@ -79,9 +81,9 @@ class LocalMedia extends Component {
                     remoteDisplayName={this.props.remoteDisplayName}
                     call = {this.props.call}
                     connection={this.props.connection}
-                    terminated={this.props.terminated}
                     reconnectingCall={this.state.reconnectingCall}
                     media={this.props.media}
+                    declineReason={this.state.declineReason}
                 />
 
                 {this.showSaveDialog() ?
@@ -140,7 +142,7 @@ LocalMedia.propTypes = {
     connection          : PropTypes.object,
     participants        : PropTypes.array,
     media               : PropTypes.string,
-    terminated          : PropTypes.bool
+    declineReason       : PropTypes.string
 };
 
 

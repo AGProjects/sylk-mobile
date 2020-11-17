@@ -215,7 +215,8 @@ class Sylk extends Component {
             participantsToInvite: [],
             myInvitedParties: {},
             myDisplayNames: {},
-            defaultDomain: config.defaultDomain
+            defaultDomain: config.defaultDomain,
+            declineReason: null
         };
 
         this.outgoingMedia = null;
@@ -1158,7 +1159,7 @@ class Sylk extends Component {
         let hasVideo = false;
         let mediaType = 'audio';
         let tracks;
-        let readyDelay = 4000;
+        let readyDelay = 5000;
 
         if (this.state.incomingCall && this.state.currentCall) {
             if (this.state.incomingCall != this.state.currentCall) {
@@ -1315,6 +1316,7 @@ class Sylk extends Component {
 
             case 'terminated':
                 this._terminatedCalls.set(callUUID, true);
+                utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
 
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
                     newincomingCall = null;
@@ -1355,10 +1357,16 @@ class Sylk extends Component {
                     reason = 'Timeout';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/480/)) {
-                    reason = 'User not online';
+                    reason = 'Is not online';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
-                } else if (reason.match(/486/) || reason.match(/60[036]/)) {
-                    reason = 'Busy';
+                } else if (reason.match(/486/)) {
+                    reason = 'Is busy';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
+                    if (direction === 'outgoing') {
+                        play_busy_tone = false;
+                    }
+                } else if (reason.match(/603/)) {
+                    reason = 'Cannot answer now';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                     if (direction === 'outgoing') {
                         play_busy_tone = false;
@@ -1386,6 +1394,9 @@ class Sylk extends Component {
                     this.playBusyTone();
                 }
 
+                if (direction === 'outgoing') {
+                    this.setState({declineReason: reason});
+                }
                 this.stopRingback();
 
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
@@ -1419,7 +1430,7 @@ class Sylk extends Component {
             if (!this.state.reconnectingCall) {
                 if (this.state.inFocus) {
                     if (this.currentRoute !== '/ready') {
-                        utils.timestampedLog('Will go to ready in 4 seconds (terminated)', callUUID);
+                        utils.timestampedLog('Will go to ready in', readyDelay/1000, 'seconds (terminated)', callUUID);
                         this.goToReadyTimer = setTimeout(() => {
                             this.changeRoute('/ready', 'no_more_calls');
                         }, readyDelay);
@@ -1438,7 +1449,6 @@ class Sylk extends Component {
         if (this.state.incomingCall) {
             //console.log('Incoming:', this.state.incomingCall.id);
         }
-
     }
 
     handleRegistration(accountId, password, remember=true) {
@@ -2639,6 +2649,7 @@ class Sylk extends Component {
                 reconnectingCall = {this.state.reconnectingCall}
                 muted = {this.state.muted}
                 myDisplayNames = {this.state.myDisplayNames}
+                declineReason = {this.state.declineReason}
             />
         )
     }

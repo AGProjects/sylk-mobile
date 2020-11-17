@@ -213,7 +213,8 @@ class Call extends Component {
                       packetLossQueue: [],
                       audioBandwidthQueue: [],
                       videoBandwidthQueue: [],
-                      latencyQueue: []
+                      latencyQueue: [],
+                      declineReason: this.props.declineReason
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -305,7 +306,8 @@ class Call extends Component {
             this.setState({targetUri: nextProps.targetUri});
         }
 
-        this.setState({registrationState: nextProps.registrationState});
+        this.setState({registrationState: nextProps.registrationState,
+                       declineReason: nextProps.declineReason});
 
         if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia && this.state.direction === 'outgoing') {
             utils.timestampedLog('Call: media for outgoing call has been changed');
@@ -845,6 +847,7 @@ class Call extends Component {
                         audioBandwidthQueue = {this.state.audioBandwidthQueue}
                         latencyQueue = {this.state.latencyQueue}
                         info = {this.state.info}
+                        declineReason = {this.state.declineReason}
                     />
                 );
             } else {
@@ -894,6 +897,7 @@ class Call extends Component {
                                 orientation = {this.props.orientation}
                                 isTablet = {this.props.isTablet}
                                 media = 'audio and video'
+                                declineReason = {this.state.declineReason}
                             />
                         );
                     }
@@ -920,6 +924,7 @@ class Call extends Component {
                     reconnectingCall = {this.state.reconnectingCall}
                     muted = {this.props.muted}
                     info = {this.state.info}
+                    declineReason = {this.state.declineReason}
                 />
             );
 
@@ -950,7 +955,8 @@ Call.propTypes = {
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
-    myDisplayNames          : PropTypes.object
+    myDisplayNames          : PropTypes.object,
+    declineReason           : PropTypes.string
 };
 
 

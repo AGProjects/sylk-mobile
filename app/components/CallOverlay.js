@@ -28,6 +28,7 @@ class CallOverlay extends React.Component {
 
         this.state = {
             call: this.props.call,
+            declineReason: this.props.declineReason,
             media: this.props.media ? this.props.media : 'audio',
             callState: this.props.call ? this.props.call.state : null,
             direction: this.props.call ? this.props.call.direction: null,
@@ -79,17 +80,19 @@ class CallOverlay extends React.Component {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
 
-            this.setState({call: nextProps.call});
+            this.setState({call: nextProps.call, direction:
+                           nextProps.call.direction});
         }
 
         this.setState({remoteDisplayName: nextProps.remoteDisplayName,
                        remoteUri: nextProps.remoteUri,
-                       media: nextProps.media
+                       media: nextProps.media,
+                       declineReason: nextProps.declineReason
                        });
     }
 
     callStateChanged(oldState, newState, data) {
-        if (newState === 'established' && this._isMounted && !this.props.terminated) {
+        if (newState === 'established' && this._isMounted) {
             this.startTimer();
         }
 
@@ -137,12 +140,6 @@ class CallOverlay extends React.Component {
     render() {
         let header = null;
 
-        if (this.props.terminated) {
-            clearTimeout(this.timer);
-            this.duration = null;
-            this.timer = null;
-        }
-
         let displayName = this.state.remoteUri;
 
         if (this.state.remoteDisplayName && this.state.remoteDisplayName !== this.state.remoteUri) {
@@ -150,7 +147,7 @@ class CallOverlay extends React.Component {
         }
 
         if (this.props.show) {
-            let callDetail;
+            let callDetail = '';
 
             if (this.duration) {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
@@ -158,25 +155,24 @@ class CallOverlay extends React.Component {
             } else {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting call...';
-                } else if (this.props.terminated) {
-                    callDetail = 'Call ended';
                 } else if (this.state.callState === 'terminated') {
-                    callDetail = this.finalDuration ? 'Call ended after ' + this.finalDuration : 'Call ended';
-                } else {
-                   if (this.state.callState) {
-                       if (this.state.callState === 'incoming') {
-                           callDetail = 'Waiting for incoming call...';
-                       } else if (this.state.callState === 'accepted') {
-                           callDetail = 'Waiting for ' + this.state.media + '...';
-                       } else {
-                           callDetail = toTitleCase(this.state.callState);
-                       }
-
-                   } else if (this.state.direction) {
-                       callDetail = 'Connecting', this.state.direction, 'call...';
-                   } else {
-                       callDetail = 'Connecting...';
-                   }
+                    if (this.finalDuration) {
+                        callDetail = 'Call ended after ' + this.finalDuration
+                    } else if (this.state.direction === 'outgoing' && this.state.declineReason) {
+                        callDetail = this.state.declineReason;
+                    } else {
+                        callDetail = 'Call ended';
+                    }
+                } else if (this.state.callState === 'incoming') {
+                    callDetail = 'Waiting for incoming call...';
+                } else if (this.state.callState === 'accepted') {
+                    callDetail = 'Waiting for ' + this.state.media + '...';
+                } else if (this.state.callState === 'progress') {
+                    callDetail = 'Connecting...';
+                } else if (this.state.callState === 'established') {
+                    callDetail = 'Media established';
+                } else if (this.state.callState) {
+                    callDetail = toTitleCase(this.state.callState);
                 }
             }
 
@@ -216,7 +212,7 @@ CallOverlay.propTypes = {
     call: PropTypes.object,
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool,
-    terminated : PropTypes.bool,
+    declineReason : PropTypes.string,
     media: PropTypes.string,
     info: PropTypes.string
 };

@@ -42,7 +42,8 @@ class AudioCallBox extends Component {
             info                        : this.props.info,
             packetLossQueue             : [],
             audioBandwidthQueue         : [],
-            latencyQueue                : []
+            latencyQueue                : [],
+            declineReason               : this.props.declineReason
         };
 
         this.remoteAudio = React.createRef();
@@ -117,7 +118,8 @@ class AudioCallBox extends Component {
 
         this.setState({remoteUri: nextProps.remoteUri,
                        remoteDisplayName: nextProps.remoteDisplayName,
-                       photo: nextProps.photo
+                       photo: nextProps.photo,
+                       declineReason: nextProps.declineReason
                        });
     }
 
@@ -211,6 +213,7 @@ class AudioCallBox extends Component {
                     connection={this.props.connection}
                     accountId={this.props.accountId}
                     media='audio'
+                    declineReason={this.state.declineReason}
                 />
                 <View style={userIconContainerClass}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
@@ -325,7 +328,8 @@ AudioCallBox.propTypes = {
     packetLossQueue         : PropTypes.array,
     videoBandwidthQueue     : PropTypes.array,
     audioBandwidthQueue     : PropTypes.array,
-    latencyQueue            : PropTypes.array
+    latencyQueue            : PropTypes.array,
+    declineReason           : PropTypes.string
 };
 
 export default AudioCallBox;
