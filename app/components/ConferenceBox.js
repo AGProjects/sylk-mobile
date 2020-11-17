@@ -188,13 +188,13 @@ class ConferenceBox extends Component {
             interval = Math.floor((Date.now() - p.timestamp) / 1000);
             //console.log(_uri, 'was invited', interval, 'seconds ago');
 
-            if (interval >= 60) {
+            if (interval >= 180) {
                 this.invitedParticipants.delete(_uri);
                 this.forceUpdate();
             }
 
             if (p.status.indexOf('Invited') > -1 && interval > 5) {
-                p.status = '.';
+                p.status = 'Wait .';
             }
 
             if (p.status.indexOf('.') > -1) {
@@ -1119,7 +1119,6 @@ class ConferenceBox extends Component {
                     if (this.packetLoss.get(p.id) === 100) {
                         status = 'No media';
                         participantsCount = participantsCount - 1;
-                        return;
                     } else {
                         status = this.packetLoss.get(p.id) + '% loss';
                     }
@@ -1140,7 +1139,9 @@ class ConferenceBox extends Component {
             });
 
             const invitedParties = Array.from(this.invitedParticipants.keys());
+            let alreadyInvitedParticipants = []
             let p;
+
             invitedParties.forEach((_uri) => {
                 if (participants_uris.indexOf(_uri) > 0) {
                     return;
@@ -1153,6 +1154,10 @@ class ConferenceBox extends Component {
                              photo: _contact ? _contact.photo: null
                             };
 
+                if (p.status != 'No answer') {
+                    alreadyInvitedParticipants.push(_uri)
+                }
+
                 audioParticipants.push(
                     <ConferenceAudioParticipant
                         key={_uri}
@@ -1163,8 +1168,6 @@ class ConferenceBox extends Component {
                     />
                 );
             });
-
-            const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
 
             return (
                 <View style={styles.container}>
