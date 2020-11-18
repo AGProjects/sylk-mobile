@@ -92,7 +92,7 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
         this._RNCallKeep.addEventListener('didPerformSetMutedCallAction', this._boundRnMute);
         this._RNCallKeep.addEventListener('didActivateAudioSession', this._boundRnActiveAudioCall);
-        this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall.bind(this));
+        this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
         this._RNCallKeep.addEventListener('didPerformDTMFAction', this._boundRnDTMF);
         this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
         this._RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
