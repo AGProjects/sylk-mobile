@@ -100,6 +100,10 @@ export default class CallManager extends events.EventEmitter {
 
         this._RNCallKeep.setup(options);
 
+        if (Platform.OS === 'android') {
+            this._RNCallKeep.canMakeMultipleCalls(false);
+        }
+
         this._RNCallKeep.addEventListener('checkReachability', () => {
             this._RNCallKeep.setReachable();
         });
@@ -164,6 +168,10 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setCurrentCallActive(callUUID) {
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
         utils.timestampedLog('Callkeep: active call', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
     }
@@ -203,9 +211,8 @@ export default class CallManager extends events.EventEmitter {
                 clearTimeout(this._timeouts.get(callUUID));
                 this._timeouts.delete(callUUID);
             }
-        } else {
-            this.callKeep.endCall(callUUID);
         }
+        this.callKeep.endCall(callUUID);
     }
 
     terminateCall(callUUID) {
