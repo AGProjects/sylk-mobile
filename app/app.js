@@ -2108,7 +2108,7 @@ class Sylk extends Component {
                 if (direction === 'outgoing' && to) {
                     utils.timestampedLog('Outgoing conference to', to);
                     this.backToForeground();
-                    this.callKeepStartConference(to);
+                    this.callKeepStartConference(to, {audio: true, video: true, callUUID: callUUID});
                 } else if (direction === 'incoming' && from) {
                     utils.timestampedLog('Incoming conference from', from);
                     // allow app to wake up
