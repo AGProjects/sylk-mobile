@@ -163,8 +163,8 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                     <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
-                    <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings" />
-                    <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Update me" />
+                    <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
+                    <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                 </Menu>
 
