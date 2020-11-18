@@ -474,8 +474,6 @@ class Sylk extends Component {
         if (route === '/ready') {
             Vibration.cancel();
 
-            this.speakerphoneOff()
-
             if (reason === 'conference_really_ended' && this.callKeeper.countCalls) {
                 utils.timestampedLog('Change route cancelled because we still have calls');
                 return;
@@ -488,7 +486,6 @@ class Sylk extends Component {
                             incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
                             targetUri: '',
                             reconnectingCall: false,
-                            localMedia: null,
                             muted: false
                             });
 
@@ -1274,6 +1271,8 @@ class Sylk extends Component {
 
                 if (mediaType === 'video') {
                     this.speakerphoneOn();
+                } else {
+                    this.speakerphoneOff();
                 }
 
                 if (!this.isConference(call)){
@@ -1297,10 +1296,14 @@ class Sylk extends Component {
                     this.stopRingback();
                     if (this.state.speakerPhoneEnabled) {
                         this.speakerphoneOn();
+                    } else {
+                        this.speakerphoneOff();
                     }
                 } else {
                     if (mediaType === 'video') {
                         this.speakerphoneOn();
+                    } else {
+                        this.speakerphoneOff();
                     }
                 }
 
@@ -1402,10 +1405,6 @@ class Sylk extends Component {
 
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
 
-                if (this.state.currentCall === null) {
-                    this.speakerphoneOff();
-                }
-
                 if (play_busy_tone && oldState !== 'established' && direction === 'outgoing') {
                     this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
                 }
@@ -1428,6 +1427,8 @@ class Sylk extends Component {
         });
 
         if (!this.state.currentCall && !this.state.incomingCall) {
+            this.speakerphoneOn();
+
             if (!this.state.reconnectingCall) {
                 if (this.state.inFocus) {
                     if (this.currentRoute !== '/ready') {
@@ -1724,6 +1725,7 @@ class Sylk extends Component {
         if (this.state.localMedia != null) {
             utils.timestampedLog('Close local media');
             sylkrtc.utils.closeMediaStream(this.state.localMedia);
+            this.setState({localMedia: null});
         }
     }
 
@@ -2569,6 +2571,7 @@ class Sylk extends Component {
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
                     logout = {this.logout}
+                    toggleSpeakerPhone = {this.toggleSpeakerPhone}
                     preview = {this.startPreview}
                     connection = {this.state.connection}
                     registrationState = {this.state.registrationState}
