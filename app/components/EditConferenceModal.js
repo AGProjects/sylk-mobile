@@ -177,7 +177,7 @@ class EditConferenceModal extends Component {
                         {this.enableFavoritesButton() ?
                         <Button
                             mode="contained"
-                            style={styles.participantButton}
+                            style={styles.button}
                             onPress={this.saveParticipants}
                             icon="content-save">Favorites
                         </Button>
