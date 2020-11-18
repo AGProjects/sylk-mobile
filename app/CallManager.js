@@ -100,10 +100,6 @@ export default class CallManager extends events.EventEmitter {
 
         this._RNCallKeep.setup(options);
 
-        if (Platform.OS === 'android') {
-            this._RNCallKeep.canMakeMultipleCalls(false);
-        }
-
         this._RNCallKeep.addEventListener('checkReachability', () => {
             this._RNCallKeep.setReachable();
         });
