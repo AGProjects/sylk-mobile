@@ -735,7 +735,6 @@ class Call extends Component {
         utils.timestampedLog('Call: start call', callUUID, 'when ready to', this.state.targetUri);
         this.waitCounter = 0;
 
-
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {

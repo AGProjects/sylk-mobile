@@ -374,7 +374,7 @@ class Conference extends React.Component {
             }
 
         } else {
-            console.log('Error: cannot start conference without local media');
+            console.log('Waiting for local media');
         }
 
         return box;

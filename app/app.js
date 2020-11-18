@@ -901,8 +901,10 @@ class Sylk extends Component {
         let callUUID = data.callUUID || uuid.v4();
         let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
 
+        this.backToForeground();
+
         if (is_conf) {
-            this.callKeepStartConference(data.handle, {audio: true, video: data.video, callUUID: callUUID});
+            this.callKeepStartConference(data.handle, {audio: true, video: data.video || true, callUUID: callUUID});
         } else {
             this.callKeepStartCall(data.handle, {audio: true, video: data.video, callUUID: callUUID});
         }
@@ -2076,7 +2078,7 @@ class Sylk extends Component {
                 from        = url_parts[5];
                 to          = url_parts[6];
                 displayName = url_parts[7];
-                mediaType   = url_parts[8];
+                mediaType   = url_parts[8] || 'audio';
 
                 if (from.search('@videoconference.') > -1) {
                     event = 'conference';
