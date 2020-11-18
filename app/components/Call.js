@@ -571,7 +571,7 @@ class Call extends Component {
                 this.hangupCall('answer_failed');
             }
 
-            if (!this.state.call.state !== 'incoming') {
+            if (this.state.call.state !== 'incoming') {
                 utils.timestampedLog('Call: state is not incoming');
             }
 
