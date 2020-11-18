@@ -896,7 +896,7 @@ class Call extends Component {
                                 connection = {this.props.connection}
                                 orientation = {this.props.orientation}
                                 isTablet = {this.props.isTablet}
-                                media = 'audio and video'
+                                media = 'video'
                                 declineReason = {this.state.declineReason}
                             />
                         );

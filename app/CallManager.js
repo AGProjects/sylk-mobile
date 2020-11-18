@@ -146,11 +146,7 @@ export default class CallManager extends events.EventEmitter {
 
     startOutgoingCall(callUUID, targetUri, hasVideo) {
         utils.timestampedLog('Callkeep: will start outgoing', callUUID);
-        if (Platform.OS === 'ios') {
-            this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
-        } else if (Platform.OS === 'android') {
-            this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
-        }
+        this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
     }
 
     updateDisplay(callUUID, displayName, uri) {
@@ -548,6 +544,8 @@ export default class CallManager extends events.EventEmitter {
         if (this._conferences.has(callUUID)) {
             return;
         }
+
+        displayName = displayName + ' and others';
         const hasVideo = mediaType === 'video' ? true : false;
 
         this._conferences.set(callUUID, {room: room, from: from_uri});
@@ -555,7 +553,7 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
 
-        this.showAlertPanel(callUUID, from_uri, displayName, hasVideo);
+        this.showAlertPanel(callUUID, room, displayName, hasVideo);
 
         this._timeouts.set(callUUID, setTimeout(() => {
             utils.timestampedLog('Callkeep: conference timeout', callUUID);
@@ -587,13 +585,15 @@ export default class CallManager extends events.EventEmitter {
             panelFrom = from.indexOf('@guest.') > -1 ? displayName : from;
         }
 
-        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
-
         this._alertedCalls.set(callUUID, Date.now());
 
-        const handleType = Platform.OS === 'ios' ? 'email': 'sip';
+        const options = {supportsHolding: false,
+                         supportsGrouping: false,
+                         supportsUngrouping: false,
+                         supportsDTMF: false}
 
-        this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, handleType, hasVideo);
+        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
+        this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, 'sip', hasVideo, options);
     }
 
    _startedCall(data) {

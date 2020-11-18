@@ -319,7 +319,7 @@ class Conference extends React.Component {
         if (this.state.localMedia !== null) {
             let media = 'audio'
             if (this.props.proposedMedia && this.props.proposedMedia.video === true) {
-                media = 'audio and video';
+                media = 'video';
             }
 
             if (this.state.currentCall != null && (this.state.callState === 'established')) {

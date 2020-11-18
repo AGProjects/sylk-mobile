@@ -16,6 +16,7 @@ class NavigationBar extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
         this.state = {
             showAboutModal: false,
             showCallMeMaybeModal: false,
@@ -54,6 +55,9 @@ class NavigationBar extends Component {
                 break;
             case 'displayName':
                 this.toggleEditDisplayNameModal();
+                break;
+            case 'speakerphone':
+                this.props.toggleSpeakerPhone();
                 break;
             case 'logOut':
                 this.props.logout();
@@ -123,6 +127,8 @@ class NavigationBar extends Component {
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
         let subtitle = 'Signed in as ' +  this.state.accountId;
 
+        //<Menu.Item onPress={() => this.handleMenu('speakerphone')} icon="speaker" title="Toggle speakerphone" />
+
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 <Image source={blinkLogo} style={styles.logo}/>
@@ -189,6 +195,7 @@ NavigationBar.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
     logout             : PropTypes.func.isRequired,
     preview            : PropTypes.func.isRequired,
+    toggleSpeakerPhone : PropTypes.func.isRequired,
     saveDisplayName    : PropTypes.func.isRequired,
     displayName        : PropTypes.string,
     account            : PropTypes.object,

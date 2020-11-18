@@ -897,16 +897,14 @@ class Sylk extends Component {
     }
 
     startCallFromCallKeeper(data) {
-        // like from native iOS history
-        //utils.timestampedLog("CallKeep started call from outside the app to", data.handle);
-        // we dont have options in the tmp var, which means this likely came from the native dialer
-        // for now, we only do audio calls from the native dialer.
+        utils.timestampedLog('Starting call from OS...');
         let callUUID = data.callUUID || uuid.v4();
         let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
+
         if (is_conf) {
-            this.callKeepStartConference(data.handle, {audio: true, video: true, callUUID: callUUID});
+            this.callKeepStartConference(data.handle, {audio: true, video: data.video, callUUID: callUUID});
         } else {
-            this.callKeepStartCall(data.handle, {audio: true, video: false, callUUID: callUUID});
+            this.callKeepStartCall(data.handle, {audio: true, video: data.video, callUUID: callUUID});
         }
         this._notificationCenter.removeNotification();
     }
@@ -1983,7 +1981,7 @@ class Sylk extends Component {
     incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}) {
         const mediaType = outgoingMedia.video ? 'video' : 'audio';
 
-        utils.timestampedLog('Incoming', mediaType, 'conference invite from', from, 'to room', to);
+        utils.timestampedLog('Incoming', mediaType, 'conference invite from', from, displayName, 'to room', to);
 
         if (this.state.account && from === this.state.account.id) {
             utils.timestampedLog('Reject conference call from myself', callUUID);
@@ -2079,6 +2077,11 @@ class Sylk extends Component {
                 to          = url_parts[6];
                 displayName = url_parts[7];
                 mediaType   = url_parts[8];
+
+                if (from.search('@videoconference.') > -1) {
+                    event = 'conference';
+                    to = from;
+                }
 
                 this.setState({targetUri: from});
 

@@ -329,7 +329,7 @@ class VideoBox extends Component {
                     connection = {this.props.connection}
                     accountId = {this.props.accountId}
                     info={this.state.info}
-                    media='audio and video'
+                    media='video'
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
