@@ -2080,7 +2080,7 @@ class Sylk extends Component {
                 displayName = url_parts[7];
                 mediaType   = url_parts[8] || 'audio';
 
-                if (from.search('@videoconference.') > -1) {
+                if (event !== 'cancel' && from && from.search('@videoconference.') > -1) {
                     event = 'conference';
                     to = from;
                 }
