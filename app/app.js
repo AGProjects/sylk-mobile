@@ -769,7 +769,7 @@ class Sylk extends Component {
             } else if (Platform.OS === 'android') {
                 token = this.pushtoken;
             }
-            utils.timestampedLog('Push notification: token sent to server');
+            utils.timestampedLog('Push notification token sent to server:', token);
             this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
             this.tokenSent = true;
         }
