@@ -1106,6 +1106,14 @@ class Sylk extends Component {
         }
     }
 
+    goToReadyNowAndCancelTimer() {
+        if (this.goToReadyTimer !== null) {
+            clearTimeout(this.goToReadyTimer);
+            this.goToReadyTimer = null;
+            this.changeRoute('/ready', 'cancel_timer_incoming_call');
+        }
+    }
+
     isConference(call) {
         const _call = call || this.state.currentCall;
         if (_call && _call.hasOwnProperty('_participants')) {
@@ -2225,6 +2233,8 @@ class Sylk extends Component {
             return;
         }
 
+        this.goToReadyNowAndCancelTimer();
+
         this.setState({targetUri: from});
 
         let skipNativePanel = false;
@@ -2258,6 +2268,8 @@ class Sylk extends Component {
         }
 
         const autoAccept = this.autoAcceptIncomingCall(callUUID, from);
+
+        this.goToReadyNowAndCancelTimer();
 
         call.mediaTypes = mediaTypes;
 

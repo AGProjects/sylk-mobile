@@ -140,7 +140,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     backToForeground() {
-       //utils.timestampedLog('Callkeep: bring app to the FOREGROUND');
+       utils.timestampedLog('Callkeep: bring app to the FOREGROUND');
        this.callKeep.backToForeground();
     }
 
@@ -250,7 +250,7 @@ export default class CallManager extends events.EventEmitter {
     _rnEnd(data) {
         // this is called both when user touches Reject and when the call ends
         let callUUID = data.callUUID.toLowerCase();
-        utils.timestampedLog('Callkeep: end callback', callUUID);
+        utils.timestampedLog('---- Callkeep: end callback', callUUID);
 
         if (this._terminatedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: call', callUUID, 'already terminated');
