@@ -534,10 +534,6 @@ class Call extends Component {
      };
 
     mediaPlaying(localMedia) {
-        if (this.state.call) {
-            utils.timestampedLog('Call:', this.state.call.id);
-        }
-
         if (this.state.direction === 'incoming') {
             const media = localMedia ? localMedia : this.state.localMedia;
             this.answerCall(media);
