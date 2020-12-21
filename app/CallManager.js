@@ -523,14 +523,13 @@ export default class CallManager extends events.EventEmitter {
             if (accept) {
                 this.acceptCall(call.id);
             } else {
-                this.showAlertPanelforCall(call);
+                if (Platform.OS === 'ios') {
+                    this.showAlertPanelforCall(call);
+                }
             }
 
 /*
             } else if (!skipNativePanel) {
-                if (Platform.OS === 'ios') {
-                    this.showAlertPanelforCall(call);
-                }
             }
 */
 
