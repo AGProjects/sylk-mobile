@@ -26,6 +26,7 @@
     "react-native-draw-overlay": "^1.0.1",
     "react-native-dtmf": "nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9",
     "react-native-email-link": "1.7.5",
+    "react-native-fs": "^2.16.6",
     "react-native-incall-manager": "nimbleape/react-native-incall-manager#start-ringback-method",
     "react-native-keyboard-spacer": "^0.4.1",
     "react-native-linear-gradient": "^2.5.6",
