@@ -1015,7 +1015,9 @@ class Sylk extends Component {
     }
 
     showRegisterFailure(reason) {
-        utils.timestampedLog('Registration error: ' + reason);
+        const connection = this.getConnection();
+
+        utils.timestampedLog('Registration error: ' + reason, 'on web socket', connection);
         this.setState({
             loading     : null,
             registrationState: 'failed',

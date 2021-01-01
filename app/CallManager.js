@@ -105,8 +105,6 @@ export default class CallManager extends events.EventEmitter {
             this._RNCallKeep.setReachable();
         });
 
-        utils.timestampedLog('Callkeep: init');
-
     }
 
     get callKeep() {
@@ -639,7 +637,6 @@ export default class CallManager extends events.EventEmitter {
     }
 
     destroy() {
-        utils.timestampedLog('Callkeep: destroyed');
         this._RNCallKeep.removeEventListener('acceptCall', this._boundRnAccept);
         this._RNCallKeep.removeEventListener('endCall', this._boundRnEnd);
         this._RNCallKeep.removeEventListener('didPerformSetMutedCallAction', this._boundRnMute);
