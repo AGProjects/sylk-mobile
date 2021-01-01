@@ -42,7 +42,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection) {
+    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -57,6 +57,7 @@ export default class CallManager extends events.EventEmitter {
         this._cancelledCalls = new Map();
         this._alertedCalls = new Map();
         this._terminatedCalls = new Map();
+        this.unmounted = isUnmountedFunc;
 
         this.webSocketActions = new Map();
         this.pushNotificationsActions = new Map();
@@ -103,6 +104,9 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('checkReachability', () => {
             this._RNCallKeep.setReachable();
         });
+
+        utils.timestampedLog('Callkeep: init');
+
     }
 
     get callKeep() {
@@ -174,6 +178,10 @@ export default class CallManager extends events.EventEmitter {
     }
 
     endCall(callUUID, reason) {
+        if (this.unmounted()) {
+            return;
+        }
+
         if (reason) {
             utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
         } else {
@@ -285,16 +293,21 @@ export default class CallManager extends events.EventEmitter {
     }
 
     acceptCall(callUUID) {
+        if (this.unmounted()) {
+            return;
+        }
+        const connection = this.getConnection();
+
         if (this._acceptedCalls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: already accepted call', callUUID);
+            utils.timestampedLog('Callkeep: already accepted call', callUUID, 'on web socket', connection);
             this.endCall(callUUID);
             return;
         } else {
-            utils.timestampedLog('Callkeep: accept call', callUUID);
+            utils.timestampedLog('Callkeep: accept call', callUUID, 'on web socket', connection);
         }
 
         if (this._terminatedCalls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: call', callUUID, 'was already terminated');
+            utils.timestampedLog('Callkeep: call', callUUID, 'was already terminated', 'on web socket', connection);
             this.endCall(callUUID);
             return;
         }
@@ -334,25 +347,30 @@ export default class CallManager extends events.EventEmitter {
                 utils.timestampedLog('Callkeep: current calls:', this.callUUIDS);
 
                 if (!this._calls.has(callUUID) && !this._terminatedCalls.has(callUUID)) {
-                    utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive over web socket', connection);
+                    utils.timestampedLog('Callkeep: call', callUUID, 'did not arrive on web socket', connection);
                     this.webSocketActions.delete(callUUID);
                     this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.FAILED);
                     this.sylkHangupCall(callUUID, 'timeout');
                 } else {
-                    utils.timestampedLog('Callkeep: call', callUUID, 'did arrive over web socket', connection);
+                    utils.timestampedLog('Callkeep: call', callUUID, 'did arrive on web socket', connection);
                 }
             }, 12000);
         }
     }
 
     rejectCall(callUUID) {
+        if (this.unmounted()) {
+            return;
+        }
+
+        const connection = this.getConnection();
         if (this._rejectedCalls.has(callUUID)) {
-            utils.timestampedLog('Callkeep: already rejected call', callUUID);
+            utils.timestampedLog('Callkeep: already rejected call', callUUID, 'on web socket', connection);
             //this.endCall(callUUID);
             return;
         }
 
-        utils.timestampedLog('Callkeep: reject call', callUUID);
+        utils.timestampedLog('Callkeep: reject call', callUUID, 'on web socket', connection);
 
         this._rejectedCalls.set(callUUID, Date.now());
 
@@ -434,15 +452,22 @@ export default class CallManager extends events.EventEmitter {
     }
 
     addWebsocketCall(call) {
+        if (this.unmounted()) {
+            return;
+        }
+
         const connection = this.getConnection();
         if (this._calls.has(call.id)) {
             return;
         }
-        utils.timestampedLog('Callkeep: added websocket call', call.id, 'for connection', connection);
+        utils.timestampedLog('Callkeep: added websocket call', call.id, 'for web socket', connection);
         this._calls.set(call.id, call);
     }
 
     incomingCallFromPush(callUUID, from, displayName, mediaType, force=false, skipNativePanel=false) {
+        if (this.unmounted()) {
+            return;
+        }
         utils.timestampedLog('Callkeep: incoming', mediaType, 'push call', callUUID, 'from', from);
         const hasVideo = mediaType === 'video' ? true : false;
 
@@ -481,9 +506,6 @@ export default class CallManager extends events.EventEmitter {
         }, 45000));
 
         if (Platform.OS === 'ios') {
-            if (this._calls.has(callUUID)) {
-                utils.timestampedLog('Callkeep: call', callUUID, 'already received on web socket');
-            }
             this.showAlertPanel(callUUID, from, displayName, hasVideo);
         } else {
             if (this._calls.has(callUUID) || force) {
@@ -502,9 +524,14 @@ export default class CallManager extends events.EventEmitter {
     }
 
     incomingCallFromWebSocket(call, accept=false, skipNativePanel=false) {
+        if (this.unmounted()) {
+            return;
+        }
+        const connection = this.getConnection();
+
         this.addWebsocketCall(call);
 
-        utils.timestampedLog('Callkeep: incoming websocket call', call.id);
+        utils.timestampedLog('Callkeep: incoming call', call.id, 'on web socket', connection);
 
         // if the call came via push and was already accepted or rejected
         if (this.webSocketActions.get(call.id)) {
@@ -527,12 +554,6 @@ export default class CallManager extends events.EventEmitter {
                     this.showAlertPanelforCall(call);
                 }
             }
-
-/*
-            } else if (!skipNativePanel) {
-            }
-*/
-
         }
 
         // Emit event.
@@ -540,6 +561,9 @@ export default class CallManager extends events.EventEmitter {
     }
 
     handleConference(callUUID, room, from_uri, displayName, mediaType, outgoingMedia) {
+        if (this.unmounted()) {
+            return;
+        }
         if (this._conferences.has(callUUID)) {
             return;
         }
@@ -570,8 +594,11 @@ export default class CallManager extends events.EventEmitter {
     }
 
     showAlertPanel(callUUID, from, displayName, hasVideo=false) {
+        if (this.unmounted()) {
+            return;
+        }
         if (this._alertedCalls.has(callUUID)) {
-            //utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
+            utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
             return;
         }
 
@@ -612,6 +639,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     destroy() {
+        utils.timestampedLog('Callkeep: destroyed');
         this._RNCallKeep.removeEventListener('acceptCall', this._boundRnAccept);
         this._RNCallKeep.removeEventListener('endCall', this._boundRnEnd);
         this._RNCallKeep.removeEventListener('didPerformSetMutedCallAction', this._boundRnMute);
@@ -621,6 +649,5 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.removeEventListener('didResetProvider', this._boundRnProviderReset);
         this._RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
         this._RNCallKeep.removeEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
-
     }
 }
