@@ -142,7 +142,8 @@ LocalMedia.propTypes = {
     connection          : PropTypes.object,
     participants        : PropTypes.array,
     media               : PropTypes.string,
-    declineReason       : PropTypes.string
+    declineReason       : PropTypes.string,
+    showLogs            : PropTypes.func
 };
 
 

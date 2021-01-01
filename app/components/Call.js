@@ -814,6 +814,7 @@ class Call extends Component {
     }
 
     render() {
+
         let box = null;
         if (this.state.localMedia !== null) {
             if (this.state.audioOnly) {
@@ -843,6 +844,7 @@ class Call extends Component {
                         latencyQueue = {this.state.latencyQueue}
                         info = {this.state.info}
                         declineReason = {this.state.declineReason}
+                        showLogs = {this.props.showLogs}
                     />
                 );
             } else {
@@ -871,6 +873,7 @@ class Call extends Component {
                             reconnectingCall = {this.state.reconnectingCall}
                             muted = {this.props.muted}
                             info = {this.state.info}
+                            showLogs = {this.props.showLogs}
                         />
                     );
                 } else {
@@ -893,6 +896,7 @@ class Call extends Component {
                                 isTablet = {this.props.isTablet}
                                 media = 'video'
                                 declineReason = {this.state.declineReason}
+                                showLogs = {this.props.showLogs}
                             />
                         );
                     }
@@ -920,6 +924,7 @@ class Call extends Component {
                     muted = {this.props.muted}
                     info = {this.state.info}
                     declineReason = {this.state.declineReason}
+                    showLogs = {this.props.showLogs}
                 />
             );
 
@@ -951,7 +956,8 @@ Call.propTypes = {
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
     myDisplayNames          : PropTypes.object,
-    declineReason           : PropTypes.string
+    declineReason           : PropTypes.string,
+    showLogs                : PropTypes.func
 };
 
 

@@ -1,5 +1,5 @@
 import React, { Component } from 'react';
-import { View, Platform } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback } from 'react-native';
 import { IconButton, Dialog, Text, ActivityIndicator, Colors } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
@@ -175,6 +175,16 @@ class AudioCallBox extends Component {
         });
     }
 
+    handleDoubleTap() {
+        const now = Date.now();
+        const DOUBLE_PRESS_DELAY = 300;
+        if (this.lastTap && now - this.lastTap < DOUBLE_PRESS_DELAY) {
+          this.props.showLogs();
+        } else {
+          this.lastTap = now;
+        }
+    }
+
     render() {
         let buttonContainerClass;
         let userIconContainerClass;
@@ -222,7 +232,9 @@ class AudioCallBox extends Component {
                 </View>
 
                 <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
+                <TouchableWithoutFeedback onPress={this.handleDoubleTap}>
                 <Text style={styles.uri}>{this.state.remoteUri}</Text>
+                </TouchableWithoutFeedback>
 
                 {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
@@ -334,7 +346,8 @@ AudioCallBox.propTypes = {
     videoBandwidthQueue     : PropTypes.array,
     audioBandwidthQueue     : PropTypes.array,
     latencyQueue            : PropTypes.array,
-    declineReason           : PropTypes.string
+    declineReason           : PropTypes.string,
+    showLogs                : PropTypes.func
 };
 
 export default AudioCallBox;

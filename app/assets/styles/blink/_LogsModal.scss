@@ -1,0 +1,46 @@
+.container {
+    margin: 0 auto;
+    padding: 5px;
+}
+
+.scrollViewLandscape {
+    height: 200px;
+    margin-bottom: 10px;
+}
+
+.scrollViewPortrait {
+    height: 500px;
+    margin-bottom: 10px;
+}
+
+.title {
+    padding: 10px;
+    font-size: 20px;
+    text-align: center;
+}
+
+.subtitle {
+    padding: 5px;
+    font-size: 14px;
+    text-align: center;
+    color: blue;
+}
+
+.body {
+    font-size: 10px;
+    margin: 10px;
+    text-align: left;
+}
+
+.button {
+    border-radius: 1px;
+    border: 1px;
+    width: 33%;
+    margin: 0 auto;
+}
+
+.buttonRow {
+    flex-direction: row;
+    justify-content: center;
+}
+

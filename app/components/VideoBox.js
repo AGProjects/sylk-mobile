@@ -401,7 +401,8 @@ VideoBox.propTypes = {
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
-    muted                   : PropTypes.bool
+    muted                   : PropTypes.bool,
+    showLogs                : PropTypes.func
 };
 
 export default VideoBox;

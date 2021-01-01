@@ -30,6 +30,7 @@ import Conference from './components/Conference';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
 import IncomingCallModal from './components/IncomingCallModal';
+import LogsModal from './components/LogsModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -39,6 +40,9 @@ import CallManager from "./CallManager";
 import utils from './utils';
 import config from './config';
 import storage from './storage';
+
+const RNFS = require('react-native-fs');
+const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
 import styles from './assets/styles/blink/root.scss';
 const backgroundImage = require('./assets/images/dark_linen.png');
@@ -77,6 +81,7 @@ let bundleId = `${getBundleId()}`;
 const deviceId = getUniqueId();
 
 const version = '1.0.0';
+const MAX_LOG_LINES = 300;
 
 
 if (Platform.OS == 'ios') {
@@ -230,6 +235,7 @@ class Sylk extends Component {
         this.registrationFailureTimer = null;
         this.contacts = [];
         this.startedByPush = false;
+        this.heartbeats = 0;
 
         this.cachedHistory = []; // used for caching server history
 
@@ -247,6 +253,7 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.goToReadyTimer = null;
+
         storage.initialize();
 
         this.callKeeper = new CallManager(RNCallKeep,
@@ -1066,6 +1073,16 @@ class Sylk extends Component {
     }
 
     heartbeat() {
+        if (this.unmounted) {
+            return;
+        }
+
+        this.heartbeats = this.heartbeats + 1;
+
+        if (this.heartbeats % 40 == 0) {
+            this.trimLogs();
+        }
+
         if (this.state.connection) {
             //console.log('Check calls in', this.state.appState, 'with connection', Object.id(this.state.connection), this.state.connection.state);
         } else {
@@ -2533,6 +2550,15 @@ class Sylk extends Component {
                                 contacts = {this.contacts}
                             />
 
+                            <LogsModal
+                                logs={this.state.logs}
+                                show={this.state.showLogsModal}
+                                refresh={this.showLogs}
+                                close={this.hideLogsModal}
+                                purgeLogs={this.purgeLogs}
+                                orientation={this.state.orientation}
+                            />
+
                             <LoadingScreen
                             text={this.state.loading}
                             show={this.state.loading !== null && this.currentRoute === '/login'}
@@ -2581,6 +2607,48 @@ class Sylk extends Component {
         storage.set('cachedHistory', history);
     }
 
+    hideLogsModal() {
+       this.setState({showLogsModal: false});
+    }
+
+    purgeLogs() {
+        RNFS.unlink(logfile)
+          .then(() => {
+            utils.timestampedLog('Log file initialized');
+            this.showLogs();
+          })
+          // `unlink` will throw an error, if the item to unlink does not exist
+          .catch((err) => {
+            console.log(err.message);
+          });
+    }
+
+    showLogs() {
+       this.setState({showLogsModal: true});
+       RNFS.readFile(logfile, 'utf8').then((content) => {
+           console.log('Read', content.length, 'bytes from', logfile);
+           const lastlines = content.split('\n').slice(-MAX_LOG_LINES).join('\n');
+           this.setState({logs: lastlines});
+       });
+    }
+
+    trimLogs() {
+       RNFS.readFile(logfile, 'utf8').then((content) => {
+           const lines = content.split('\n');
+           //console.log('Read', lines.length, 'lines and', content.length, 'bytes from', logfile);
+           if (lines.length > (MAX_LOG_LINES + 50) || content.length > 100000) {
+               const text = lines.slice(-MAX_LOG_LINES).join('\n');
+               RNFS.writeFile(logfile, text + '\r\n', 'utf8')
+                   .then((success) => {
+                   //console.log('Trimmed logs to', MAX_LOG_LINES, 'lines and', text.length, 'bytes');
+               })
+               .catch((err) => {
+                   console.log(err.message);
+               });
+           }
+       });
+    }
+
     ready() {
         return (
             <Fragment>
@@ -2590,6 +2658,7 @@ class Sylk extends Component {
                     logout = {this.logout}
                     toggleSpeakerPhone = {this.toggleSpeakerPhone}
                     preview = {this.startPreview}
+                    showLogs = {this.showLogs}
                     connection = {this.state.connection}
                     registrationState = {this.state.registrationState}
                     orientation = {this.state.orientation}
@@ -2655,6 +2724,7 @@ class Sylk extends Component {
                 localMedia = {this.state.localMedia}
                 escalateToConference = {this.escalateToConference}
                 hangupCall = {this.hangupCall}
+                showLogs = {this.showLogs}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
                 callKeepSendDtmf = {this.callKeepSendDtmf}
                 toggleMute = {this.toggleMute}

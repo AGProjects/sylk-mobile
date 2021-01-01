@@ -4,6 +4,19 @@ import MaterialColors from './MaterialColors';
 import { Clipboard, Dimensions } from 'react-native';
 import Contacts from 'react-native-contacts';
 
+const RNFS = require('react-native-fs');
+const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
+
+function log2file(text) {
+    // append to logfile
+    RNFS.appendFile(logfile, text + '\r\n', 'utf8')
+      .then((success) => {
+        console.log(text);
+      })
+      .catch((err) => {
+        console.log(err.message);
+      });
+}
 
 function isAnonymous(uri) {
     if (uri.indexOf('@guest.') > -1 || uri.indexOf('@anonymous.') > -1) {
@@ -38,8 +51,11 @@ function timestampedLog() {
         let txt = arguments[i] ? arguments[i].toString() : '';
         message = message + ' ' + txt;
     }
-    console.log(message);
+
+    log2file(message);
+    //console.log(message);
 }
+
 
 function generateUniqueId() {
     const uniqueId = uuidv4().replace(/-/g, '').slice(0, 16);

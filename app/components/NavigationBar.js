@@ -62,6 +62,9 @@ class NavigationBar extends Component {
             case 'logOut':
                 this.props.logout();
                 break;
+            case 'logs':
+                this.props.showLogs();
+                break;
             case 'preview':
                 this.props.preview();
                 break;
@@ -164,6 +167,7 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                     <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                     <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
+                    <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Show logs" />
                     <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                 </Menu>
@@ -197,6 +201,7 @@ NavigationBar.propTypes = {
     preview            : PropTypes.func.isRequired,
     toggleSpeakerPhone : PropTypes.func.isRequired,
     saveDisplayName    : PropTypes.func.isRequired,
+    showLogs           : PropTypes.func.isRequired,
     displayName        : PropTypes.string,
     account            : PropTypes.object,
     connection         : PropTypes.object,
