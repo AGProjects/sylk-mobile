@@ -565,15 +565,15 @@ class Sylk extends Component {
     }
 
     backPressed() {
-        utils.timestampedLog('Back pressed');
+        //console.log('Back button pressed');
+        return true;
     }
 
     async componentDidMount() {
         utils.timestampedLog('App did mount');
+        this._loaded = true;
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
-        this._loaded = true;
-        //console.log('App did mount');
         // Start a timer that runs once after X milliseconds
         BackgroundTimer.runBackgroundTimer(() => {
             // this will be executed once after 10 seconds
