@@ -562,9 +562,9 @@ class Sylk extends Component {
     componentWillUnmount() {
         utils.timestampedLog('App will unmount');
         AppState.removeEventListener('change', this._handleAppStateChange);
+        this.callKeeper.destroy();
         this.closeConnection();
         this._loaded = false;
-        //BackHandler.exitApp();
     }
 
     get unmounted() {
