@@ -774,7 +774,7 @@ class Sylk extends Component {
     }
 
     _proximityDetect(data) {
-        utils.timestampedLog('Proximity changed, isNear is', data.isNear);
+        //utils.timestampedLog('Proximity changed, isNear is', data.isNear);
         if (!this.state.proximityEnabled) {
             return;
         }
