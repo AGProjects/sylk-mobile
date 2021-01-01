@@ -223,7 +223,8 @@ class Sylk extends Component {
             defaultDomain: config.defaultDomain,
             declineReason: null,
             showLogsModal: false,
-            logs: ''
+            logs: '',
+            proximityEnabled: true
         };
 
         utils.timestampedLog('Init app');
@@ -332,6 +333,16 @@ class Sylk extends Component {
             //console.log('My display name is', displayName);
             this.setState({displayName: displayName});
         });
+
+        storage.get('proximityEnabled').then((proximityEnabled) => {
+            this.setState({proximityEnabled: proximityEnabled});
+        });
+
+        if (this.state.proximityEnabled) {
+            utils.timestampedLog('Proximity sensor enabled');
+        } else {
+            utils.timestampedLog('Proximity sensor disabled');
+        }
 
         storage.get('myDisplayNames').then((myDisplayNames) => {
             this.setState({myDisplayNames: myDisplayNames});
@@ -763,7 +774,10 @@ class Sylk extends Component {
     }
 
     _proximityDetect(data) {
-        return;
+        utils.timestampedLog('Proximity changed, isNear is', data.isNear);
+        if (!this.state.proximityEnabled) {
+            return;
+        }
 
         if (data.isNear) {
            this.speakerphoneOff();
@@ -1890,6 +1904,17 @@ class Sylk extends Component {
         }
     }
 
+    toggleProximity() {
+        storage.set('proximityEnabled', !this.state.proximityEnabled);
+
+        if (!this.state.proximityEnabled) {
+            utils.timestampedLog('Proximity sensor enabled');
+        } else {
+            utils.timestampedLog('Proximity sensor disabled');
+        }
+        this.setState({proximityEnabled: !this.state.proximityEnabled});
+    }
+
     toggleMute(callUUID, mute) {
         utils.timestampedLog('Toggle mute for call', callUUID, ':', mute);
         this.callKeeper.setMutedCall(callUUID, mute);
@@ -2695,6 +2720,8 @@ class Sylk extends Component {
                     account = {this.state.account}
                     logout = {this.logout}
                     toggleSpeakerPhone = {this.toggleSpeakerPhone}
+                    toggleProximity = {this.toggleProximity}
+                    proximity = {this.state.proximityEnabled}
                     preview = {this.startPreview}
                     showLogs = {this.showLogs}
                     connection = {this.state.connection}
