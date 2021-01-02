@@ -1,0 +1,9 @@
+ * Remove CallKeep listeners at unmount
+ * Added proximity sensor setting
+ * Hangup call when press back button
+ * Do not exit the app on back button press
+ * Stop handling network notifications if the app was unmounted
+ * Added logs panel
+ * Only bring up alert panel when push notification arrives
+ * Go to ready as soon as a new call comes in
+ * Increased Android version to v29
