@@ -175,7 +175,6 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                     <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
                     <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Show logs" />
-                    <Menu.Item onPress={() => this.handleMenu('speakerphone')} icon="speaker" title="Toggle speakerphone" />
                     <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                     <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />

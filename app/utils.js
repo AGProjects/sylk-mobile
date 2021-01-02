@@ -74,7 +74,7 @@ function normalizeUri(uri, defaultDomain) {
         username = targetUri;
         domain = defaultDomain;
     }
-    username = username.replace(/[<>\s()\[\]\'\"\~\!\%\&\*\{\}\|\\]/g, '');
+    username = username.replace(/[\s()-]/g, '');
     return `${username}@${domain}`;
 }
 
