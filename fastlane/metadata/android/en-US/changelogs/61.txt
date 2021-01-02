@@ -1,0 +1,26 @@
+* Fixed waking up from OS dialer
+* Fixed Call id when starting conference from the system
+* Fixed handling incoming calls from OS and preserve media type
+* Fixed call state check for incoming calls
+* Fixed revert speakerphone state
+* Fix for edit conference modal
+* CallKeep fixes for Android
+* Fixed CallKeep didDeactivateAudioSession
+* Fixed propagating media type
+* Display call reject cause
+* Improve inviting participants at a later time
+* Improve display of call and conference statistics
+* Remove dead participants from conference view
+* Fixed display of packet loss
+* Propagate display name from favorites
+* Close call in one more corner case
+* Print media type in waiting for media line
+* Fixed answering new call while in a call
+* Make sure between calls vibration is always cancelled
+* Trim username and password strings in sign-in form
+* Added menu link for version update
+* Propagate display name from favorites
+* Close call in one more corner case
+* Improve conference statistics and remove dead participants from view
+* Added network statistics to conferences participants
+* Added packet loss and bandwidth usage info
