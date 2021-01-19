@@ -2743,10 +2743,10 @@ class Sylk extends Component {
                     orientation = {this.state.orientation}
                     contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
-                    localHistory = {this.state.localHistory}
                     refreshHistory = {this.state.refreshHistory}
                     refreshFavorites = {this.state.refreshFavorites}
                     cacheHistory = {this.saveHistoryForLater}
+                    localHistory = {this.state.localHistory}
                     serverHistory = {this.cachedHistory}
                     myDisplayName = {this.state.myDisplayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
@@ -2760,6 +2760,7 @@ class Sylk extends Component {
                     defaultDomain = {this.state.defaultDomain}
                     saveDisplayName = {this.saveDisplayName}
                     myDisplayNames = {this.state.myDisplayNames}
+                    lookupContacts = {this.lookupContacts}
                 />
             </Fragment>
         );
@@ -2879,14 +2880,128 @@ class Sylk extends Component {
                 startedByPush = {this.startedByPush}
                 inFocus = {this.state.inFocus}
                 reconnectingCall = {this.state.reconnectingCall}
-                contacts = {this.contacts}
                 setFavoriteUri = {this.setFavoriteUri}
                 favoriteUris = {this.state.favoriteUris}
                 myDisplayNames = {this.state.myDisplayNames}
-
+                lookupContacts={this.lookupContacts}
             />
         )
     }
+
+    matchContact(contact, filter='', matchDisplayName=true) {
+        if (contact.remoteParty.toLowerCase().startsWith(filter.toLowerCase())) {
+            return true;
+        }
+
+        if (matchDisplayName && contact.displayName && contact.displayName.toLowerCase().indexOf(filter.toLowerCase()) > -1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    lookupContacts(text, addressbook=true, favorites=true, localHistory=true, serverHistory=true) {
+        let contacts = [];
+
+        if (addressbook) {
+            const addressbook_contacts = this.contacts.filter(contact => this.matchContact(contact, text));
+            addressbook_contacts.forEach((c) => {
+                const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.remoteParty.toLowerCase(), false));
+                if (existing_contacts.length === 0) {
+                    contacts.push(c);
+                }
+            });
+        }
+
+        if (favorites) {
+            const favorite_contacts = this.favoritesContacts.filter(contact => this.matchContact(contact, text));
+            favorite_contacts.forEach((c) => {
+                const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.remoteParty.toLowerCase(), false));
+                if (existing_contacts.length === 0) {
+                    contacts.push(c);
+                }
+            });
+        }
+
+        if (localHistory) {
+            const local_history_contacts = this.state.localHistory.filter(contact => this.matchContact(contact, text));
+            local_history_contacts.forEach((c) => {
+                const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.remoteParty.toLowerCase(), false));
+                if (c.remoteParty.toLowerCase().indexOf('@guest.')) {
+                }
+                if (c.remoteParty.toLowerCase().indexOf('@conference.')) {
+                }
+                if (c.remoteParty.toLowerCase().indexOf('@videoconference.')) {
+                }
+                if (existing_contacts.length === 0) {
+                    contacts.push(c);
+                }
+            });
+        }
+
+        if (serverHistory) {
+            const server_history_contacts = this.cachedHistory.filter(contact => this.matchContact(contact, text));
+            server_history_contacts.forEach((c) => {
+                const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.remoteParty.toLowerCase(), false));
+                if (c.remoteParty.toLowerCase().indexOf('@guest.')) {
+                }
+                if (c.remoteParty.toLowerCase().indexOf('@conference.')) {
+                }
+                if (existing_contacts.length === 0) {
+                    contacts.push(c);
+                }
+            });
+        }
+
+        return contacts;
+    }
+
+    get favoritesContacts() {
+        let favoriteContacts = [];
+        let displayName = '';
+        let conference = false;
+
+        this.state.favoriteUris.forEach((uri) => {
+
+            if (!uri) {
+                return;
+            }
+
+            uri = uri.toLowerCase();
+
+            displayName = '';
+
+            if (this.state.myDisplayNames && this.state.myDisplayNames.hasOwnProperty(uri)) {
+                displayName = this.state.myDisplayNames[uri];
+            }
+
+            conference = false;
+
+            let tags = ['favorite'];
+
+            if (uri.indexOf('@videoconference.') > -1) {
+                displayName = uri.split('@')[0];
+                const room = uri.split('@')[0];
+                uri = room + '@' + config.defaultConferenceDomain;
+                conference = true;
+                tags.push('conference');
+            }
+
+            const item = {
+                remoteParty: uri,
+                displayName: displayName,
+                conference: conference,
+                type: 'contact',
+                id: uuid.v4(),
+                tags: tags
+                };
+
+            favoriteContacts.push(item);
+        });
+
+        return favoriteContacts;
+    }
+
 
     conferenceByUri(urlParameters) {
         const targetUri = utils.normalizeUri(urlParameters.targetUri, config.defaultConferenceDomain);

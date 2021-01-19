@@ -346,10 +346,10 @@ class Conference extends React.Component {
                         defaultDomain = {this.props.defaultDomain}
                         inFocus = {this.props.inFocus}
                         reconnectingCall={this.state.reconnectingCall}
-                        contacts={this.props.contacts}
                         initialParticipants={this.props.participantsToInvite}
                         terminated={this.userHangup}
                         myDisplayNames = {this.props.myDisplayNames}
+                        lookupContacts = {this.props.lookupContacts}
                    />
                 );
             } else {
@@ -408,9 +408,9 @@ Conference.propTypes = {
     setFavoriteUri          : PropTypes.func,
     saveInvitedParties      : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
-    contacts                : PropTypes.array,
     favoriteUris            : PropTypes.array,
-    myDisplayNames          : PropTypes.object
+    myDisplayNames          : PropTypes.object,
+    lookupContacts          : PropTypes.func
 };
 
 

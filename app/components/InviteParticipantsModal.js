@@ -1,18 +1,19 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { View } from 'react-native';
+import { View, TouchableOpacity } from 'react-native';
 import { Dialog, Portal, Text, Button, Surface, TextInput, IconButton} from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import { openComposer } from 'react-native-email-link';
 import Share from 'react-native-share';
+import Autocomplete from 'react-native-autocomplete-input';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import config from '../config';
-import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
 import utils from '../utils';
 
+import styles from '../assets/styles/blink/_ConferenceModal.scss';
 
 class InviteParticipantsModal extends Component {
     constructor(props) {
@@ -22,10 +23,8 @@ class InviteParticipantsModal extends Component {
         const sanitizedParticipants = [];
         let participants = [];
 
-        if (this.props.previousParticipants && this.props.currentParticipants && this.props.alreadyInvitedParticipants) {
-            participants = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
-            participants = participants.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
-        }
+        participants = this.props.previousParticipants.filter(x => !this.props.currentParticipants.includes(x));
+        participants = participants.filter(x => !this.props.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
 
         participants.forEach((item) => {
             item = item.trim().toLowerCase();
@@ -46,7 +45,9 @@ class InviteParticipantsModal extends Component {
             participants: sanitizedParticipants.toString().replace(/,/g, ", "),
             previousParticipants: this.props.previousParticipants,
             currentParticipants: this.props.currentParticipants,
-            roomUrl: config.publicUrl + '/conference/' + this.props.room
+            roomUrl: config.publicUrl + '/conference/' + this.props.room,
+            filteredContacts: [],
+            searching: false
         }
     }
 
@@ -58,10 +59,10 @@ class InviteParticipantsModal extends Component {
         let difference = nextProps.previousParticipants.filter(x => !nextProps.currentParticipants.includes(x));
         difference = difference.filter(x => !nextProps.alreadyInvitedParticipants.includes(x) && x !== this.props.accountId);
         this.setState({
-            participants: difference.toString(),
             alreadyInvitedParticipants: nextProps.alreadyInvitedParticipants,
             previousParticipants: nextProps.previousParticipants,
-            currentParticipants: nextProps.currentParticipants
+            currentParticipants: nextProps.currentParticipants,
+            roomUrl: config.publicUrl + '/conference/' + nextProps.room
         });
     }
 
@@ -114,40 +115,126 @@ class InviteParticipantsModal extends Component {
                 uris.push(item);
             });
         }
+
         if (uris) {
             this.props.inviteParticipants(uris);
-            this.setState({participants: null});
+            this.setState({participants: ''});
         }
+
         this.props.close();
     }
 
-    onInputChange(value) {
-        this.setState({participants: value});
+    isValidUri(uri) {
+        if (uri === this.props.accountId) {
+            return false;
+        }
+
+        let username = uri.split('@')[0];
+        let domain = uri.split('@')[1];
+
+        if (username.match(/^(\+?)([\-|\d]+)$/) && !domain) {
+            return false;
+        }
+
+        if (domain) {
+            if (domain.indexOf('yahoo') > -1) {
+                return false;
+            }
+
+            if (domain.indexOf('icloud') > -1) {
+                return false;
+            }
+
+            if (domain.indexOf('gmail') > -1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    searchContacts(text) {
+        const search_text = text;
+        let filteredContacts = [];
+        let searching = false;
+
+        if (!text.startsWith(this.state.participants)) {
+            this.setState({participants: text,
+                           filteredContacts: [],
+                           searching: false});
+            return;
+        }
+
+        if (text.indexOf(',') > -1) {
+            const text_els = text.split(',');
+            text = text_els[text_els.length - 1].trim()
+        }
+
+        if (text.length > 1) {
+            filteredContacts = this.props.lookupContacts(text);
+            let already_added = this.state.participants.replace(/\s+,\s+/g, ",").split(',');
+            filteredContacts = filteredContacts.filter(x => !already_added.includes(x.remoteParty) && this.isValidUri(x.remoteParty));
+
+            if (filteredContacts.length > 0) {
+               searching = true;
+            }
+        }
+
+        this.setState({filteredContacts: filteredContacts.slice(0, 6),
+                       participants: search_text,
+                       searching: searching
+                       });
+    }
+
+    updateParticipants(contact) {
+        let participants = this.state.participants.replace(/\s+,\s+/g, ",");
+        let els = participants.split(',');
+        if (els.length === 1) {
+            participants = contact.remoteParty;
+        } else {
+            els.pop(-1);
+            els.push(contact.remoteParty);
+            participants = els.toString(',');
+        }
+
+        this.setState({participants: participants.replace(/,/g, ", "),
+                       filteredContacts: [],
+                       searching: false});
     }
 
     render() {
         return (
-            <Portal>
+            <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
-                        <Dialog.Title>Invite to conference</Dialog.Title>
-                        <TextInput
-                            style={styles.participants}
-                            mode="flat"
-                            name="people"
-                            label="People"
-                            onChangeText={this.onInputChange}
-                            defaultValue={this.state.participants}
-                            placeholder="Enter accounts separated by ,"
-                            required
-                            autoCapitalize="none"
-                            clearButtonMode="always"
+                    <Surface>
+                        <Dialog.Title>Invite people</Dialog.Title>
+
+                        <View>
+                        <Autocomplete
+                          containerStyle={styles.autocompleteContainer}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          data={this.state.filteredContacts}
+                          defaultValue={this.state.participants}
+                          keyExtractor={(item, i) => i.toString()}
+                          onChangeText={(text) => this.searchContacts(text)}
+                          placeholder="Enter Sylk accounts separated by ,"
+                          renderItem={({item}) => (
+                                        <TouchableOpacity
+                                              onPress={() => {this.updateParticipants(item);}}>
+                                              <Text style={styles.autocompleteSearchBoxTextItem}>
+                                                  {item.displayName ? item.displayName + ' ('+ item.remoteParty + ')' : item.remoteParty}
+                                              </Text>
+                                        </TouchableOpacity>
+                                        )}
                         />
-                        <View style={styles.buttonRow}>
+                        </View>
+                        <View style={styles.buttonRowInvite}>
                         <Button
                             mode="contained"
                             style={styles.button}
                             onPress={this.invite}
+                            disabled={this.state.searching}
                             icon="email">Invite
                         </Button>
                         </View>
@@ -192,7 +279,8 @@ InviteParticipantsModal.propTypes = {
     alreadyInvitedParticipants: PropTypes.array,
     room: PropTypes.string,
     defaultDomain: PropTypes.string,
-    accountId: PropTypes.string
+    accountId: PropTypes.string,
+    lookupContacts: PropTypes.func
 };
 
 export default InviteParticipantsModal;

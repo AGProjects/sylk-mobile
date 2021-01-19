@@ -1,9 +1,14 @@
 .container {
-    padding: 5px;
-    margin: 0px;
+    flex: 1;
     flex-direction: column;
     justify-content: center;
     align-items: center;
+}
+
+.inviteTitle {
+    padding: 3px;
+    font-size: 24px;
+    text-align: left;
 }
 
 .title {
@@ -12,21 +17,60 @@
     text-align: center;
 }
 
-.room {
-    padding: 5px;
-    font-size: 18px;
-    width: 100%;
+.roomContainer {
+    margin-top: 60px;
+    margin-bottom: 10px;
+    zIndex: -1;
 }
 
-.participants {
-    padding: 5px;
+.room {
+    font-size: 20px;
+}
+
+.roomUrl {
     font-size: 14px;
     text-align: center;
-    width: 100%;
+}
+
+.roomUrlContainer {
+}
+
+.roomDescription {
+    font-size: 14px;
+    text-align: center;
+}
+
+.roomDescriptionContainer {
+    margin: 20px;
 }
 
 .buttonRow {
     flex-direction: row;
+    justify-content: center;
+    margin-top: 30px;
+    padding-bottom: 10px;
+    zIndex: -1;
+}
+
+.buttonRowInvite {
+    flex-direction: row;
+    justify-content: center;
+    margin-top: 100px;
+    padding-bottom: 10px;
+}
+
+.shareText {
+    margin-top: 10px;
+    padding: 3px;
+    font-size: 16px;
+    text-align: center;
+}
+
+.iconContainer {
+    margin-top: 10px;
+    margin-bottom: 30px;
+    flex-direction: row;
+    justify-content: center;
 }
 
 .button {
@@ -34,4 +78,22 @@
     width: 130;
 }
 
+.autocompleteContainer {
+    margin: 10px;
+    flex: 1;
+    left: 0;
+    position: absolute;
+    right: 0;
+    top: 0;
+    zIndex: 1;
+}
 
+.autocompleteSearchBoxTextItem {
+    font-size: 16px;
+    margin: 3px;
+}
+
+.autocompleteSelectedTextStyle {
+    font-size: 18;
+    text-align: center;
+}

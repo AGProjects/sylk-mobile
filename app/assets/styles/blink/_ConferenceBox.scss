@@ -2,9 +2,72 @@
     flex: 1;
 }
 
+.conferenceContainerLandscape {
+    flex-direction: row;
+    align-content: flex-end;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: 0;
+}
+
+.chatContainerLandscape {
+    flex: 1;
+    margin-top: 120px;
+    margin-right: 10px;
+    margin-left: 5px;
+    border: 0.4px;
+    border-color: grey;
+    border-radius: 5px;
+}
+
+.audioContainerLandscape {
+    align-content: flex-start;
+    margin-top: 120px;
+    margin-left: 10px;
+    margin-right: 25px;
+    width: 40%;
+}
+
+.conferenceContainer {
+    flex-direction: column;
+    align-content: flex-end;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: 0;
+}
+
 .audioContainer {
     margin-top: 120px;
     margin-left: 10px;
+    height: 35%;
+}
+
+.chatContainer {
+    flex: 1;
+    margin-top: 10px;
+    border: 0.4px;
+    border-color: grey;
+    border-radius: 5px;
+}
+
+.videosContainer {
+    flex: 1;
+    flex-wrap: wrap;
+}
+
+.carouselContainer {
+    position: absolute;
+    bottom: 10;
+    left: 10;
+    right: 10;
+}
+
+.landscapeVideosContainer {
+    flex-direction: row;
 }
 
 .button {
@@ -23,25 +86,6 @@
     margin: 8px;
 }
 
-
-.conferenceContainer {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    top: 0;
-    align-content: flex-end;
-}
-
-.videosContainer {
-    flex: 1;
-    flex-wrap: wrap;
-}
-
-.landscapeVideosContainer {
-    flex-direction: row;
-}
-
 .hangupButton {
     background-color: rgba(#a94442, .8);
 }
@@ -54,13 +98,6 @@
 .buttonContainer {
     flex-direction: row;
     margin: 0 auto;
-}
-
-.carouselContainer {
-    position: absolute;
-    bottom: 10;
-    left: 10;
-    right: 10;
 }
 
 .landscapeDrawer {

@@ -328,6 +328,7 @@ class ReadyBox extends Component {
                     handleConferenceCall={this.handleConferenceCall}
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.props.account ? this.props.account.id: null}
+                    lookupContacts={this.props.lookupContacts}
                 />
             </Fragment>
         );
@@ -358,7 +359,8 @@ ReadyBox.propTypes = {
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     defaultDomain   : PropTypes.string,
-    saveDisplayName : PropTypes.func
+    saveDisplayName : PropTypes.func,
+    lookupContacts  : PropTypes.func
 };
 
 
