@@ -184,7 +184,19 @@ continueUserActivity:(NSUserActivity *)userActivity
 
   //you can't do this check - you HAVE to call reportNewIncomingCall otherwise apple will start killing your app
   if ([[UIApplication sharedApplication] applicationState] != UIApplicationStateActive) {
-    [RNCallKeep reportNewIncomingCall:calluuid handle:handle handleType:@"generic" hasVideo:[mediaType isEqualToString:@"video"] localizedCallerName:callerName fromPushKit: YES payload:payload.dictionaryPayload withCompletionHandler:nil];
+
+     [RNCallKeep reportNewIncomingCall: calluuid
+                             handle: handle
+                         handleType: @"generic"
+                           hasVideo: [mediaType isEqualToString:@"video"]
+                localizedCallerName: callerName
+                    supportsHolding: NO
+                       supportsDTMF: YES
+                   supportsGrouping: YES
+                 supportsUngrouping: YES
+                        fromPushKit: YES
+                            payload: payload.dictionaryPayload
+              withCompletionHandler: completion];
   }
   // }
   // else {
