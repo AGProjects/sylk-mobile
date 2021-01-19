@@ -35,7 +35,7 @@ import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
 import Preview from './components/Preview';
-import CallManager from "./CallManager";
+import CallManager from './CallManager';
 
 import utils from './utils';
 import config from './config';
