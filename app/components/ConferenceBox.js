@@ -30,11 +30,25 @@ import InviteParticipantsModal from './InviteParticipantsModal';
 import ConferenceAudioParticipantList from './ConferenceAudioParticipantList';
 import ConferenceAudioParticipant from './ConferenceAudioParticipant';
 import { GiftedChat } from 'react-native-gifted-chat'
+import xss from 'xss';
 
 import styles from '../assets/styles/blink/_ConferenceBox.scss';
 
 const DEBUG = debug('blinkrtc:ConferenceBox');
 debug.enable('*');
+
+
+function escapeHtml(text) {
+  var map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+
+  return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+}
 
 
 function toTitleCase(str) {
@@ -363,9 +377,27 @@ class ConferenceBox extends Component {
             system = true;
         }
 
+        let content;
+
+        console.log('Received', sylkMessage.contentType);
+
+        if (sylkMessage.contentType === 'text/html') {
+            content = xss(sylkMessage.content, {
+                          whiteList: [], // empty, means filter out all tags
+                          stripIgnoreTag: true, // filter out all HTML not in the whitelist
+                          stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
+                          // to filter out its content
+                        });
+            content = escapeHtml(content)
+        } else if (sylkMessage.contentType === 'text/plain') {
+            content = sylkMessage.content;
+        } else {
+            content = 'Unknown message type received ' + sylkMessage.contentType;
+        }
+
         return {
             _id: sylkMessage.id,
-            text: sylkMessage.content,
+            text: content,
             createdAt: sylkMessage.timestamp,
             received: true,
             system: system,
