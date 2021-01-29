@@ -181,10 +181,11 @@ class HistoryCard extends Component {
     render () {
         let containerClass = styles.portraitContainer;
         let cardClass = styles.card;
+        cardClass = this.state.isTablet ? styles.tabletCard : styles.card;
 
         let showActions = this.props.contact.showActions && this.props.contact.tags.indexOf('test') === -1;
 
-        let uri =  this.state.uri;
+        let uri = this.state.uri;
         let username =  uri.split('@')[0];
         let domain =  uri.split('@')[1];
         let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
@@ -366,7 +367,9 @@ class HistoryCard extends Component {
                     <Card.Content style={styles.content}>
                         <View style={styles.mainContent}>
                             <Title noWrap style={color}>{title}</Title>
+                            {showActions || this.state.isTablet ?
                             <Subheading noWrap style={color}>{subtitle}</Subheading>
+                            : null}
                             <Caption color="textSecondary">
                                 <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
                             </Caption>

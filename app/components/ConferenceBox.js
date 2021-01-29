@@ -379,8 +379,6 @@ class ConferenceBox extends Component {
 
         let content;
 
-        console.log('Received', sylkMessage.contentType);
-
         if (sylkMessage.contentType === 'text/html') {
             content = xss(sylkMessage.content, {
                           whiteList: [], // empty, means filter out all tags
