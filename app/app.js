@@ -1983,6 +1983,8 @@ class Sylk extends Component {
             hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
         }
 
+        this.callKeeper.startOutgoingCall(call.id, call.remoteIdentity.uri, hasVideo);
+
         utils.timestampedLog('Outgoing', mediaType, 'conference', call.id, 'started to', call.remoteIdentity.uri);
         this.callKeeper.addWebsocketCall(call);
 
