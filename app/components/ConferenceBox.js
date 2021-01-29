@@ -411,6 +411,14 @@ class ConferenceBox extends Component {
     }
 
     messageReceived(sylkMessage) {
+        if (sylkMessage.content.indexOf('has joined the room') > -1) {
+            return;
+        }
+
+        if (sylkMessage.content.indexOf('has left the room after') > -1) {
+            return;
+        }
+
         const giftedChatMessage = this.sylkMessage2giftedChatMessage(sylkMessage);
         this.setState({messages: GiftedChat.append(this.state.messages, [giftedChatMessage])});
     }
