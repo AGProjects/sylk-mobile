@@ -1887,10 +1887,10 @@ class Sylk extends Component {
                  this.changeRoute('/ready', 'conference_really_ended');
             }, 15000);
         } else {
-            utils.timestampedLog('Will go to ready in 4 seconds (hangup)');
+            utils.timestampedLog('Will go to ready in 6 seconds (hangup)');
             setTimeout(() => {
                  this.changeRoute('/ready', reason);
-            }, 4000);
+            }, 6000);
         }
     }
 
