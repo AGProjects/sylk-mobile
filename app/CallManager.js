@@ -56,7 +56,7 @@ export default class CallManager extends events.EventEmitter {
 
         this._calls = new Map();
         this._pushCalls = new Map();
-        this._conferences = new Map();
+        this._incoming_conferences = new Map();
         this._rejectedCalls = new Map();
         this._acceptedCalls = new Map();
         this._cancelledCalls = new Map();
@@ -274,7 +274,7 @@ export default class CallManager extends events.EventEmitter {
 
         let call = this._calls.get(callUUID);
 
-        if (!call && !this._conferences.has(callUUID)) {
+        if (!call && !this._incoming_conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
             this.webSocketActions.set(callUUID, 'reject');
             return;
@@ -285,10 +285,10 @@ export default class CallManager extends events.EventEmitter {
                 this.rejectCall(callUUID);
             }
         } else {
-            if (this._conferences.has(callUUID)) {
-                const conference = this._conferences.get(callUUID);
+            if (this._incoming_conferences.has(callUUID)) {
+                const conference = this._incoming_conferences.get(callUUID);
                 this.logMissedCall(conference.room, callUUID, direction='received', participants=[conference.from]);
-                this._conferences.delete(callUUID);
+                this._incoming_conferences.delete(callUUID);
             } else {
                 this.sylkHangupCall(callUUID, 'callkeep_hangup_call');
             }
@@ -322,8 +322,8 @@ export default class CallManager extends events.EventEmitter {
             this._timeouts.delete(callUUID);
         }
 
-        if (this._conferences.has(callUUID)) {
-            let conference = this._conferences.get(callUUID);
+        if (this._incoming_conferences.has(callUUID)) {
+            let conference = this._incoming_conferences.get(callUUID);
 
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
             this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
@@ -331,7 +331,7 @@ export default class CallManager extends events.EventEmitter {
 
             utils.timestampedLog('Callkeep: will start conference to', conference.room);
             this.conferenceCall(conference.room, this.outgoingMedia);
-            this._conferences.delete(callUUID);
+            this._incoming_conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {
             this.backToForeground();
@@ -384,10 +384,10 @@ export default class CallManager extends events.EventEmitter {
 
         this.callKeep.rejectCall(callUUID);
 
-        if (this._conferences.has(callUUID)) {
+        if (this._incoming_conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: reject conference invite', callUUID);
-            let room = this._conferences.get(callUUID);
-            this._conferences.delete(callUUID);
+            let room = this._incoming_conferences.get(callUUID);
+            this._incoming_conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {
             let call = this._calls.get(callUUID);
@@ -567,14 +567,14 @@ export default class CallManager extends events.EventEmitter {
         if (this.unmounted()) {
             return;
         }
-        if (this._conferences.has(callUUID)) {
+        if (this._incoming_conferences.has(callUUID)) {
             return;
         }
 
         displayName = displayName + ' and others';
         const hasVideo = mediaType === 'video' ? true : false;
 
-        this._conferences.set(callUUID, {room: room, from: from_uri});
+        this._incoming_conferences.set(callUUID, {room: room, from: from_uri});
         this.outgoingMedia = outgoingMedia;
 
         utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
