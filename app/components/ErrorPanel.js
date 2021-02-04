@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Portal, Modal, Title, Text, Surface } from 'react-native-paper';

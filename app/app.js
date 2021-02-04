@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { Component, Fragment } from 'react';
 import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration, PermissionsAndroid} from 'react-native';
 import { DeviceEventEmitter, BackHandler } from 'react-native';

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { useState, useEffect, useRef, Fragment, Component } from 'react';
 import { View } from 'react-native';
 import autoBind from 'auto-bind';

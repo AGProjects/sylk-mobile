@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * Metro configuration for React Native
  * https://github.com/facebook/react-native

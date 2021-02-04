@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { useRef, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 

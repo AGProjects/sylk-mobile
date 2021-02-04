@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import uuidv4 from 'uuid/v4';
 import SillyNames from './SillyNames';
 import MaterialColors from './MaterialColors';

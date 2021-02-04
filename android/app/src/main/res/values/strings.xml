@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2020, AG Projects
+SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <resources>
     <string name="app_name">Sylk</string>
     <string name="gcm_sender_id">151376522833</string>

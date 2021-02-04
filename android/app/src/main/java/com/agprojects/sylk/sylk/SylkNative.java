@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 package com.agprojects.sylk.sylk;
 
 import android.app.ActivityManager;

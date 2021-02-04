@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { Fragment } from 'react';
 import { View, Image, Text} from 'react-native';
 import { Title } from 'react-native-paper';

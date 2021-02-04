@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { memo, useState, useEffect } from 'react';
 import { View, Dimensions } from 'react-native';
 import { Dialog, Colors } from 'react-native-paper';
