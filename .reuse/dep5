@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: sylk-mobile
+Upstream-Contact: AG Projects <support@ag-projects.com>
+Source: https://github.com/AGProjects/sylk-mobile/
+ 
+Files: *android/app/src/main/res* *app/assets/images/* *ios/sylk/Images.xcassets/*
+Copyright: 2020, AG Projects
+License: GPL-3.0-only
