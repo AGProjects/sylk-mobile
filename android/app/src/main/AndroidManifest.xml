@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2020, AG Projects
+SPDX-License-Identifier: GPL-3.0-only
+-->
+
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   package="com.agprojects.sylk">
 

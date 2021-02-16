@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2020, AG Projects
+SPDX-License-Identifier: GPL-3.0-only
+-->
+
 # Sylk Mobile
 
 Sylk Mobile is part of Sylk Suite, a set of real-time communications
@@ -18,8 +23,7 @@ Sylk Suite consists of:
 
 ## License
 
-Sylk mobile licensed under GNU General Public License version 3.  A copy of
-the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
+Sylk mobile licensed under GNU General Public License version 3.  For accurate information please check individual files. 
 
 Copyright 2020 [AG Projects](https://ag-projects.com)
 

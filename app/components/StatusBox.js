@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { useState }  from 'react';
 import PropTypes from 'prop-types';
 import { Snackbar } from 'react-native-paper';

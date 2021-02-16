@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import React, { Component } from 'react';
 import { ProgressBar, Colors, Snackbar } from 'react-native-paper';
 import moment from 'moment';

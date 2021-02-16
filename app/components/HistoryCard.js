@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 ﻿import React, { Component, Fragment} from 'react';
 import { View, SafeAreaView, FlatList } from 'react-native';
 import autoBind from 'auto-bind';

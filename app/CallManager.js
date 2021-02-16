@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2020, AG Projects
+// SPDX-License-Identifier: GPL-3.0-only
+
 import events from 'events';
 import Logger from '../Logger';
 import uuid from 'react-native-uuid';
