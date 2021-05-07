@@ -1,6 +1,30 @@
-.container {
-    margin-top: 10px;
-    margin-bottom: 0px;
+.portraitContainer {
     flex: 1;
     flex-direction: column;
 }
+
+.landscapeContainer {
+    flex: 1;
+    flex-direction: row;
+}
+
+.historyBorder {
+    margin-top: 10px;
+}
+
+.chatLandscapeContainer {
+    flex: 1;
+}
+
+.chatBorder {
+    border-width: 0px;
+    margin: 1px;
+    border-radius: 5px;
+    border-color: gray;
+}
+
+.chatPortraitContainer {
+    flex: 2;
+    margin-top: 20px;
+}
+

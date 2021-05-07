@@ -1,0 +1,33 @@
+.container {
+    flex: 1;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.title {
+    padding: 3px;
+    font-size: 24px;
+    text-align: center;
+}
+
+.buttonRow {
+    flex-direction: row;
+    justify-content: center;
+    margin-top: 30px;
+    padding-bottom: 10px;
+    zIndex: -1;
+}
+
+.iconContainer {
+    margin-top: 10px;
+    margin-bottom: 30px;
+    flex-direction: row;
+    justify-content: center;
+}
+
+.button {
+    margin: 10px;
+    width: 130;
+    border: 0.4px;
+}

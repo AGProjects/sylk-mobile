@@ -590,7 +590,7 @@ class Call extends Component {
             remoteDisplayName = 'Video Test';
         } else if (remoteUri.indexOf('4444@') > -1) {
             remoteDisplayName = 'Echo Test';
-        } else if (this.props.myDisplayNames.hasOwnProperty(remoteUri)) {
+        } else if (this.props.myDisplayNames.hasOwnProperty(remoteUri) && this.props.myDisplayNames[remoteUri].name) {
             remoteDisplayName = this.props.myDisplayNames[remoteUri];
         } else if (this.props.contacts) {
             let username = remoteUri.split('@')[0];

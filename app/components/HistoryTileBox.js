@@ -2,12 +2,15 @@ import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 
 import PropTypes from 'prop-types';
-import { SafeAreaView, ScrollView, View, FlatList, Text } from 'react-native';
+import { Clipboard, SafeAreaView, View, FlatList, Text } from 'react-native';
 
 import HistoryCard from './HistoryCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
+import { GiftedChat, IMessage, Bubble } from 'react-native-gifted-chat'
+import MessageInfoModal from './MessageInfoModal';
+import ShareMessageModal from './ShareMessageModal';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -30,12 +33,20 @@ class HistoryTileBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             isRefreshing: false,
+            isLandscape: this.props.isLandscape,
             contacts: this.props.contacts,
             myInvitedParties: this.props.myInvitedParties,
             refreshHistory: this.props.refreshHistory,
             refreshFavorites: this.props.refreshFavorites,
-            selectedContact: this.props.selectedContact || null,
-            myDisplayNames: this.props.myDisplayNames
+            selectedContact: this.props.selectedContact,
+            myDisplayNames: this.props.myDisplayNames,
+            messages: this.props.messages,
+            renderMessages: [],
+            chat: this.props.chat,
+            pinned: false,
+            showMessageModal: false,
+            message: null,
+            showShareMessageModal: false
         }
 
         const echoTest = {
@@ -73,6 +84,7 @@ class HistoryTileBox extends Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
+
         if (this.ended) {
             return;
         }
@@ -105,11 +117,57 @@ class HistoryTileBox extends Component {
 
         if (nextProps.selectedContact !== this.state.selectedContact) {
             this.setState({selectedContact: nextProps.selectedContact});
+            if (nextProps.selectedContact) {
+                this.getMessages(nextProps.selectedContact);
+            }
         };
 
         if (nextProps.myDisplayNames !== this.state.myDisplayNames) {
             this.setState({myDisplayNames: nextProps.myDisplayNames});
         };
+
+        if (this.state.messages) {
+            let renderMessages = [];
+            if (this.state.selectedContact) {
+                let uri = this.state.selectedContact.remoteParty;
+                let username = uri.split('@')[0];
+                if (this.state.selectedContact.remoteParty.indexOf('@videoconference') > -1) {
+                    uri = username;
+                }
+
+                if (nextProps.messages && nextProps.messages.hasOwnProperty(uri)) {
+                    renderMessages = nextProps.messages[uri];
+                    if (this.state.renderMessages.length !== renderMessages.length) {
+                        this.props.confirmRead(uri);
+                    }
+                }
+
+                this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
+            }
+        }
+        this.setState({isLandscape: nextProps.isLandscape,
+                       chat: nextProps.chat,
+                       showMessageModal: nextProps.showMessageModal,
+                       message: nextProps.message
+                       });
+
+    }
+
+    getMessages(contact) {
+
+        if (!contact) {
+            return;
+        }
+
+        let uri = contact.remoteParty;
+        console.log('Get messages for', uri);
+
+        if (uri.indexOf('@videoconference') > -1) {
+            let username = uri.split('@')[0];
+            uri = username;
+        }
+
+        this.props.getMessages(uri);
     }
 
     setTargetUri(uri, contact) {
@@ -144,15 +202,20 @@ class HistoryTileBox extends Component {
         return this.props.setBlockedUri(uri);
     }
 
-    renderItem(item) {
+    togglePinned() {
+        this.setState({pinned: !this.state.pinned});
+    }
+
+    renderItem(object) {
+        let item = object.item || object;
         let invitedParties = [];
-        let uri = item.item.remoteParty;
+        let uri = item.remoteParty;
         let myDisplayName;
 
         let username = uri.split('@')[0];
 
         if (this.state.myDisplayNames && this.state.myDisplayNames.hasOwnProperty(uri)) {
-            myDisplayName = this.state.myDisplayNames[uri];
+            myDisplayName = this.state.myDisplayNames[uri].name;
         }
 
         if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(username)) {
@@ -160,17 +223,18 @@ class HistoryTileBox extends Component {
         }
 
         if (myDisplayName) {
-            if (item.item.displayName === item.item.remoteParty || item.item.displayName !== myDisplayName) {
-                item.item.displayName = myDisplayName;
+            if (item.displayName === item.remoteParty || item.displayName !== myDisplayName) {
+                item.displayName = myDisplayName;
             }
         }
 
         return(
             <HistoryCard
             id={item.id}
-            contact={item.item}
+            contact={item}
             filter={this.props.filter}
             invitedParties={invitedParties}
+            purgeMessages={this.props.purgeMessages}
             setFavoriteUri={this.setFavoriteUri}
             saveInvitedParties={this.saveInvitedParties}
             setBlockedUri={this.setBlockedUri}
@@ -178,12 +242,18 @@ class HistoryTileBox extends Component {
             setTargetUri={this.setTargetUri}
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
+            isLandscape={this.state.isLandscape}
             contacts={this.state.contacts}
             defaultDomain={this.props.defaultDomain}
             accountId={this.state.accountId}
             favoriteUris={this.state.favoriteUris}
             saveDisplayName={this.props.saveDisplayName}
             myDisplayNames={this.state.myDisplayNames}
+            messages={this.state.renderMessages}
+            unread={item.unread}
+            chat={this.state.chat}
+            togglePinned={this.togglePinned}
+            pinned={this.state.pinned}
             />);
     }
 
@@ -300,6 +370,38 @@ class HistoryTileBox extends Component {
         this.favoriteContacts = favoriteContacts;
     }
 
+    closeMessageModal() {
+        this.setState({showMessageModal: false, message: null});
+    }
+
+    onSendMessage(messages) {
+        let uri;
+        if (!this.state.selectedContact) {
+            if (this.props.targetUri && this.state.chat) {
+                 let contacts = this.searchedContact(this.props.targetUri);
+                 if (contacts.length !== 1) {
+                     return;
+                }
+                 uri = contacts[0].remoteParty;
+            } else {
+                return;
+            }
+        } else {
+            uri = this.state.selectedContact.remoteParty;
+        }
+        messages.forEach((message) => {
+            /*
+              sent: true,
+              // Mark the message as received, using two tick
+              received: true,
+              // Mark the message as pending with a clock loader
+              pending: true,
+            */
+            this.props.sendMessage(uri, message);
+        });
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
+    }
+
     getBlockedContacts() {
         let blockedContacts = [];
         let contact_obj;
@@ -328,6 +430,64 @@ class HistoryTileBox extends Component {
         });
 
         return blockedContacts;
+    }
+
+    getChatContacts() {
+        let chatContacts = [];
+        let contact_obj;
+        let displayName;
+        let label;
+        //console.log('this.state.chatUris', this.state.chatUris);
+
+        let contacts= this.state.contacts
+        contacts = contacts.concat(this.videoTest);
+        contacts = contacts.concat(this.echoTest);
+
+        const uris = Object.keys(this.state.myDisplayNames);
+
+        uris.forEach((uri) => {
+            contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
+            displayName = contact_obj ? contact_obj.displayName : uri;
+            label = contact_obj ? contact_obj.label: null;
+
+            const item = {
+                remoteParty: uri.toLowerCase(),
+                displayName: displayName,
+                conference: false,
+                type: 'contact',
+                unread: this.state.myDisplayNames[uri].unread ? this.state.myDisplayNames[uri].unread.toString() : "0",
+                startTime: this.state.myDisplayNames[uri].timestamp,
+                stopTime: this.state.myDisplayNames[uri].timestamp,
+                media: ['chat'],
+                label: label,
+                id: uuid.v4(),
+                tags: contact_obj ? ['chat', 'history'] : ['chat', 'syntetic', 'history']
+                };
+            chatContacts.push(item);
+        });
+
+        //console.log('chatContacts', chatContacts);
+
+        return chatContacts;
+    }
+
+    searchedContact(uri) {
+        let contacts = [];
+        let displayName = uri;
+
+        if (uri.indexOf('@') === -1) {
+            uri = uri + '@' + this.props.defaultDomain;
+        }
+        const item = {
+            remoteParty: uri.toLowerCase(),
+            displayName: displayName,
+            conference: false,
+            type: 'contact',
+            id: uuid.v4(),
+            tags: ['syntetic']
+            };
+        contacts.push(item);
+        return contacts;
     }
 
     getServerHistory() {
@@ -496,11 +656,155 @@ class HistoryTileBox extends Component {
         return false;
     }
 
+    noChatInputToolbar () {
+        return null;
+    }
+
+    onLongMessagePress(context, currentMessage) {
+        if (currentMessage && currentMessage.text) {
+            let options = ['Copy']
+
+            if (this.props.targetUri.indexOf('@videoconference') === -1) {
+                options.push('Delete');
+                if (currentMessage.direction === 'outgoing') {
+                    if (currentMessage.failed) {
+                        options.push('Resend')
+                    } else {
+                        if (!currentMessage.received) {
+                            options.push('Delete after read')
+                        }
+                    }
+                }
+
+                if (currentMessage.pinned) {
+                    options.push('Unpin');
+                } else {
+                    options.push('Pin');
+                }
+            }
+
+            options.push('Share');
+            options.push('Info');
+            options.push('Cancel');
+
+            const cancelButtonIndex = options.length - 1;
+            const infoButtonIndex = options.length - 2;
+            const shareButtonIndex = options.length - 3;
+            context.actionSheet().showActionSheetWithOptions({
+                options,
+                cancelButtonIndex,
+            }, (buttonIndex) => {
+                switch (buttonIndex) {
+                    case 0:
+                        Clipboard.setString(currentMessage.text);
+                        break;
+                    case 1:
+                        this.props.deleteMessage(currentMessage._id, this.props.targetUri);
+                        break;
+                    case 2:
+                        if (currentMessage.direction !== 'outgoing') {
+                            if (currentMessage.pinned) {
+                                this.props.unpinMessage(currentMessage._id);
+                            } else {
+                                this.props.pinMessage(currentMessage._id);
+                            }
+                        } else {
+                            if (currentMessage.failed) {
+                                this.props.reSendMessage(currentMessage, this.props.targetUri);
+                            } else {
+                                if (!currentMessage.received) {
+                                    this.props.expireMessage(currentMessage._id, 300);
+                                }
+                            }
+                        }
+                        break;
+                    case 3:
+                        if (currentMessage.direction !== 'outgoing') {
+                            break;
+                        }
+
+                        if (currentMessage.pinned) {
+                            this.props.unpinMessage(currentMessage._id);
+                        } else {
+                            this.props.pinMessage(currentMessage._id);
+                        }
+                        break;
+                    case infoButtonIndex:
+                        this.setState({message: currentMessage,
+                                       showMessageModal: true});
+
+                        break;
+                    case shareButtonIndex:
+                        this.setState({message: currentMessage,
+                                       showShareMessageModal: true
+                                       });
+                        break;
+                    default:
+                        break;
+                }
+            });
+        }
+    };
+
+    shouldUpdateMessage(props, nextProps) {
+        return true;
+    }
+
+    toggleShareMessageModal() {
+        this.setState({showShareMessageModal: !this.state.showShareMessageModal});
+    }
+
+    renderMessageBubble (props) {
+        let rightColor = '#0084ff';
+        let leftColor = '#f0f0f0';
+
+        if (props.currentMessage.failed) {
+            rightColor = 'red';
+        } else {
+            if (props.currentMessage.pinned) {
+                rightColor = '#2ecc71';
+                leftColor = '#2ecc71';
+            }
+        }
+
+        return (
+          <Bubble
+            {...props}
+            wrapperStyle={{
+              right: {
+                backgroundColor: rightColor
+              },
+              left: {
+                backgroundColor: leftColor
+              }
+            }}
+          />
+        )
+    }
+
+    get showChat() {
+       if (this.props.selectedContact || this.props.targetUri) {
+           return true;
+       }
+
+       return false;
+    }
+
     render() {
+
         let history = [];
         let searchExtraItems = [];
         let items = [];
         let matchedContacts = [];
+        let messages = this.state.renderMessages;
+
+        let chatInputClass;
+
+        if (this.state.selectedContact && this.state.selectedContact.remoteParty.indexOf('@videoconference') > -1) {
+            chatInputClass = this.noChatInputToolbar;
+        } else if (!this.state.chat) {
+            chatInputClass = this.noChatInputToolbar;
+        }
 
         if (this.props.filter === 'favorite') {
             items = this.favoriteContacts.filter(historyItem => this.matchContact(historyItem, this.props.targetUri));
@@ -511,8 +815,11 @@ class HistoryTileBox extends Component {
             history = this.state.serverHistory;
             items = history.filter(historyItem => this.matchContact(historyItem, this.props.targetUri) && historyItem.tags.indexOf('missed') > -1);
         } else {
+            let chatContacts = this.getChatContacts();
+            items = chatContacts.filter(chatItem => this.matchContact(chatItem, this.props.targetUri));
             history = this.getLocalHistory();
             history = history.concat(this.state.serverHistory);
+            history = history.concat(items);
 
             searchExtraItems = searchExtraItems.concat(this.state.contacts);
             searchExtraItems = searchExtraItems.concat(this.favoriteContacts);
@@ -528,6 +835,10 @@ class HistoryTileBox extends Component {
             }
 
             items = items.concat(matchedContacts);
+        }
+
+        if (this.props.targetUri && items.length == 0) {
+            items = items.concat(this.searchedContact(this.props.targetUri));
         }
 
         const known = [];
@@ -556,6 +867,10 @@ class HistoryTileBox extends Component {
 
             if (!item.tags) {
                 item.tags = [];
+            }
+
+            if (!item.unread) {
+                item.unread = "0";
             }
 
             if (this.state.favoriteUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('favorite') === -1) {
@@ -599,6 +914,7 @@ class HistoryTileBox extends Component {
         items.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         if (items.length === 1) {
+            //console.log(items[0]);
             items[0].showActions = true;
         }
 
@@ -610,18 +926,103 @@ class HistoryTileBox extends Component {
             columns = this.props.orientation === 'landscape' ? 2 : 1;
         }
 
+        const chatContainer = this.props.orientation === 'landscape' ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
+        const container = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
+        const contactsContainer = this.props.orientation === 'landscape' ? styles.contactsLandscapeContainer : styles.contactsPortraitContainer;
+        const borderClass = (messages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
+
+        if (items.length === 1) {
+            items[0].unread = "0";
+            if (items[0].tags.toString() === 'syntetic') {
+                messages = [];
+            }
+        }
+
+        let pinned_messages = []
+        if (this.state.pinned) {
+            messages.forEach((m) => {
+                if (m.pinned) {
+                    pinned_messages.push(m);
+                }
+            });
+            messages = pinned_messages;
+            if (pinned_messages.length === 0) {
+                let msg = {
+                    _id: uuid.v4(),
+                    text: 'No pinned messages found. Touch individual messages to pin them.',
+                    system: true
+                }
+                pinned_messages.push(msg);
+            }
+        }
+
         return (
-            <SafeAreaView style={styles.container}>
+            <SafeAreaView style={container}>
+              {items.length === 1 ?
+              (this.renderItem(items[0]))
+             :
               <FlatList
                 horizontal={false}
                 numColumns={columns}
                 onRefresh={this.getServerHistory}
+                onLongPress={this.onLongMessagePress}
                 refreshing={this.state.isRefreshing}
+                renderBubble={this.renderMessageBubble}
                 data={items}
                 renderItem={this.renderItem}
                 listKey={item => item.id}
                 key={this.props.orientation}
-              />
+             />
+             }
+
+             {this.showChat ?
+             <View style={[chatContainer, borderClass]}>
+                <GiftedChat
+                  messages={messages}
+                  onSend={this.onSendMessage}
+                  alwaysShowSend={true}
+                  onLongPress={this.onLongMessagePress}
+                  onPress={this.onLongMessagePress}
+                  renderInputToolbar={chatInputClass}
+                  renderBubble={this.renderMessageBubble}
+                  shouldUpdateMessage={this.shouldUpdateMessage}
+                  scrollToBottom
+                  inverted={false}
+                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                  infiniteScroll
+                />
+              </View>
+              : (items.length === 1) ?
+              <View style={[chatContainer, borderClass]}>
+                <GiftedChat
+                  messages={messages}
+                  renderInputToolbar={() => { return null }}
+                  renderBubble={this.renderBubble}
+                  onSend={this.onSendMessage}
+                  onLongPress={this.onLongMessagePress}
+                  shouldUpdateMessage={this.shouldUpdateMessage}
+                  onPress={this.onLongMessagePress}
+                  scrollToBottom
+                  inverted={false}
+                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                  infiniteScroll
+                />
+              </View>
+              : null
+              }
+
+            <MessageInfoModal
+                show={this.state.showMessageModal}
+                message={this.state.message}
+                close={this.closeMessageModal}
+            />
+
+            <ShareMessageModal
+                show={this.state.showShareMessageModal}
+                message={this.state.message}
+                close={this.toggleShareMessageModal}
+            />
+
             </SafeAreaView>
         );
     }
@@ -634,9 +1035,11 @@ HistoryTileBox.propTypes = {
     targetUri       : PropTypes.string,
     selectedContact : PropTypes.object,
     contacts        : PropTypes.array,
+    chat            : PropTypes.bool,
     orientation     : PropTypes.string,
     setTargetUri    : PropTypes.func,
     isTablet        : PropTypes.bool,
+    isLandscape     : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     refreshFavorites: PropTypes.bool,
     cacheHistory    : PropTypes.func,
@@ -655,7 +1058,17 @@ HistoryTileBox.propTypes = {
     filter          : PropTypes.string,
     defaultDomain   : PropTypes.string,
     saveDisplayName : PropTypes.func,
-    myDisplayNames  : PropTypes.object
+    myDisplayNames  : PropTypes.object,
+    messages        : PropTypes.object,
+    getMessages     : PropTypes.func,
+    confirmRead     : PropTypes.func,
+    sendMessage     : PropTypes.func,
+    reSendMessage   : PropTypes.func,
+    deleteMessage   : PropTypes.func,
+    expireMessage   : PropTypes.func,
+    pinMessage      : PropTypes.func,
+    unpinMessage    : PropTypes.func,
+    purgeMessages   : PropTypes.func
 };
 
 

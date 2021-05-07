@@ -47,7 +47,7 @@ class EditDisplayNameModal extends Component {
                         <Dialog.Title style={styles.title}>{this.props.uri}</Dialog.Title>
                         {this.props.myself ?
                          <Text style={styles.body}>
-                             Please set your name seen by others when you call them
+                             My display name seen by others:
                         </Text>
                         : null}
                        <TextInput
@@ -55,7 +55,7 @@ class EditDisplayNameModal extends Component {
                             name="display_name"
                             label="Display name"
                             onChangeText={this.onInputChange}
-                            defaultValue={this.state.displayName}
+                            defaultValue={(this.state.displayName !== this.props.uri) ? this.state.displayName : ''}
                             required
                             autoCapitalize="none"
                         />

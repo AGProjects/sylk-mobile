@@ -38,19 +38,6 @@ const DEBUG = debug('blinkrtc:ConferenceBox');
 debug.enable('*');
 
 
-function escapeHtml(text) {
-  var map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
-  };
-
-  return text.replace(/[&<>"']/g, function(m) { return map[m]; });
-}
-
-
 function toTitleCase(str) {
     return str.replace(
         /\w\S*/g,
@@ -82,14 +69,24 @@ class ConferenceBox extends Component {
 
         this.mediaLost = new Map();
 
-        let messages = [];
-
         this.sampleInterval = 5;
+
+        this.seenMessages = new Map();
+
+        let messages = [];
+        props.messages.reverse().forEach((m) => {
+            if (!this.seenMessages.has(m._id)) {
+                messages.push(m);
+                this.seenMessages.set(m.id, true);
+            }
+        });
+
+        messages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
 
         if (this.props.call) {
             let giftedChatMessage;
             this.props.call.messages.reverse().forEach((sylkMessage) => {
-                giftedChatMessage = this.sylkMessage2giftedChatMessage(sylkMessage);
+                giftedChatMessage = utils.sylkToRenderMessage(sylkMessage);
                 messages.push(giftedChatMessage);
             });
         }
@@ -304,8 +301,8 @@ class ConferenceBox extends Component {
             this._muteVideo();
         }
 
-        let msg = "Others can join the conference using a web browser at " + this.conferenceUrl;
-        this.postChatSystemMessage(msg, false);
+        //let msg = "Others can join the conference using a web browser at " + this.conferenceUrl;
+        //this.postChatSystemMessage(msg, false);
     }
 
     componentWillUnmount() {
@@ -354,58 +351,6 @@ class ConferenceBox extends Component {
         return null;
     }
 
-    sylkMessage2giftedChatMessage(sylkMessage) {
-        /*
-        export interface IMessage {
-          _id: string | number
-          text: string
-          createdAt: Date | number
-          user: User
-          image?: string
-          video?: string
-          audio?: string
-          system?: boolean
-          sent?: boolean
-          received?: boolean
-          pending?: boolean
-          quickReplies?: QuickReplies
-        }
-        */
-
-        let system = false;
-        if (sylkMessage.content.indexOf('Welcome!') > -1) {
-            system = true;
-        }
-
-        let content;
-
-        if (sylkMessage.contentType === 'text/html') {
-            content = xss(sylkMessage.content, {
-                          whiteList: [], // empty, means filter out all tags
-                          stripIgnoreTag: true, // filter out all HTML not in the whitelist
-                          stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
-                          // to filter out its content
-                        });
-            content = escapeHtml(content)
-        } else if (sylkMessage.contentType === 'text/plain') {
-            content = sylkMessage.content;
-        } else {
-            content = 'Unknown message type received ' + sylkMessage.contentType;
-        }
-
-        return {
-            _id: sylkMessage.id,
-            text: content,
-            createdAt: sylkMessage.timestamp,
-            received: true,
-            system: system,
-            user: {
-              _id: sylkMessage.sender.uri,
-              name: sylkMessage.sender.toString()
-                }
-            }
-    }
-
     composingIndicationReceived(data) {
         utils.timestampedLog('isComposing received');
     }
@@ -419,8 +364,9 @@ class ConferenceBox extends Component {
             return;
         }
 
-        const giftedChatMessage = this.sylkMessage2giftedChatMessage(sylkMessage);
+        const giftedChatMessage = utils.sylkToRenderMessage(sylkMessage);
         this.setState({messages: GiftedChat.append(this.state.messages, [giftedChatMessage])});
+        this.props.saveMessage(this.props.remoteUri.split('@')[0], giftedChatMessage);
     }
 
     onSendMessage(messages) {
@@ -429,6 +375,8 @@ class ConferenceBox extends Component {
         }
         messages.forEach((message) => {
             this.props.call.sendMessage(message.text, 'text/plain')
+            this.props.saveMessage(this.props.remoteUri.split('@')[0], message);
+
         });
         this.setState({messages: GiftedChat.append(this.state.messages, messages)});
     }
@@ -437,8 +385,8 @@ class ConferenceBox extends Component {
         let photo;
         let username =  uri.split('@')[0];
 
-        if (this.props.myDisplayNames.hasOwnProperty(uri)) {
-            displayName = this.props.myDisplayNames[uri];
+        if (this.props.myDisplayNames.hasOwnProperty(uri) && this.props.myDisplayNames[uri].name) {
+            displayName = this.props.myDisplayNames[uri].name;
         } else if (this.props.contacts) {
             let username = uri.split('@')[0];
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
@@ -1704,6 +1652,8 @@ ConferenceBox.propTypes = {
     connection          : PropTypes.object,
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
+    saveMessage         : PropTypes.func,
+    messages            : PropTypes.array,
     previousParticipants: PropTypes.array,
     remoteUri           : PropTypes.string,
     generatedVideoTrack : PropTypes.bool,

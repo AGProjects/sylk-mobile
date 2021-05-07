@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from'react';
+import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import utils from '../utils';
-import { Avatar } from 'react-native-paper';
+import { Text, View } from 'react-native'
+import { Avatar, Badge, withBadge } from 'react-native-paper';
+import BadgeView from 'react-native-badge-view';
 
 const UserIcon = (props) => {
 
@@ -22,16 +24,16 @@ const UserIcon = (props) => {
         avatarSize = 80;
     }
 
-
     if (photo) {
         return  <Avatar.Image source={{uri: photo}} size={avatarSize} />
     }
 
+
     if (props.identity.uri && props.identity.uri.search('anonymous') !== -1) {
         return (
             <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />
-        )
-    }
+                    )
+                }
 
     if (props.identity.uri && props.identity.uri.search('videoconference') !== -1) {
         return (
@@ -40,13 +42,15 @@ const UserIcon = (props) => {
     }
 
     return (
-        <Avatar.Text style={{backgroundColor: color}} size={avatarSize} label={initials.toUpperCase()} />
-    );
+        <BadgeView parentView={<Avatar.Text style={{backgroundColor: color}} size={avatarSize} label={initials.toUpperCase()} />}
+                   badgeText={props.unread}/>
+            );
 };
 
 UserIcon.propTypes = {
     identity: PropTypes.object.isRequired,
     large: PropTypes.bool,
+    unread: PropTypes.string,
     carousel: PropTypes.bool
 };
 

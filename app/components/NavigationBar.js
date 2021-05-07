@@ -24,6 +24,7 @@ class NavigationBar extends Component {
             registrationState: this.props.registrationState,
             connection: this.props.connection,
             proximity: this.props.proximity,
+            selectedContact: this.props.selectedContact,
             mute: false,
             menuVisible: false,
             accountId: this.props.account ? this.props.account.id : null,
@@ -42,7 +43,8 @@ class NavigationBar extends Component {
         this.setState({registrationState: nextProps.registrationState,
                        connection: nextProps.connection,
                        displayName: nextProps.displayName,
-                       proximity: nextProps.proximity
+                       proximity: nextProps.proximity,
+                       selectedContact: nextProps.selectedContact
                        });
     }
 
@@ -114,6 +116,7 @@ class NavigationBar extends Component {
         this.setState({showEditDisplayNameModal: !this.state.showEditDisplayNameModal});
     }
 
+
     render() {
          const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
@@ -139,9 +142,14 @@ class NavigationBar extends Component {
 
         //<Menu.Item onPress={() => this.handleMenu('speakerphone')} icon="speaker" title="Toggle speakerphone" />
 
+        //console.log('Nabvar selectedContact', this.state.selectedContact);
+
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
-                <Image source={blinkLogo} style={styles.logo}/>
+                {(this.props.goBackFunc && this.state.selectedContact)?
+                <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
+                : <Image source={blinkLogo} style={styles.logo}/>}
+
                 <Appbar.Content
                     title="Sylk"
                     titleStyle={titleStyle}
@@ -168,8 +176,7 @@ class NavigationBar extends Component {
                         />
                     }
                 >
-                    <Divider />
-                    <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk" />
+                    <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
                     <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                     <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                     <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
@@ -177,6 +184,7 @@ class NavigationBar extends Component {
                     <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Show logs" />
                     <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                     <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
+                    <Divider/>
                     <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                 </Menu>
 
@@ -212,12 +220,14 @@ NavigationBar.propTypes = {
     saveDisplayName    : PropTypes.func.isRequired,
     showLogs           : PropTypes.func.isRequired,
     proximity          : PropTypes.bool,
+    goBackFunc         : PropTypes.func,
     displayName        : PropTypes.string,
     account            : PropTypes.object,
     connection         : PropTypes.object,
     toggleMute         : PropTypes.func,
     orientation        : PropTypes.string,
-    isTablet           : PropTypes.bool
+    isTablet           : PropTypes.bool,
+    selectedContact    : PropTypes.object
 };
 
 export default NavigationBar;

@@ -1,21 +1,24 @@
-.content {
-    flex: 1;
-    flex-direction: row;
+.container {
 }
+
+.containerLandscape {
+}
+
 
 .mainContent {
     width: 100%;
 }
 
-.expandedCard {
+.cardContent {
+    flex: 1;
+    flex-direction: row;
 }
-
 
 .participantView {
 }
 
 .participant {
-    font-size: 16px;
+    font-size: 14px;
 }
 
 .card {
@@ -26,46 +29,40 @@
     height: 110px;
 }
 
+.expandedCard {
+    height: 120px;
+}
+
 .userAvatarContent {
     margin-top: 0px;
     margin-left: auto;
 }
 
-.landscapeContainer {
-    width: 50%;
-    margin-left: 0%;
-    margin-top: 0px;
-    border-radius: 2px;
-    border: 1px;
-}
-
-.portraitContainer {
-    width: 100%;
+.cardPortraitContainer {
     margin: 0 auto;
-    border: 1px;
-    margin-top: 0px;
+    margin-top: 1px;
+    height: 185px;
+}
+
+.cardLandscapeContainer {
+    flex: 1;
+    margin-left: 1px;
+    margin-top: 1px;
     border-radius: 2px;
 }
 
-.landscapeTabletContainer {
-    width: 33%;
-    margin-left: 0%;
-    margin-top: 0px;
+.cardLandscapeTabletContainer {
+    flex: 1;
     border: 1px;
     border-radius: 2px;
 }
 
-.portraitTabletContainer {
-    width: 50%;
-    margin: 0 auto;
-    margin-top: 0px;
+.cardPortraitTabletContainer {
     border: 1px;
     border-radius: 2px;
 }
 
 .buttonContainer {
-    justify-self: flex-end;
-    flex-direction: row;
     margin: 0 auto;
     margin-top:auto;
 }
@@ -75,4 +72,6 @@
     padding-left: 30px;
     padding-right: 30px;
 }
+
+
 

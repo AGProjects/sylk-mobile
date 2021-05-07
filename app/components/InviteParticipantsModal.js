@@ -108,11 +108,19 @@ class InviteParticipantsModal extends Component {
         const uris = [];
         if (this.state.participants) {
             this.state.participants.split(',').forEach((item) => {
-                item = item.trim();
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
+                item = item.trim().toLowerCase();
+                if (item.length > 1) {
+                    if (item.indexOf('@') === -1) {
+                        item = `${item}@${this.props.defaultDomain}`;
+                    } else {
+                        const domain = item.split('@')[1];
+                        const username = item.split('@')[0];
+                        if (username.length === 0) {
+                            return;
+                        }
+                    }
+                    uris.push(item);
                 }
-                uris.push(item);
             });
         }
 
@@ -207,8 +215,7 @@ class InviteParticipantsModal extends Component {
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface>
-                        <Dialog.Title>Invite people</Dialog.Title>
-
+                        <Dialog.Title style={styles.title}>Invite People</Dialog.Title>
                         <View>
                         <Autocomplete
                           containerStyle={styles.autocompleteContainer}
@@ -230,7 +237,7 @@ class InviteParticipantsModal extends Component {
                         />
                         </View>
                         <View style={styles.buttonRowInvite}>
-                        <Button
+                        <Button color={!this.state.participants ? "lightgray": null}
                             mode="contained"
                             style={styles.button}
                             onPress={this.invite}

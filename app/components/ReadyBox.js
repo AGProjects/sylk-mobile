@@ -13,7 +13,6 @@ import config from '../config';
 import utils from '../utils';
 import styles from '../assets/styles/blink/_ReadyBox.scss';
 
-
 class ReadyBox extends Component {
     constructor(props) {
         super(props);
@@ -22,15 +21,20 @@ class ReadyBox extends Component {
         this.state = {
             targetUri: '',
             contacts: this.props.contacts,
-            selectedContact: null,
+            selectedContact: this.props.selectedContact,
             showConferenceModal: false,
             sticky: false,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             historyFilter: null,
             missedCalls: false,
+            isLandscape: this.props.isLandscape,
             participants: null,
-            myInvitedParties: this.props.myInvitedParties
+            myInvitedParties: this.props.myInvitedParties,
+            messages: this.props.messages,
+            myDisplayName: this.props.myDisplayName,
+            chat: false,
+            edit: false
         };
         this.ended = false;
     }
@@ -40,7 +44,20 @@ class ReadyBox extends Component {
             return;
         }
 
-        this.setState({myInvitedParties: nextProps.myInvitedParties});
+        if (this.state.selectedContact && nextProps.selectedContact === null) {
+            this.setState({targetUri: '',
+                           chat: false});
+        }
+
+        if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
+            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.remoteParty)});
+        }
+
+        this.setState({myInvitedParties: nextProps.myInvitedParties,
+                        messages: nextProps.messages,
+                        myDisplayName: nextProps.myDisplayName,
+                        selectedContact: nextProps.selectedContact,
+                        isLandscape: nextProps.isLandscape});
     }
 
     getTargetUri(uri) {
@@ -72,13 +89,63 @@ class ReadyBox extends Component {
        this.handleTargetChange('');
     }
 
+    chatDisabledForUri(uri) {
+        if (uri.indexOf('@videoconference') > -1) {
+            return true;
+        }
+        if (uri.indexOf('@guest') > -1) {
+            return true;
+        }
+
+        if (uri.indexOf('3333@') > -1) {
+            return true;
+        }
+
+        if (uri.indexOf('4444@') > -1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    get showSearchBar() {
+        if (this.props.isTablet) {
+            return true;
+        }
+        return (this.state.selectedContact ===  null);
+    }
+
+    get showButtonsBar() {
+        if (this.props.isTablet) {
+            return true;
+        }
+
+        if (this.state.chat && this.state.selectedContact) {
+            return false;
+        }
+
+        return true;
+    }
+
     handleTargetChange(value, contact) {
+        if (this.state.selectedContact === contact) {
+            this.setState({edit: !this.state.edit});
+            if (this.state.chat) {
+                this.setState({chat: false});
+            }
+            return;
+        } else {
+            this.setState({chat: false});
+        }
+
         let new_value = value;
 
         if (contact) {
             if (this.state.targetUri === contact.uri) {
                 new_value = '';
             }
+        } else {
+            contact = null;
         }
 
         if (this.state.targetUri === value) {
@@ -89,7 +156,10 @@ class ReadyBox extends Component {
             contact = null;
         }
 
-        this.setState({targetUri: new_value, selectedContact: contact});
+        new_value = new_value.replace(' ','');
+
+        this.props.selectContact(contact);
+        this.setState({targetUri: new_value});
     }
 
     handleTargetSelect() {
@@ -97,7 +167,6 @@ class ReadyBox extends Component {
             this.props._notificationCenter.postSystemNotification("Server unreachable");
             return;
         }
-        // the user pressed enter, start a video call by default
 
         let uri = this.state.targetUri.toLowerCase();
 
@@ -116,6 +185,16 @@ class ReadyBox extends Component {
         event.preventDefault();
         this.setState({showConferenceModal: true});
         return;
+    }
+
+    handleChat(event) {
+        event.preventDefault();
+        if (!this.state.chat && !this.state.selectedContact && this.state.targetUri.toLowerCase().indexOf('@') === -1) {
+           this.setState({targetUri: this.getTargetUri(this.state.targetUri)});
+        }
+
+        let uri = this.state.targetUri.toLowerCase();
+        this.setState({chat: !this.state.chat});
     }
 
     handleAudioCall(event) {
@@ -193,6 +272,29 @@ class ReadyBox extends Component {
         return true;
     }
 
+    get chatButtonDisabled() {
+        let uri = this.state.targetUri.trim();
+        if (this.chatDisabledForUri(uri)) {
+            return true;
+        }
+
+        return this.callButtonDisabled;
+    }
+
+    get callButtonDisabled() {
+        let uri = this.state.targetUri.trim();
+        if (uri.indexOf(' ') > -1) {
+            return true;
+        }
+        if (uri.length === 0 ||
+            uri.indexOf('@videoconference') > -1 ||
+            uri.indexOf('@guest') > -1
+            ) {
+            return true;
+            }
+        return false;
+    }
+
     render() {
         let uriClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
@@ -230,13 +332,17 @@ class ReadyBox extends Component {
             uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
         }
 
-        const historyClass = this.props.orientation === 'landscape' ? styles.landscapeHistory : styles.portraitHistory;
+        const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
+        const buttonGroupClass = this.props.orientation === 'landscape' ? styles.landscapeButtonGroup : styles.buttonGroup;
+        const borderClass = this.state.chat ? null : styles.historyBorder;
 
         return (
             <Fragment>
-                <View style={styles.wholeContainer}>
+                <View style={styles.container}>
                     <View >
+                        {this.showButtonsBar ?
                         <View style={uriGroupClass}>
+                            {this.showSearchBar ?
                             <View style={uriClass}>
                                 <URIInput
                                     defaultValue={this.state.targetUri}
@@ -245,32 +351,42 @@ class ReadyBox extends Component {
                                     autoFocus={false}
                                 />
                             </View>
-                            <View style={styles.buttonGroup}>
+                            : null}
+
+                            <View style={buttonGroupClass}>
                                 <IconButton
                                     style={buttonClass}
-                                    size={34}
-                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1 || this.state.targetUri.indexOf('@guest') > -1}
+                                    size={32}
+                                    disabled={this.chatButtonDisabled}
+                                    onPress={this.handleChat}
+                                    icon="chat"
+                                />
+                                <IconButton
+                                    style={buttonClass}
+                                    size={32}
+                                    disabled={this.callButtonDisabled}
                                     onPress={this.handleAudioCall}
                                     icon="phone"
                                 />
                                 <IconButton
                                     style={buttonClass}
-                                    size={34}
-                                    disabled={this.state.targetUri.length === 0 || this.state.targetUri.indexOf('@videoconference') > -1 || this.state.targetUri.indexOf('@guest') > -1}
+                                    size={32}
+                                    disabled={this.callButtonDisabled}
                                     onPress={this.handleVideoCall}
                                     icon="video"
                                 />
                                 <IconButton
                                     style={styles.conferenceButton}
                                     disabled={!this.conferenceButtonActive()}
-                                    size={34}
+                                    size={32}
                                     onPress={this.showConferenceModal}
                                     icon="account-group"
                                 />
                             </View>
                         </View>
+                                : null}
                     </View>
-                    <View style={historyClass}>
+                    <View style={[historyContainer, borderClass]}>
                         <HistoryTileBox
                             contacts={this.state.contacts}
                             targetUri={this.state.targetUri}
@@ -279,6 +395,8 @@ class ReadyBox extends Component {
                             selectedContact={this.state.selectedContact}
                             setMissedCalls={this.setMissedCalls}
                             isTablet={this.props.isTablet}
+                            chat={this.state.chat}
+                            isLandscape={this.state.isLandscape}
                             account={this.props.account}
                             password={this.props.password}
                             config={this.props.config}
@@ -287,7 +405,7 @@ class ReadyBox extends Component {
                             localHistory={this.props.localHistory}
                             cacheHistory={this.props.cacheHistory}
                             serverHistory={this.props.serverHistory}
-                            myDisplayName={this.props.myDisplayName}
+                            myDisplayName={this.state.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
                             deleteHistoryEntry={this.props.deleteHistoryEntry}
                             setFavoriteUri={this.props.setFavoriteUri}
@@ -300,13 +418,24 @@ class ReadyBox extends Component {
                             defaultDomain={this.props.defaultDomain}
                             saveDisplayName={this.props.saveDisplayName}
                             myDisplayNames = {this.props.myDisplayNames}
+                            messages = {this.state.messages}
+                            sendMessage={this.props.sendMessage}
+                            reSendMessage={this.props.reSendMessage}
+                            purgeMessages={this.props.purgeMessages}
+                            expireMessage = {this.props.expireMessage}
+                            deleteMessage = {this.props.deleteMessage}
+                            getMessages = {this.props.getMessages}
+                            pinMessage = {this.props.pinMessage}
+                            unpinMessage = {this.props.unpinMessage}
+                            confirmRead = {this.props.confirmRead}
                         />
                     </View>
-                    {((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
+
+                    {(((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
                       (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') ||
                       (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked') ||
-                      (this.state.historyFilter === 'missed')
-                      ) ?
+                      (this.state.historyFilter === 'missed')) &&
+                      !this.state.chat) ?
                     <View style={styles.historyButtonGroup}>
                        {this.state.historyFilter !== null ? <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>: null}
                        {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
@@ -314,6 +443,7 @@ class ReadyBox extends Component {
                        {(this.state.missedCalls && this.state.historyFilter !== 'missed')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
                     </View>
                     : null}
+
                     {this.props.isTablet && 0?
                     <View style={styles.footer}>
                         <FooterBox />
@@ -345,10 +475,11 @@ ReadyBox.propTypes = {
     contacts        : PropTypes.array,
     orientation     : PropTypes.string,
     isTablet        : PropTypes.bool,
+    isLandscape     : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     refreshFavorites: PropTypes.bool,
     cacheHistory    : PropTypes.func,
-    serverHistory  : PropTypes.array,
+    serverHistory   : PropTypes.array,
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
@@ -360,7 +491,19 @@ ReadyBox.propTypes = {
     blockedUris     : PropTypes.array,
     defaultDomain   : PropTypes.string,
     saveDisplayName : PropTypes.func,
-    lookupContacts  : PropTypes.func
+    selectContact: PropTypes.func,
+    lookupContacts  : PropTypes.func,
+    sendMessage     : PropTypes.func,
+    reSendMessage   : PropTypes.func,
+    purgeMessages   : PropTypes.func,
+    confirmRead     : PropTypes.func,
+    deleteMessage   : PropTypes.func,
+    expireMessage   : PropTypes.func,
+    getMessages     : PropTypes.func,
+    pinMessage      : PropTypes.func,
+    unpinMessage    : PropTypes.func,
+    selectedContact : PropTypes.object,
+    messages        : PropTypes.object
 };
 
 

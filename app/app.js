@@ -16,6 +16,7 @@ import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import Contacts from 'react-native-contacts';
 import BackgroundTimer from 'react-native-background-timer';
 import DeepLinking from 'react-native-deep-linking';
+import base64 from 'react-native-base64';
 
 registerGlobals();
 
@@ -36,7 +37,13 @@ import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
 import Preview from './components/Preview';
 import CallManager from './CallManager';
+import SQLite from 'react-native-sqlite-storage';
+//SQLite.DEBUG(true);
+SQLite.enablePromise(true);
 
+import xss from 'xss';
+import moment from 'moment';
+import momentFormat from 'moment-duration-format';
 import utils from './utils';
 import config from './config';
 import storage from './storage';
@@ -120,6 +127,7 @@ const mainStyle = StyleSheet.create({
     }
 })();
 
+
 const requestCameraPermission = async () => {
     if (Platform.OS !== 'android') {
         return;
@@ -169,6 +177,7 @@ const requestCameraPermission = async () => {
         console.warn(err);
     }
 };
+
 
 
 class Sylk extends Component {
@@ -224,7 +233,9 @@ class Sylk extends Component {
             declineReason: null,
             showLogsModal: false,
             logs: '',
-            proximityEnabled: true
+            proximityEnabled: true,
+            messages: {},
+            selectedContact: null
         };
 
         utils.timestampedLog('Init app');
@@ -260,7 +271,6 @@ class Sylk extends Component {
         this.goToReadyTimer = null;
 
         storage.initialize();
-
         this.callKeeper = new CallManager(RNCallKeep,
                                                 this.acceptCall,
                                                 this.rejectCall,
@@ -329,11 +339,6 @@ class Sylk extends Component {
             }
         });
 
-        storage.get('displayName').then((displayName) => {
-            //console.log('My display name is', displayName);
-            this.setState({displayName: displayName});
-        });
-
         storage.get('proximityEnabled').then((proximityEnabled) => {
             this.setState({proximityEnabled: proximityEnabled});
         });
@@ -344,28 +349,292 @@ class Sylk extends Component {
             utils.timestampedLog('Proximity sensor disabled');
         }
 
-        storage.get('myDisplayNames').then((myDisplayNames) => {
-            this.setState({myDisplayNames: myDisplayNames});
-        });
-
-        storage.get('favoriteUris').then((favoriteUris) => {
-            if (favoriteUris) {
-                this.setState({favoriteUris: favoriteUris});
-            }
-        });
-
-        storage.get('blockedUris').then((blockedUris) => {
-            if (blockedUris) {
-                this.setState({blockedUris: blockedUris});
-                //console.log('My blocked Uris', blockedUris);
-            }
-        });
+        this.loadPeople();
 
         for (let scheme of URL_SCHEMES) {
             DeepLinking.addScheme(scheme);
         }
 
+        this.sqlTableVersions = {'messages': 1,
+                                 'journal': 1
+                                 }
+
+        this.updateTableQueries = {'messages': {1: []},
+                                   'journal': {1: []}
+                                   };
+
+        this.db = null;
+        this.initSQL();
+
     }
+
+    loadPeople() {
+        let blockedUris = [];
+        let myDisplayNames = {};
+        let favoriteUris = [];
+        let displayName = null;
+
+        storage.get('displayName').then((displayName) => {
+            console.log('My display name is', displayName);
+            this.setState({displayName: displayName});
+        }).catch((error) => {
+            console.log('get displayName error:', error);
+        });
+
+        storage.get('myDisplayNames').then((myDisplayNames) => {
+            let myDisplayNamesObjects = {};
+            if (myDisplayNames) {
+                Object.keys(myDisplayNames).forEach((key) => {
+                    if(typeof(myDisplayNames[key]) == 'string') {
+                        console.log('Convert display name object');
+                        myDisplayNamesObjects[key] = {'name': myDisplayNames[key]}
+                    } else {
+                        myDisplayNamesObjects[key] = myDisplayNames[key];
+                    }
+                });
+                myDisplayNames = myDisplayNamesObjects;
+            } else {
+                myDisplayNames = {};
+            }
+            console.log('My displayNames:', myDisplayNames);
+            this.setState({myDisplayNames: myDisplayNames});
+
+            storage.get('favoriteUris').then((favoriteUris) => {
+                favoriteUris = favoriteUris.filter(item => item !== null);
+                console.log('My favorites:', favoriteUris);
+                this.setState({favoriteUris: favoriteUris});
+
+                favoriteUris.forEach((uri) => {
+                    if (uri in myDisplayNames) {
+                        myDisplayNames[uri].favorite = true;
+                    } else {
+                        myDisplayNames[uri] = {name: '', favorite: true};
+                    }
+                });
+
+                storage.remove('favoriteUris');
+                storage.set('myDisplayNames', myDisplayNames);
+                this.setState({myDisplayNames: myDisplayNames});
+
+            }).catch((error) => {
+                //console.log('get favoriteUris error:', error);
+                let uris = Object.keys(myDisplayNames);
+                uris.forEach((uri) => {
+                    if (myDisplayNames[uri].favorite) {
+                        favoriteUris.push(uri);
+                    }
+                });
+
+                console.log('Loaded', favoriteUris.length, 'favorites');
+                this.setState({favoriteUris: favoriteUris});
+            });
+
+            storage.get('blockedUris').then((blockedUris) => {
+                blockedUris = blockedUris.filter(item => item !== null);
+                console.log('My blockedUris:', blockedUris);
+                this.setState({blockedUris: blockedUris});
+
+                blockedUris.forEach((uri) => {
+                    if (uri in myDisplayNames) {
+                        myDisplayNames[uri].blocked = true;
+                    } else {
+                        myDisplayNames[uri] = {name: '', blocked: true};
+                    }
+                });
+
+                storage.remove('blockedUris');
+                storage.set('myDisplayNames', myDisplayNames);
+                this.setState({myDisplayNames: myDisplayNames});
+
+            }).catch((error) => {
+                //console.log('get favoriteUris error:', error);
+                let uris = Object.keys(myDisplayNames);
+                uris.forEach((uri) => {
+                    if (myDisplayNames[uri].blocked) {
+                        blockedUris.push(uri);
+                    }
+                });
+
+                console.log('Loaded', blockedUris.length, 'blocked uris');
+                this.setState({blockedUris: blockedUris});
+            });
+
+        }).catch((error) => {
+            console.log('get myDisplayNames error:', error);
+        });
+    }
+
+    async initSQL() {
+        const database_name = "sylk.db";
+        const database_version = "1.0";
+        const database_displayname = "Sylk Database";
+        const database_size = 200000;
+
+        await SQLite.openDatabase(database_name, database_version, database_displayname, database_size).then((DB) => {
+            this.db = DB;
+            console.log('SQL database', database_name, 'opened');
+            //this.dropTables();
+            this.createTables();
+        }).catch((error) => {
+            console.log('SQL database error:', error);
+        });
+    }
+
+    dropTables() {
+        console.log('Drop SQL tables...')
+        this.ExecuteQuery("DROP TABLE if exists 'chat_uris';");
+        this.ExecuteQuery("DROP TABLE if exists 'recipients';");
+        this.ExecuteQuery("DROP TABLE 'messages';");
+        this.ExecuteQuery("DROP TABLE 'versions';");
+    }
+
+    createTables() {
+        console.log('Create SQL tables...')
+        let create_versions_table = "CREATE TABLE IF NOT EXISTS 'versions' ( \
+                                    'id' INTEGER PRIMARY KEY AUTOINCREMENT, \
+                                    'table' TEXT UNIQUE, \
+                                    'version' INTEGER NOT NULL );\
+                                    ";
+
+        this.ExecuteQuery(create_versions_table).then((success) => {
+            //console.log('SQL version table created');
+        }).catch((error) => {
+            console.log(create_versions_table);
+            console.log('SQL version table creation error:', error);
+        });
+
+        let create_table_messages = "CREATE TABLE IF NOT EXISTS 'messages' ( \
+                                    'id' INTEGER PRIMARY KEY AUTOINCREMENT, \
+                                    'msg_id' TEXT UNIQUE, \
+                                    'timestamp' TEXT, \
+                                    'content' BLOB, \
+                                    'content_type' TEXT, \
+                                    'from_uri' TEXT, \
+                                    'to_uri' TEXT, \
+                                    'sent' INTEGER, \
+                                    'sent_timestamp' TEXT, \
+                                    'encrypted' INTEGER, \
+                                    'encryption_key' TEXT, \
+                                    'received' INTEGER, \
+                                    'received_timestamp' TEXT, \
+                                    'expire_interval' INTEGER, \
+                                    'deleted' INTEGER, \
+                                    'pinned' INTEGER, \
+                                    'pending' INTEGER, \
+                                    'system' INTEGER, \
+                                    'url' TEXT, \
+                                    'direction' TEXT) \
+                                    ";
+
+        this.ExecuteQuery(create_table_messages).then((success) => {
+            console.log('SQL messages table OK');
+        }).catch((error) => {
+            console.log(create_table_messages);
+            console.log('SQL messages table creation error:', error);
+        });
+
+        let create_table_journal = " CREATE TABLE IF NOT EXISTS 'journal' ( \
+                                    'id' INTEGER PRIMARY KEY AUTOINCREMENT, \
+                                    'timestamp' TEXT, \
+                                    'msg_id' TEXT, \
+                                    'uri' TEXT, \
+                                    'action' TEXT, \
+                                    'data' TEXT) \
+                                    ";
+
+        this.ExecuteQuery(create_table_journal).then((success) => {
+            console.log('SQL journal table OK');
+        }).catch((error) => {
+            console.log(create_table_journal);
+            console.log('SQL journal table creation error:', error);
+        });
+
+        this.upgradeSQLTables();
+    }
+
+    upgradeSQLTables() {
+        console.log('Update SQL tables')
+        let query;
+        let update_queries;
+        let update_sub_queries;
+        let version_numbers;
+
+        /*
+        this.ExecuteQuery("ALTER TABLE 'messages' add column received_timestamp TEXT after received");
+        this.ExecuteQuery("ALTER TABLE 'messages' add column sent_timestamp TEXT after sent");
+        */
+
+        query = "SELECT * FROM versions";
+        let currentVersions = {};
+
+        this.ExecuteQuery(query,[]).then((results) => {
+            let rows = results.rows;
+            for (let i = 0; i < rows.length; i++) {
+                var item = rows.item(i);
+                currentVersions[item.table] = item.version;
+            }
+
+            for (const [key, value] of Object.entries(this.sqlTableVersions)) {
+                if (currentVersions[key] == null) {
+                    query = "INSERT INTO versions ('table', 'version') values ('" + key + "', '" + this.sqlTableVersions[key] + "')";
+                    console.log(query);
+                    this.ExecuteQuery(query);
+                } else {
+                    if (this.sqlTableVersions[key] > currentVersions[key]) {
+                        console.log('Table', key, 'must have version', value, 'and it has', currentVersions[key]);
+                        update_queries = this.updateTableQueries[key];
+                        version_numbers = Object.keys(update_queries);
+                        version_numbers.sort(function(a, b){return a-b});
+                        version_numbers.forEach((version) => {
+                            if (version <= currentVersions[key]) {
+                                return;
+                            }
+                            update_sub_queries = update_queries[version];
+                            update_sub_queries.forEach((query) => {
+                                console.log('Run query for table', key, 'version', version, ':', query);
+                                this.ExecuteQuery(query);
+                            });
+
+                        });
+
+                        query = "update versions set version = " + this.sqlTableVersions[key] + " where \"table\" = '" + key + "';";
+                        console.log(query);
+                        this.ExecuteQuery(query);
+
+                    } else {
+                        //console.log('No upgrade required for table', key);
+                    }
+                }
+            }
+
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+
+    }
+
+    /*
+    * Execute sql queries
+    *
+    * @param sql
+    * @param params
+    *
+    * @returns {resolve} results
+    */
+
+    ExecuteQuery = (sql, params = []) => new Promise((resolve, reject) => {
+        //console.log('Execute query:', sql);
+        this.db.transaction((trans) => {
+          trans.executeSql(sql, params, (trans, results) => {
+            resolve(results);
+          },
+            (error) => {
+              //console.log('SQL error', error);
+              reject(error);
+            });
+        });
+      });
 
     async loadContacts() {
         Contacts.checkPermission((err, permission) => {
@@ -508,6 +777,7 @@ class Sylk extends Component {
                             currentCall: null,
                             incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
                             targetUri: '',
+                            selectedContact: null,
                             reconnectingCall: false,
                             muted: false
                             });
@@ -957,6 +1227,10 @@ class Sylk extends Component {
         this._notificationCenter.removeNotification();
     }
 
+    selectContact(contact) {
+        this.setState({selectedContact: contact});
+    }
+
     connectionStateChanged(oldState, newState) {
         if (this.unmounted) {
             return;
@@ -1001,6 +1275,10 @@ class Sylk extends Component {
                     generatedVideoTrack: false,
                     });
 
+                if (this.currentRoute === '/login') {
+                    this.changeRoute('/ready');
+                }
+
                 break;
             default:
                 if (this.state.registrationKeepalive !== true) {
@@ -1030,6 +1308,11 @@ class Sylk extends Component {
         if (this.startedByPush) {
             // TODO: hangup incoming call
         }
+
+        if (this.currentRoute === '/login') {
+            this.changeRoute('/ready');
+        }
+
     }
 
     registrationStateChanged(oldState, newState, data) {
@@ -1078,6 +1361,10 @@ class Sylk extends Component {
                     }
                 }
             }
+            if (this.currentRoute === '/login') {
+                this.changeRoute('/ready');
+            }
+
         } else if (newState === 'registered') {
             if (this.registrationFailureTimer) {
                 clearTimeout(this.registrationFailureTimer);
@@ -1387,6 +1674,7 @@ class Sylk extends Component {
                 this._terminatedCalls.set(callUUID, true);
                 utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
 
+
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
                     newincomingCall = null;
                 }
@@ -1399,6 +1687,7 @@ class Sylk extends Component {
                 let reason = data.reason;
                 let play_busy_tone = !this.isConference(call);
                 let CALLKEEP_REASON;
+                let missed = false;
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState === 'progress' && direction === 'outgoing') {
@@ -1406,6 +1695,7 @@ class Sylk extends Component {
                         play_busy_tone = false;
                     } else if (oldState === 'incoming') {
                         reason = 'Cancelled';
+                        missed = true;
                         play_busy_tone = false;
                         CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                     } else {
@@ -1468,6 +1758,13 @@ class Sylk extends Component {
                 }
                 this.stopRingback();
 
+                let msg;
+                let current_datetime = new Date();
+                let formatted_date = utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+                msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
+
+                this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
+
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
 
                 if (play_busy_tone && oldState !== 'established' && direction === 'outgoing') {
@@ -1516,6 +1813,10 @@ class Sylk extends Component {
         if (this.state.incomingCall) {
             //console.log('Incoming:', this.state.incomingCall.id);
         }
+    }
+
+    goBack() {
+        this.setState({selectedContact: null});
     }
 
     handleRegistration(accountId, password, remember=true) {
@@ -1593,6 +1894,8 @@ class Sylk extends Component {
                 account.on('conferenceCall', this.outgoingConference);
                 account.on('registrationStateChanged', this.registrationStateChanged);
                 account.on('incomingCall', this.incomingCallFromWebSocket);
+                account.on('message', this.incomingMessage);
+                account.on('messageStateChanged', this.messageStateChanged);
                 account.on('missedCall', this.missedCall);
                 account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
                 //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
@@ -2049,6 +2352,7 @@ class Sylk extends Component {
         }
     }
 
+
     backToForeground() {
         if (this.state.appState !== 'active') {
             this.callKeeper.backToForeground();
@@ -2376,6 +2680,15 @@ class Sylk extends Component {
 
     missedCall(data) {
         utils.timestampedLog('Missed call from ' + data.originator.uri, '(', data.originator.displayName, ')');
+
+        /*
+        let msg;
+        let current_datetime = new Date();
+        let formatted_date = utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+        msg = formatted_date + " - missed call";
+        this.saveSystemMessage(data.originator.uri.toLowerCase(), msg, 'incoming', true);
+        */
+
         if (!this.state.currentCall) {
             let from = data.originator.displayName ||  data.originator.uri;
             this._notificationCenter.postSystemNotification('Missed call', {body: `from ${from}`});
@@ -2417,45 +2730,594 @@ class Sylk extends Component {
         }
     }
 
-    setFavoriteUri(uri) {
-        let favoriteUris = this.state.favoriteUris;
-        let idx = favoriteUris.indexOf(uri);
-        let ret;
+    sendMessage(uri, message) {
+        // Send outgoing messages
+        console.log('Outgoing message to', uri);
+        let outgoingMessage;
 
-        if (idx === -1) {
-            favoriteUris.push(uri);
-            ret = true;
+        message.sent = false;
+        message.received = false;
+        message.direction = 'outgoing';
+
+        if (this.state.account) {
+            outgoingMessage = this.state.account.sendMessage(uri, message.text, {id: message._id});
+            message.pending = true;
         } else {
-            let removed = favoriteUris.splice(idx, 1);
-            ret = false;
+            message.pending = false;
         }
 
-        storage.set('favoriteUris', favoriteUris);
-        this.setState({favoriteUris: favoriteUris,
-                       refreshFavorites: !this.state.refreshFavorites});
-        return ret;
+        this.saveOutgoingMessage(uri, message);
+
+        let renderMessages = this.state.messages;
+        if (Object.keys(renderMessages).indexOf(uri) === -1) {
+            renderMessages[uri] = [];
+        }
+
+        renderMessages[uri].push(message);
+        this.setState({messages: renderMessages});
     }
 
-    setBlockedUri(uri) {
-        let blockedUris = this.state.blockedUris;
-        console.log('Old blocked Uris:', blockedUris);
+    async reSendMessage(message, uri) {
+        await this.deleteMessage(message._id, uri).then((result) => {
+            message._id = uuid.v4();
+            message.createdAt = new Date();
+            this.sendMessage(uri, message);
+        }).catch((error) => {
+            console.log('Failed to delete old messages');
+        });
+    }
 
-        let ret;
-        let idx = blockedUris.indexOf(uri);
+    async saveOutgoingMessage(uri, message) {
+        this.saveOutgoingChatUri(uri);
 
-        if (idx === -1) {
-            blockedUris.push(uri);
-            ret = true;
-        } else {
-            let removed = blockedUris.splice(idx, 1);
-            console.log('Removed', removed);
-            ret = false;
+        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, "
+            + " direction, pending, sent, received) VALUES ('"
+            + message._id
+            + "', '"
+            + message.createdAt
+            + "', '"
+            + base64.encode(message.text)
+            + "', '"
+            + 'text/plain'
+            + "', '"
+            + this.state.account.id
+            + "', '"
+            + uri
+            + "', '"
+            + 'outgoing'
+            + "', "
+            + "0, 0, 0"
+            + ")";
+
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((result) => {
+            //console.log('SQL insert message OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async saveConferenceMessage(uri, message) {
+        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, "
+            + " direction, pending, sent, received) VALUES ('"
+            + message._id
+            + "', '"
+            + message.createdAt
+            + "', '"
+            + base64.encode(message.text)
+            + "', '"
+            + 'text/plain'
+            + "', '"
+            + this.state.account.id
+            + "', '"
+            + uri
+            + "', '"
+            + 'outgoing'
+            + "', '"
+            + (message.pending ? 1: 0)
+            + "', '"
+            + (message.sent ? 1: 0)
+            + "', '"
+            + (message.received ? 1: 0)
+            + "')";
+
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((result) => {
+            //console.log('SQL insert message OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async messageStateChanged(obj) {
+        // valid API states: pending -> accepted -> delivered -> displayed,
+        // error, failed or forbidden
+        // valid UI render states: pending, read, received
+
+        let id = obj.messageId;
+        let state = obj.state;
+        let uri;
+
+        utils.timestampedLog('Message state changed for message', id, state);
+
+        let query;
+
+        if (state == 'accepted') {
+            query = "UPDATE messages set pending = 0 where msg_id = '" + id + "'";
+        } else if (state == 'delivered') {
+            query = "UPDATE messages set sent = 1 where msg_id = '" + id + "'";
+        } else if (state == 'displayed') {
+            query = "UPDATE messages set received = 1 where msg_id = '" + id + "'";
+        } else if (state == 'failed') {
+            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+        } else if (state == 'error') {
+            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+        } else if (state == 'forbidden') {
+            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
         }
 
-        console.log('New blocked Uris:', blockedUris);
-        storage.set('blockedUris', blockedUris);
-        this.setState({blockedUris: blockedUris});
-        return ret;
+        //console.log(query);
+        await this.ExecuteQuery(query).then((results) => {
+            this.updateRenderMessage(id, state);
+            // console.log('SQL update OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async deleteMessage(id, uri) {
+        utils.timestampedLog('Delete message', id);
+        let query;
+        // TODO send request to server
+        query = "DELETE from messages where msg_id = '" + id + "'";
+        //console.log(query);
+        this.addJournal(id, 'delete');
+        await this.ExecuteQuery(query).then((results) => {
+            this.deleteRenderMessage(id, uri);
+            // console.log('SQL update OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async expireMessage(id, duration=300) {
+        utils.timestampedLog('Expire message', id, 'in', duration, 'seconds after read');
+        // TODO expire message
+    }
+
+    async deleteRenderMessage(id, uri) {
+        if (uri.indexOf('@videoconference.') > -1) {
+            uri = uri.split('@')[0];
+        }
+
+        let changes = false;
+        let renderedMessages = this.state.messages;
+        let newRenderedMessages = [];
+        if (uri in this.state.messages) {
+            renderedMessages[uri].forEach((m) => {
+                if (m._id !== id) {
+                    newRenderedMessages.push(m);
+                } else {
+                    changes = true;
+                }
+            });
+
+            renderedMessages[uri] = newRenderedMessages;
+        }
+        if (changes) {
+            this.setState({messages: renderedMessages});
+        }
+    }
+
+    async updateRenderMessage(id, state) {
+        let query;
+        let uri;
+        let changes = false;
+
+        query = "SELECT * from messages where msg_id = '" + id + "';";
+        //console.log(query);
+        await this.ExecuteQuery(query,[]).then((results) => {
+            let rows = results.rows;
+            if (rows.length === 1) {
+                var item = rows.item(0);
+                uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
+                //console.log('Message uri', uri, 'new state', state);
+                if (uri in this.state.messages) {
+                    let renderedMessages = this.state.messages;
+
+                    renderedMessages[uri].forEach((m) => {
+                        if (m._id === id) {
+                            if (state === 'accepted') {
+                                m.pending = false;
+                                changes = true;
+                            }
+
+                            if (state === 'delivered') {
+                                m.sent = true;
+                                m.pending = false;
+                                changes = true;
+                            }
+
+                            if (state === 'displayed') {
+                                m.received = true;
+                                m.sent = true;
+                                m.pending = false;
+                                changes = true;
+                            }
+
+                            if (state === 'failed') {
+                                m.received = false;
+                                m.sent = false;
+                                m.pending = false;
+                                m.failed = true;
+                                changes = true;
+                            }
+
+                            if (state === 'pinned') {
+                                m.pinned = true;
+                                changes = true;
+                            }
+
+                            if (state === 'unpinned') {
+                                m.pinned = false;
+                                changes = true;
+                            }
+                        }
+                    });
+
+                    if (changes) {
+                        console.log('Message', id, 'updated');
+                        this.setState({messages: renderedMessages});
+                    }
+                } else {
+                    //console.log('Messages for', uri, 'are not rendered now');
+                }
+            }
+
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async saveOutgoingChatUri(uri) {
+        //console.log('saveOutgoingChatUri', uri);
+        let current_datetime = new Date();
+        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+        let query;
+
+        let myDisplayNames = this.state.myDisplayNames;
+
+        if (uri in myDisplayNames) {
+            //
+        } else {
+            myDisplayNames[uri] = {};
+        }
+
+        myDisplayNames[uri].timestamp = formatted_date;
+        myDisplayNames[uri].unread = 0;
+
+        storage.set('myDisplayNames', myDisplayNames);
+        this.setState({myDisplayNames: myDisplayNames});
+    }
+
+     pinMessage(id) {
+        let query;
+        query = "UPDATE messages set pinned = 1 where msg_id ='" + id + "'";
+        //console.log(query);
+        this.ExecuteQuery(query).then((results) => {
+            console.log('Message', id, 'pinned');
+            this.updateRenderMessage(id, 'pinned')
+            this.addJournal(id, 'pinned');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+     }
+
+     unpinMessage(id) {
+        let query;
+        query = "UPDATE messages set pinned = 0 where msg_id ='" + id + "'";
+        //console.log(query);
+        this.ExecuteQuery(query).then((results) => {
+            this.updateRenderMessage(id, 'unpinned')
+            this.addJournal(id, 'unpinned');
+            console.log('Message', id, 'unpinned');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+     }
+
+     async addJournal(id, action, data={}) {
+         //console.log('Add journal entry:', action, id);
+     }
+
+     async confirmRead(uri){
+        //console.log('Confirm read messages for', uri);
+        let query;
+        let displayed = [];
+
+        query = "SELECT * FROM messages where from_uri = '" + uri + "' and received is NULL and system is NULL";
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((results) => {
+            let rows = results.rows;
+            //console.log('We must confirm read of', rows.length, 'messages');
+            for (let i = 0; i < rows.length; i++) {
+                var item = rows.item(i);
+                if (this.sendDispositionNotification(item)) {
+                    displayed.push(item.msg_id);
+                }
+            }
+
+            if (displayed.length > 0) {
+                let sql_ids = '';
+                let i = 1;
+                displayed.forEach((msg_id) => {
+                    sql_ids = sql_ids + "'" + msg_id + "'";
+                    if (i < displayed.length) {
+                        sql_ids = sql_ids + ', ';
+                    }
+                    i = i + 1;
+                });
+
+                query = "UPDATE messages set received = 1 where msg_id in (" + sql_ids + ")";
+                //console.log(query);
+                this.ExecuteQuery(query).then((results) => {
+                    console.log('Sent disposition saved for', displayed.length, 'messages');
+                }).catch((error) => {
+                    console.log('SQL query:', query);
+                    console.log('SQL error:', error);
+                });
+            }
+
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+
+        this.resetUnreadCount(uri);
+    }
+
+    async resetUnreadCount(uri) {
+        let myDisplayNames = this.state.myDisplayNames;
+        if (uri in myDisplayNames && myDisplayNames[uri]['unread'] > 0) {
+            myDisplayNames[uri].unread = 0;
+            this.setState({myDisplayNames: myDisplayNames});
+        }
+    }
+
+    async sendDispositionNotification(message) {
+        //console.log('Confirm read message', message.msg_id);
+        let query;
+        let result = {};
+
+        this.state.account.sendDispositionNotification(message.from_uri, message.msg_id, message.timestamp, 'displayed',(error) => {
+            if (!error) {
+                console.log('Displayed notification for message', message.msg_id, 'was sent');
+                return true;
+            } else {
+                console.log('Displayed notification for message', message.msg_id, 'failed');
+                return false;
+            }
+        });
+     }
+
+     async getMessages(uri, limit=200){
+        //console.log('Get messages with', uri);
+        let messages = this.state.messages;
+        let msg;
+        let query;
+
+        query = "SELECT * FROM messages where from_uri = '"
+            + uri
+            + "' or to_uri = '"
+            + uri
+            + "' order by id desc limit "
+            + limit
+            + ";";
+
+        // TODO add pagination, reload older messages
+
+        //console.log(query);
+        await this.ExecuteQuery(query).then((results) => {
+            //console.log('SQL get messages OK');
+            let rows = results.rows;
+            messages[uri] = [];
+            let content;
+            let image;
+
+            for (let i = 0; i < rows.length; i++) {
+                var item = rows.item(i);
+                //console.log(item);
+                content = base64.decode(item.content);
+                if (item.content_type === 'text/html') {
+                    content = xss(content, {
+                        whiteList: [], // empty, means filter out all tags
+                        stripIgnoreTag: true, // filter out all HTML not in the whitelist
+                        stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
+                        // to filter out its content
+                    });
+                    content = utils.escapeHtml(content);
+                } else if (item.content_type === 'text/plain') {
+                    content = content;
+                } else if (item.content_type.indexOf('image/') > -1) {
+                    image = `data:${item.content_type};base64,${btoa(content)}`
+                } else {
+                    content = 'Unknown message type received ' + item.content_type;
+                }
+
+                let failed = (item.pending === 0 && item.received === 0 && item.sent === 1) ? true: false,
+
+                msg = {
+                    _id: item.msg_id,
+                    text: content,
+                    image: image,
+                    createdAt: item.timestamp,
+                    sent: ((item.sent === 1 || item.received === 1) && !failed) ? true : false,
+                    direction: item.direction,
+                    received: item.received === 1 ? true : false,
+                    pending: (item.pending === 1 && item.sent !== 1) ? true : false,
+                    system: item.system === 1 ? true : false,
+                    failed: (item.pending === 0 && item.received === 0 && item.sent === 1) ? true: false,
+                    pinned: (item.pinned === 1) ? true: false,
+                    user: item.direction == 'incoming' ? {_id: item.from_uri, name: item.from_name} : {}
+                    }
+                messages[uri].push(msg)
+            }
+
+            messages[uri].reverse();
+
+            if (messages[uri].length > 0) {
+                console.log('Got', messages[uri].length, 'messages for', uri);
+                //console.log(messages[uri]);
+            }
+
+            this.setState({messages: messages});
+
+            this.confirmRead(uri);
+
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async purgeMessages(uri) {
+        console.log('Purge messages with', uri);
+        let query;
+        this.addJournal(uri, 'delete_messages');
+        query = "DELETE FROM messages where from_uri = '"
+            + uri
+            + "' or to_uri = '"
+            + uri
+            + "';"
+        await this.ExecuteQuery(query).then((result) => {
+            //console.log('SQL delete messages OK');
+            let messages = this.state.messages;
+            delete messages[uri];
+            this.setState({messages: messages});
+
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+
+        if (uri in this.state.myDisplayNames) {
+            let myDisplayNames = this.state.myDisplayNames;
+            myDisplayNames[uri].read = 0;
+            myDisplayNames[uri].timestamp = '';
+            this.setState({myDisplayNames: myDisplayNames});
+        }
+    }
+
+    incomingMessage(message) {
+        // Handle incoming messages
+        if (message.content.indexOf('?OTRv3') > -1) {
+            return;
+        }
+
+        this.saveIncomingMessage(message.sender.uri, message);
+
+        let renderMessages = this.state.messages;
+        if (Object.keys(renderMessages).indexOf(message.sender.uri) === -1) {
+            renderMessages[message.sender.uri] = [];
+        }
+
+        renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message));
+        this.setState({messages: renderMessages});
+    }
+
+    async saveSystemMessage(uri, content, direction, missed=false) {
+        let timestamp = new Date();
+
+        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, pending, system, direction) VALUES ('"
+            + uuid.v4()
+            + "', '"
+            + timestamp
+            + "', '"
+            + base64.encode(content)
+            + "', '"
+            + 'text/plain'
+            + "', '"
+            + (direction === 'incoming' ? uri : this.state.account.id)
+            + "', '"
+            + (direction === 'outgoing' ? uri : this.state.account.id)
+            + "', 0, 1, '"
+            + direction
+            + "')";
+
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((result) => {
+            if (missed) {
+                this.updateUnreadMessages(uri);
+            }
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async saveIncomingMessage(uri, message) {
+        var content = message.content;
+
+        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES ('"
+            + message.id
+            + "', '"
+            + message.timestamp
+            + "', '"
+            + base64.encode(content)
+            + "', '"
+            + message.contentType
+            + "', '"
+            + message.sender.uri
+            + "', '"
+            + this.state.account.id
+            + "', 'incoming', 0"
+            + ")";
+
+        console.log(query);
+        await this.ExecuteQuery(query).then((result) => {
+            this.updateUnreadMessages(uri, message.sender.toString());
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async updateUnreadMessages(uri, name='') {
+        console.log('updateUnreadMessages', uri);
+        let current_datetime = new Date();
+        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
+
+        let myDisplayNames = this.state.myDisplayNames;
+
+        if (uri in myDisplayNames) {
+            //
+        } else {
+            myDisplayNames[uri] = {'name': name};
+        }
+
+        console.log('unread', myDisplayNames[uri].unread);
+
+        if (myDisplayNames[uri].unread >= 0) {
+            myDisplayNames[uri].unread = myDisplayNames[uri].unread + 1;
+        } else {
+            myDisplayNames[uri].unread = 0;
+        }
+
+        myDisplayNames[uri].timestamp = formatted_date;
+
+        storage.set('myDisplayNames', myDisplayNames);
+        this.setState({myDisplayNames: myDisplayNames});
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -2497,27 +3359,99 @@ class Sylk extends Component {
     saveDisplayName(uri, displayName) {
         displayName = displayName.trim();
 
-        let myDisplayNames;
+        let myDisplayNames = this.state.myDisplayNames;
 
-        if (!this.state.myDisplayNames) {
-            myDisplayNames = new Object();
+        if (uri in myDisplayNames) {
+            myDisplayNames[uri].name = displayName;
         } else {
-            myDisplayNames = this.state.myDisplayNames;
+            myDisplayNames[uri] = {};
+            myDisplayNames[uri].name = displayName;
+            myDisplayNames[uri].favorite = false;
+            myDisplayNames[uri].blocked = false;
         }
 
-        myDisplayNames[uri] = displayName;
         storage.set('myDisplayNames', myDisplayNames);
         this.setState({myDisplayNames: myDisplayNames});
+
         if (displayName && uri === this.state.accountId) {
             storage.set('displayName', displayName);
-
             this.setState({displayName: displayName});
-
             if (this.state.account && displayName !== this.state.account.displayName) {
                 this.processRegistration(this.state.accountId, this.state.password, displayName);
             }
         }
+        console.log('myDisplayNames', myDisplayNames);
     }
+
+    setFavoriteUri(uri) {
+        let favoriteUris = this.state.favoriteUris;
+        let idx = favoriteUris.indexOf(uri);
+        let favorite;
+
+        if (idx === -1) {
+            favoriteUris.push(uri);
+            favorite = true;
+        } else {
+            let removed = favoriteUris.splice(idx, 1);
+            favorite = true;
+        }
+
+        storage.set('favoriteUris', favoriteUris);
+
+        this.setState({favoriteUris: favoriteUris,
+                       refreshFavorites: !this.state.refreshFavorites});
+
+        let myDisplayNames = this.state.myDisplayNames;
+        if (uri in myDisplayNames) {
+            myDisplayNames[uri].favorite = favorite;
+        } else {
+            myDisplayNames[uri] = {};
+            myDisplayNames[uri].name = '';
+            myDisplayNames[uri].favorite = favorite;
+        }
+
+        storage.set('myDisplayNames', myDisplayNames);
+        this.setState({myDisplayNames: myDisplayNames});
+        console.log('myDisplayNames', myDisplayNames);
+
+        return favorite;
+    }
+
+    setBlockedUri(uri) {
+        let blockedUris = this.state.blockedUris;
+        console.log('Old blocked Uris:', blockedUris);
+
+        let blocked;
+        let idx = blockedUris.indexOf(uri);
+
+        if (idx === -1) {
+            blockedUris.push(uri);
+            blocked = true;
+        } else {
+            let removed = blockedUris.splice(idx, 1);
+            blocked = false;
+        }
+
+        console.log('New blocked Uris:', blockedUris);
+        storage.set('blockedUris', blockedUris);
+        this.setState({blockedUris: blockedUris});
+
+        let myDisplayNames = this.state.myDisplayNames;
+        if (uri in myDisplayNames) {
+            myDisplayNames[uri].blocked = blocked;
+        } else {
+            myDisplayNames[uri] = {};
+            myDisplayNames[uri].name = uri;
+            myDisplayNames[uri].blocked = blocked;
+        }
+
+        storage.set('myDisplayNames', myDisplayNames);
+        this.setState({myDisplayNames: myDisplayNames});
+        console.log('myDisplayNames', myDisplayNames);
+
+        return blocked;
+    }
+
 
     saveInvitedParties(room, uris) {
         room = room.split('@')[0];
@@ -2728,12 +3662,14 @@ class Sylk extends Component {
                     proximity = {this.state.proximityEnabled}
                     preview = {this.startPreview}
                     showLogs = {this.showLogs}
+                    goBackFunc = {this.goBack}
                     connection = {this.state.connection}
                     registrationState = {this.state.registrationState}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
                     saveDisplayName = {this.saveDisplayName}
                     displayName = {this.state.displayName}
+                    selectedContact = {this.state.selectedContact}
                 />
                 <ReadyBox
                     account = {this.state.account}
@@ -2745,15 +3681,17 @@ class Sylk extends Component {
                     orientation = {this.state.orientation}
                     contacts = {this.contacts}
                     isTablet = {this.state.isTablet}
+                    isLandscape = {this.state.orientation === 'landscape'}
                     refreshHistory = {this.state.refreshHistory}
                     refreshFavorites = {this.state.refreshFavorites}
                     cacheHistory = {this.saveHistoryForLater}
                     localHistory = {this.state.localHistory}
                     serverHistory = {this.cachedHistory}
-                    myDisplayName = {this.state.myDisplayName}
+                    myDisplayName = {this.state.displayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
                     deleteHistoryEntry = {this.deleteHistoryEntry}
                     saveInvitedParties = {this.saveInvitedParties}
+                    purgeMessages = {this.purgeMessages}
                     myInvitedParties = {this.state.myInvitedParties}
                     setFavoriteUri = {this.setFavoriteUri}
                     setBlockedUri = {this.setBlockedUri}
@@ -2763,6 +3701,17 @@ class Sylk extends Component {
                     saveDisplayName = {this.saveDisplayName}
                     myDisplayNames = {this.state.myDisplayNames}
                     lookupContacts = {this.lookupContacts}
+                    expireMessage = {this.expireMessage}
+                    sendMessage = {this.sendMessage}
+                    reSendMessage = {this.reSendMessage}
+                    deleteMessage = {this.deleteMessage}
+                    getMessages = {this.getMessages}
+                    pinMessage = {this.pinMessage}
+                    unpinMessage = {this.unpinMessage}
+                    messages = {this.state.messages}
+                    selectContact = {this.selectContact}
+                    confirmRead = {this.confirmRead}
+                    selectedContact = {this.state.selectedContact}
                 />
             </Fragment>
         );
@@ -2863,6 +3812,7 @@ class Sylk extends Component {
                 registrationState = {this.state.registrationState}
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
+                saveMessage = {this.saveConferenceMessage}
                 myInvitedParties = {this.state.myInvitedParties}
                 saveInvitedParties = {this.saveInvitedParties}
                 previousParticipants = {previousParticipants}
@@ -2974,7 +3924,7 @@ class Sylk extends Component {
             displayName = '';
 
             if (this.state.myDisplayNames && this.state.myDisplayNames.hasOwnProperty(uri)) {
-                displayName = this.state.myDisplayNames[uri];
+                displayName = this.state.myDisplayNames[uri].name;
             }
 
             conference = false;

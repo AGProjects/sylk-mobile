@@ -1,9 +1,20 @@
 @import './variables';
 
-.wholeContainer {
+.container {
     flex: 1;
     flex-direction: column;
     justify-content: center;
+}
+
+.historyLandscapeContainer {
+    margin-top: 0px;
+    width: 100%;
+    flex: 9;
+}
+
+.historyPortraitContainer {
+    width: 100%;
+    flex: 9;
 }
 
 .landscapeTitle {
@@ -66,15 +77,15 @@
 
 .portraitUriInputBox {
     align: left;
-    padding-top: 0px;
     width: 100%;
 }
 
 .landscapeUriInputBox {
     align: left;
-    padding-top: 5px;
-    width: 50%;
+    flex: 1;
+    padding-top: 10px;
     margin-left: 2px;
+    margin-right: 8px;
 }
 
 .portraitTabletUriInputBox {
@@ -99,7 +110,6 @@
     width:33%;
 }
 
-
 .buttonGroup {
     flex-direction: row;
     padding-top: 5px;
@@ -107,8 +117,8 @@
 }
 
 .landscapeButtonGroup {
+    flex: 1;
     flex-direction: row;
-    padding-top: 5px;
     justify-content: flex-end;
 }
 
@@ -142,18 +152,6 @@
 .conferenceButton {
     background-color: rgba(#4572a6, 1);
     margin: 10px;
-}
-
-.landscapeHistory {
-    margin-top: 0px;
-    width: 100%;
-    margin-left: 3px;
-    flex: 9;
-}
-
-.portraitHistory {
-    width: 100%;
-    flex: 9;
 }
 
 .footer {

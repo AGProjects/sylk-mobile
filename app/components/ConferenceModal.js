@@ -71,6 +71,17 @@ class ConferenceModal extends Component {
 
             participants.forEach((item) => {
                 item = item.trim().toLowerCase();
+                if (item.length === 0) {
+                    return;
+                }
+
+                const username = item.split('@')[0];
+
+                if (username.length === 0) {
+                    return;
+                }
+
+                const domain = item.split('@')[1];
 
                 if (item === this.props.accountId) {
                     return;
@@ -79,15 +90,13 @@ class ConferenceModal extends Component {
                 if (item.indexOf('@') === -1) {
                     sanitizedParticipants.push(item);
                 } else {
-                    const domain = item.split('@')[1];
                     if (domain === this.props.defaultDomain) {
-                        sanitizedParticipants.push(item.split('@')[0]);
+                        sanitizedParticipants.push(username);
                     } else {
                         sanitizedParticipants.push(item);
                     }
                 }
             });
-
         }
 
         this.setState({targetUri: targetUri,
@@ -108,10 +117,12 @@ class ConferenceModal extends Component {
         if (this.state.participants) {
             this.state.participants.split(',').forEach((item) => {
                 item = item.trim().toLowerCase().replace(' ', '');
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
+                if (item.length > 1) {
+                    if (item.indexOf('@') === -1) {
+                        item = `${item}@${this.props.defaultDomain}`;
+                    }
+                    participants.push(item);
                 }
-                participants.push(item);
             });
         }
 
@@ -248,7 +259,6 @@ class ConferenceModal extends Component {
                     <Surface >
                         <Dialog.Title style={styles.title}>Join Conference</Dialog.Title>
 
-                        <Text  style={styles.inviteTitle}>Invite people</Text>
                         <View>
                         <Autocomplete
                           containerStyle={styles.autocompleteContainer}
@@ -258,7 +268,7 @@ class ConferenceModal extends Component {
                           defaultValue={this.state.participants}
                           keyExtractor={(item, i) => i.toString()}
                           onChangeText={(text) => this.searchContacts(text)}
-                          placeholder="Enter Sylk accounts separated by ,"
+                          placeholder="Invite Sylk accounts separated by ,"
                           renderItem={({item}) => (
                                         <TouchableOpacity
                                               onPress={() => {this.updateParticipants(item);}}>
@@ -275,7 +285,7 @@ class ConferenceModal extends Component {
                             mode="flat"
                             autoCapitalize="none"
                             label="Enter the room you wish to join"
-                            placeholder="Conference room"
+                            placeholder="room"
                             onChangeText={(text) => {this.handleConferenceTargetChange(text);}}
                             name="uri"
                             required
@@ -292,13 +302,13 @@ class ConferenceModal extends Component {
 
 
                         <View style={styles.buttonRow}>
-                        <Button
+                        <Button color={!this.state.targetUri ? "lightgray": null}
                             mode="contained"
                             style={styles.button}
                             onPress={this.joinAudio}
                             icon="speaker"
                         >Audio</Button>
-                        <Button
+                        <Button color={!this.state.targetUri ? "lightgray": null}
                             mode="contained"
                             style={styles.button}
                             onPress={this.joinVideo}

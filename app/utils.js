@@ -3,6 +3,7 @@ import SillyNames from './SillyNames';
 import MaterialColors from './MaterialColors';
 import { Clipboard, Dimensions } from 'react-native';
 import Contacts from 'react-native-contacts';
+import xss from 'xss';
 
 const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
@@ -60,6 +61,65 @@ function timestampedLog() {
 function generateUniqueId() {
     const uniqueId = uuidv4().replace(/-/g, '').slice(0, 16);
     return uniqueId;
+}
+
+function sylkToRenderMessage(sylkMessage) {
+    /*
+    export interface IMessage {
+      _id: string | number
+      text: string
+      createdAt: Date | number
+      user: User
+      image?: string
+      video?: string
+      audio?: string
+      system?: boolean
+      sent?: boolean
+      received?: boolean
+      pending?: boolean
+      quickReplies?: QuickReplies
+    }
+    */
+
+    let system = false;
+    if (sylkMessage.content.indexOf('Welcome!') > -1) {
+        system = true;
+    }
+
+    let content;
+    let image;
+
+    if (sylkMessage.contentType === 'text/html') {
+        content = xss(sylkMessage.content, {
+                      whiteList: [], // empty, means filter out all tags
+                      stripIgnoreTag: true, // filter out all HTML not in the whitelist
+                      stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
+                      // to filter out its content
+                    });
+        content = escapeHtml(content)
+    } else if (sylkMessage.contentType === 'text/plain') {
+        content = sylkMessage.content;
+    } else if (sylkMessage.contentType.indexOf('image/') > -1) {
+        image = `data:${sylkMessage.contentType};base64,${btoa(sylkMessage.content)}`
+    } else {
+        content = 'Unknown message type received ' + sylkMessage.contentType;
+    }
+
+    let g_id = sylkMessage.id;
+
+    return {
+        _id: g_id,
+        text: content,
+        image: image,
+        createdAt: sylkMessage.timestamp,
+        received: true,
+        direction: 'incoming',
+        system: system,
+        user: {
+          _id: sylkMessage.sender.uri,
+          name: sylkMessage.sender.toString()
+            }
+        }
 }
 
 function normalizeUri(uri, defaultDomain) {
@@ -193,6 +253,19 @@ function getWindowHeight() {
     return Dimensions.get('window').height;
 }
 
+function escapeHtml(text) {
+  var map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+
+  return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+}
+
+
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
 exports.generateSillyName = generateSillyName;
@@ -203,5 +276,6 @@ exports.generateMaterialColor = generateMaterialColor;
 exports.generateVideoTrack = generateVideoTrack;
 exports.getWindowHeight = getWindowHeight;
 exports.findContact = findContact;
-exports.findContact = findContact;
+exports.sylkToRenderMessage = sylkToRenderMessage;
 exports.isAnonymous = isAnonymous;
+exports.escapeHtml = escapeHtml;

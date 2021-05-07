@@ -235,6 +235,10 @@ class Conference extends React.Component {
         this.props.saveParticipant(callUUID, room, uri);
     }
 
+    saveMessage(room, messages) {
+        this.props.saveMessage(room, messages);
+    }
+
     showSaveDialog() {
         if (!this.userHangup) {
             return false;
@@ -315,11 +319,17 @@ class Conference extends React.Component {
 
     render() {
         let box = null;
+        let messages = [];
 
         if (this.state.localMedia !== null) {
             let media = 'audio'
             if (this.props.proposedMedia && this.props.proposedMedia.video === true) {
                 media = 'video';
+            }
+
+            let room = this.state.targetUri.split('@')[0];
+            if (this.props.myMessages && this.props.myMessages.hasOwnProperty(room)) {
+                messages = this.props.myMessages[room];
             }
 
             if (this.state.currentCall != null && (this.state.callState === 'established')) {
@@ -330,8 +340,10 @@ class Conference extends React.Component {
                         audioOnly = {this.props.proposedMedia ? !this.props.proposedMedia.video: false}
                         reconnectingCall={this.state.reconnectingCall}
                         connection = {this.state.connection}
+                        messages = {messages}
                         hangup = {this.hangup}
                         saveParticipant = {this.saveParticipant}
+                        saveMessage = {this.saveMessage}
                         saveInvitedParties = {this.props.saveInvitedParties}
                         previousParticipants = {this.props.previousParticipants}
                         remoteUri = {this.props.targetUri}
@@ -388,6 +400,8 @@ Conference.propTypes = {
     registrationState       : PropTypes.string,
     hangupCall              : PropTypes.func,
     saveParticipant         : PropTypes.func,
+    saveMessage             : PropTypes.func,
+    myMessages              : PropTypes.object,
     saveInvitedParties      : PropTypes.func,
     previousParticipants    : PropTypes.array,
     currentCall             : PropTypes.object,
