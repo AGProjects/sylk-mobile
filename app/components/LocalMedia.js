@@ -63,6 +63,7 @@ class LocalMedia extends Component {
     }
 
     render() {
+
         let {height, width} = Dimensions.get('window');
         let videoStyle = {
             height,
@@ -84,6 +85,7 @@ class LocalMedia extends Component {
                     reconnectingCall={this.state.reconnectingCall}
                     media={this.props.media}
                     declineReason={this.state.declineReason}
+                    goBackFunc={this.props.goBackFunc}
                 />
 
                 {this.showSaveDialog() ?
@@ -143,7 +145,9 @@ LocalMedia.propTypes = {
     participants        : PropTypes.array,
     media               : PropTypes.string,
     declineReason       : PropTypes.string,
-    showLogs            : PropTypes.func
+    showLogs            : PropTypes.func,
+    goBackFunc          : PropTypes.func
+
 };
 
 

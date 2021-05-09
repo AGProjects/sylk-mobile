@@ -186,7 +186,8 @@ ConferenceHeader.propTypes = {
     reconnectingCall: PropTypes.bool,
     audioOnly: PropTypes.bool,
     terminated: PropTypes.bool,
-    info: PropTypes.string
+    info: PropTypes.string,
+    goBackFunc: PropTypes.func
 };
 
 

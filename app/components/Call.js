@@ -229,6 +229,7 @@ class Call extends Component {
         this.lookupContact();
 
         if (this.state.direction === 'outgoing' && this.state.callUUID) {
+            utils.timestampedLog('Call: start call', this.state.callUUID, 'when ready to', this.state.targetUri);
             this.startCallWhenReady(this.state.callUUID);
         }
 
@@ -590,8 +591,8 @@ class Call extends Component {
             remoteDisplayName = 'Video Test';
         } else if (remoteUri.indexOf('4444@') > -1) {
             remoteDisplayName = 'Echo Test';
-        } else if (this.props.myDisplayNames.hasOwnProperty(remoteUri) && this.props.myDisplayNames[remoteUri].name) {
-            remoteDisplayName = this.props.myDisplayNames[remoteUri];
+        } else if (this.props.myContacts.hasOwnProperty(remoteUri) && this.props.myContacts[remoteUri].name) {
+            remoteDisplayName = this.props.myContacts[remoteUri];
         } else if (this.props.contacts) {
             let username = remoteUri.split('@')[0];
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
@@ -728,7 +729,6 @@ class Call extends Component {
     }
 
     async startCallWhenReady(callUUID) {
-        utils.timestampedLog('Call: start call', callUUID, 'when ready to', this.state.targetUri);
         this.waitCounter = 0;
 
         let diff = 0;
@@ -845,6 +845,7 @@ class Call extends Component {
                         info = {this.state.info}
                         declineReason = {this.state.declineReason}
                         showLogs = {this.props.showLogs}
+                        goBackFunc={this.props.goBackFunc}
                     />
                 );
             } else {
@@ -874,6 +875,7 @@ class Call extends Component {
                             muted = {this.props.muted}
                             info = {this.state.info}
                             showLogs = {this.props.showLogs}
+                            goBackFunc={this.props.goBackFunc}
                         />
                     );
                 } else {
@@ -897,6 +899,7 @@ class Call extends Component {
                                 media = 'video'
                                 declineReason = {this.state.declineReason}
                                 showLogs = {this.props.showLogs}
+                                goBackFunc={this.props.goBackFunc}
                             />
                         );
                     }
@@ -925,6 +928,7 @@ class Call extends Component {
                     info = {this.state.info}
                     declineReason = {this.state.declineReason}
                     showLogs = {this.props.showLogs}
+                    goBackFunc={this.props.goBackFunc}
                 />
             );
 
@@ -955,9 +959,10 @@ Call.propTypes = {
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
-    myDisplayNames          : PropTypes.object,
+    myContacts              : PropTypes.object,
     declineReason           : PropTypes.string,
-    showLogs                : PropTypes.func
+    showLogs                : PropTypes.func,
+    goBackFunc              : PropTypes.func
 };
 
 

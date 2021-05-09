@@ -228,7 +228,7 @@ class Sylk extends Component {
             muted: false,
             participantsToInvite: [],
             myInvitedParties: {},
-            myDisplayNames: {},
+            myContacts: {},
             defaultDomain: config.defaultDomain,
             declineReason: null,
             showLogsModal: false,
@@ -370,7 +370,7 @@ class Sylk extends Component {
 
     loadPeople() {
         let blockedUris = [];
-        let myDisplayNames = {};
+        let myContacts = {};
         let favoriteUris = [];
         let displayName = null;
 
@@ -381,23 +381,24 @@ class Sylk extends Component {
             console.log('get displayName error:', error);
         });
 
-        storage.get('myDisplayNames').then((myDisplayNames) => {
-            let myDisplayNamesObjects = {};
-            if (myDisplayNames) {
-                Object.keys(myDisplayNames).forEach((key) => {
-                    if(typeof(myDisplayNames[key]) == 'string') {
+        storage.get('myContacts').then((myContacts) => {
+            let myContactsObjects = {};
+            if (myContacts) {
+                Object.keys(myContacts).forEach((key) => {
+                    if(typeof(myContacts[key]) == 'string') {
                         console.log('Convert display name object');
-                        myDisplayNamesObjects[key] = {'name': myDisplayNames[key]}
+                        myContactsObjects[key] = {'name': myContacts[key]}
                     } else {
-                        myDisplayNamesObjects[key] = myDisplayNames[key];
+                        myContactsObjects[key] = myContacts[key];
                     }
                 });
-                myDisplayNames = myDisplayNamesObjects;
+                myContacts = myContactsObjects;
             } else {
-                myDisplayNames = {};
+                myContacts = {};
             }
-            console.log('My displayNames:', myDisplayNames);
-            this.setState({myDisplayNames: myDisplayNames});
+
+            console.log('Loaded', Object.keys(myContacts).length, 'contacts');
+            this.setState({myContacts: myContacts});
 
             storage.get('favoriteUris').then((favoriteUris) => {
                 favoriteUris = favoriteUris.filter(item => item !== null);
@@ -405,22 +406,21 @@ class Sylk extends Component {
                 this.setState({favoriteUris: favoriteUris});
 
                 favoriteUris.forEach((uri) => {
-                    if (uri in myDisplayNames) {
-                        myDisplayNames[uri].favorite = true;
+                    if (uri in myContacts) {
+                        myContacts[uri].favorite = true;
                     } else {
-                        myDisplayNames[uri] = {name: '', favorite: true};
+                        myContacts[uri] = {name: '', favorite: true};
                     }
                 });
 
                 storage.remove('favoriteUris');
-                storage.set('myDisplayNames', myDisplayNames);
-                this.setState({myDisplayNames: myDisplayNames});
+                this.saveMyContacts(myContacts);
 
             }).catch((error) => {
                 //console.log('get favoriteUris error:', error);
-                let uris = Object.keys(myDisplayNames);
+                let uris = Object.keys(myContacts);
                 uris.forEach((uri) => {
-                    if (myDisplayNames[uri].favorite) {
+                    if (myContacts[uri].favorite) {
                         favoriteUris.push(uri);
                     }
                 });
@@ -435,22 +435,21 @@ class Sylk extends Component {
                 this.setState({blockedUris: blockedUris});
 
                 blockedUris.forEach((uri) => {
-                    if (uri in myDisplayNames) {
-                        myDisplayNames[uri].blocked = true;
+                    if (uri in myContacts) {
+                        myContacts[uri].blocked = true;
                     } else {
-                        myDisplayNames[uri] = {name: '', blocked: true};
+                        myContacts[uri] = {name: '', blocked: true};
                     }
                 });
 
                 storage.remove('blockedUris');
-                storage.set('myDisplayNames', myDisplayNames);
-                this.setState({myDisplayNames: myDisplayNames});
+                this.saveMyContacts(myContacts);
 
             }).catch((error) => {
                 //console.log('get favoriteUris error:', error);
-                let uris = Object.keys(myDisplayNames);
+                let uris = Object.keys(myContacts);
                 uris.forEach((uri) => {
-                    if (myDisplayNames[uri].blocked) {
+                    if (myContacts[uri].blocked) {
                         blockedUris.push(uri);
                     }
                 });
@@ -460,7 +459,7 @@ class Sylk extends Component {
             });
 
         }).catch((error) => {
-            console.log('get myDisplayNames error:', error);
+            console.log('get myContacts error:', error);
         });
     }
 
@@ -755,6 +754,10 @@ class Sylk extends Component {
      }
 
     changeRoute(route, reason) {
+        if (route === '/ready') {
+            this.setState({selectedContact: null, targetUri: ''});
+        }
+
         if (this.currentRoute === route) {
             return;
         }
@@ -763,7 +766,7 @@ class Sylk extends Component {
             utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
         }
 
-        if (route === '/ready') {
+        if (route === '/ready' && reason !== 'back to home') {
             Vibration.cancel();
 
             if (reason === 'conference_really_ended' && this.callKeeper.countCalls) {
@@ -1815,8 +1818,22 @@ class Sylk extends Component {
         }
     }
 
-    goBack() {
-        this.setState({selectedContact: null});
+    goBackToCall() {
+        let call = this.state.currentCall || this.state.incomingCall;
+
+        if (call) {
+            if (call.hasOwnProperty('_participants')) {
+                this.changeRoute('/conference', 'back to call');
+            } else {
+                this.changeRoute('/call', 'back to call');
+            }
+        } else {
+            console.log('No call to go back to');
+        }
+    }
+
+    goBackToHome() {
+        this.changeRoute('/ready', 'back to home');
     }
 
     handleRegistration(accountId, password, remember=true) {
@@ -2992,19 +3009,18 @@ class Sylk extends Component {
         let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
         let query;
 
-        let myDisplayNames = this.state.myDisplayNames;
+        let myContacts = this.state.myContacts;
 
-        if (uri in myDisplayNames) {
+        if (uri in myContacts) {
             //
         } else {
-            myDisplayNames[uri] = {};
+            myContacts[uri] = {};
         }
 
-        myDisplayNames[uri].timestamp = formatted_date;
-        myDisplayNames[uri].unread = 0;
+        myContacts[uri].timestamp = formatted_date;
+        myContacts[uri].unread = 0;
 
-        storage.set('myDisplayNames', myDisplayNames);
-        this.setState({myDisplayNames: myDisplayNames});
+        this.saveMyContacts(myContacts);
     }
 
      pinMessage(id) {
@@ -3040,16 +3056,18 @@ class Sylk extends Component {
      }
 
      async confirmRead(uri){
-        //console.log('Confirm read messages for', uri);
+        console.log('Confirm read messages for', uri);
         let query;
         let displayed = [];
 
-        query = "SELECT * FROM messages where from_uri = '" + uri + "' and received is NULL and system is NULL";
+        query = "SELECT * FROM messages where from_uri = '" + uri + "' and received = 0 and system is NULL";
         //console.log(query);
 
         await this.ExecuteQuery(query).then((results) => {
             let rows = results.rows;
-            //console.log('We must confirm read of', rows.length, 'messages');
+            if (rows.length > 0) {
+                console.log('We must confirm read of', rows.length, 'messages');
+            }
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 if (this.sendDispositionNotification(item)) {
@@ -3071,7 +3089,7 @@ class Sylk extends Component {
                 query = "UPDATE messages set received = 1 where msg_id in (" + sql_ids + ")";
                 //console.log(query);
                 this.ExecuteQuery(query).then((results) => {
-                    console.log('Sent disposition saved for', displayed.length, 'messages');
+                    //console.log('Sent disposition saved for', displayed.length, 'messages');
                 }).catch((error) => {
                     console.log('SQL query:', query);
                     console.log('SQL error:', error);
@@ -3087,15 +3105,16 @@ class Sylk extends Component {
     }
 
     async resetUnreadCount(uri) {
-        let myDisplayNames = this.state.myDisplayNames;
-        if (uri in myDisplayNames && myDisplayNames[uri]['unread'] > 0) {
-            myDisplayNames[uri].unread = 0;
-            this.setState({myDisplayNames: myDisplayNames});
+        console.log('Reset read count for', uri);
+        let myContacts = this.state.myContacts;
+        if (uri in myContacts && myContacts[uri].unread > 0) {
+            myContacts[uri].unread = 0;
+            this.setState({myContacts: myContacts});
         }
     }
 
     async sendDispositionNotification(message) {
-        //console.log('Confirm read message', message.msg_id);
+        console.log('Confirm read message', message.msg_id);
         let query;
         let result = {};
 
@@ -3111,7 +3130,7 @@ class Sylk extends Component {
      }
 
      async getMessages(uri, limit=200){
-        //console.log('Get messages with', uri);
+        console.log('Get messages with', uri);
         let messages = this.state.messages;
         let msg;
         let query;
@@ -3182,8 +3201,6 @@ class Sylk extends Component {
 
             this.setState({messages: messages});
 
-            this.confirmRead(uri);
-
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -3210,11 +3227,11 @@ class Sylk extends Component {
             console.log('SQL error:', error);
         });
 
-        if (uri in this.state.myDisplayNames) {
-            let myDisplayNames = this.state.myDisplayNames;
-            myDisplayNames[uri].read = 0;
-            myDisplayNames[uri].timestamp = '';
-            this.setState({myDisplayNames: myDisplayNames});
+        if (uri in this.state.myContacts) {
+            let myContacts = this.state.myContacts;
+            myContacts[uri].read = 0;
+            myContacts[uri].timestamp = '';
+            this.setState({myContacts: myContacts});
         }
     }
 
@@ -3284,7 +3301,7 @@ class Sylk extends Component {
             + "', 'incoming', 0"
             + ")";
 
-        console.log(query);
+        //console.log(query);
         await this.ExecuteQuery(query).then((result) => {
             this.updateUnreadMessages(uri, message.sender.toString());
         }).catch((error) => {
@@ -3294,30 +3311,27 @@ class Sylk extends Component {
     }
 
     async updateUnreadMessages(uri, name='') {
-        console.log('updateUnreadMessages', uri);
         let current_datetime = new Date();
         let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
 
-        let myDisplayNames = this.state.myDisplayNames;
+        let myContacts = this.state.myContacts;
 
-        if (uri in myDisplayNames) {
+        if (uri in myContacts) {
             //
         } else {
-            myDisplayNames[uri] = {'name': name};
+            myContacts[uri] = {'name': name};
         }
 
-        console.log('unread', myDisplayNames[uri].unread);
-
-        if (myDisplayNames[uri].unread >= 0) {
-            myDisplayNames[uri].unread = myDisplayNames[uri].unread + 1;
+        if (myContacts[uri].unread >= 1) {
+            myContacts[uri].unread = myContacts[uri].unread + 1;
         } else {
-            myDisplayNames[uri].unread = 0;
+            myContacts[uri].unread = 1;
         }
 
-        myDisplayNames[uri].timestamp = formatted_date;
+        myContacts[uri].timestamp = formatted_date;
+        console.log(uri, 'has', myContacts[uri].unread, 'unread messages');
 
-        storage.set('myDisplayNames', myDisplayNames);
-        this.setState({myDisplayNames: myDisplayNames});
+        this.saveMyContacts(myContacts);
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -3359,19 +3373,18 @@ class Sylk extends Component {
     saveDisplayName(uri, displayName) {
         displayName = displayName.trim();
 
-        let myDisplayNames = this.state.myDisplayNames;
+        let myContacts = this.state.myContacts;
 
-        if (uri in myDisplayNames) {
-            myDisplayNames[uri].name = displayName;
+        if (uri in myContacts) {
+            myContacts[uri].name = displayName;
         } else {
-            myDisplayNames[uri] = {};
-            myDisplayNames[uri].name = displayName;
-            myDisplayNames[uri].favorite = false;
-            myDisplayNames[uri].blocked = false;
+            myContacts[uri] = {};
+            myContacts[uri].name = displayName;
+            myContacts[uri].favorite = false;
+            myContacts[uri].blocked = false;
         }
 
-        storage.set('myDisplayNames', myDisplayNames);
-        this.setState({myDisplayNames: myDisplayNames});
+        this.saveMyContacts(myContacts);
 
         if (displayName && uri === this.state.accountId) {
             storage.set('displayName', displayName);
@@ -3380,7 +3393,7 @@ class Sylk extends Component {
                 this.processRegistration(this.state.accountId, this.state.password, displayName);
             }
         }
-        console.log('myDisplayNames', myDisplayNames);
+        console.log('myContacts', myContacts);
     }
 
     setFavoriteUri(uri) {
@@ -3401,19 +3414,16 @@ class Sylk extends Component {
         this.setState({favoriteUris: favoriteUris,
                        refreshFavorites: !this.state.refreshFavorites});
 
-        let myDisplayNames = this.state.myDisplayNames;
-        if (uri in myDisplayNames) {
-            myDisplayNames[uri].favorite = favorite;
+        let myContacts = this.state.myContacts;
+        if (uri in myContacts) {
+            myContacts[uri].favorite = favorite;
         } else {
-            myDisplayNames[uri] = {};
-            myDisplayNames[uri].name = '';
-            myDisplayNames[uri].favorite = favorite;
+            myContacts[uri] = {};
+            myContacts[uri].name = '';
+            myContacts[uri].favorite = favorite;
         }
 
-        storage.set('myDisplayNames', myDisplayNames);
-        this.setState({myDisplayNames: myDisplayNames});
-        console.log('myDisplayNames', myDisplayNames);
-
+        this.saveMyContacts(myContacts);
         return favorite;
     }
 
@@ -3436,22 +3446,25 @@ class Sylk extends Component {
         storage.set('blockedUris', blockedUris);
         this.setState({blockedUris: blockedUris});
 
-        let myDisplayNames = this.state.myDisplayNames;
-        if (uri in myDisplayNames) {
-            myDisplayNames[uri].blocked = blocked;
+        let myContacts = this.state.myContacts;
+        if (uri in myContacts) {
+            myContacts[uri].blocked = blocked;
         } else {
-            myDisplayNames[uri] = {};
-            myDisplayNames[uri].name = uri;
-            myDisplayNames[uri].blocked = blocked;
+            myContacts[uri] = {};
+            myContacts[uri].name = uri;
+            myContacts[uri].blocked = blocked;
         }
 
-        storage.set('myDisplayNames', myDisplayNames);
-        this.setState({myDisplayNames: myDisplayNames});
-        console.log('myDisplayNames', myDisplayNames);
+        this.saveMyContacts(myContacts);
 
         return blocked;
     }
 
+    saveMyContacts(myContacts) {
+        console.log('Saved', Object.keys(myContacts).length, 'contacts');
+        storage.set('myContacts', myContacts);
+        this.setState({myContacts: myContacts});
+    }
 
     saveInvitedParties(room, uris) {
         room = room.split('@')[0];
@@ -3657,12 +3670,13 @@ class Sylk extends Component {
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
                     logout = {this.logout}
+                    inCall = {(this.state.incomingCall || this.state.currentCall) ? true: false}
                     toggleSpeakerPhone = {this.toggleSpeakerPhone}
                     toggleProximity = {this.toggleProximity}
                     proximity = {this.state.proximityEnabled}
                     preview = {this.startPreview}
                     showLogs = {this.showLogs}
-                    goBackFunc = {this.goBack}
+                    goBackFunc = {this.goBackToHome}
                     connection = {this.state.connection}
                     registrationState = {this.state.registrationState}
                     orientation = {this.state.orientation}
@@ -3675,6 +3689,7 @@ class Sylk extends Component {
                     account = {this.state.account}
                     password = {this.state.password}
                     config = {config}
+                    inCall = {(this.state.incomingCall || this.state.currentCall) ? true: false}
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
                     missedTargetUri = {this.state.missedTargetUri}
@@ -3699,7 +3714,7 @@ class Sylk extends Component {
                     blockedUris = {this.state.blockedUris}
                     defaultDomain = {this.state.defaultDomain}
                     saveDisplayName = {this.saveDisplayName}
-                    myDisplayNames = {this.state.myDisplayNames}
+                    myContacts = {this.state.myContacts}
                     lookupContacts = {this.lookupContacts}
                     expireMessage = {this.expireMessage}
                     sendMessage = {this.sendMessage}
@@ -3712,6 +3727,8 @@ class Sylk extends Component {
                     selectContact = {this.selectContact}
                     confirmRead = {this.confirmRead}
                     selectedContact = {this.state.selectedContact}
+                    call = {this.state.incomingCall || this.state.currentCall}
+                    goBackFunc = {this.goBackToCall}
                 />
             </Fragment>
         );
@@ -3759,8 +3776,9 @@ class Sylk extends Component {
                 isTablet = {this.state.isTablet}
                 reconnectingCall = {this.state.reconnectingCall}
                 muted = {this.state.muted}
-                myDisplayNames = {this.state.myDisplayNames}
+                myContacts = {this.state.myContacts}
                 declineReason = {this.state.declineReason}
+                goBackFunc={this.goBackToHome}
             />
         )
     }
@@ -3834,8 +3852,9 @@ class Sylk extends Component {
                 reconnectingCall = {this.state.reconnectingCall}
                 setFavoriteUri = {this.setFavoriteUri}
                 favoriteUris = {this.state.favoriteUris}
-                myDisplayNames = {this.state.myDisplayNames}
+                myContacts = {this.state.myContacts}
                 lookupContacts={this.lookupContacts}
+                goBackFunc={this.goBackToHome}
             />
         )
     }
@@ -3923,8 +3942,8 @@ class Sylk extends Component {
 
             displayName = '';
 
-            if (this.state.myDisplayNames && this.state.myDisplayNames.hasOwnProperty(uri)) {
-                displayName = this.state.myDisplayNames[uri].name;
+            if (this.state.myContacts && this.state.myContacts.hasOwnProperty(uri)) {
+                displayName = this.state.myContacts[uri].name;
             }
 
             conference = false;

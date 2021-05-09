@@ -330,6 +330,7 @@ class VideoBox extends Component {
                     accountId = {this.props.accountId}
                     info={this.state.info}
                     media='video'
+                    goBackFunc={this.props.goBackFunc}
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
@@ -402,7 +403,8 @@ VideoBox.propTypes = {
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
-    showLogs                : PropTypes.func
+    showLogs                : PropTypes.func,
+    goBackFunc              : PropTypes.func
 };
 
 export default VideoBox;

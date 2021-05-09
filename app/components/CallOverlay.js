@@ -193,6 +193,7 @@ class CallOverlay extends React.Component {
             } else {
                 header = (
                     <Appbar.Header style={styles.appbarContainer}>
+                        <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                         <Appbar.Content
                             title={`Call with ${displayName}`} subtitle={callDetail}
                         />
@@ -214,7 +215,8 @@ CallOverlay.propTypes = {
     reconnectingCall: PropTypes.bool,
     declineReason : PropTypes.string,
     media: PropTypes.string,
-    info: PropTypes.string
+    info: PropTypes.string,
+    goBackFunc: PropTypes.func
 };
 
 export default CallOverlay;

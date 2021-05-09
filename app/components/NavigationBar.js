@@ -19,6 +19,7 @@ class NavigationBar extends Component {
 
         this.state = {
             showAboutModal: false,
+            inCall: this.props.inCall,
             showCallMeMaybeModal: false,
             showEditDisplayNameModal: false,
             registrationState: this.props.registrationState,
@@ -44,6 +45,7 @@ class NavigationBar extends Component {
                        connection: nextProps.connection,
                        displayName: nextProps.displayName,
                        proximity: nextProps.proximity,
+                       inCall: nextProps.inCall,
                        selectedContact: nextProps.selectedContact
                        });
     }
@@ -116,7 +118,6 @@ class NavigationBar extends Component {
         this.setState({showEditDisplayNameModal: !this.state.showEditDisplayNameModal});
     }
 
-
     render() {
          const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
@@ -142,11 +143,9 @@ class NavigationBar extends Component {
 
         //<Menu.Item onPress={() => this.handleMenu('speakerphone')} icon="speaker" title="Toggle speakerphone" />
 
-        //console.log('Nabvar selectedContact', this.state.selectedContact);
-
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
-                {(this.props.goBackFunc && this.state.selectedContact)?
+                {this.state.selectedContact?
                 <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                 : <Image source={blinkLogo} style={styles.logo}/>}
 
@@ -219,15 +218,16 @@ NavigationBar.propTypes = {
     toggleProximity    : PropTypes.func.isRequired,
     saveDisplayName    : PropTypes.func.isRequired,
     showLogs           : PropTypes.func.isRequired,
+    inCall             : PropTypes.bool,
     proximity          : PropTypes.bool,
-    goBackFunc         : PropTypes.func,
     displayName        : PropTypes.string,
     account            : PropTypes.object,
     connection         : PropTypes.object,
     toggleMute         : PropTypes.func,
     orientation        : PropTypes.string,
     isTablet           : PropTypes.bool,
-    selectedContact    : PropTypes.object
+    selectedContact    : PropTypes.object,
+    goBackFunc         : PropTypes.func
 };
 
 export default NavigationBar;

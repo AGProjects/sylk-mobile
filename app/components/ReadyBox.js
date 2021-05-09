@@ -34,7 +34,8 @@ class ReadyBox extends Component {
             messages: this.props.messages,
             myDisplayName: this.props.myDisplayName,
             chat: false,
-            edit: false
+            edit: false,
+            call: this.props.call
         };
         this.ended = false;
     }
@@ -56,6 +57,7 @@ class ReadyBox extends Component {
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                         messages: nextProps.messages,
                         myDisplayName: nextProps.myDisplayName,
+                        call: nextProps.call,
                         selectedContact: nextProps.selectedContact,
                         isLandscape: nextProps.isLandscape});
     }
@@ -335,6 +337,7 @@ class ReadyBox extends Component {
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
         const buttonGroupClass = this.props.orientation === 'landscape' ? styles.landscapeButtonGroup : styles.buttonGroup;
         const borderClass = this.state.chat ? null : styles.historyBorder;
+        const callType = (this.state.call && this.state.call.hasOwnProperty('_participants')) ? 'Back to conference' : 'Back to call';
 
         return (
             <Fragment>
@@ -353,6 +356,7 @@ class ReadyBox extends Component {
                             </View>
                             : null}
 
+                            {!this.state.call ?
                             <View style={buttonGroupClass}>
                                 <IconButton
                                     style={buttonClass}
@@ -383,6 +387,18 @@ class ReadyBox extends Component {
                                     icon="account-group"
                                 />
                             </View>
+                                :
+                            <View style={buttonGroupClass}>
+                                <Button
+                                    mode="contained"
+                                    style={styles.backButton}
+                                    onPress={this.props.goBackFunc}
+                                    accessibilityLabel={callType}
+                                    >{callType}
+                                </Button>
+                            </View>
+                                }
+
                         </View>
                                 : null}
                     </View>
@@ -417,7 +433,7 @@ class ReadyBox extends Component {
                             filter={this.state.historyFilter}
                             defaultDomain={this.props.defaultDomain}
                             saveDisplayName={this.props.saveDisplayName}
-                            myDisplayNames = {this.props.myDisplayNames}
+                            myContacts = {this.props.myContacts}
                             messages = {this.state.messages}
                             sendMessage={this.props.sendMessage}
                             reSendMessage={this.props.reSendMessage}
@@ -503,7 +519,9 @@ ReadyBox.propTypes = {
     pinMessage      : PropTypes.func,
     unpinMessage    : PropTypes.func,
     selectedContact : PropTypes.object,
-    messages        : PropTypes.object
+    messages        : PropTypes.object,
+    call            : PropTypes.object,
+    goBackFunc      : PropTypes.func
 };
 
 

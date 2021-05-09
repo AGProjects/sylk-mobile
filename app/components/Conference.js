@@ -204,6 +204,10 @@ class Conference extends React.Component {
     }
 
     start() {
+        if (this.state.currentCall) {
+            console.log('Conference: call already in progress');
+        }
+
         const options = {
             id: this.state.callUUID,
             pcConfig: {iceServers: config.iceServers},
@@ -216,7 +220,9 @@ class Conference extends React.Component {
             },
             initialParticipants: this.props.participantsToInvite
         };
+
         utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.state.callUUID, 'to', this.props.targetUri.toLowerCase());
+
         if (this.props.participantsToInvite) {
             utils.timestampedLog('Initial participants', this.props.participantsToInvite);
         }
@@ -360,8 +366,9 @@ class Conference extends React.Component {
                         reconnectingCall={this.state.reconnectingCall}
                         initialParticipants={this.props.participantsToInvite}
                         terminated={this.userHangup}
-                        myDisplayNames = {this.props.myDisplayNames}
+                        myContacts = {this.props.myContacts}
                         lookupContacts = {this.props.lookupContacts}
+                        goBackFunc={this.props.goBackFunc}
                    />
                 );
             } else {
@@ -423,8 +430,10 @@ Conference.propTypes = {
     saveInvitedParties      : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
     favoriteUris            : PropTypes.array,
-    myDisplayNames          : PropTypes.object,
-    lookupContacts          : PropTypes.func
+    myContacts              : PropTypes.object,
+    lookupContacts          : PropTypes.func,
+    goBackFunc              : PropTypes.func
+
 };
 
 

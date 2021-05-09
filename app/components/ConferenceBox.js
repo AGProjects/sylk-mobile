@@ -385,8 +385,8 @@ class ConferenceBox extends Component {
         let photo;
         let username =  uri.split('@')[0];
 
-        if (this.props.myDisplayNames.hasOwnProperty(uri) && this.props.myDisplayNames[uri].name) {
-            displayName = this.props.myDisplayNames[uri].name;
+        if (this.props.myContacts.hasOwnProperty(uri) && this.props.myContacts[uri].name) {
+            displayName = this.props.myContacts[uri].name;
         } else if (this.props.contacts) {
             let username = uri.split('@')[0];
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
@@ -1301,6 +1301,7 @@ class ConferenceBox extends Component {
                             audioOnly={this.props.audioOnly}
                             terminated={this.state.terminated}
                             info={this.getInfo()}
+                            goBackFunc={this.props.goBackFunc}
                         />
 
                         <View style={audioContainer}>
@@ -1566,6 +1567,7 @@ class ConferenceBox extends Component {
                         audioOnly={this.props.audioOnly}
                         terminated={this.state.terminated}
                         info={this.getInfo()}
+                        goBackFunc={this.props.goBackFunc}
                     />
 
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
@@ -1669,9 +1671,9 @@ ConferenceBox.propTypes = {
     audioOnly           : PropTypes.bool,
     initialParticipants : PropTypes.array,
     terminated          : PropTypes.bool,
-    myDisplayNames      : PropTypes.object,
-    lookupContacts      : PropTypes.func
-
+    myContacts          : PropTypes.object,
+    lookupContacts      : PropTypes.func,
+    goBackFunc          : PropTypes.func
 };
 
 export default ConferenceBox;

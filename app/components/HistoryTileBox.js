@@ -39,7 +39,7 @@ class HistoryTileBox extends Component {
             refreshHistory: this.props.refreshHistory,
             refreshFavorites: this.props.refreshFavorites,
             selectedContact: this.props.selectedContact,
-            myDisplayNames: this.props.myDisplayNames,
+            myContacts: this.props.myContacts,
             messages: this.props.messages,
             renderMessages: [],
             chat: this.props.chat,
@@ -122,8 +122,8 @@ class HistoryTileBox extends Component {
             }
         };
 
-        if (nextProps.myDisplayNames !== this.state.myDisplayNames) {
-            this.setState({myDisplayNames: nextProps.myDisplayNames});
+        if (nextProps.myContacts !== this.state.myContacts) {
+            this.setState({myContacts: nextProps.myContacts});
         };
 
         if (this.state.messages) {
@@ -154,19 +154,15 @@ class HistoryTileBox extends Component {
     }
 
     getMessages(contact) {
-
         if (!contact) {
             return;
         }
-
         let uri = contact.remoteParty;
-        console.log('Get messages for', uri);
 
         if (uri.indexOf('@videoconference') > -1) {
             let username = uri.split('@')[0];
             uri = username;
         }
-
         this.props.getMessages(uri);
     }
 
@@ -214,8 +210,8 @@ class HistoryTileBox extends Component {
 
         let username = uri.split('@')[0];
 
-        if (this.state.myDisplayNames && this.state.myDisplayNames.hasOwnProperty(uri)) {
-            myDisplayName = this.state.myDisplayNames[uri].name;
+        if (this.state.myContacts && this.state.myContacts.hasOwnProperty(uri)) {
+            myDisplayName = this.state.myContacts[uri].name;
         }
 
         if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(username)) {
@@ -248,7 +244,7 @@ class HistoryTileBox extends Component {
             accountId={this.state.accountId}
             favoriteUris={this.state.favoriteUris}
             saveDisplayName={this.props.saveDisplayName}
-            myDisplayNames={this.state.myDisplayNames}
+            myContacts={this.state.myContacts}
             messages={this.state.renderMessages}
             unread={item.unread}
             chat={this.state.chat}
@@ -443,7 +439,7 @@ class HistoryTileBox extends Component {
         contacts = contacts.concat(this.videoTest);
         contacts = contacts.concat(this.echoTest);
 
-        const uris = Object.keys(this.state.myDisplayNames);
+        const uris = Object.keys(this.state.myContacts);
 
         uris.forEach((uri) => {
             contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
@@ -455,9 +451,9 @@ class HistoryTileBox extends Component {
                 displayName: displayName,
                 conference: false,
                 type: 'contact',
-                unread: this.state.myDisplayNames[uri].unread ? this.state.myDisplayNames[uri].unread.toString() : "0",
-                startTime: this.state.myDisplayNames[uri].timestamp,
-                stopTime: this.state.myDisplayNames[uri].timestamp,
+                unread: this.state.myContacts[uri].unread ? this.state.myContacts[uri].unread.toString() : "0",
+                startTime: this.state.myContacts[uri].timestamp,
+                stopTime: this.state.myContacts[uri].timestamp,
                 media: ['chat'],
                 label: label,
                 id: uuid.v4(),
@@ -1058,7 +1054,7 @@ HistoryTileBox.propTypes = {
     filter          : PropTypes.string,
     defaultDomain   : PropTypes.string,
     saveDisplayName : PropTypes.func,
-    myDisplayNames  : PropTypes.object,
+    myContacts  : PropTypes.object,
     messages        : PropTypes.object,
     getMessages     : PropTypes.func,
     confirmRead     : PropTypes.func,
