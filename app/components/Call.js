@@ -176,6 +176,7 @@ class Call extends Component {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
             remoteUri = this.props.call.remoteIdentity.uri;
+            callState = this.props.call.state;
             remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
             direction = this.props.call.direction;
             callUUID = this.props.call.id;
@@ -228,7 +229,7 @@ class Call extends Component {
 
         this.lookupContact();
 
-        if (this.state.direction === 'outgoing' && this.state.callUUID) {
+        if (this.state.direction === 'outgoing' && this.state.callUUID && this.state.callState !== 'established') {
             utils.timestampedLog('Call: start call', this.state.callUUID, 'when ready to', this.state.targetUri);
             this.startCallWhenReady(this.state.callUUID);
         }
@@ -496,7 +497,7 @@ class Call extends Component {
          this.audioPacketLoss = audioPacketLoss;
          this.videoPacketLoss = videoPacketLoss;
 
-        let info;
+        let info = '';
         let suffix = 'kbit/s';
 
         if (foundVideo && (bandwidthUpload > 0 || bandwidthDownload > 0)) {
@@ -505,17 +506,20 @@ class Call extends Component {
             bandwidthDownload = Math.ceil(bandwidthDownload / 1000 * 100) / 100;
         }
 
-        if (bandwidthDownload > 0 && bandwidthUpload > 0) {
-            info = '⇣' + bandwidthDownload + ' ⇡' + bandwidthUpload;
-        } else if (bandwidthDownload > 0) {
-            info = '⇣' + bandwidthDownload;
-        } else if (bandwidthUpload > 0) {
-            info = '⇡' + this.bandwidthUpload;
+        if (bandwidthDownload && bandwidthUpload) {
+            if (bandwidthDownload > 0 && bandwidthUpload > 0) {
+                info = '⇣' + bandwidthDownload + ' ⇡' + bandwidthUpload;
+            } else if (bandwidthDownload > 0) {
+                info = '⇣' + bandwidthDownload;
+            } else if (bandwidthUpload > 0) {
+                info = '⇡' + this.bandwidthUpload;
+            }
+
+            if (info) {
+                info = info + ' ' + suffix;
+            }
         }
 
-        if (info) {
-            info = info + ' ' + suffix;
-        }
 
         if (this.packetLoss > 2) {
             info = info + ' - ' + Math.ceil(this.packetLoss) + '% loss';
@@ -592,7 +596,7 @@ class Call extends Component {
         } else if (remoteUri.indexOf('4444@') > -1) {
             remoteDisplayName = 'Echo Test';
         } else if (this.props.myContacts.hasOwnProperty(remoteUri) && this.props.myContacts[remoteUri].name) {
-            remoteDisplayName = this.props.myContacts[remoteUri];
+            remoteDisplayName = this.props.myContacts[remoteUri].name;
         } else if (this.props.contacts) {
             let username = remoteUri.split('@')[0];
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
@@ -846,6 +850,7 @@ class Call extends Component {
                         declineReason = {this.state.declineReason}
                         showLogs = {this.props.showLogs}
                         goBackFunc={this.props.goBackFunc}
+                        callState={this.props.callState}
                     />
                 );
             } else {
@@ -876,6 +881,7 @@ class Call extends Component {
                             info = {this.state.info}
                             showLogs = {this.props.showLogs}
                             goBackFunc={this.props.goBackFunc}
+                            callState={this.props.callState}
                         />
                     );
                 } else {
@@ -962,7 +968,8 @@ Call.propTypes = {
     myContacts              : PropTypes.object,
     declineReason           : PropTypes.string,
     showLogs                : PropTypes.func,
-    goBackFunc              : PropTypes.func
+    goBackFunc              : PropTypes.func,
+    callState               : PropTypes.object
 };
 
 

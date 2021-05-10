@@ -7707,6 +7707,11 @@ react-native-snap-carousel@^3.8.4:
     prop-types "^15.6.1"
     react-addons-shallow-compare "15.6.2"
 
+react-native-sound-player@^0.10.8:
+  version "0.10.8"
+  resolved "https://registry.yarnpkg.com/react-native-sound-player/-/react-native-sound-player-0.10.8.tgz#96e52b9a1e1a682d22fb24ba1a13a9e613123e59"
+  integrity sha512-0osSJ8XFEk+KqTnlQCZJgzc5Eno9NiFcBP3QudYusgqS3Z6YxoujRmjP9NpLiKi5MzDSEm4WcCK6tNJ6Z2lb0A==
+
 react-native-splash-screen@^3.2.0:
   version "3.2.0"
   resolved "https://registry.yarnpkg.com/react-native-splash-screen/-/react-native-splash-screen-3.2.0.tgz#d47ec8557b1ba988ee3ea98d01463081b60fff45"
@@ -7740,6 +7745,23 @@ react-native-swipe-list-view@^3.2.3:
   version "3.2.3"
   resolved "https://registry.yarnpkg.com/react-native-swipe-list-view/-/react-native-swipe-list-view-3.2.3.tgz#2b4aa361f26b6e55efe38a829ce122dff6c00292"
   integrity sha512-f0B92eZiO0mCk7ZFtn8tbLz4lb+mR8xzcfjFqCVSDeXnuNw7GenUMsccGnclIOhnxnip5BHvUHavlD41peGqig==
+
+react-native-sylkrtc@agprojects/react-native-sylkrtc.js#7cb59908635c12d859888741f3863607c9f80f6b:
+  version "1.4.8"
+  resolved "https://codeload.github.com/agprojects/react-native-sylkrtc.js/tar.gz/7cb59908635c12d859888741f3863607c9f80f6b"
+  dependencies:
+    "@rifflearning/attachmediastream" "^3.0.0"
+    async "^3.1.0"
+    blueimp-md5 "^2.13.0"
+    bowser "^2.7.0"
+    debug "^4.1.1"
+    react-native-device-info "^5.5.4"
+    react-native-get-random-values "^1.4.0"
+    react-native-uuid "^1.4.9"
+    sdp-transform "^2.3.0"
+    webrtc-adapter "^6.4.8"
+    websocket "^1.0.28"
+    xss "^1.0.8"
 
 react-native-sylkrtc@agprojects/react-native-sylkrtc.js#b9cd8d827ce10d33467f4c75225bbe4d014ba548:
   version "1.4.8"

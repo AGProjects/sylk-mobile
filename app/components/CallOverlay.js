@@ -32,6 +32,7 @@ class CallOverlay extends React.Component {
             media: this.props.media ? this.props.media : 'audio',
             callState: this.props.call ? this.props.call.state : null,
             direction: this.props.call ? this.props.call.direction: null,
+            startTime: this.props.callState ? this.props.callState.startTime : null,
             remoteUri: this.props.remoteUri,
             remoteDisplayName: this.props.remoteDisplayName,
             reconnectingCall: this.props.reconnectingCall
@@ -87,6 +88,7 @@ class CallOverlay extends React.Component {
         this.setState({remoteDisplayName: nextProps.remoteDisplayName,
                        remoteUri: nextProps.remoteUri,
                        media: nextProps.media,
+                       startTime: nextProps.callState ? nextProps.callState.startTime : null,
                        declineReason: nextProps.declineReason
                        });
     }
@@ -121,9 +123,9 @@ class CallOverlay extends React.Component {
 
         // TODO: consider using window.requestAnimationFrame
 
-        const startTime = new Date();
         this.timer = setInterval(() => {
-            const duration = moment.duration(new Date() - startTime);
+            const duration = moment.duration(new Date() - this.state.startTime);
+            console.log('this.duration =', this.duration);
 
             if (this.duration > 3600) {
                 this.duration = duration.format('hh:mm:ss', {trim: false});
@@ -216,7 +218,8 @@ CallOverlay.propTypes = {
     declineReason : PropTypes.string,
     media: PropTypes.string,
     info: PropTypes.string,
-    goBackFunc: PropTypes.func
+    goBackFunc: PropTypes.func,
+    callState : PropTypes.object
 };
 
 export default CallOverlay;

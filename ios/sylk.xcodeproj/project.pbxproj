@@ -12,6 +12,12 @@
 		13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB11A68108700A75B9A /* LaunchScreen.xib */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
+		1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871726495CFF0096C518 /* hangup_tone.wav */; };
+		1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871826495CFF0096C518 /* outbound_ringtone.wav */; };
+		1F31871F26495CFF0096C518 /* participant_joined.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871926495CFF0096C518 /* participant_joined.wav */; };
+		1F31872026495CFF0096C518 /* message_received.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871A26495CFF0096C518 /* message_received.wav */; };
+		1F31872126495CFF0096C518 /* message_sent.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871B26495CFF0096C518 /* message_sent.wav */; };
+		1F31872226495CFF0096C518 /* participant_left.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871C26495CFF0096C518 /* participant_left.wav */; };
 		2D02E4BC1E0B4A80006451C7 /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.m */; };
 		2D02E4BD1E0B4A84006451C7 /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		2D02E4BF1E0B4AB3006451C7 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
@@ -58,6 +64,12 @@
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = sylk/Info.plist; sourceTree = "<group>"; };
 		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = sylk/main.m; sourceTree = "<group>"; };
 		16F8C88D0BB542C7BDD8C492 /* Octicons.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = Octicons.ttf; path = "../node_modules/react-native-vector-icons/Fonts/Octicons.ttf"; sourceTree = "<group>"; };
+		1F31871726495CFF0096C518 /* hangup_tone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = hangup_tone.wav; path = ../app/assets/sounds/hangup_tone.wav; sourceTree = "<group>"; };
+		1F31871826495CFF0096C518 /* outbound_ringtone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = outbound_ringtone.wav; path = ../app/assets/sounds/outbound_ringtone.wav; sourceTree = "<group>"; };
+		1F31871926495CFF0096C518 /* participant_joined.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_joined.wav; path = ../app/assets/sounds/participant_joined.wav; sourceTree = "<group>"; };
+		1F31871A26495CFF0096C518 /* message_received.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = message_received.wav; path = ../app/assets/sounds/message_received.wav; sourceTree = "<group>"; };
+		1F31871B26495CFF0096C518 /* message_sent.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = message_sent.wav; path = ../app/assets/sounds/message_sent.wav; sourceTree = "<group>"; };
+		1F31871C26495CFF0096C518 /* participant_left.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_left.wav; path = ../app/assets/sounds/participant_left.wav; sourceTree = "<group>"; };
 		286EA52C71C0EEB870505AD8 /* libPods-sylk.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-sylk.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D02E47B1E0B4A5D006451C7 /* sylk-tvOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "sylk-tvOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D02E4901E0B4A5D006451C7 /* sylk-tvOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "sylk-tvOSTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -148,6 +160,12 @@
 		13B07FAE1A68108700A75B9A /* sylk */ = {
 			isa = PBXGroup;
 			children = (
+				1F31871726495CFF0096C518 /* hangup_tone.wav */,
+				1F31871A26495CFF0096C518 /* message_received.wav */,
+				1F31871B26495CFF0096C518 /* message_sent.wav */,
+				1F31871826495CFF0096C518 /* outbound_ringtone.wav */,
+				1F31871926495CFF0096C518 /* participant_joined.wav */,
+				1F31871C26495CFF0096C518 /* participant_left.wav */,
 				64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */,
 				64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
@@ -396,10 +414,16 @@
 			buildActionMask = 2147483647;
 			files = (
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
+				1F31871F26495CFF0096C518 /* participant_joined.wav in Resources */,
 				64893BB52481601600F1ACB1 /* incallmanager_busytone.mp3 in Resources */,
 				642006FA24364F8D00F214A5 /* GoogleService-Info.plist in Resources */,
+				1F31872226495CFF0096C518 /* participant_left.wav in Resources */,
+				1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */,
+				1F31872026495CFF0096C518 /* message_received.wav in Resources */,
+				1F31872126495CFF0096C518 /* message_sent.wav in Resources */,
 				64893BB324815ED900F1ACB1 /* incallmanager_ringback.mp3 in Resources */,
 				13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */,
+				1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

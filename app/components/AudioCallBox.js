@@ -227,6 +227,7 @@ class AudioCallBox extends Component {
                     media='audio'
                     declineReason={this.state.declineReason}
                     goBackFunc={this.props.goBackFunc}
+                    callState={this.props.callState}
                 />
                 <View style={userIconContainerClass}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
@@ -349,7 +350,8 @@ AudioCallBox.propTypes = {
     latencyQueue            : PropTypes.array,
     declineReason           : PropTypes.string,
     showLogs                : PropTypes.func,
-    goBackFunc              : PropTypes.func
+    goBackFunc              : PropTypes.func,
+    callState               : PropTypes.object
 };
 
 export default AudioCallBox;

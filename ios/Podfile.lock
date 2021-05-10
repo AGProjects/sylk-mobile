@@ -331,6 +331,8 @@ PODS:
     - React
   - RNShare (3.3.3):
     - React
+  - RNSoundPlayer (0.10.8):
+    - React
   - RNSVG (12.1.0):
     - React
   - RNVectorIcons (6.6.0):
@@ -383,6 +385,7 @@ DEPENDENCIES:
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
   - RNFS (from `../node_modules/react-native-fs`)
   - RNShare (from `../node_modules/react-native-share`)
+  - RNSoundPlayer (from `../node_modules/react-native-sound-player`)
   - RNSVG (from `../node_modules/react-native-svg`)
   - RNVectorIcons (from `../node_modules/react-native-vector-icons`)
   - RNVoipPushNotification (from `../node_modules/react-native-voip-push-notification`)
@@ -488,6 +491,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-fs"
   RNShare:
     :path: "../node_modules/react-native-share"
+  RNSoundPlayer:
+    :path: "../node_modules/react-native-sound-player"
   RNSVG:
     :path: "../node_modules/react-native-svg"
   RNVectorIcons:
@@ -554,6 +559,7 @@ SPEC CHECKSUMS:
   RNFBMessaging: 51cc7f6beaf4c4feac6f18ea941bba5854e3d9c6
   RNFS: 2bd9eb49dc82fa9676382f0585b992c424cd59df
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
+  RNSoundPlayer: aa3c998a1f9beaa0f9fdd4485846a74a53df7d07
   RNSVG: ce9d996113475209013317e48b05c21ee988d42e
   RNVectorIcons: 0bb4def82230be1333ddaeee9fcba45f0b288ed4
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36

@@ -389,6 +389,16 @@ class ReadyBox extends Component {
                             </View>
                                 :
                             <View style={buttonGroupClass}>
+                                { this.state.selectedContact ?
+                                <IconButton
+                                    style={buttonClass}
+                                    size={32}
+                                    disabled={this.chatButtonDisabled}
+                                    onPress={this.handleChat}
+                                    icon="chat"
+                                />
+                                : null}
+
                                 <Button
                                     mode="contained"
                                     style={styles.backButton}

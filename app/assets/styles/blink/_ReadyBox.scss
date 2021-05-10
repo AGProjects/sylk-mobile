@@ -161,6 +161,9 @@
 }
 
 .backButton {
+    justifyContent: center;
+    alignItems: center;
+    flex: 1;
     background-color: red;
     color: white;
     margin: 10px;

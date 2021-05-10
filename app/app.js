@@ -17,6 +17,7 @@ import Contacts from 'react-native-contacts';
 import BackgroundTimer from 'react-native-background-timer';
 import DeepLinking from 'react-native-deep-linking';
 import base64 from 'react-native-base64';
+import SoundPlayer from 'react-native-sound-player';
 
 registerGlobals();
 
@@ -235,7 +236,8 @@ class Sylk extends Component {
             logs: '',
             proximityEnabled: true,
             messages: {},
-            selectedContact: null
+            selectedContact: null,
+            callsState: {}
         };
 
         utils.timestampedLog('Init app');
@@ -253,6 +255,11 @@ class Sylk extends Component {
         this.startedByPush = false;
         this.heartbeats = 0;
 
+        this._onFinishedPlayingSubscription = null
+        this._onFinishedLoadingSubscription = null
+        this._onFinishedLoadingFileSubscription = null
+        this._onFinishedLoadingURLSubscription = null
+
         this.cachedHistory = []; // used for caching server history
 
         this.state = Object.assign({}, this._initialState);
@@ -269,6 +276,7 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.goToReadyTimer = null;
+        this.msg_sound_played_ts = null;
 
         storage.initialize();
         this.callKeeper = new CallManager(RNCallKeep,
@@ -526,7 +534,7 @@ class Sylk extends Component {
                                     ";
 
         this.ExecuteQuery(create_table_messages).then((success) => {
-            console.log('SQL messages table OK');
+            //console.log('SQL messages table OK');
         }).catch((error) => {
             console.log(create_table_messages);
             console.log('SQL messages table creation error:', error);
@@ -542,7 +550,7 @@ class Sylk extends Component {
                                     ";
 
         this.ExecuteQuery(create_table_journal).then((success) => {
-            console.log('SQL journal table OK');
+            //console.log('SQL journal table OK');
         }).catch((error) => {
             console.log(create_table_journal);
             console.log('SQL journal table creation error:', error);
@@ -552,7 +560,7 @@ class Sylk extends Component {
     }
 
     upgradeSQLTables() {
-        console.log('Update SQL tables')
+        console.log('Upgrade SQL tables')
         let query;
         let update_queries;
         let update_sub_queries;
@@ -835,6 +843,12 @@ class Sylk extends Component {
     componentWillUnmount() {
         utils.timestampedLog('App will unmount');
         AppState.removeEventListener('change', this._handleAppStateChange);
+
+        this._onFinishedPlayingSubscription.remove();
+        this._onFinishedLoadingSubscription.remove();
+        this._onFinishedLoadingURLSubscription.remove();
+        this._onFinishedLoadingFileSubscription.remove();
+
         this.callKeeper.destroy();
         this.closeConnection();
         this._loaded = false;
@@ -913,7 +927,25 @@ class Sylk extends Component {
         });
 
         this.listenforPushNotifications();
+        this.listenforSoundNotifications();
     }
+
+    listenforSoundNotifications() {
+     // Subscribe to event(s) you want when component mounted
+        this._onFinishedPlayingSubscription = SoundPlayer.addEventListener('FinishedPlaying', ({ success }) => {
+          console.log('finished playing', success)
+        })
+        this._onFinishedLoadingSubscription = SoundPlayer.addEventListener('FinishedLoading', ({ success }) => {
+          console.log('finished loading', success)
+        })
+        this._onFinishedLoadingFileSubscription = SoundPlayer.addEventListener('FinishedLoadingFile', ({ success, name, type }) => {
+          console.log('finished loading file', success, name, type)
+        })
+        this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
+          console.log('finished loading url', success, url)
+        })
+    }
+
 
     listenforPushNotifications() {
         if (this.state.appState === null) {
@@ -1637,6 +1669,10 @@ class Sylk extends Component {
                 break;
 
             case 'established':
+                callsState = this.state.callsState;
+                callsState[callUUID] = {startTime: new Date()};
+                this.setState({callsState: callsState});
+
                 this.callKeeper.setCurrentCallActive(callUUID);
 
                 this.backToForeground();
@@ -1664,6 +1700,10 @@ class Sylk extends Component {
 
                 break;
             case 'accepted':
+                callsState = this.state.callsState;
+                callsState[callUUID] = {startTime: new Date()};
+                this.setState({callsState: callsState});
+
                 this.callKeeper.setCurrentCallActive(callUUID);
                 this.backToForeground();
                 this.resetGoToReadyTimer();
@@ -1674,6 +1714,14 @@ class Sylk extends Component {
                 break;
 
             case 'terminated':
+                let startTime;
+                if (callUUID in this.state.callsState) {
+                    callsState = this.state.callsState;
+                    startTime = callsState[callUUID].startTime;
+                    delete callsState[callUUID];
+                    this.setState({callsState: callsState});
+               }
+
                 this._terminatedCalls.set(callUUID, true);
                 utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
 
@@ -1764,7 +1812,12 @@ class Sylk extends Component {
                 let msg;
                 let current_datetime = new Date();
                 let formatted_date = utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
-                msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
+                if (startTime) {
+                    const duration = moment.duration(new Date() - startTime);
+                    msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
+                } else {
+                    msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
+                }
 
                 this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
 
@@ -3109,7 +3162,7 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
         if (uri in myContacts && myContacts[uri].unread > 0) {
             myContacts[uri].unread = 0;
-            this.setState({myContacts: myContacts});
+            this.saveMyContacts(myContacts);
         }
     }
 
@@ -3231,7 +3284,33 @@ class Sylk extends Component {
             let myContacts = this.state.myContacts;
             myContacts[uri].read = 0;
             myContacts[uri].timestamp = '';
-            this.setState({myContacts: myContacts});
+            this.saveMyContacts(myContacts);
+        }
+    }
+
+
+    playIncomingSound() {
+        let must_play_sound = true;
+
+        if (this.msg_sound_played_ts) {
+            let diff = (Date.now() - this.msg_sound_played_ts)/ 1000;
+            console.log('Diff = ', diff);
+            if (diff < 10) {
+                must_play_sound = false;
+            }
+        }
+
+        this.msg_sound_played_ts = Date.now();
+
+        if (must_play_sound) {
+            try {
+              SoundPlayer.setSpeaker(true);
+              console.log('play sound');
+              SoundPlayer.playSoundFile('message_received', 'wav');
+            } catch (e) {
+              console.log('Cannot play message_received.wav', e);
+            }
+            // TODO play message_received.message_received
         }
     }
 
@@ -3240,6 +3319,8 @@ class Sylk extends Component {
         if (message.content.indexOf('?OTRv3') > -1) {
             return;
         }
+
+        this.playIncomingSound();
 
         this.saveIncomingMessage(message.sender.uri, message);
 
@@ -3749,12 +3830,18 @@ class Sylk extends Component {
 
     call() {
         let call = this.state.currentCall || this.state.incomingCall;
+        let callState;
+
+        if (call && call.id in this.state.callsState) {
+            callState = this.state.callsState[call.id];
+        }
 
         return (
             <Call
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
                 call = {call}
+                callState = {callState}
                 connection = {this.state.connection}
                 registrationState = {this.state.registrationState}
                 localMedia = {this.state.localMedia}
