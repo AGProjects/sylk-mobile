@@ -1646,6 +1646,8 @@ class Sylk extends Component {
         utils.timestampedLog('---incomingCall:', newincomingCall);
         */
 
+        let callsState;
+
         switch (newState) {
             case 'progress':
                 this.callKeeper.setCurrentCallActive(callUUID);
@@ -1813,7 +1815,14 @@ class Sylk extends Component {
                 let current_datetime = new Date();
                 let formatted_date = utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
                 if (startTime) {
-                    const duration = moment.duration(new Date() - startTime);
+                    let duration = moment.duration(new Date() - startTime);
+
+                    if (duration > 3600) {
+                        duration = duration.format('hh:mm:ss', {trim: false});
+                    } else {
+                        duration = duration.format('mm:ss', {trim: false});
+                    }
+
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
