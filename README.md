@@ -34,6 +34,7 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 ## Features
 
 * 1-to-1 audio and video calls
+* Text messaging
 * Multiparty video conferencing
 * Call history entries management
 * Native address book lookup
@@ -52,8 +53,10 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 
 ### Financial support
 
-* [NLnet](http://nlnet.nl)
+* NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement No 825310
 * [Project description](https://nlnet.nl/project/SylkMobile/)
+
+
 
 ### People
 
