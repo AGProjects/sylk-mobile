@@ -1,14 +1,15 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { View, TouchableOpacity } from 'react-native';
+import { View, TouchableOpacity, FlatList } from 'react-native';
 import Autocomplete from 'react-native-autocomplete-input';
 
-import { Portal, Dialog, Button, Text, TextInput, Surface } from 'react-native-paper';
+import { Portal, Dialog, Button, Text, TextInput, Surface, Chip} from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import config from '../config';
 import styles from '../assets/styles/blink/_ConferenceModal.scss';
+
 
 class ConferenceModal extends Component {
     constructor(props) {
@@ -20,7 +21,7 @@ class ConferenceModal extends Component {
             targetUri: targetUri,
             myInvitedParties: props.myInvitedParties,
             selectedContact: props.selectedContact,
-            participants: '',
+            participants: [],
             filteredContacts: [],
             searching: false,
             roomUrl: config.publicUrl + '/conference/' + targetUri
@@ -102,7 +103,7 @@ class ConferenceModal extends Component {
         this.setState({targetUri: targetUri,
                        searching: false,
                        roomUrl:  targetUri ? config.publicUrl + '/conference/' + targetUri: '',
-                       participants: sanitizedParticipants.toString().replace(/,/g, ", ")
+                       participants: sanitizedParticipants
                        });
     }
 
@@ -115,7 +116,7 @@ class ConferenceModal extends Component {
         const participants = [];
 
         if (this.state.participants) {
-            this.state.participants.split(',').forEach((item) => {
+            this.state.participants.forEach((item) => {
                 item = item.trim().toLowerCase().replace(' ', '');
                 if (item.length > 1) {
                     if (item.indexOf('@') === -1) {
@@ -135,7 +136,7 @@ class ConferenceModal extends Component {
         const participants = [];
 
         if (this.state.participants) {
-            this.state.participants.split(',').forEach((item) => {
+            this.state.participants.forEach((item) => {
                 item = item.trim().toLowerCase().replace(' ', '');
                 if (item.indexOf('@') === -1) {
                     item = `${item}@${this.props.defaultDomain}`;
@@ -180,37 +181,14 @@ class ConferenceModal extends Component {
         return true;
     }
 
-    searchContacts(text) {
-        const search_text = text;
-        let filteredContacts = [];
-        let searching = false;
-
-        if (!text.startsWith(this.state.participants)) {
-            this.setState({participants: text,
-                           filteredContacts: [],
-                           searching: false});
-            return;
+    removeParticipant(uri) {
+        let participants = this.state.participants;
+        let idx = participants.indexOf(uri);
+        if (idx > -1) {
+            console.log('Remove', uri, 'from', participants);
+            participants.splice(idx, 1);
+            this.setState({participants: participants});
         }
-
-        if (text.indexOf(',') > -1) {
-            const text_els = text.split(',');
-            text = text_els[text_els.length - 1].trim()
-        }
-
-        if (text.length > 1) {
-            filteredContacts = this.props.lookupContacts(text);
-            let already_added = this.state.participants.replace(/\s+,\s+/g, ",").split(',');
-            filteredContacts = filteredContacts.filter(x => !already_added.includes(x.remoteParty) && this.isValidUri(x.remoteParty));
-
-            if (filteredContacts.length > 0) {
-               searching = true;
-            }
-        }
-
-        this.setState({filteredContacts: filteredContacts.slice(0, 6),
-                       participants: search_text,
-                       searching: searching
-                       });
     }
 
     isPhoneNumber(uri) {
@@ -224,8 +202,8 @@ class ConferenceModal extends Component {
     }
 
     updateParticipants(contact) {
-        let participants = this.state.participants.replace(/\s+,\s+/g, ",");
-        let els = participants.split(',');
+        let participants = this.state.participants;
+        let els = participants;
         if (els.length === 1) {
             participants = contact.remoteParty;
         } else {
@@ -239,47 +217,23 @@ class ConferenceModal extends Component {
                        searching: false});
     }
 
-    //https://reactnativecode.com/react-native-autocomplete-text-input/
-
-    /*
-                        <View style={styles.roomUrlContainer}>
-                        <Text style={styles.roomUrl}>
-                             {this.state.roomUrl}
-                        </Text>
-                        </View>
-
-    */
-
     render() {
         const validUri = this.state.targetUri.length > 0 && this.state.targetUri.indexOf('@') === -1;
+
+        let data = [];
+        if (this.state.participants) {
+            this.state.participants.forEach((p) => {
+                data.push({key: p.trim()});
+                });
+        }
 
         return (
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.onHide}>
                     <Surface >
                         <Dialog.Title style={styles.title}>Join Conference</Dialog.Title>
-
-                        <View>
-                        <Autocomplete
-                          containerStyle={styles.autocompleteContainer}
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          data={this.state.filteredContacts}
-                          defaultValue={this.state.participants}
-                          keyExtractor={(item, i) => i.toString()}
-                          onChangeText={(text) => this.searchContacts(text)}
-                          placeholder="Invite Sylk accounts separated by ,"
-                          renderItem={({item}) => (
-                                        <TouchableOpacity
-                                              onPress={() => {this.updateParticipants(item);}}>
-                                              <Text style={styles.autocompleteSearchBoxTextItem}>
-                                                  {item.displayName ? item.displayName + ' ('+ item.remoteParty + ')' : item.remoteParty}
-                                              </Text>
-                                        </TouchableOpacity>
-                                        )}
-                        />
-                        </View>
                         <View style={styles.roomContainer}>
+
                         <TextInput
                             style={styles.room}
                             mode="flat"
@@ -291,12 +245,34 @@ class ConferenceModal extends Component {
                             required
                             defaultValue={this.state.targetUri}
                         />
+
                         </View>
 
                         <View style={styles.roomDescriptionContainer}>
+                        {this.state.participants.length > 0 ?
+                        <View>
+                        <View>
+                              <Text style={styles.roomDescription}>Invited participants:</Text>
+                        </View>
+
+                        <View style={styles.chipsContainer}>
+                              <FlatList style={styles.chips}
+                                horizontal={true}
+                                data={data}
+                                renderItem={({item}) => <Chip style={styles.chip}
+                                                         textStyle={styles.chipTextStyle}
+                                                         icon="account"
+                                                         onClose={() => this.removeParticipant(item.key)}>
+                                                         {item.key}
+                                                         </Chip>
+                                            }
+                              />
+                        </View>
+                        </View>
+                        : null}
+
                         <Text style={styles.roomDescription}>
-                             Others can join
-                             later using a Web browser
+                             Others can be invited once the conference starts
                         </Text>
                         </View>
 

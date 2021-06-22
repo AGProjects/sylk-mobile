@@ -114,7 +114,8 @@ class ConferenceBox extends Component {
             reconnectingCall: this.props.reconnectingCall,
             terminated: this.props.terminated,
             messages: messages,
-            chatView: false
+            chatView: false,
+            selectedContacts: this.props.selectedContacts
         };
 
         const friendlyName = this.props.remoteUri.split('@')[0];
@@ -156,6 +157,7 @@ class ConferenceBox extends Component {
         });
 
         this.invitedParticipants = new Map();
+        // TODO preserve this list between route changes
 
         props.initialParticipants.forEach((uri) => {
             this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
@@ -303,6 +305,10 @@ class ConferenceBox extends Component {
 
         //let msg = "Others can join the conference using a web browser at " + this.conferenceUrl;
         //this.postChatSystemMessage(msg, false);
+
+        if (this.state.selectedContacts) {
+            this.inviteParticipants(this.state.selectedContacts);
+        }
     }
 
     componentWillUnmount() {
@@ -339,7 +345,8 @@ class ConferenceBox extends Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
-        this.setState({terminated: nextProps.terminated});
+        this.setState({terminated: nextProps.terminated,
+                       selectedContacts: nextProps.selectedContacts});
     }
 
     findObjectByKey(array, key, value) {
@@ -999,6 +1006,7 @@ class ConferenceBox extends Component {
     }
 
     inviteParticipants(uris) {
+        console.log('Invite participants:', uris);
         this.props.call.inviteParticipants(uris);
         uris.forEach((uri) => {
             uri = uri.replace(/ /g, '');
@@ -1105,18 +1113,6 @@ class ConferenceBox extends Component {
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         const floatingButtons = [];
-        if (!this.state.reconnectingCall) {
-            floatingButtons.push(
-                <IconButton
-                    size={25}
-                    style={buttonClass}
-                    title="Share link to this conference"
-                    icon="account-plus"
-                    onPress={this.toggleInviteModal}
-                    key="shareButton"
-                />
-            );
-        }
         if (this.haveVideo) {
             floatingButtons.push(
                 <IconButton
@@ -1302,6 +1298,9 @@ class ConferenceBox extends Component {
                             terminated={this.state.terminated}
                             info={this.getInfo()}
                             goBackFunc={this.props.goBackFunc}
+                            toggleInviteModal={this.toggleInviteModal}
+                            inviteToConferenceFunc={this.props.inviteToConferenceFunc}
+                            callState={this.props.callState}
                         />
 
                         <View style={audioContainer}>
@@ -1337,6 +1336,7 @@ class ConferenceBox extends Component {
                         notificationCenter = {this.props.notificationCenter}
                         lookupContacts = {this.props.lookupContacts}
                     />
+
                 <ConferenceDrawer
                     show={this.state.showDrawer && !this.state.reconnectingCall}
                     close={this.toggleDrawer}
@@ -1568,6 +1568,9 @@ class ConferenceBox extends Component {
                         terminated={this.state.terminated}
                         info={this.getInfo()}
                         goBackFunc={this.props.goBackFunc}
+                        toggleInviteModal={this.toggleInviteModal}
+                        inviteToConferenceFunc={this.props.inviteToConferenceFunc}
+                        callState={this.props.callState}
                     />
 
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
@@ -1673,7 +1676,10 @@ ConferenceBox.propTypes = {
     terminated          : PropTypes.bool,
     myContacts          : PropTypes.object,
     lookupContacts      : PropTypes.func,
-    goBackFunc          : PropTypes.func
+    goBackFunc          : PropTypes.func,
+    inviteToConferenceFunc: PropTypes.func,
+    selectedContacts    : PropTypes.array,
+    callState           : PropTypes.object
 };
 
 export default ConferenceBox;

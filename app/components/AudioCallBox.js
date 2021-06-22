@@ -213,6 +213,7 @@ class AudioCallBox extends Component {
 
         const buttonSize = this.props.isTablet ? 40 : 34;
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        const chatButtonClass = (Platform.OS === 'ios') ? styles.iosChatButton : styles.androidChatButton;
 
         return (
             <View style={styles.container}>
@@ -256,6 +257,12 @@ class AudioCallBox extends Component {
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) ?
                     <View style={buttonContainerClass}>
+                    <IconButton
+                        size={buttonSize}
+                        style={chatButtonClass}
+                        icon="chat"
+                        onPress={this.props.goBackFunc}
+                    />
                     <IconButton
                         size={buttonSize}
                         style={buttonClass}
@@ -351,7 +358,17 @@ AudioCallBox.propTypes = {
     declineReason           : PropTypes.string,
     showLogs                : PropTypes.func,
     goBackFunc              : PropTypes.func,
-    callState               : PropTypes.object
+    callState               : PropTypes.object,
+    messages                : PropTypes.object,
+    sendMessage             : PropTypes.func,
+    reSendMessage           : PropTypes.func,
+    confirmRead             : PropTypes.func,
+    deleteMessage           : PropTypes.func,
+    expireMessage           : PropTypes.func,
+    getMessages             : PropTypes.func,
+    pinMessage              : PropTypes.func,
+    unpinMessage            : PropTypes.func,
+    selectedContact         : PropTypes.object
 };
 
 export default AudioCallBox;

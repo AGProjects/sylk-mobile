@@ -33,9 +33,11 @@ class ReadyBox extends Component {
             myInvitedParties: this.props.myInvitedParties,
             messages: this.props.messages,
             myDisplayName: this.props.myDisplayName,
-            chat: false,
-            edit: false,
-            call: this.props.call
+            chat: this.props.selectedContact && this.props.call,
+            call: this.props.call,
+            inviteContacts: this.props.inviteContacts,
+            selectedContacts: this.props.selectedContacts,
+            pinned: this.props.pinned
         };
         this.ended = false;
     }
@@ -58,7 +60,10 @@ class ReadyBox extends Component {
                         messages: nextProps.messages,
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
+                        inviteContacts: nextProps.inviteContacts,
+                        selectedContacts: nextProps.selectedContacts,
                         selectedContact: nextProps.selectedContact,
+                        pinned: nextProps.pinned,
                         isLandscape: nextProps.isLandscape});
     }
 
@@ -111,14 +116,23 @@ class ReadyBox extends Component {
     }
 
     get showSearchBar() {
-        if (this.props.isTablet) {
+        if (this.props.isTablet || this.props.isLandscape) {
             return true;
         }
+
+        if (this.state.call) {
+            return false;
+        }
+
         return (this.state.selectedContact ===  null);
     }
 
     get showButtonsBar() {
         if (this.props.isTablet) {
+            return true;
+        }
+
+        if (this.state.call) {
             return true;
         }
 
@@ -130,8 +144,13 @@ class ReadyBox extends Component {
     }
 
     handleTargetChange(value, contact) {
+        if (this.state.inviteContacts && contact) {
+             const uri = contact.remoteParty;
+             this.props.updateSelection(uri);
+             return;
+        }
+
         if (this.state.selectedContact === contact) {
-            this.setState({edit: !this.state.edit});
             if (this.state.chat) {
                 this.setState({chat: false});
             }
@@ -337,7 +356,10 @@ class ReadyBox extends Component {
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
         const buttonGroupClass = this.props.orientation === 'landscape' ? styles.landscapeButtonGroup : styles.buttonGroup;
         const borderClass = this.state.chat ? null : styles.historyBorder;
-        const callType = (this.state.call && this.state.call.hasOwnProperty('_participants')) ? 'Back to conference' : 'Back to call';
+        let callType = 'Back to call';
+        if (this.state.call && this.state.call.hasOwnProperty('_participants')) {
+            callType = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
+        }
 
         return (
             <Fragment>
@@ -389,15 +411,6 @@ class ReadyBox extends Component {
                             </View>
                                 :
                             <View style={buttonGroupClass}>
-                                { this.state.selectedContact ?
-                                <IconButton
-                                    style={buttonClass}
-                                    size={32}
-                                    disabled={this.chatButtonDisabled}
-                                    onPress={this.handleChat}
-                                    icon="chat"
-                                />
-                                : null}
 
                                 <Button
                                     mode="contained"
@@ -434,26 +447,31 @@ class ReadyBox extends Component {
                             myDisplayName={this.state.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
                             deleteHistoryEntry={this.props.deleteHistoryEntry}
-                            setFavoriteUri={this.props.setFavoriteUri}
                             saveInvitedParties={this.props.saveInvitedParties}
                             myInvitedParties = {this.state.myInvitedParties}
-                            setBlockedUri={this.props.setBlockedUri}
                             favoriteUris={this.props.favoriteUris}
                             blockedUris={this.props.blockedUris}
                             filter={this.state.historyFilter}
                             defaultDomain={this.props.defaultDomain}
-                            saveDisplayName={this.props.saveDisplayName}
+                            saveContact={this.props.saveContact}
                             myContacts = {this.props.myContacts}
                             messages = {this.state.messages}
-                            sendMessage={this.props.sendMessage}
-                            reSendMessage={this.props.reSendMessage}
-                            purgeMessages={this.props.purgeMessages}
+                            sendMessage = {this.props.sendMessage}
+                            reSendMessage = {this.props.reSendMessage}
+                            deleteMessages = {this.props.deleteMessages}
                             expireMessage = {this.props.expireMessage}
                             deleteMessage = {this.props.deleteMessage}
                             getMessages = {this.props.getMessages}
                             pinMessage = {this.props.pinMessage}
                             unpinMessage = {this.props.unpinMessage}
                             confirmRead = {this.props.confirmRead}
+                            sendPublicKey = {this.props.sendPublicKey}
+                            inviteContacts = {this.state.inviteContacts}
+                            selectedContacts = {this.state.selectedContacts}
+                            toggleFavorite={this.props.toggleFavorite}
+                            toggleBlocked={this.props.toggleBlocked}
+                            togglePinned = {this.props.togglePinned}
+                            pinned = {this.state.pinned}
                         />
                     </View>
 
@@ -476,6 +494,7 @@ class ReadyBox extends Component {
                     </View>
                         : null}
                 </View>
+
                 <ConferenceModal
                     show={this.state.showConferenceModal}
                     targetUri={uri}
@@ -510,28 +529,31 @@ ReadyBox.propTypes = {
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
     deleteHistoryEntry: PropTypes.func,
-    setFavoriteUri  : PropTypes.func,
+    toggleFavorite  : PropTypes.func,
     myInvitedParties: PropTypes.object,
-    setBlockedUri   : PropTypes.func,
+    toggleBlocked   : PropTypes.func,
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     defaultDomain   : PropTypes.string,
-    saveDisplayName : PropTypes.func,
-    selectContact: PropTypes.func,
+    saveContact     : PropTypes.func,
+    selectContact   : PropTypes.func,
     lookupContacts  : PropTypes.func,
+    call            : PropTypes.object,
+    goBackFunc      : PropTypes.func,
+    messages        : PropTypes.object,
     sendMessage     : PropTypes.func,
     reSendMessage   : PropTypes.func,
-    purgeMessages   : PropTypes.func,
     confirmRead     : PropTypes.func,
     deleteMessage   : PropTypes.func,
     expireMessage   : PropTypes.func,
     getMessages     : PropTypes.func,
+    deleteMessages  : PropTypes.func,
     pinMessage      : PropTypes.func,
     unpinMessage    : PropTypes.func,
-    selectedContact : PropTypes.object,
-    messages        : PropTypes.object,
-    call            : PropTypes.object,
-    goBackFunc      : PropTypes.func
+    sendPublicKey   : PropTypes.func,
+    inviteContacts  : PropTypes.bool,
+    selectedContacts: PropTypes.array,
+    updateSelection : PropTypes.func
 };
 
 

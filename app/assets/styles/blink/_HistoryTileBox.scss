@@ -3,13 +3,24 @@
     flex-direction: column;
 }
 
+.contactsPortraitContainer {
+    flex: 1;
+    flex-direction: column;
+}
+
+.chatPortraitContainer {
+    flex: 6;
+    margin-top: 20px;
+}
+
 .landscapeContainer {
     flex: 1;
     flex-direction: row;
 }
 
-.historyBorder {
-    margin-top: 10px;
+.contactsLandscapeContainer {
+    flex: 1;
+    flex-direction: row;
 }
 
 .chatLandscapeContainer {
@@ -23,8 +34,4 @@
     border-color: gray;
 }
 
-.chatPortraitContainer {
-    flex: 2;
-    margin-top: 20px;
-}
 

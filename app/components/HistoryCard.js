@@ -7,8 +7,6 @@ import momentFormat from 'moment-duration-format';
 import { Card, IconButton, Button, Caption, Title, Subheading, List, Text, Menu} from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
-import EditConferenceModal from './EditConferenceModal';
-import EditDisplayNameModal from './EditDisplayNameModal';
 import styles from '../assets/styles/blink/_HistoryCard.scss';
 import UserIcon from './UserIcon';
 import { GiftedChat } from 'react-native-gifted-chat'
@@ -56,41 +54,54 @@ class HistoryCard extends Component {
             id: this.props.contact.id,
             contact: this.props.contact,
             displayName: this.props.contact.displayName,
+            organization: this.props.contact.organization,
             filter: this.props.filter,
             uri: this.props.contact.remoteParty,
+            duration: this.props.contact.duration,
+            direction: this.props.contact.direction,
             invitedParties: this.props.invitedParties,
             participants: this.props.contact.participants,
             conference: this.props.contact.conference,
+            selected: this.props.contact.selected,
             type: this.props.contact.type,
             photo: this.props.contact.photo,
             label: this.props.contact.label,
             orientation: this.props.orientation,
+            lastMessage: this.props.contact.lastMessage,
             isTablet: this.props.isTablet,
             isLandscape: this.props.isLandscape,
             favorite: (this.props.contact.tags.indexOf('favorite') > -1)? true : false,
             blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false,
             confirmRemoveFavorite: false,
             confirmPurgeChat: false,
-            showEditConferenceModal: false,
-            showEditDisplayNameModal: false,
             messages: this.props.messages,
             unread: this.props.unread,
             chat: this.props.chat,
-            pinned: this.props.pinned
+            pinned: this.props.pinned,
+            publicKey: this.props.contact.publicKey,
+            publicKeyHash: this.props.contact.publicKeyHash,
+            menuVisible: false
         }
+
+        this.menuRef = React.createRef();
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({
             id: nextProps.contact.id,
             isLandscape: nextProps.isLandscape,
+            direction: nextProps.contact.direction,
+            duration: nextProps.contact.duration,
             contact: nextProps.contact,
             displayName: nextProps.contact.displayName,
+            organization: nextProps.contact.organization,
             uri: nextProps.contact.remoteParty,
+            duration: nextProps.contact.duration,
             invitedParties: nextProps.invitedParties,
             participants: nextProps.contact.participants,
             conference: nextProps.contact.conference,
             type: nextProps.contact.type,
+            selected: nextProps.contact.selected,
             photo: nextProps.contact.photo,
             label: nextProps.contact.label,
             orientation: nextProps.orientation,
@@ -99,6 +110,7 @@ class HistoryCard extends Component {
             chat: nextProps.chat,
             pinned: nextProps.pinned,
             messages: nextProps.messages,
+            lastMessage: nextProps.contact.lastMessage,
             unread: nextProps.chat ? "0": nextProps.unread || "0"
         });
     }
@@ -106,34 +118,6 @@ class HistoryCard extends Component {
     shouldComponentUpdate(nextProps) {
         //https://medium.com/sanjagh/how-to-optimize-your-react-native-flatlist-946490c8c49b
         return true;
-    }
-
-    toggleEdit() {
-        if (this.state.conference) {
-            this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
-        } else {
-            this.setState({showEditDisplayNameModal: !this.state.showEditDisplayNameModal});
-        }
-    }
-
-    setFavoriteUri() {
-        if (this.state.favorite) {
-            if (this.state.confirmRemoveFavorite) {
-                let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
-                this.setState({favorite: newFavoriteState, action: null, confirmRemoveFavorite: false});
-                this.props.setTargetUri(this.state.uri);
-            } else {
-                this.setState({confirmRemoveFavorite: true});
-            }
-        } else {
-            let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
-            this.setState({favorite: newFavoriteState});
-        }
-    }
-
-    saveInvitedParties(uris) {
-        this.setState({invitedParties: uris});
-        this.props.saveInvitedParties(this.state.uri.split('@')[0], uris);
     }
 
     handleParticipant() {
@@ -148,27 +132,13 @@ class HistoryCard extends Component {
         return null;
     }
 
-    setBlockedUri() {
-        let newBlockedState = this.props.setBlockedUri(this.state.uri);
-        this.setState({blocked: newBlockedState});
+    toggleBlocked() {
+        this.props.toggleBlocked(this.state.uri);
     }
 
     setBlockedDomain() {
-        let newBlockedState = this.props.setBlockedUri('@' + this.state.uri.split('@')[1]);
+        let newBlockedState = this.props.toggleBlocked('@' + this.state.uri.split('@')[1]);
         this.setState({blocked: newBlockedState});
-    }
-
-    deleteHistoryEntry() {
-        this.props.deleteHistoryEntry(this.state.uri);
-    }
-
-    deleteChat() {
-        if (this.state.confirmDeleteChat) {
-            this.setState({confirmDeleteChat: false, action: null});
-            this.props.purgeMessages(this.state.uri);
-        } else {
-            this.setState({confirmDeleteChat: true, action: null});
-        }
     }
 
     undo() {
@@ -177,30 +147,11 @@ class HistoryCard extends Component {
                        action: null});
     }
 
-    saveDisplayName(displayName) {
-        this.props.saveDisplayName(this.state.uri, displayName);
-    }
-
     onSendMessage(messages) {
         messages.forEach((message) => {
             // TODO send messages using account API
         });
         this.setState({messages: GiftedChat.append(this.state.messages, messages)});
-    }
-
-    setFavoriteUri() {
-        if (this.state.favorite) {
-            if (this.state.confirmRemoveFavorite) {
-                let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
-                this.setState({favorite: newFavoriteState, action: null, confirmRemoveFavorite: false});
-                this.props.setTargetUri(this.state.uri);
-            } else {
-                this.setState({confirmRemoveFavorite: true});
-            }
-        } else {
-            let newFavoriteState = this.props.setFavoriteUri(this.state.uri);
-            this.setState({favorite: newFavoriteState});
-        }
     }
 
     setTargetUri(uri, contact) {
@@ -216,35 +167,25 @@ class HistoryCard extends Component {
                           this.props.contact.tags.indexOf('test') === -1 &&
                           this.props.contact.tags.toString() !== "syntetic";
 
+
         let uri = this.state.uri;
         let username =  uri.split('@')[0];
         let domain =  uri.split('@')[1];
         let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
 
         let displayName = this.state.displayName;
+        if (this.state.organization) {
+            //displayName = displayName + ' (' + this.state.organization + ')';
+        }
 
-        let buttonMode = 'text';
         let showBlockButton = !this.state.conference && !this.state.chat;
         let showBlockDomainButton = false;
-        let showFavoriteButton = !this.state.chat;
-        let showUndoButton = (this.state.confirmRemoveFavorite || this.state.confirmDeleteChat) ? true : false;
-        let showDeleteButton = (!this.state.pinned && !this.state.chat && this.props.contact.tags.indexOf('local') > -1 && !this.state.favorite) ? true: false;
-        let showEditButton = (!this.state.chat && !this.state.confirmRemoveFavorite ) ? true: false;
         let blockTextbutton = 'Block';
         let blockDomainTextbutton = 'Block domain';
-        let editTextbutton = 'Edit';
-        let favoriteTextbutton = 'Favorite';
-        let undoTextbutton = 'Undo';
-        let deleteTextbutton = 'Delete';
-        let showPurgeButton = (this.state.messages.length > 0 && !this.state.pinned && this.state.chat);
-        let deleteChatbutton = this.state.confirmDeleteChat ? 'Confirm purge' : 'Purge';
-        let pinChatbutton = this.state.pinned ? 'Show all messages' : 'Pinned only';
-        let showPinnedButton = this.state.chat && !this.state.confirmDeleteChat;;
 
         let participantsData = [];
 
         if (this.state.favorite) {
-            favoriteTextbutton = this.state.confirmRemoveFavorite ? 'Confirm' : 'Unfavorite';
             if (!this.state.blocked) {
                 showBlockButton = false;
             }
@@ -264,27 +205,17 @@ class HistoryCard extends Component {
 
         if (this.state.blocked) {
             blockTextbutton = 'Unblock';
-            showFavoriteButton = false;
         }
-
-        if (this.state.confirmDeleteChat) {
-            showFavoriteButton = false;
-            showBlockButton = false;
-            showEditButton = false;
-        }
-
-        if (this.state.confirmRemoveFavorite) {
-            showPurgeButton = false;
-            showBlockButton = false;
-        }
-
 
         let color = {};
 
         let title = displayName || username;
-
         let subtitle = uri;
-        let description = this.props.contact.startTime;
+        let description;
+
+        if (this.props.contact.startTime && this.props.contact.startTime.indexOf("1970-01-01") === -1) {
+            description = moment(this.props.contact.startTime).format('MMM D HH:mm');
+        }
 
         if (displayName === uri) {
             title = toTitleCase(username);
@@ -294,7 +225,6 @@ class HistoryCard extends Component {
            title = 'Tel ' + username;
            subtitle = 'From @' + domain;
            showBlockDomainButton = true;
-           showFavoriteButton = false;
        }
 
         if (utils.isAnonymous(uri)) {
@@ -303,7 +233,6 @@ class HistoryCard extends Component {
             if (uri.indexOf('@guest.') > -1) {
                 subtitle = 'From the Web';
             }
-            showFavoriteButton = false;
             showBlockDomainButton = true;
             if (!this.state.blocked) {
                 showBlockButton = false;
@@ -329,109 +258,130 @@ class HistoryCard extends Component {
             cardContainerClass = (this.state.orientation === 'landscape') ? styles.cardLandscapeContainer : styles.cardPortraitContainer;
         }
 
-        let cardClass = this.state.isTablet ? styles.tabletCard : styles.card;
-        let cardHeight = this.state.isTablet ? 110 : 85;
+        let cardHeight = 85;
 
-        if (showActions) {
-            cardClass = styles.expandedCard;
-        }
+        let duration;
 
         if (this.props.contact.tags.indexOf('history') > -1) {
-            let duration = moment.duration(this.props.contact.duration, 'seconds').format('HH:mm:ss', {trim: false});
+            duration = moment.duration(this.state.duration, 'seconds').format('HH:mm:ss', {trim: false});
 
-            if (this.props.contact.direction === 'received' && this.props.contact.duration === 0) {
-                color.color = '#a94442';
+            if (this.state.direction === 'received' && this.state.duration === 0) {
                 duration = 'missed';
-            } else if (this.props.contact.direction === 'placed' && this.props.contact.duration === 0) {
+            } else if (this.state.direction === 'placed' && this.state.duration === 0) {
                 duration = 'cancelled';
             }
+        }
 
-            if (this.state.conference) {
-                let participants = this.state.participants;
-                if (this.state.invitedParties && this.state.invitedParties.length > 0 ) {
-                    participants = this.state.invitedParties;
-                }
+        if (this.state.conference) {
+            let participants = this.state.participants;
+            if (this.state.invitedParties && this.state.invitedParties.length > 0 ) {
+                participants = this.state.invitedParties;
+            }
 
-                if (participants && participants.length > 0) {
-                    const p_text = participants.length > 1 ? 'participants' : 'participant';
-                    subtitle = 'With ' + participants.length + ' ' + p_text;
-                    let i = 1;
-                    let contact_obj;
-                    let dn;
-                    let _item;
-                    participants.forEach((participant) => {
-                        contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
-                        dn = contact_obj ? contact_obj.displayName : participant;
-                        if (participant === dn && this.props.myDisplayNames && this.props.myDisplayNames.hasOwnProperty(participant)) {
-                            dn = this.props.myDisplayNames[participant].name;
-                        }
-                        _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
-                        participantsData.push(_item);
-                        i = i + 1;
-                    });
-                } else {
-                    subtitle = 'With no participants';
-                }
-
+            if (participants && participants.length > 0) {
+                const p_text = participants.length > 1 ? 'participants' : 'participant';
+                subtitle = 'With ' + participants.length + ' ' + p_text;
+                let i = 1;
+                let contact_obj;
                 let dn;
-                if (participantsData.length > 4 || participantsData.length < 2) {
-                    title = username.length > 10 ? 'Conference' : toTitleCase(username);
-                } else if (participantsData.length > 1 || participantsData.length <= 4 ) {
-                    let j = 0;
-                    if (username.length < 10) {
-                        title = toTitleCase(username);
-                    } else {
-                        participantsData.forEach((participant) => {
-                            if (participant.displayName === participant.uri) {
-                                dn = toTitleCase(participant.uri.split('@')[0]);
-                            } else {
-                                dn = participant.displayName.split(' ')[0];
-                            }
-                            title = title + dn;
-                            if (j < participantsData.length - 1) {
-                                title = title + ' & ';
-                            }
-                            j = j + 1;
-                        });
+                let _item;
+                participants.forEach((participant) => {
+                    contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', participant);
+                    dn = contact_obj ? contact_obj.displayName : participant;
+                    if (participant === dn && this.props.myDisplayNames && this.props.myDisplayNames.hasOwnProperty(participant)) {
+                        dn = this.props.myDisplayNames[participant].name;
                     }
-                }
+                    _item = {nr: i, id: uuid.v4(), uri: participant, displayName: dn};
+                    participantsData.push(_item);
+                    i = i + 1;
+                });
+            } else {
+                subtitle = 'With no participants';
             }
 
-            if (!displayName) {
-                title = uri;
-                if (duration === 'missed') {
-                    subtitle = 'Last call missed';
-                } else if (duration === 'cancelled') {
-                    subtitle = 'Last call cancelled';
+            let dn;
+            if (participantsData.length > 4 || participantsData.length < 2) {
+                title = username.length > 10 ? 'Conference' : toTitleCase(username);
+            } else if (participantsData.length > 1 || participantsData.length <= 4 ) {
+                let j = 0;
+                if (username.length < 10) {
+                    title = toTitleCase(username);
                 } else {
-                    subtitle = 'Last call duration ' + duration ;
+                    participantsData.forEach((participant) => {
+                        if (participant.displayName === participant.uri) {
+                            dn = toTitleCase(participant.uri.split('@')[0]);
+                        } else {
+                            dn = participant.displayName.split(' ')[0];
+                        }
+                        title = title + dn;
+                        if (j < participantsData.length - 1) {
+                            title = title + ' & ';
+                        }
+                        j = j + 1;
+                    });
                 }
             }
+        }
 
-            description = description + ' (' + duration + ')';
-            const container = this.state.isLandscape ? styles.containerLandscape : styles.container;
-            const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
-
-            if (showActions) {
-                cardHeight = 150 + 30 * participantsData.length;
+        if (!displayName) {
+            title = uri;
+            if (duration === 'missed') {
+                subtitle = 'Last call missed';
+            } else if (duration === 'cancelled') {
+                subtitle = 'Last call cancelled';
+            } else {
+                subtitle = 'Last call duration ' + duration ;
             }
+        }
 
-            return (
-                <Fragment>
-                    <Card style={[cardContainerClass, cardClass, {height: cardHeight}]}
-                        onPress={() => {this.setTargetUri(uri, this.props.contact)}}
-                        >
-                        <Card.Content style={styles.cardContent}>
-                            <View style={styles.mainContent}>
-                                <Title noWrap style={color}>{title}</Title>
-                                {showActions || this.state.isTablet ?
-                                <Subheading noWrap style={color}>{subtitle}</Subheading>
+        if (duration && duration !== "00:00:00") {
+            description = description + ' (' + duration + ')';
+        }
+
+        const container = this.state.isLandscape ? styles.containerLandscape : styles.containerPortrait;
+        const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
+
+        if (showActions && participantsData.length > 0) {
+            cardHeight = cardHeight + 20 * participantsData.length + 10;
+        }
+
+        let showSubtitle = (showActions || this.state.isTablet || !description);
+        let label = this.state.label ? (" (" +this.state.label + ")" ) : '';
+        if (this.state.lastMessage) {
+            subtitle = this.state.lastMessage;
+            //description = description + ': ' + this.state.lastMessage;
+        } else {
+            subtitle = subtitle + label;
+        }
+
+        return (
+            <Fragment>
+                <Card style={[cardContainerClass, {height: cardHeight}]}
+                    onPress={() => {this.setTargetUri(uri, this.props.contact)}}
+                    >
+
+                <View style={styles.rowContent}>
+                    <Card.Content style={styles.cardContent}>
+                        <View style={styles.avatarContent}>
+                            <UserIcon style={styles.userIcon} identity={this.state} unread={this.state.unread}/>
+                        </View>
+
+                        <View style={styles.mainContent}>
+                            <Title noWrap style={styles.title}>{title}</Title>
+                            <Subheading style={styles.subtitle}>{subtitle}</Subheading>
+
+                            <Caption style={styles.description}>
+                                {this.state.direction ?
+                                <Icon name={this.state.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
                                 : null}
-                                <Caption color="textSecondary">
-                                    <Icon name={this.props.contact.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>{description}
-                                </Caption>
-                                {participantsData && participantsData.length && showActions ?
-                                <SafeAreaView style={styles.mainContent}>
+                                {description}
+
+                            </Caption>
+
+                            {participantsData && participantsData.length && showActions ?
+
+                            <View style={styles.participants}>
+                                <SafeAreaView style={styles.participant}>
                                   <FlatList
                                     horizontal={false}
                                     data={participantsData}
@@ -440,89 +390,31 @@ class HistoryCard extends Component {
                                     key={item => item.id}
                                   />
                                 </SafeAreaView>
-                                : null}
-
                             </View>
-                            <View style={styles.userAvatarContent}>
-                                <UserIcon style={styles.userIcon} identity={this.state} unread={this.state.unread}/>
-                            </View>
-                        </Card.Content>
-                        {showActions ?
-                                <View style={styles.buttonContainer}>
-                                <Card.Actions>
-                                   {showEditButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.toggleEdit()}}>{editTextbutton}</Button>: null}
-                                   {showDeleteButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteHistoryEntry()}}>{deleteTextbutton}</Button>: null}
-                                   {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
-                                   {showBlockDomainButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedDomain()}}>{blockDomainTextbutton}</Button>: null}
-                                   {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
-                                   {showUndoButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.undo()}}>{undoTextbutton}</Button>: null}
-                                   {showPurgeButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.deleteChat()}}>{deleteChatbutton}</Button>: null}
-                                   {showPinnedButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.props.togglePinned()}}>{pinChatbutton}</Button>: null}
-                                </Card.Actions>
-                                </View>
-
                             : null}
-                    </Card>
-
-                { this.state.showEditDisplayNameModal ?
-                <EditDisplayNameModal
-                    show={this.state.showEditDisplayNameModal}
-                    close={this.toggleEdit}
-                    uri={this.state.uri}
-                    myself={false}
-                    displayName={this.state.displayName}
-                    saveDisplayName={this.saveDisplayName}
-                />
-                : null}
-
-                { this.state.showEditConferenceModal ?
-                <EditConferenceModal
-                    show={this.state.showEditConferenceModal}
-                    room={title}
-                    invitedParties={this.state.invitedParties}
-                    selectedContact={this.state.contact}
-                    setFavoriteUri={this.props.setFavoriteUri}
-                    saveInvitedParties={this.saveInvitedParties}
-                    close={this.toggleEdit}
-                    defaultDomain={this.props.defaultDomain}
-                    accountId={this.props.accountId}
-                    setFavoriteUri={this.props.setFavoriteUri}
-                    favoriteUris={this.props.favoriteUris}
-                />
-                : null}
-
-                </Fragment>
-            );
-
-        } else {
-            return (
-                <Card style={[cardContainerClass, cardClass]}
-                    onPress={() => {this.props.setTargetUri(uri, this.props.contact)}}
-                >
-                    <Card.Content style={styles.cardContent}>
-                        <View style={styles.mainContent}>
-                            <Title noWrap style={color}>{title}</Title>
-                            <Subheading noWrap style={color}>{uri}</Subheading>
-                            <Caption color="textSecondary">
-                                {this.state.label}
-                            </Caption>
-                        </View>
-                        <View style={styles.userAvatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.state}/>
                         </View>
                     </Card.Content>
-                    {showActions ?
-                        <View style={styles.buttonContainer}>
-                        <Card.Actions>
-                           {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedUri()}}>{blockTextbutton}</Button>: null}
-                           {showFavoriteButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.setFavoriteUri()}}>{favoriteTextbutton}</Button>: null}
-                           {showUndoButton?<Button mode={buttonMode} style={styles.button} onPress={() => {this.undo()}}>{undoTextbutton}</Button>: null}
-                        </Card.Actions>
-                        </View>
+                    <View style={styles.rightContent}>
+                        { this.state.selected ?
+                        <Icon name='check-circle' size={30} />
+                        :
+                        null
+                        }
+                    </View>
+                </View>
+
+                    {showActions && false ?
+                            <View style={styles.buttonContainer}>
+                            <Card.Actions>
+                               {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.toggleBlocked()}}>{blockTextbutton}</Button>: null}
+                               {showBlockDomainButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedDomain()}}>{blockDomainTextbutton}</Button>: null}
+                            </Card.Actions>
+                            </View>
                         : null}
                 </Card>
-            );
-        }
+
+            </Fragment>
+        );
     }
 }
 
@@ -530,11 +422,6 @@ HistoryCard.propTypes = {
     id             : PropTypes.string,
     contact        : PropTypes.object,
     setTargetUri   : PropTypes.func,
-    setBlockedUri  : PropTypes.func,
-    purgeMessages  : PropTypes.func,
-    setFavoriteUri : PropTypes.func,
-    saveInvitedParties : PropTypes.func,
-    deleteHistoryEntry : PropTypes.func,
     chat           : PropTypes.bool,
     orientation    : PropTypes.string,
     isTablet       : PropTypes.bool,
@@ -545,9 +432,10 @@ HistoryCard.propTypes = {
     favoriteUris   : PropTypes.array,
     myDisplayNames : PropTypes.object,
     messages       : PropTypes.array,
-    togglePinned   : PropTypes.func,
     pinned         : PropTypes.bool,
-    unread         : PropTypes.string
+    unread         : PropTypes.string,
+    toggleBlocked  : PropTypes.func,
+    sendPublicKey  : PropTypes.func
 };
 
 

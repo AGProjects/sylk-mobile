@@ -95,7 +95,7 @@ class URIInput extends React.Component {
     }
 
     render() {
-        const placehoder = 'Enter a SIP address';
+        const placehoder = 'Search contacts';
 
         return (
             <Searchbar
@@ -114,7 +114,6 @@ class URIInput extends React.Component {
                 placeholder={placehoder}
             />
         );
-
     }
 }
 

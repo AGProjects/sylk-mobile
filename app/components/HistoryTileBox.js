@@ -11,6 +11,8 @@ import uuid from 'react-native-uuid';
 import { GiftedChat, IMessage, Bubble } from 'react-native-gifted-chat'
 import MessageInfoModal from './MessageInfoModal';
 import ShareMessageModal from './ShareMessageModal';
+import CustomChatActions from './ChatActions';
+
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -29,7 +31,7 @@ class HistoryTileBox extends Component {
             localHistory: this.props.localHistory,
             accountId: this.props.account ? this.props.account.id : '',
             password: this.props.password,
-            targetUri: this.props.targetUri,
+            targetUri: this.props.selectedContact ? this.props.selectedContact.remoteParty : this.props.targetUri,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             isRefreshing: false,
@@ -46,14 +48,16 @@ class HistoryTileBox extends Component {
             pinned: false,
             showMessageModal: false,
             message: null,
-            showShareMessageModal: false
+            showShareMessageModal: false,
+            inviteContacts: this.props.inviteContacts,
+            selectedContacts: this.props.selectedContacts,
+            pinned: this.props.pinned
         }
 
         const echoTest = {
             remoteParty: '4444@sylk.link',
             displayName: 'Echo test',
-            type: 'contact',
-            label: 'Call to test microphone',
+            label: 'Test microphone',
             id: uuid.v4(),
             tags: ['test']
             };
@@ -63,8 +67,7 @@ class HistoryTileBox extends Component {
         const videoTest = {
             remoteParty: '3333@sylk.link',
             displayName: 'Video test',
-            type: 'contact',
-            label: 'Call to test video',
+            label: 'Test video',
             id: uuid.v4(),
             tags: ['test']
             };
@@ -124,6 +127,7 @@ class HistoryTileBox extends Component {
 
         if (nextProps.myContacts !== this.state.myContacts) {
             this.setState({myContacts: nextProps.myContacts});
+            this.getChatContacts();
         };
 
         if (this.state.messages) {
@@ -145,13 +149,28 @@ class HistoryTileBox extends Component {
                 this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
             }
         }
+
         this.setState({isLandscape: nextProps.isLandscape,
                        chat: nextProps.chat,
                        showMessageModal: nextProps.showMessageModal,
-                       message: nextProps.message
+                       message: nextProps.message,
+                       inviteContacts: nextProps.inviteContacts,
+                       selectedContacts: nextProps.selectedContacts,
+                       pinned: nextProps.pinned,
+                       targetUri: nextProps.selectedContact ? nextProps.selectedContact.remoteParty : nextProps.targetUri
                        });
 
     }
+
+    renderCustomActions = props =>
+    (
+      <CustomChatActions {...props} onSend={this.onSendFromUser} />
+    )
+
+    onSendFromUser() {
+        console.log('On send from user...');
+    }
+
 
     getMessages(contact) {
         if (!contact) {
@@ -163,6 +182,7 @@ class HistoryTileBox extends Component {
             let username = uri.split('@')[0];
             uri = username;
         }
+
         this.props.getMessages(uri);
     }
 
@@ -180,26 +200,8 @@ class HistoryTileBox extends Component {
         return this.props.setFavoriteUri(uri);
     }
 
-    saveInvitedParties(room, uris) {
-        if (this.ended) {
-            return;
-        }
-
-        this.props.saveInvitedParties(room, uris);
-        let myInvitedParties = this.state.myInvitedParties;
-
-        if (myInvitedParties && myInvitedParties.hasOwnProperty(room)) {
-            myInvitedParties[room] = uris;
-            this.setState({myInvitedParties: myInvitedParties});
-        }
-    }
-
     setBlockedUri(uri) {
         return this.props.setBlockedUri(uri);
-    }
-
-    togglePinned() {
-        this.setState({pinned: !this.state.pinned});
     }
 
     renderItem(object) {
@@ -230,7 +232,7 @@ class HistoryTileBox extends Component {
             contact={item}
             filter={this.props.filter}
             invitedParties={invitedParties}
-            purgeMessages={this.props.purgeMessages}
+            deleteMessages={this.props.deleteMessages}
             setFavoriteUri={this.setFavoriteUri}
             saveInvitedParties={this.saveInvitedParties}
             setBlockedUri={this.setBlockedUri}
@@ -243,13 +245,15 @@ class HistoryTileBox extends Component {
             defaultDomain={this.props.defaultDomain}
             accountId={this.state.accountId}
             favoriteUris={this.state.favoriteUris}
-            saveDisplayName={this.props.saveDisplayName}
+            saveContact={this.props.saveContact}
             myContacts={this.state.myContacts}
             messages={this.state.renderMessages}
             unread={item.unread}
             chat={this.state.chat}
-            togglePinned={this.togglePinned}
+            togglePinned={this.props.togglePinned}
+            toggleBlocked={this.props.toggleBlocked}
             pinned={this.state.pinned}
+            sendPublicKey={this.props.sendPublicKey}
             />);
     }
 
@@ -352,7 +356,6 @@ class HistoryTileBox extends Component {
                 displayName: displayName,
                 conference: conference,
                 media: media,
-                type: 'contact',
                 startTime: startTime,
                 startTime: startTime,
                 duration: duration,
@@ -373,8 +376,8 @@ class HistoryTileBox extends Component {
     onSendMessage(messages) {
         let uri;
         if (!this.state.selectedContact) {
-            if (this.props.targetUri && this.state.chat) {
-                 let contacts = this.searchedContact(this.props.targetUri);
+            if (this.state.targetUri && this.state.chat) {
+                 let contacts = this.searchedContact(this.state.targetUri);
                  if (contacts.length !== 1) {
                      return;
                 }
@@ -417,7 +420,6 @@ class HistoryTileBox extends Component {
                 remoteParty: uri.toLowerCase(),
                 displayName: displayName,
                 conference: false,
-                type: 'contact',
                 label: label,
                 id: uuid.v4(),
                 tags: ['blocked']
@@ -436,12 +438,15 @@ class HistoryTileBox extends Component {
         //console.log('this.state.chatUris', this.state.chatUris);
 
         let contacts= this.state.contacts
-        contacts = contacts.concat(this.videoTest);
-        contacts = contacts.concat(this.echoTest);
+        //contacts = contacts.concat(this.videoTest);
+        //contacts = contacts.concat(this.echoTest);
 
         const uris = Object.keys(this.state.myContacts);
 
         uris.forEach((uri) => {
+            if (!uri) {
+                return;
+            }
             contact_obj = this.findObjectByKey(contacts, 'remoteParty', uri);
             displayName = contact_obj ? contact_obj.displayName : uri;
             label = contact_obj ? contact_obj.label: null;
@@ -449,14 +454,16 @@ class HistoryTileBox extends Component {
             const item = {
                 remoteParty: uri.toLowerCase(),
                 displayName: displayName,
-                conference: false,
-                type: 'contact',
+                organization: this.state.myContacts[uri].organization,
                 unread: this.state.myContacts[uri].unread ? this.state.myContacts[uri].unread.toString() : "0",
                 startTime: this.state.myContacts[uri].timestamp,
                 stopTime: this.state.myContacts[uri].timestamp,
                 media: ['chat'],
+                publicKey: this.state.myContacts[uri].publicKey ? this.state.myContacts[uri].publicKey : null,
+                publicKeyHash: this.state.myContacts[uri].publicKeyHash ? this.state.myContacts[uri].publicKeyHash : null,
                 label: label,
                 id: uuid.v4(),
+                lastMessage: this.state.myContacts[uri].lastMessage,
                 tags: contact_obj ? ['chat', 'history'] : ['chat', 'syntetic', 'history']
                 };
             chatContacts.push(item);
@@ -478,7 +485,6 @@ class HistoryTileBox extends Component {
             remoteParty: uri.toLowerCase(),
             displayName: displayName,
             conference: false,
-            type: 'contact',
             id: uuid.v4(),
             tags: ['syntetic']
             };
@@ -493,7 +499,7 @@ class HistoryTileBox extends Component {
 
         this.setState({isRefreshing: true});
 
-        //utils.timestampedLog('Requesting call history from server');
+        //utils.timestampedLog('Requesting call history from server ------');
 
         let history = [];
         let localTime;
@@ -539,6 +545,24 @@ class HistoryTileBox extends Component {
                         return null;
                     }
 
+                    if (elem.remoteParty.split('@')[0] === '3333') {
+                        elem.displayName = this.videoTest.displayName;
+                        elem.remoteParty = this.videoTest.remoteParty;
+                        elem.label = this.videoTest.label;
+                    }
+
+                    if (elem.remoteParty.split('@')[0] === '4444') {
+                        elem.displayName = this.echoTest.displayName;
+                        elem.remoteParty = this.echoTest.remoteParty;
+                        elem.label = this.echoTest.label;
+                    }
+
+                    if (known.indexOf(elem.remoteParty) > -1) {
+                        return null;
+                    }
+
+                    known.push(elem.remoteParty);
+
                     elem.remoteParty = elem.remoteParty.toLowerCase();
 
                     let username = elem.remoteParty.split('@')[0];
@@ -556,6 +580,7 @@ class HistoryTileBox extends Component {
                     if (contact_obj) {
                         elem.displayName = contact_obj.displayName;
                         elem.photo = contact_obj.photo;
+                        elem.label = contact_obj.label;
                         if (isPhoneNumber) {
                             elem.remoteParty = username;
                         }
@@ -586,8 +611,6 @@ class HistoryTileBox extends Component {
                         elem.tags.push('history');
                     }
 
-                    elem.label = elem.direction;
-
                     if (!elem.displayName) {
                         elem.displayName = elem.remoteParty;
                     }
@@ -596,14 +619,6 @@ class HistoryTileBox extends Component {
                         elem.media = ['audio'];
                     }
 
-                    if (elem.remoteParty.indexOf('3333@') > -1) {
-                        // see Call.js as well if we change this
-                        elem.displayName = 'Video Test';
-                    }
-                    if (elem.remoteParty.indexOf('4444@') > -1) {
-                        // see Call.js as well if we change this
-                        elem.displayName = 'Echo Test';
-                    }
 
                     if (elem.timezone !== undefined) {
                         localTime = momenttz.tz(elem.startTime, elem.timezone).toDate();
@@ -612,14 +627,11 @@ class HistoryTileBox extends Component {
                         elem.stopTime = moment(localTime).format('YYYY-MM-DD HH:mm:ss');
                     }
 
-                    if (known.indexOf(elem.remoteParty) <= -1) {
-                        known.push(elem.remoteParty);
-                        if (elem.direction === 'received' && elem.duration === 0) {
-                            elem.tags.push('missed');
-                            hasMissedCalls = true;
-                        }
-                        return elem;
+                    if (elem.direction === 'received' && elem.duration === 0) {
+                        elem.tags.push('missed');
+                        hasMissedCalls = true;
                     }
+                    return elem;
                 });
 
                 this.props.cacheHistory(history);
@@ -659,9 +671,9 @@ class HistoryTileBox extends Component {
     onLongMessagePress(context, currentMessage) {
         if (currentMessage && currentMessage.text) {
             let options = ['Copy']
+            options.push('Delete');
 
-            if (this.props.targetUri.indexOf('@videoconference') === -1) {
-                options.push('Delete');
+            if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
                     if (currentMessage.failed) {
                         options.push('Resend')
@@ -671,12 +683,12 @@ class HistoryTileBox extends Component {
                         }
                     }
                 }
+            }
 
-                if (currentMessage.pinned) {
-                    options.push('Unpin');
-                } else {
-                    options.push('Pin');
-                }
+            if (currentMessage.pinned) {
+                options.push('Unpin');
+            } else {
+                options.push('Pin');
             }
 
             options.push('Share');
@@ -686,6 +698,8 @@ class HistoryTileBox extends Component {
             const cancelButtonIndex = options.length - 1;
             const infoButtonIndex = options.length - 2;
             const shareButtonIndex = options.length - 3;
+            const pinButtonIndex = options.length - 4;
+
             context.actionSheet().showActionSheetWithOptions({
                 options,
                 cancelButtonIndex,
@@ -695,30 +709,9 @@ class HistoryTileBox extends Component {
                         Clipboard.setString(currentMessage.text);
                         break;
                     case 1:
-                        this.props.deleteMessage(currentMessage._id, this.props.targetUri);
+                        this.props.deleteMessage(currentMessage._id, this.state.targetUri);
                         break;
-                    case 2:
-                        if (currentMessage.direction !== 'outgoing') {
-                            if (currentMessage.pinned) {
-                                this.props.unpinMessage(currentMessage._id);
-                            } else {
-                                this.props.pinMessage(currentMessage._id);
-                            }
-                        } else {
-                            if (currentMessage.failed) {
-                                this.props.reSendMessage(currentMessage, this.props.targetUri);
-                            } else {
-                                if (!currentMessage.received) {
-                                    this.props.expireMessage(currentMessage._id, 300);
-                                }
-                            }
-                        }
-                        break;
-                    case 3:
-                        if (currentMessage.direction !== 'outgoing') {
-                            break;
-                        }
-
+                    case pinButtonIndex:
                         if (currentMessage.pinned) {
                             this.props.unpinMessage(currentMessage._id);
                         } else {
@@ -734,6 +727,18 @@ class HistoryTileBox extends Component {
                         this.setState({message: currentMessage,
                                        showShareMessageModal: true
                                        });
+                        break;
+                    case 2:
+                        if (this.state.targetUri.indexOf('@videoconference') === -1) {
+                            if (currentMessage.failed) {
+                                this.props.reSendMessage(currentMessage, this.state.targetUri);
+                            } else {
+                                if (!currentMessage.received) {
+                                    this.props.expireMessage(currentMessage._id, 300);
+                                }
+                            }
+                        }
+
                         break;
                     default:
                         break;
@@ -779,7 +784,11 @@ class HistoryTileBox extends Component {
     }
 
     get showChat() {
-       if (this.props.selectedContact || this.props.targetUri) {
+       if (this.props.selectedContact && this.props.selectedContact.tags && this.props.selectedContact.tags.indexOf('blocked') > -1) {
+           return false;
+       }
+
+       if (this.props.selectedContact || this.state.targetUri) {
            return true;
        }
 
@@ -788,11 +797,44 @@ class HistoryTileBox extends Component {
 
     render() {
 
-        let history = [];
         let searchExtraItems = [];
         let items = [];
         let matchedContacts = [];
         let messages = this.state.renderMessages;
+        let chatContacts = this.getChatContacts();
+        let history = [];
+
+        history = history.concat(this.getLocalHistory());
+        history = history.concat(this.state.serverHistory);
+
+        let historyContacts = [];
+        let duplicates = [];
+        history.forEach((item) => {
+            historyContacts = chatContacts.filter(chatItem => this.matchContact(chatItem, item.remoteParty));
+            if (historyContacts.length > 0) {
+                historyContacts.forEach((c) => {
+
+                    c.direction = item.direction;
+                    if (!c.stopTime || item.stopTime > c.stopTime) {
+                        c.stopTime = item.stopTime;
+                        c.startTime = item.startTime;
+                        c.timezone = item.timezone;
+                    }
+
+                    c.displayName = c.displayName || item.displayName;
+                    c.photo = c.photo || item.photo;
+                    c.media = item.media;
+                    item.tags.forEach((t) => {
+                        if (c.tags.indexOf(t) === -1) {
+                            c.tags.push(t);
+                        }
+                    });
+                    duplicates.push(item.id);
+                });
+            }
+        });
+
+        history = history.filter(historyItem => duplicates.indexOf(historyItem.id) === -1);
 
         let chatInputClass;
 
@@ -802,30 +844,29 @@ class HistoryTileBox extends Component {
             chatInputClass = this.noChatInputToolbar;
         }
 
-        if (this.props.filter === 'favorite') {
-            items = this.favoriteContacts.filter(historyItem => this.matchContact(historyItem, this.props.targetUri));
+        if (this.state.inviteContacts) {
+            items = chatContacts.filter(chatItem => this.matchContact(chatItem, this.state.targetUri));
+        } else if (this.props.filter === 'favorite') {
+            items = this.favoriteContacts.filter(historyItem => this.matchContact(historyItem, this.state.targetUri));
         } else if (this.props.filter === 'blocked') {
             let blockedContacts = this.getBlockedContacts();
-            items = blockedContacts.filter(historyItem => this.matchContact(historyItem, this.props.targetUri));
+            items = blockedContacts.filter(historyItem => this.matchContact(historyItem, this.state.targetUri));
         } else if (this.props.filter === 'missed') {
-            history = this.state.serverHistory;
-            items = history.filter(historyItem => this.matchContact(historyItem, this.props.targetUri) && historyItem.tags.indexOf('missed') > -1);
+            items = chatContacts.filter(chatItem => this.matchContact(chatItem, this.state.targetUri) && chatItem.tags.indexOf('missed') > -1);
+            items.concat(history.filter(historyItem => this.matchContact(historyItem, this.state.targetUri) && historyItem.tags.indexOf('missed') > -1));
         } else {
-            let chatContacts = this.getChatContacts();
-            items = chatContacts.filter(chatItem => this.matchContact(chatItem, this.props.targetUri));
-            history = this.getLocalHistory();
-            history = history.concat(this.state.serverHistory);
-            history = history.concat(items);
+            items = chatContacts.filter(chatItem => this.matchContact(chatItem, this.state.targetUri));
 
             searchExtraItems = searchExtraItems.concat(this.state.contacts);
             searchExtraItems = searchExtraItems.concat(this.favoriteContacts);
             searchExtraItems = searchExtraItems.concat(this.videoTest);
             searchExtraItems = searchExtraItems.concat(this.echoTest);
 
-            items = history.filter(historyItem => this.matchContact(historyItem, this.props.targetUri));
+            history = history.filter(historyItem => this.matchContact(historyItem, this.state.targetUri));
+            items = items.concat(history);
 
-            if (this.props.targetUri && this.props.targetUri.length > 2 && !this.state.selectedContact) {
-                matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.props.targetUri));
+            if (this.state.targetUri && this.state.targetUri.length > 2 && !this.state.selectedContact) {
+                matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri));
             } else if (this.state.selectedContact && this.state.selectedContact.type === 'contact') {
                 matchedContacts.push(this.state.selectedContact);
             }
@@ -833,8 +874,8 @@ class HistoryTileBox extends Component {
             items = items.concat(matchedContacts);
         }
 
-        if (this.props.targetUri && items.length == 0) {
-            items = items.concat(this.searchedContact(this.props.targetUri));
+        if (this.state.targetUri && items.length == 0) {
+            items = items.concat(this.searchedContact(this.state.targetUri));
         }
 
         const known = [];
@@ -849,7 +890,7 @@ class HistoryTileBox extends Component {
             }
         });
 
-        if (!this.props.targetUri && !this.props.filter) {
+        if (!this.state.targetUri && !this.props.filter && !this.state.inviteContacts) {
             if (!this.findObjectByKey(items, 'remoteParty', this.echoTest.remoteParty)) {
                 items.push(this.echoTest);
             }
@@ -890,6 +931,14 @@ class HistoryTileBox extends Component {
 
             if (item.remoteParty.indexOf('@videoconference.') === -1) {
                 item.conference = false;
+            } else {
+                item.conference = true;
+            }
+
+            if (this.state.selectedContacts && this.state.selectedContacts.indexOf(item.remoteParty) > -1) {
+                item.selected = true;
+            } else {
+                item.selected = false;
             }
 
         });
@@ -899,6 +948,9 @@ class HistoryTileBox extends Component {
 
         items.forEach((item) => {
             const fromDomain = '@' + item.remoteParty.split('@')[1];
+            if (this.state.inviteContacts && item.remoteParty.indexOf('@videoconference.') > -1) {
+                return;
+            }
             if (this.props.filter && item.tags.indexOf(this.props.filter) > -1) {
                 filteredItems.push(item);
             } else if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
@@ -979,10 +1031,11 @@ class HistoryTileBox extends Component {
                   alwaysShowSend={true}
                   onLongPress={this.onLongMessagePress}
                   onPress={this.onLongMessagePress}
+                  renderActions={this.renderCustomActions}
                   renderInputToolbar={chatInputClass}
                   renderBubble={this.renderMessageBubble}
                   shouldUpdateMessage={this.shouldUpdateMessage}
-                  scrollToBottom
+                  scrollToBottom={true}
                   inverted={false}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
@@ -998,7 +1051,7 @@ class HistoryTileBox extends Component {
                   onLongPress={this.onLongMessagePress}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   onPress={this.onLongMessagePress}
-                  scrollToBottom
+                  scrollToBottom={true}
                   inverted={false}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
@@ -1053,8 +1106,8 @@ HistoryTileBox.propTypes = {
     setMissedCalls  : PropTypes.func,
     filter          : PropTypes.string,
     defaultDomain   : PropTypes.string,
-    saveDisplayName : PropTypes.func,
-    myContacts  : PropTypes.object,
+    saveContact     : PropTypes.func,
+    myContacts      : PropTypes.object,
     messages        : PropTypes.object,
     getMessages     : PropTypes.func,
     confirmRead     : PropTypes.func,
@@ -1064,7 +1117,12 @@ HistoryTileBox.propTypes = {
     expireMessage   : PropTypes.func,
     pinMessage      : PropTypes.func,
     unpinMessage    : PropTypes.func,
-    purgeMessages   : PropTypes.func
+    deleteMessages   : PropTypes.func,
+    sendPublicKey   : PropTypes.func,
+    inviteContacts  : PropTypes.bool,
+    selectedContacts: PropTypes.array,
+    toggleBlocked   : PropTypes.func,
+    togglePinned    : PropTypes.func
 };
 
 

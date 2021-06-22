@@ -19,26 +19,30 @@ const UserIcon = (props) => {
     }
 
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
-    let avatarSize = props.large ? 120: 50;
+    let avatarSize = props.large ? 130: 55;
     if (props.carousel === true) {
-        avatarSize = 80;
+        avatarSize = 70;
     }
 
     if (photo) {
-        return  <Avatar.Image source={{uri: photo}} size={avatarSize} />
+         return (
+            <BadgeView parentView={<Avatar.Image source={{uri: photo}} size={avatarSize} />}
+                       badgeText={props.unread}/>
+                );
     }
 
-
     if (props.identity.uri && props.identity.uri.search('anonymous') !== -1) {
-        return (
-            <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />
-                    )
-                }
+         return (
+            <BadgeView parentView={ <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />}
+                       badgeText={props.unread}/>
+                );
+    }
 
     if (props.identity.uri && props.identity.uri.search('videoconference') !== -1) {
-        return (
-            <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />
-        )
+         return (
+            <BadgeView parentView={<Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />}
+                       badgeText={props.unread}/>
+                );
     }
 
     return (

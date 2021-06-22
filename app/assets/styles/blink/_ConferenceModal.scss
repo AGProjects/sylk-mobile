@@ -18,7 +18,7 @@
 }
 
 .roomContainer {
-    margin-top: 60px;
+    margin-top: 20px;
     margin-bottom: 10px;
     zIndex: -1;
 }
@@ -40,14 +40,31 @@
     text-align: center;
 }
 
+.chipsContainer {
+    margin-top: 20px;
+    margin-bottom: 20px;
+}
+
+.chipTextStyle {
+    color: black;
+}
+
+.chips {
+}
+
+.chip {
+    border: 0.25px;
+    background-color: white;
+}
+
 .roomDescriptionContainer {
-    margin: 20px;
+    margin: 10px;
 }
 
 .buttonRow {
     flex-direction: row;
     justify-content: center;
-    margin-top: 30px;
+    margin-top: 10px;
     padding-bottom: 10px;
     zIndex: -1;
 }
@@ -55,7 +72,6 @@
 .buttonRowInvite {
     flex-direction: row;
     justify-content: center;
-    margin-top: 100px;
     padding-bottom: 10px;
 }
 
@@ -75,26 +91,6 @@
 
 .button {
     margin: 10px;
-    width: 130;
     border: 0.4px;
 }
 
-.autocompleteContainer {
-    margin: 10px;
-    flex: 1;
-    left: 0;
-    position: absolute;
-    right: 0;
-    top: 0;
-    zIndex: 1;
-}
-
-.autocompleteSearchBoxTextItem {
-    font-size: 16px;
-    margin: 3px;
-}
-
-.autocompleteSelectedTextStyle {
-    font-size: 18;
-    text-align: center;
-}

@@ -5,7 +5,7 @@ import PropTypes from 'prop-types';
 import moment from 'moment';
 
 import momentFormat from 'moment-duration-format';
-import { Text, Appbar } from 'react-native-paper';
+import { Text, Appbar, Menu } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import styles from '../assets/styles/blink/_ConferenceHeader.scss';
@@ -20,13 +20,17 @@ class ConferenceHeader extends React.Component {
             call: this.props.call,
             callState: this.props.call ? this.props.call.state : null,
             participants: this.props.participants,
+            startTime: this.props.callState ? this.props.callState.startTime : null,
             reconnectingCall: this.props.reconnectingCall,
-            info: this.props.info
+            info: this.props.info,
+            menuVisible: true
         }
 
         this.duration = null;
         this.timer = null;
         this._isMounted = false;
+        this.menuRef = React.createRef();
+
     }
 
     componentDidMount() {
@@ -50,8 +54,7 @@ class ConferenceHeader extends React.Component {
         }
 
         // TODO: consider using window.requestAnimationFrame
-
-        const startTime = new Date();
+        const startTime = this.state.startTime || new Date();
         this.timer = setInterval(() => {
             const duration = moment.duration(new Date() - startTime);
 
@@ -98,6 +101,7 @@ class ConferenceHeader extends React.Component {
         }
 
         this.setState({info: nextProps.info,
+                       startTime: nextProps.callState ? nextProps.callState.startTime : null,
                        participants: nextProps.participants});
     }
 
@@ -121,6 +125,20 @@ class ConferenceHeader extends React.Component {
         }
 
         this.setState({callState: newState});
+    }
+
+    handleMenu(event) {
+        switch (event) {
+            case 'invite':
+                this.props.inviteToConferenceFunc();
+                break;
+            case 'share':
+                this.props.toggleInviteModal();
+                break;
+            default:
+                break;
+        }
+        this.setState({menuVisible: false});
     }
 
     render() {
@@ -152,12 +170,30 @@ class ConferenceHeader extends React.Component {
 
             videoHeader = (
                 <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
+                    <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                      <Appbar.Content
                         title={`Conference: ${room}`}
                         subtitle={callDetail}
                     />
                     {this.props.audioOnly ? null : this.props.buttons.top.right}
+
+                <Menu
+                    visible={this.state.menuVisible}
+                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    anchor={
+                        <Appbar.Action
+                            ref={this.menuRef}
+                            color="white"
+                            icon="menu"
+                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                        />
+                    }
+                >
+                    <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite contacts"/>
+                    <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share link..." />
+                </Menu>
                 </Appbar.Header>
+
             );
 
             callButtons = (
@@ -187,7 +223,10 @@ ConferenceHeader.propTypes = {
     audioOnly: PropTypes.bool,
     terminated: PropTypes.bool,
     info: PropTypes.string,
-    goBackFunc: PropTypes.func
+    goBackFunc: PropTypes.func,
+    toggleInviteModal: PropTypes.func,
+    inviteToConferenceFunc: PropTypes.func,
+    callState: PropTypes.object
 };
 
 

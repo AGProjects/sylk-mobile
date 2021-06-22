@@ -18,7 +18,6 @@ const Logo = (props) => {
     return (
             <View style={containerClass}>
                 <Image source={blinkLogo} style={styles.logo}/>
-                <Text style={styles.text}>&copy; AG Projects</Text>
             </View>
     );
 }

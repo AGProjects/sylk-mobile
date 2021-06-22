@@ -267,6 +267,10 @@ PODS:
     - React
   - react-native-contacts (5.2.3):
     - React
+  - react-native-randombytes (3.6.1):
+    - React-Core
+  - react-native-simple-crypto (0.2.15):
+    - React
   - react-native-splash-screen (3.2.0):
     - React
   - react-native-sqlite-storage (5.0.0):
@@ -361,6 +365,8 @@ DEPENDENCIES:
   - React-jsinspector (from `../node_modules/react-native/ReactCommon/jsinspector`)
   - react-native-background-timer (from `../node_modules/react-native-background-timer`)
   - react-native-contacts (from `../node_modules/react-native-contacts`)
+  - react-native-randombytes (from `../node_modules/react-native-randombytes`)
+  - react-native-simple-crypto (from `../node_modules/react-native-simple-crypto`)
   - react-native-splash-screen (from `../node_modules/react-native-splash-screen`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
   - react-native-webrtc (from `../node_modules/react-native-webrtc`)
@@ -445,6 +451,10 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-background-timer"
   react-native-contacts:
     :path: "../node_modules/react-native-contacts"
+  react-native-randombytes:
+    :path: "../node_modules/react-native-randombytes"
+  react-native-simple-crypto:
+    :path: "../node_modules/react-native-simple-crypto"
   react-native-splash-screen:
     :path: "../node_modules/react-native-splash-screen"
   react-native-sqlite-storage:
@@ -536,6 +546,8 @@ SPEC CHECKSUMS:
   React-jsinspector: fa0ecc501688c3c4c34f28834a76302233e29dc0
   react-native-background-timer: 1b6e6b4e10f1b74c367a1fdc3c72b67c619b222b
   react-native-contacts: e342f93e42bbaac13729e551ffa35ad4a5b90a45
+  react-native-randombytes: 421f1c7d48c0af8dbcd471b0324393ebf8fe7846
+  react-native-simple-crypto: 499ddd9f317932677e50393e58e7a72bca2a86e1
   react-native-splash-screen: 200d11d188e2e78cea3ad319964f6142b6384865
   react-native-sqlite-storage: 418ef4afc5e6df6ce3574c4617e5f0b65cffde55
   react-native-webrtc: 9268ae9a2bc9730796b0968d012327e92c392adf

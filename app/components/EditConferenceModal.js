@@ -31,7 +31,7 @@ class EditConferenceModal extends Component {
     }
 
     sanitizedParticipants(participants) {
-        sanitizedParticipants = [];
+        let sanitizedParticipants = [];
         participants.forEach((item) => {
             item = item.trim().toLowerCase();
 
@@ -70,75 +70,22 @@ class EditConferenceModal extends Component {
         });
     }
 
-    enableFavoritesButton() {
-        let show_button = false;
-        if (this.state.participants) {
-            this.state.participants.split(',').forEach((item) => {
-                item = item.trim();
-
-                if (!item) {
-                    return;
-                }
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
-                }
-
-                if (this.props.favoriteUris.indexOf(item) === -1) {
-                    show_button = true;
-                }
-            });
-        }
-
-        return show_button;
-    }
-
     saveConference(event) {
         event.preventDefault();
         const uris = [];
         if (this.state.participants) {
             this.state.participants.split(',').forEach((item) => {
                 item = item.trim();
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
-                }
-
-                if (item === this.props.accountId) {
-                    return;
-                }
-
-                let username = item.split('@')[0];
-                if (username && username !== ',') {
+                if (uris.indexOf(item) === -1) {
                     uris.push(item);
                 }
             });
         }
 
         if (uris) {
-            this.props.saveInvitedParties(uris);
+            this.props.saveInvitedParties(this.state.selectedContact.remoteParty, uris);
             this.setState({participants: null});
         }
-        this.props.close();
-    }
-
-    saveParticipants(event) {
-        event.preventDefault();
-        if (this.state.participants) {
-            this.state.participants.split(',').forEach((item) => {
-                item = item.trim();
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
-                }
-
-                if (this.props.favoriteUris.indexOf(item) === -1) {
-                    this.props.setFavoriteUri(item);
-                } else {
-                    console.log('Uri is already favorite', item)
-
-                }
-
-            });
-        }
-
         this.props.close();
     }
 
@@ -174,14 +121,6 @@ class EditConferenceModal extends Component {
                             onPress={this.saveConference}
                             icon="content-save">Save
                         </Button>
-                        {this.enableFavoritesButton() ?
-                        <Button
-                            mode="contained"
-                            style={styles.button}
-                            onPress={this.saveParticipants}
-                            icon="content-save">Favorites
-                        </Button>
-                        : null}
                         </View>
                     </Surface>
                 </DialogType>
@@ -191,16 +130,14 @@ class EditConferenceModal extends Component {
 }
 
 EditConferenceModal.propTypes = {
+    room               : PropTypes.string,
     show               : PropTypes.bool.isRequired,
     close              : PropTypes.func.isRequired,
     saveInvitedParties : PropTypes.func,
-    setFavoriteUri     : PropTypes.func,
     invitedParties     : PropTypes.array,
-    room               : PropTypes.string,
     selectedContact    : PropTypes.object,
     defaultDomain      : PropTypes.string,
-    accountId          : PropTypes.string,
-    favoriteUris   : PropTypes.array
-};
+    accountId          : PropTypes.string
+    };
 
 export default EditConferenceModal;

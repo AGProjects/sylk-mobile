@@ -63,7 +63,7 @@ function generateUniqueId() {
     return uniqueId;
 }
 
-function sylkToRenderMessage(sylkMessage) {
+function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
     /*
     export interface IMessage {
       _id: string | number
@@ -82,15 +82,15 @@ function sylkToRenderMessage(sylkMessage) {
     */
 
     let system = false;
-    if (sylkMessage.content.indexOf('Welcome!') > -1) {
+    let image;
+    let content = decryptedBody || sylkMessage.content;
+
+    if (content.indexOf('Welcome!') > -1) {
         system = true;
     }
 
-    let content;
-    let image;
-
     if (sylkMessage.contentType === 'text/html') {
-        content = xss(sylkMessage.content, {
+        content = xss(content, {
                       whiteList: [], // empty, means filter out all tags
                       stripIgnoreTag: true, // filter out all HTML not in the whitelist
                       stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
@@ -98,9 +98,9 @@ function sylkToRenderMessage(sylkMessage) {
                     });
         content = escapeHtml(content)
     } else if (sylkMessage.contentType === 'text/plain') {
-        content = sylkMessage.content;
+        content = content;
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
-        image = `data:${sylkMessage.contentType};base64,${btoa(sylkMessage.content)}`
+        image = `data:${sylkMessage.contentType};base64,${btoa(content)}`
     } else {
         content = 'Unknown message type received ' + sylkMessage.contentType;
     }

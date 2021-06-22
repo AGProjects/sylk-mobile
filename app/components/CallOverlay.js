@@ -125,8 +125,6 @@ class CallOverlay extends React.Component {
 
         this.timer = setInterval(() => {
             const duration = moment.duration(new Date() - this.state.startTime);
-            console.log('this.duration =', this.duration);
-
             if (this.duration > 3600) {
                 this.duration = duration.format('hh:mm:ss', {trim: false});
             } else {

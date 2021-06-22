@@ -215,7 +215,8 @@ class Call extends Component {
                       audioBandwidthQueue: [],
                       videoBandwidthQueue: [],
                       latencyQueue: [],
-                      declineReason: this.props.declineReason
+                      declineReason: this.props.declineReason,
+                      messages: this.props.messages
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -325,6 +326,8 @@ class Call extends Component {
 
             //this.mediaPlaying(nextProps.localMedia);
         }
+
+        this.setState({messages: nextProps.messages});
     }
 
     getConnectionStats() {
@@ -849,8 +852,18 @@ class Call extends Component {
                         info = {this.state.info}
                         declineReason = {this.state.declineReason}
                         showLogs = {this.props.showLogs}
-                        goBackFunc={this.props.goBackFunc}
-                        callState={this.props.callState}
+                        goBackFunc = {this.props.goBackFunc}
+                        callState = {this.props.callState}
+                        messages = {this.state.messages}
+                        deleteMessages = {this.props.deleteMessages}
+                        sendMessage = {this.props.sendMessage}
+                        expireMessage = {this.props.expireMessage}
+                        reSendMessage = {this.props.reSendMessage}
+                        deleteMessage = {this.props.deleteMessage}
+                        getMessages = {this.props.getMessages}
+                        pinMessage = {this.props.pinMessage}
+                        unpinMessage = {this.props.unpinMessage}
+                        selectContact = {this.props.selectContact}
                     />
                 );
             } else {
@@ -880,8 +893,18 @@ class Call extends Component {
                             muted = {this.props.muted}
                             info = {this.state.info}
                             showLogs = {this.props.showLogs}
-                            goBackFunc={this.props.goBackFunc}
-                            callState={this.props.callState}
+                            goBackFunc = {this.props.goBackFunc}
+                            callState = {this.props.callState}
+                            messages = {this.state.messages}
+                            deleteMessages = {this.props.deleteMessages}
+                            sendMessage = {this.props.sendMessage}
+                            expireMessage = {this.props.expireMessage}
+                            reSendMessage = {this.props.reSendMessage}
+                            deleteMessage = {this.props.deleteMessage}
+                            getMessages = {this.props.getMessages}
+                            pinMessage = {this.props.pinMessage}
+                            unpinMessage = {this.props.unpinMessage}
+                            selectContact = {this.props.selectContact}
                         />
                     );
                 } else {
@@ -905,7 +928,7 @@ class Call extends Component {
                                 media = 'video'
                                 declineReason = {this.state.declineReason}
                                 showLogs = {this.props.showLogs}
-                                goBackFunc={this.props.goBackFunc}
+                                goBackFunc = {this.props.goBackFunc}
                             />
                         );
                     }
@@ -919,7 +942,7 @@ class Call extends Component {
                     photo = {this.state.photo}
                     hangupCall = {this.hangupCall}
                     call = {this.state.call}
-                    accountId={this.state.accountId}
+                    accountId = {this.state.accountId}
                     connection = {this.props.connection}
                     mediaPlaying = {this.mediaPlaying}
                     escalateToConference = {this.props.escalateToConference}
@@ -934,7 +957,7 @@ class Call extends Component {
                     info = {this.state.info}
                     declineReason = {this.state.declineReason}
                     showLogs = {this.props.showLogs}
-                    goBackFunc={this.props.goBackFunc}
+                    goBackFunc = {this.props.goBackFunc}
                 />
             );
 
@@ -969,7 +992,17 @@ Call.propTypes = {
     declineReason           : PropTypes.string,
     showLogs                : PropTypes.func,
     goBackFunc              : PropTypes.func,
-    callState               : PropTypes.object
+    callState               : PropTypes.object,
+    messages                : PropTypes.object,
+    sendMessage             : PropTypes.func,
+    reSendMessage           : PropTypes.func,
+    confirmRead             : PropTypes.func,
+    deleteMessage           : PropTypes.func,
+    expireMessage           : PropTypes.func,
+    getMessages             : PropTypes.func,
+    pinMessage              : PropTypes.func,
+    unpinMessage            : PropTypes.func,
+    selectedContact         : PropTypes.object
 };
 
 

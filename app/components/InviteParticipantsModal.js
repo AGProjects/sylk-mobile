@@ -211,11 +211,13 @@ class InviteParticipantsModal extends Component {
     }
 
     render() {
+        const showAutocomplete = false;
         return (
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface>
-                        <Dialog.Title style={styles.title}>Invite People</Dialog.Title>
+                        <Dialog.Title style={styles.title}>Share conference link</Dialog.Title>
+                        {showAutocomplete ?
                         <View>
                         <Autocomplete
                           containerStyle={styles.autocompleteContainer}
@@ -236,18 +238,22 @@ class InviteParticipantsModal extends Component {
                                         )}
                         />
                         </View>
+                        : null}
+
                         <View style={styles.buttonRowInvite}>
+                        {showAutocomplete ?
                         <Button color={!this.state.participants ? "lightgray": null}
                             mode="contained"
                             style={styles.button}
                             onPress={this.invite}
                             disabled={this.state.searching}
-                            icon="email">Invite
+                            >Select participants
                         </Button>
+                        : null}
                         </View>
 
                         <Text style={styles.shareText}>
-                             Or share the conference link:
+                            Select an external application to share the conference web link:
                         </Text>
 
                         <View style={styles.iconContainer}>

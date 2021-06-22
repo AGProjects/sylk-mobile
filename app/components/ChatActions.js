@@ -1,5 +1,7 @@
 import PropTypes from 'prop-types'
 import React from 'react'
+//import * as ImagePicker from 'expo-image-picker';
+
 import {
   StyleSheet,
   Text,
@@ -8,18 +10,43 @@ import {
   ViewPropTypes,
 } from 'react-native'
 
-import {
-  getLocationAsync,
-  pickImageAsync,
-  takePictureAsync,
-} from './mediaUtils'
+
+export async function pickImageAsync(onSend) {
+    return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: true,
+      aspect: [4, 3],
+    })
+
+    if (!result.cancelled) {
+      onSend([{ image: result.uri }])
+      return result.uri
+    }
+}
+
+export async function takePictureAsync(onSend) {
+    return;
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [4, 3],
+    })
+
+    if (!result.cancelled) {
+      onSend([{ image: result.uri }])
+      return result.uri
+    }
+}
 
 export default class CustomActions extends React.Component {
   onActionsPress = () => {
-    const options = [
-      'Choose From Library',
-      'Take Picture',
-      'Send Location',
+    let options = [
+      'Choose photo from library',
+      'Take a picture',
+      'Cancel',
+    ]
+
+    options = [
+      'Curious, huh?',
       'Cancel',
     ]
     const cancelButtonIndex = options.length - 1
@@ -37,8 +64,6 @@ export default class CustomActions extends React.Component {
           case 1:
             takePictureAsync(onSend)
             return
-          case 2:
-            getLocationAsync(onSend)
           default:
         }
       },

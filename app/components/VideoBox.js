@@ -406,7 +406,17 @@ VideoBox.propTypes = {
     muted                   : PropTypes.bool,
     showLogs                : PropTypes.func,
     goBackFunc              : PropTypes.func,
-    callState               : PropTypes.object
+    callState               : PropTypes.object,
+    messages                : PropTypes.object,
+    sendMessage             : PropTypes.func,
+    reSendMessage           : PropTypes.func,
+    confirmRead             : PropTypes.func,
+    deleteMessage           : PropTypes.func,
+    expireMessage           : PropTypes.func,
+    getMessages             : PropTypes.func,
+    pinMessage              : PropTypes.func,
+    unpinMessage            : PropTypes.func,
+    selectedContact         : PropTypes.object
 };
 
 export default VideoBox;

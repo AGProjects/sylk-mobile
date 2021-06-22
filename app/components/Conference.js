@@ -29,8 +29,8 @@ class Conference extends React.Component {
         this.participants = [];
 
         this.state = {
-              currentCall: null,
-              callState: null,
+              currentCall: this.props.currentCall,
+              callState: this.props.currentCall ? this.props.currentCall.state : null,
               targetUri: this.props.targetUri,
               callUUID: this.props.callUUID,
               localMedia: this.props.localMedia,
@@ -40,7 +40,8 @@ class Conference extends React.Component {
               startedByPush: this.props.startedByPush,
               reconnectingCall: this.props.reconnectingCall,
               myInvitedParties: this.props.myInvitedParties,
-              isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1
+              isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1,
+              selectedContacts: this.props.selectedContacts
               }
 
         if (this.props.connection) {
@@ -53,6 +54,12 @@ class Conference extends React.Component {
                     this.participants.push(p);
                 }
             });
+        }
+    }
+
+    componentDidMount() {
+        if (this.state.currentCall) {
+            this.state.currentCall.on('stateChanged', this.callStateChanged);
         }
     }
 
@@ -121,7 +128,8 @@ class Conference extends React.Component {
         }
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
-                       isFavorite: nextProps.favoriteUris.indexOf(this.props.targetUri) > -1
+                       isFavorite: nextProps.favoriteUris.indexOf(this.props.targetUri) > -1,
+                       selectedContacts: nextProps.selectedContacts
                        });
     }
 
@@ -289,7 +297,7 @@ class Conference extends React.Component {
 
     saveConference() {
         if (!this.state.isFavorite) {
-            this.props.setFavoriteUri(this.props.targetUri);
+            this.props.toggleFavorite(this.props.targetUri);
         }
 
         let room = this.state.targetUri.split('@')[0];
@@ -369,6 +377,9 @@ class Conference extends React.Component {
                         myContacts = {this.props.myContacts}
                         lookupContacts = {this.props.lookupContacts}
                         goBackFunc={this.props.goBackFunc}
+                        inviteToConferenceFunc={this.props.inviteToConferenceFunc}
+                        selectedContacts={this.props.selectedContacts}
+                        callState={this.props.callState}
                    />
                 );
             } else {
@@ -386,6 +397,7 @@ class Conference extends React.Component {
                         participants={this.participants}
                         terminated={this.userHangup}
                         reconnectingCall={this.state.reconnectingCall}
+                        goBackFunc={this.props.goBackFunc}
                         media={media}
                     />
 
@@ -426,14 +438,16 @@ Conference.propTypes = {
     defaultDomain           : PropTypes.string,
     startedByPush           : PropTypes.bool,
     inFocus                 : PropTypes.bool,
-    setFavoriteUri          : PropTypes.func,
+    toggleFavorite          : PropTypes.func,
     saveInvitedParties      : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
     favoriteUris            : PropTypes.array,
     myContacts              : PropTypes.object,
     lookupContacts          : PropTypes.func,
-    goBackFunc              : PropTypes.func
-
+    goBackFunc              : PropTypes.func,
+    inviteToConferenceFunc  : PropTypes.func,
+    selectedContacts        : PropTypes.array,
+    callState               : PropTypes.object
 };
 
 

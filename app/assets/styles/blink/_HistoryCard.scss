@@ -1,47 +1,11 @@
-.container {
+.containerPortrait {
 }
 
 .containerLandscape {
 }
 
-
-.mainContent {
-    width: 100%;
-}
-
-.cardContent {
-    flex: 1;
-    flex-direction: row;
-}
-
-.participantView {
-}
-
-.participant {
-    font-size: 14px;
-}
-
-.card {
-    height: 85px;
-}
-
-.tabletCard {
-    height: 110px;
-}
-
-.expandedCard {
-    height: 120px;
-}
-
-.userAvatarContent {
-    margin-top: 0px;
-    margin-left: auto;
-}
-
 .cardPortraitContainer {
-    margin: 0 auto;
     margin-top: 1px;
-    height: 185px;
 }
 
 .cardLandscapeContainer {
@@ -58,8 +22,58 @@
 }
 
 .cardPortraitTabletContainer {
+    flex: 1;
     border: 1px;
     border-radius: 2px;
+}
+
+.rowContent {
+    margin-top: 5px;
+    flex: 1;
+    flex-direction: row;
+    justify-content: space-between;
+}
+
+.cardContent {
+    flex: 1;
+    flex-direction: row;
+}
+
+.title {
+    font-size: 18px;
+    margin: 0px;
+}
+
+.subtitle {
+    font-size:14px;
+    margin: 0px;
+}
+
+.description {
+    font-size:12px;
+    margin: 0px;
+}
+
+.avatarContent {
+    margin-top: 7px;
+}
+
+.mainContent {
+    margin-left: 10px;
+}
+
+.rightContent {
+    margin-top: 15px;
+    margin-right: 10px;
+    align-items: flex-end;
+}
+
+.participants {
+    margin-top: 10px;
+}
+
+.participant {
+    font-size: 14px;
 }
 
 .buttonContainer {
@@ -72,6 +86,3 @@
     padding-left: 30px;
     padding-right: 30px;
 }
-
-
-
