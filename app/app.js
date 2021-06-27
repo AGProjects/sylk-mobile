@@ -3894,6 +3894,24 @@ class Sylk extends Component {
         this.setState({selectedContact: null, target_uri: ''});
     }
 
+    deletePublicKey(uri) {
+        uri = uri.trim().toLowerCase();
+
+        if (uri.indexOf('@') === -1) {
+            uri = uri + '@' + this.state.defaultDomain;
+        }
+
+        let myContacts = this.state.myContacts;
+
+        if (uri in myContacts) {
+            myContacts[uri].publicKey = null;
+            myContacts[uri].publicKeyHash = null;
+            console.log('Public key of', uri, 'deleted');
+            this.saveMyContacts(myContacts);
+            //
+        }
+    }
+
     saveContact(uri, displayName, organization='') {
         displayName = displayName.trim();
         uri = uri.trim().toLowerCase();
@@ -3957,9 +3975,6 @@ class Sylk extends Component {
 
         storage.set('favoriteUris', favoriteUris);
 
-        this.setState({favoriteUris: favoriteUris,
-                       refreshFavorites: !this.state.refreshFavorites});
-
         let myContacts = this.state.myContacts;
         if (uri in myContacts) {
             myContacts[uri].favorite = favorite;
@@ -3968,6 +3983,21 @@ class Sylk extends Component {
             myContacts[uri].name = '';
             myContacts[uri].favorite = favorite;
         }
+
+        let selectedContact;
+        if (this.state.selectedContact) {
+            selectedContact = this.state.selectedContact;
+            idx = selectedContact.tags.indexOf('favorite');
+            if (idx > -1) {
+                 selectedContact.tags.splice(idx, 1);
+            } else {
+                selectedContact.tags.push('favorite');
+            }
+        }
+
+        this.setState({favoriteUris: favoriteUris,
+                       selectedContact: selectedContact,
+                       refreshFavorites: !this.state.refreshFavorites});
 
         this.saveMyContacts(myContacts);
         return favorite;
@@ -4233,12 +4263,14 @@ class Sylk extends Component {
 
     ready() {
         let publicKeyHash;
+        let publicKey;
         let call = this.state.currentCall || this.state.incomingCall;
 
         if (this.state.selectedContact) {
             const uri = this.state.selectedContact.remoteParty;
             if (uri in this.state.myContacts && this.state.myContacts[uri].publicKeyHash) {
                 publicKeyHash = this.state.myContacts[uri].publicKeyHash;
+                publicKey = this.state.myContacts[uri].publicKey;
             }
         } else {
             publicKeyHash = this.state.keys ? this.state.keys.publicKeyHash : null;
@@ -4267,6 +4299,7 @@ class Sylk extends Component {
                     selectedContact = {this.state.selectedContact}
                     replicateKey = {this.sendPrivateKey}
                     publicKeyHash = {publicKeyHash}
+                    publicKey = {publicKey}
                     deleteMessages = {this.deleteMessages}
                     toggleFavorite = {this.toggleFavorite}
                     toggleBlocked = {this.toggleBlocked}
@@ -4279,6 +4312,7 @@ class Sylk extends Component {
                     saveContact = {this.saveContact}
                     deleteContact = {this.deleteContact}
                     sendPublicKey = {this.sendPublicKey}
+                    deletePublicKey = {this.deletePublicKey}
 
                 />
                 <ReadyBox

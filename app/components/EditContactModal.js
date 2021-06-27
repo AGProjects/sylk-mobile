@@ -2,12 +2,13 @@ import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View } from 'react-native';
-import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph } from 'react-native-paper';
+import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, Subheading } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import styles from '../assets/styles/blink/_EditContactModal.scss';
+import utils from '../utils';
 
 
 class EditContactModal extends Component {
@@ -54,6 +55,26 @@ class EditContactModal extends Component {
         this.props.close();
     }
 
+    deletePublicKey(event) {
+        event.preventDefault();
+
+        if (!this.state.confirm) {
+            this.setState({confirm: true});
+            return;
+        }
+
+        this.setState({confirm: false});
+        this.props.deletePublicKey(this.state.uri);
+        this.props.close();
+    }
+
+    handleClipboardButton(event) {
+        event.preventDefault();
+        console.log('Key copied to clipboard')
+        utils.copyToClipboard(this.props.publicKey);
+        this.props.close();
+    }
+
     onInputChange(value) {
         this.setState({displayName: value});
     }
@@ -64,18 +85,39 @@ class EditContactModal extends Component {
 
     render() {
         if (this.props.publicKeyHash) {
-
+            let title = this.props.displayName || this.props.uri
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>{this.props.uri}</Dialog.Title>
+                            <Dialog.Title style={styles.title}>{title}</Dialog.Title>
                              <Text style={styles.body}>
-                                 Public Key:
+                                 PGP Public Key
                             </Text>
                             <Text style={styles.key}>
-                              {this.props.publicKeyHash}
+                              {this.props.publicKey}
                             </Text>
+                        <View style={styles.buttonRow}>
+                        <Button
+                            mode="contained"
+                            style={styles.button}
+                            disabled={this.state.confirm}
+                            onPress={this.handleClipboardButton}
+                            icon="content-copy"
+                            accessibilityLabel="Copy"
+                            >Copy
+                        </Button>
+
+                        <Button
+                            mode="contained"
+                            disabled={this.state.myself}
+                            style={styles.button}
+                            onPress={this.deletePublicKey}
+                            icon="delete"
+                            accessibilityLabel="Delete"
+                            >{this.state.confirm ? 'Confirm delete': 'Delete'}
+                        </Button>
+                        </View>
                         </Surface>
                     </DialogType>
                 </Portal>
@@ -148,9 +190,11 @@ EditContactModal.propTypes = {
     displayName        : PropTypes.string,
     organization       : PropTypes.string,
     publicKeyHash      : PropTypes.string,
+    publicKey          : PropTypes.string,
     myself             : PropTypes.bool,
     saveContact        : PropTypes.func,
-    deleteContact      : PropTypes.func
+    deleteContact      : PropTypes.func,
+    deletePublicKey    : PropTypes.func
 };
 
 export default EditContactModal;

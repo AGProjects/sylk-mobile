@@ -44,6 +44,7 @@ class NavigationBar extends Component {
             displayName: this.props.displayName,
             organization: this.props.organization,
             publicKeyHash: this.props.publicKeyHash,
+            publicKey: this.props.publicKey,
             showEditContactModal: false,
             showPublicKey: false,
             myInvitedParties: this.props.myInvitedParties
@@ -65,6 +66,7 @@ class NavigationBar extends Component {
                        proximity: nextProps.proximity,
                        inCall: nextProps.inCall,
                        publicKeyHash: nextProps.publicKeyHash,
+                       publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
                        myInvitedParties: nextProps.myInvitedParties
                        });
@@ -236,6 +238,7 @@ class NavigationBar extends Component {
         let organization = this.state.selectedContact ? this.state.selectedContact.organization : this.state.organization;
         let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : 'Block';
         let favoriteTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
+        let favoriteIcon = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
 
         let invitedParties = [];
         if (this.state.selectedContact) {
@@ -285,12 +288,12 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
-                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="pin" title="Send my public key..."/>
-                        <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
-                        <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon="label" title={favoriteTitle}/>
+                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my PGP key..."/>
                         {this.props.publicKeyHash ?
-                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="label" title="Show key..."/>
+                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show PGP key..."/>
                         : null}
+                        <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
+                        <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
 
                     </Menu>
                 :
@@ -310,7 +313,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
-                        <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title="Export private key..." />
+                        <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title="Export PGP key..." />
                         <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                         <Divider/>
                         {extraMenu ?
@@ -361,7 +364,9 @@ class NavigationBar extends Component {
                     myself={this.state.selectedContact ? false : true}
                     saveContact={this.saveContact}
                     deleteContact={this.props.deleteContact}
+                    deletePublicKey={this.props.deletePublicKey}
                     publicKeyHash={this.state.showPublicKey ? this.state.publicKeyHash: null}
+                    publicKey={this.state.showPublicKey ? this.state.publicKey: null}
                 />
 
                 <EditConferenceModal
@@ -383,6 +388,7 @@ class NavigationBar extends Component {
                     close={this.toggleExportPrivateKeyModal}
                     saveFunc={this.props.replicateKey}
                     publicKeyHash={this.state.publicKeyHash}
+                    publicKey={this.state.publicKey}
                 />
             </Appbar.Header>
         );
@@ -410,6 +416,7 @@ NavigationBar.propTypes = {
     goBackFunc         : PropTypes.func,
     replicateKey       : PropTypes.func,
     publicKeyHash      : PropTypes.string,
+    publicKey          : PropTypes.string,
     deleteMessages     : PropTypes.func,
     togglePinned       : PropTypes.func,
     toggleBlocked      : PropTypes.func,
@@ -422,6 +429,7 @@ NavigationBar.propTypes = {
     saveContact        : PropTypes.func,
     addContact         : PropTypes.func,
     deleteContact      : PropTypes.func,
+    deletePublicKey    : PropTypes.func,
     sendPublicKey      : PropTypes.func
 };
 
