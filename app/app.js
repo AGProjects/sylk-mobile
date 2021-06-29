@@ -1229,7 +1229,7 @@ class Sylk extends Component {
             let token = null;
 
             if (Platform.OS === 'ios') {
-                token = `${this.pushkittoken}#${this.pushtoken}`;
+                token = `${this.pushkittoken}-${this.pushtoken}`;
             } else if (Platform.OS === 'android') {
                 token = this.pushtoken;
             }
