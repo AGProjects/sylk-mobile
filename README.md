@@ -87,6 +87,8 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 ### Building ependencies
 
 * Node.js version 12
+* NVM
+  https://heynode.com/tutorial/install-nodejs-locally-nvm/
 * Yarn (for package management)
 * GPG (for git-crypt)
 * Git-Crypt (for keeping a google upload key keystore secret)
@@ -94,8 +96,10 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 * Android Studio (Or at least the Android SDK)
 * Gem (for installing gem files)
 * Fastlane (for deploying to testflight/google play store)
-* Cocoapods (for handling iOS Pods)
+* Cocoapods (for handling iOS Pods) 
+  sudo gem install cocoapods
 * watchman (for helping watch files during development)
+  brew install watchman or port install watchman
 
 
 ### Install
@@ -118,6 +122,21 @@ yarn cache clean
 yarn
 cd ios; pod install; cd ..
 ```
+
+
+### XCODE 12.5 fixes
+
+1. https://infinitbility.com/build-failed-after-update-xcode-12.5
+
+2. https://github.com/foundation/foundation-cli/issues/98
+
+npm rebuild node-sass
+
+3. https://github.com/facebook/create-react-app/issues/4540
+
+brew install watchman or port install watchman
+
+
 
 ### Decrypting the git repo
 
