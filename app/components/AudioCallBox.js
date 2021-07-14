@@ -186,6 +186,7 @@ class AudioCallBox extends Component {
     }
 
     render() {
+
         let buttonContainerClass;
         let userIconContainerClass;
 

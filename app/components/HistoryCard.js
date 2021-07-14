@@ -229,15 +229,16 @@ class HistoryCard extends Component {
 
         if (utils.isAnonymous(uri)) {
             //uri = 'anonymous@anonymous.invalid';
-            displayName = 'Anonymous';
             if (uri.indexOf('@guest.') > -1) {
                 subtitle = 'From the Web';
+            } else {
+                displayName = 'Anonymous';
             }
             showBlockDomainButton = true;
             if (!this.state.blocked) {
                 showBlockButton = false;
             }
-            blockDomainTextbutton = 'Block Web calls';
+            blockDomainTextbutton = 'Block Web callers';
         }
 
         if (!username || username.length === 0) {

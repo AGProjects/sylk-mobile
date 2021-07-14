@@ -261,7 +261,8 @@ class Sylk extends Component {
             privateKeyImportSuccess: false,
             inviteContacts: false,
             selectedContacts: [],
-            pinned: false
+            pinned: false,
+            callContact: null
         };
 
         utils.timestampedLog('Init app');
@@ -880,12 +881,18 @@ class Sylk extends Component {
             return;
         }
 
+
         if (this.currentRoute !== route) {
             utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
         }
 
         if (route === '/conference') {
-            this.setState({inviteContacts: false});
+           this.backToForeground();
+           this.setState({inviteContacts: false});
+        }
+
+        if (route === '/call') {
+           this.backToForeground();
         }
 
         if (route === '/ready' && reason !== 'back to home') {
@@ -900,6 +907,7 @@ class Sylk extends Component {
             this.setState({
                             outgoingCallUUID: null,
                             currentCall: null,
+                            callContact: null,
                             inviteContacts: false,
                             selectedContacts: [],
                             incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
@@ -2011,6 +2019,14 @@ class Sylk extends Component {
         this.changeRoute('/ready', 'back to home');
     }
 
+    goBackToHomeFromCall() {
+        this.changeRoute('/ready', 'back to home');
+        if (this.state.callContact) {
+            this.setState({selectedContact: this.state.callContact});
+            this.getMessages(this.state.callContact.remoteParty);
+        }
+    }
+
     inviteContactsToConference() {
         console.log('Will invite contacts');
         this.setState({inviteContacts: true, selectedContacts: []});
@@ -2297,7 +2313,7 @@ class Sylk extends Component {
     }
 
     startCall(targetUri, options) {
-        this.setState({targetUri: targetUri});
+        this.setState({targetUri: targetUri, callContact: this.state.selectedContact});
         this.getLocalMedia(Object.assign({audio: true, video: options.video}, options), '/call');
     }
 
@@ -4428,7 +4444,7 @@ class Sylk extends Component {
                 muted = {this.state.muted}
                 myContacts = {this.state.myContacts}
                 declineReason = {this.state.declineReason}
-                goBackFunc={this.goBackToHome}
+                goBackFunc={this.goBackToHomeFromCall}
                 messages = {this.state.messages}
                 sendMessage={this.sendMessage}
                 reSendMessage={this.reSendMessage}
@@ -4438,6 +4454,7 @@ class Sylk extends Component {
                 pinMessage = {this.pinMessage}
                 unpinMessage = {this.unpinMessage}
                 confirmRead = {this.confirmRead}
+                selectedContact={this.state.selectedContact}
             />
         )
     }

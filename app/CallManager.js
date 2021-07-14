@@ -173,6 +173,8 @@ export default class CallManager extends events.EventEmitter {
 
         utils.timestampedLog('Callkeep: active call', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
+        this.backToForeground();
+
     }
 
     endCalls() {

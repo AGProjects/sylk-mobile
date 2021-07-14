@@ -33,7 +33,7 @@ class ReadyBox extends Component {
             myInvitedParties: this.props.myInvitedParties,
             messages: this.props.messages,
             myDisplayName: this.props.myDisplayName,
-            chat: this.props.selectedContact && this.props.call,
+            chat: (this.props.selectedContact !== null) && (this.props.call !== null),
             call: this.props.call,
             inviteContacts: this.props.inviteContacts,
             selectedContacts: this.props.selectedContacts,
@@ -378,7 +378,18 @@ class ReadyBox extends Component {
                             </View>
                             : null}
 
-                            {!this.state.call ?
+                            {( this.state.call && this.state.call.state == 'established') ?
+                            <View style={buttonGroupClass}>
+
+                                <Button
+                                    mode="contained"
+                                    style={styles.backButton}
+                                    onPress={this.props.goBackFunc}
+                                    accessibilityLabel={callType}
+                                    >{callType}
+                                </Button>
+                            </View>
+                                :
                             <View style={buttonGroupClass}>
                                 <IconButton
                                     style={buttonClass}
@@ -408,17 +419,6 @@ class ReadyBox extends Component {
                                     onPress={this.showConferenceModal}
                                     icon="account-group"
                                 />
-                            </View>
-                                :
-                            <View style={buttonGroupClass}>
-
-                                <Button
-                                    mode="contained"
-                                    style={styles.backButton}
-                                    onPress={this.props.goBackFunc}
-                                    accessibilityLabel={callType}
-                                    >{callType}
-                                </Button>
                             </View>
                                 }
 

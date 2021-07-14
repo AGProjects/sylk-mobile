@@ -216,7 +216,8 @@ class Call extends Component {
                       videoBandwidthQueue: [],
                       latencyQueue: [],
                       declineReason: this.props.declineReason,
-                      messages: this.props.messages
+                      messages: this.props.messages,
+                      selectedContact: this.props.selectedContact
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -863,7 +864,7 @@ class Call extends Component {
                         getMessages = {this.props.getMessages}
                         pinMessage = {this.props.pinMessage}
                         unpinMessage = {this.props.unpinMessage}
-                        selectContact = {this.props.selectContact}
+                        selectedContact = {this.state.selectedContact}
                     />
                 );
             } else {
@@ -904,7 +905,7 @@ class Call extends Component {
                             getMessages = {this.props.getMessages}
                             pinMessage = {this.props.pinMessage}
                             unpinMessage = {this.props.unpinMessage}
-                            selectContact = {this.props.selectContact}
+                            selectedContact = {this.props.selectedContact}
                         />
                     );
                 } else {
@@ -958,6 +959,7 @@ class Call extends Component {
                     declineReason = {this.state.declineReason}
                     showLogs = {this.props.showLogs}
                     goBackFunc = {this.props.goBackFunc}
+                    selectedContact = {this.state.selectedContact}
                 />
             );
 
