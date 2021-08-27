@@ -3189,15 +3189,21 @@ class Sylk extends Component {
         renderMessages[uri].push(message);
         this.setState({messages: renderMessages});
 
-        if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && message.contentType !== 'text/pgp-public-key') {
-            await OpenPGP.encrypt(message.text, this.state.myContacts[uri].publicKey).then((encryptedMessage) => {
-                //console.log('Outgoing encrypted message to', uri);
+        if (message.contentType !== 'text/pgp-public-key') {
+            let public_keys = this.state.keys.public;
+
+            if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
+                public_keys = public_keys + "\n" + this.state.myContacts[uri].publicKey;
+            }
+
+            await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
                 this._sendMessage(uri, encryptedMessage, message._id);
             }).catch((error) => {
                 console.log('Failed to encrypt message:', error);
             });
+
         } else {
-            //console.log('Outgoing non-encrypted message to', uri);
+            console.log('Outgoing non-encrypted message to', uri);
             this._sendMessage(uri, message.text, message._id);
         }
     }
@@ -3392,7 +3398,8 @@ class Sylk extends Component {
     async sendPendingMessage(uri, text, id) {
         utils.timestampedLog('Outgoing pending message', id);
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
-            await OpenPGP.encrypt(text, this.state.myContacts[uri].publicKey).then((encryptedMessage) => {
+            let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
+            await OpenPGP.encrypt(text, public_keys).then((encryptedMessage) => {
                 //console.log('Outgoing encrypted message to', uri);
                 this._sendMessage(uri, encryptedMessage, id);
             }).catch((error) => {
@@ -3697,18 +3704,6 @@ class Sylk extends Component {
             let content;
             let image;
 
-            /*
-            if (uri in this.state.myContacts && this.state.myContacts[uri].publicKeyHash) {
-                msg = {
-                    _id: uuid.v4(),
-                    createdAt: new Date(),
-                    text: 'Public key ' + this.state.myContacts[uri].publicKeyHash,
-                    system: 1
-                    }
-                messages[uri].push(msg);
-            }
-            */
-
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 //console.log(item);
@@ -3764,12 +3759,13 @@ class Sylk extends Component {
     }
 
     async deleteMessages(uri, local=true, period="0", deleteRemote=false) {
-        console.log('Purge messages with', uri, 'for', period, 'hours');
-        let query;
-
         if (local) {
+            console.log('Purge messages locally with', uri, 'for', period, 'hours');
             this.addJournal(uri, 'removeConversation', {period: period, deleteRemote: deleteRemote});
+        } else {
+            console.log('Purge messages from server with', uri, 'for', period, 'hours');
         }
+        let query;
 
         query = "DELETE FROM messages where (from_uri = '"
             + uri
@@ -3784,9 +3780,7 @@ class Sylk extends Component {
         await this.ExecuteQuery(query).then((result) => {
             let myContacts = this.state.myContacts;
             if (!period || period === "0") {
-                if (uri in this.state.myContacts) {
-                    delete myContacts[uri];
-                }
+                this.removeContact(uri);
                 let messages = this.state.messages;
                 delete messages[uri];
                 this.setState({messages: messages});
@@ -3806,9 +3800,6 @@ class Sylk extends Component {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
         });
-
-        // TODO deleteRemote
-
     }
 
 
@@ -3837,15 +3828,8 @@ class Sylk extends Component {
     }
 
     async outgoingMessage(message, sync=false) {
-        utils.timestampedLog('Outgoing message', message.id);
+        utils.timestampedLog('Outgoing message', message.id, 'to', message.receiver);
         if (message.content.indexOf('?OTRv3') > -1) {
-            return;
-        }
-
-        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
-            console.log('Received my own PGP private key');
-            this.setState({showImportPrivateKeyModal: true,
-                               privateKey: message.content});
             return;
         }
 
@@ -3857,14 +3841,31 @@ class Sylk extends Component {
            return;
         }
 
-        let decryptedBody = message.content;
-        // TODO: we need to decrypt our own messages too, but how if we only encrypted using remote public key?
+        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id && !sync) {
+            console.log('Received my own PGP private key');
+            this.setState({showImportPrivateKeyModal: true,
+                               privateKey: message.content});
+            return;
+        }
 
-        this.saveOutgoingChatUri(message.receiver, decryptedBody);
+        const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
+        let content = message.content;
+
+        if (is_encrypted) {
+            await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
+                // console.log('Outgoing message decrypted');
+                content = decryptedBody;
+            }).catch((error) => {
+                console.log('Failed to decrypt my own message:', error);
+                return;
+            });
+        }
+
+        this.saveOutgoingChatUri(message.receiver, content);
 
         let pending = 0;
         let sent = 0;
-        let received = 0;
+        let received = null;
 
         if (message.state == 'delivered') {
             sent = 1;
@@ -3873,10 +3874,13 @@ class Sylk extends Component {
             sent = 1;
         } else if (message.state == 'failed') {
             sent = 1;
+            received = 0;
         } else if (message.state == 'error') {
             sent = 1;
+            received = 0;
         } else if (message.state == 'forbidden') {
             sent = 1;
+            received = 0;
         }
 
         let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, "
@@ -3885,7 +3889,7 @@ class Sylk extends Component {
             + "', '"
             + message.timestamp
             + "', '"
-            + base64.encode(decryptedBody)
+            + base64.encode(content)
             + "', '"
             + message.contentType
             + "', '"
@@ -3943,20 +3947,32 @@ class Sylk extends Component {
         this.setState({messages: renderMessages});
     }
 
-    async removeConversation(message) {
-        await this.deleteMessages(message.content, false, 0, false).then((result) => {
-            console.log('Conversation with', message.content, 'was removed');
-        }).catch((error) => {
-            console.log('Failed to delete conversation with', message.content);
-        });
+    async removeConversation(obj, sync=false) {
+        let uri = sync ? obj.content: obj;
+        //console.log('removeConversation', uri);
 
         let renderMessages = this.state.messages;
-        if (Object.keys(renderMessages).indexOf(message.content) === -1) {
-            return;
+
+        await this.deleteMessages(uri, false, 0, false).then((result) => {
+            utils.timestampedLog('Conversation with', uri, 'was removed');
+        }).catch((error) => {
+            console.log('Failed to delete conversation with', uri);
+        });
+
+        if (Object.keys(renderMessages).indexOf(uri) > -1) {
+            delete renderMessages[uri];
+            this.setState({messages: renderMessages});
         }
 
-        delete renderMessages[message.content];
-        this.setState({messages: renderMessages});
+        this.removeContact(uri);
+    }
+
+    removeContact(uri) {
+        let myContacts = this.state.myContacts;
+        if (uri in myContacts) {
+            delete myContacts[uri];
+            this.saveMyContacts(myContacts);
+        }
     }
 
     async syncConversations(messages) {
@@ -3968,7 +3984,7 @@ class Sylk extends Component {
                 this.removeMessage(message, message.content.contact);
 
             } else if (message.contentType === 'application/sylk-conversation-remove') {
-                this.removeConversation(message);
+                this.removeConversation(message, true);
 
             } else if (message.contentType === 'message/imdn') {
                 this.messageStateChanged({messageId: message.id, state: message.state});
@@ -4201,10 +4217,8 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
 
         if (uri in myContacts) {
-            console.log('Delete contact', uri);
             this.deleteMessages(uri);
-            delete myContacts[uri];
-            this.saveMyContacts(myContacts);
+            this.removeContact(uri);
         }
         this.setState({selectedContact: null, target_uri: ''});
     }
