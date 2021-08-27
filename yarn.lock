@@ -7841,9 +7841,9 @@ react-native-swipe-list-view@^3.2.3:
   resolved "https://registry.yarnpkg.com/react-native-swipe-list-view/-/react-native-swipe-list-view-3.2.3.tgz#2b4aa361f26b6e55efe38a829ce122dff6c00292"
   integrity sha512-f0B92eZiO0mCk7ZFtn8tbLz4lb+mR8xzcfjFqCVSDeXnuNw7GenUMsccGnclIOhnxnip5BHvUHavlD41peGqig==
 
-react-native-sylkrtc@agprojects/react-native-sylkrtc.js#80d1a72ebf6a241517b9df687077ce52699ad227:
-  version "1.5.2"
-  resolved "https://codeload.github.com/agprojects/react-native-sylkrtc.js/tar.gz/80d1a72ebf6a241517b9df687077ce52699ad227"
+react-native-sylkrtc@agprojects/react-native-sylkrtc.js#b694b0c9d480d6dbd406921d48e2ffcc059d223d:
+  version "1.5.3"
+  resolved "https://codeload.github.com/agprojects/react-native-sylkrtc.js/tar.gz/b694b0c9d480d6dbd406921d48e2ffcc059d223d"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"

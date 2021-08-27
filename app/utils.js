@@ -90,15 +90,7 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
     }
 
     if (sylkMessage.contentType === 'text/html') {
-        content = xss(content, {
-                      whiteList: [], // empty, means filter out all tags
-                      stripIgnoreTag: true, // filter out all HTML not in the whitelist
-                      stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
-                      // to filter out its content
-                    });
-        content = escapeHtml(content)
-    } else if (sylkMessage.contentType === 'text/plain') {
-        content = content;
+        content = html2Text(content);
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
         image = `data:${sylkMessage.contentType};base64,${btoa(content)}`
     } else {
@@ -120,6 +112,17 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
           name: sylkMessage.sender.toString()
             }
         }
+}
+
+function html2Text(content) {
+    content = xss(content, {
+              whiteList: [], // empty, means filter out all tags
+              stripIgnoreTag: true, // filter out all HTML not in the whitelist
+              stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
+              // to filter out its content
+            });
+    content = escapeHtml(content);
+    return content;
 }
 
 function normalizeUri(uri, defaultDomain) {
@@ -279,3 +282,4 @@ exports.findContact = findContact;
 exports.sylkToRenderMessage = sylkToRenderMessage;
 exports.isAnonymous = isAnonymous;
 exports.escapeHtml = escapeHtml;
+exports.html2Text = html2Text;

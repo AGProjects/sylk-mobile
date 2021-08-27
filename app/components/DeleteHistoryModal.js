@@ -31,7 +31,7 @@ class DeleteHistoryModal extends Component {
 
     deleteMessages(event) {
         event.preventDefault();
-        this.props.deleteMessages(this.state.uri, this.state.period, this.state.remoteDelete);
+        this.props.deleteMessages(this.state.uri, true, this.state.period, this.state.remoteDelete);
         this.props.close();
     }
 
@@ -59,12 +59,12 @@ class DeleteHistoryModal extends Component {
                             </View>
 
                             <View style={styles.titleContainer}>
-                               <Dialog.Title style={styles.title}>Delete messages</Dialog.Title>
+                               <Dialog.Title style={styles.title}>Delete conversions</Dialog.Title>
                            </View>
 
                         </View>
                          <Text style={styles.body}>
-                             Confirm the deletion of messages exchanged with {this.state.uri}
+                             Confirm deletion conversions with {this.state.uri}
                          </Text>
                         <View style={styles.checkBoxGroupRow}>
                             <RadioButton.Group onValueChange={newValue => this.setPeriod(newValue)} value={this.state.period}>
@@ -90,7 +90,7 @@ class DeleteHistoryModal extends Component {
 
                         {canDeleteRemote ?
                             <View style={styles.checkBoxRow}>
-                              <Text>Delete from remote party too</Text>
+                              <Text>Delete from recipient too</Text>
 
                                 <Checkbox
                                   status={this.state.remoteDelete ? 'checked' : 'unchecked'}

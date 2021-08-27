@@ -267,6 +267,7 @@ class Sylk extends Component {
 
         utils.timestampedLog('Init app');
 
+        this.lastSyncedMessageId = null;
         this.outgoingMedia = null;
         this.participantsToInvite = [];
         this.tokenSent = false;
@@ -290,6 +291,7 @@ class Sylk extends Component {
         this.state = Object.assign({}, this._initialState);
 
         this.myParticipants = {};
+        this.mySyncJournal = {};
 
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
@@ -370,6 +372,18 @@ class Sylk extends Component {
             }
         });
 
+        storage.get('mySyncJournal').then((mySyncJournal) => {
+            if (mySyncJournal) {
+                this.mySyncJournal = mySyncJournal;
+            }
+        });
+
+        storage.get('lastSyncedMessageId').then((lastSyncedMessageId) => {
+            if (lastSyncedMessageId) {
+                this.lastSyncedMessageId = lastSyncedMessageId;
+            }
+        });
+
         storage.get('myInvitedParties').then((myInvitedParties) => {
             if (myInvitedParties) {
                 if (Array.isArray(myInvitedParties)) {
@@ -406,7 +420,7 @@ class Sylk extends Component {
         this.db = null;
         this.initSQL();
 
-    }
+   }
 
    async loadKeys(keys) {
         const public_key = keys.public.replace(/\r/g,'');
@@ -419,7 +433,10 @@ class Sylk extends Component {
         console.log("Loaded PGP public key", keys.publicKeyHash);
     }
 
-    async generateKeys() {
+    async generateKeys(force=false) {
+        if (this.state.keys && this.state.keys.public.indexOf('-----BEGIN PGP PUBLIC KEY BLOCK-----') > -1 && !force) {
+            return;
+        }
 
         const Options = {
           comment: 'Sylk key',
@@ -431,7 +448,6 @@ class Sylk extends Component {
         console.log('Generating key pair with options', Options);
 
         await OpenPGP.generate(Options).then((keys) => {
-            console.log(keys);
             const public_key = keys.publicKey.replace(/\r/g, '').trim();
             const private_key = keys.privateKey.replace(/\r/g, '').trim();
             keys.public = public_key;
@@ -871,6 +887,7 @@ class Sylk extends Component {
      }
 
     changeRoute(route, reason) {
+        utils.timestampedLog('Change route', route, 'with reason:', reason);
         if (this.currentRoute === route) {
             if (route === '/ready' && this.state.selectedContact) {
                 this.setState({
@@ -1431,7 +1448,7 @@ class Sylk extends Component {
                     });
 
                 if (this.currentRoute === '/login') {
-                    this.changeRoute('/ready');
+                    this.changeRoute('/ready', 'websocket disconnected');
                 }
 
                 break;
@@ -1465,7 +1482,7 @@ class Sylk extends Component {
         }
 
         if (this.currentRoute === '/login') {
-            this.changeRoute('/ready');
+            this.changeRoute('/ready', 'register failure');
         }
 
     }
@@ -1517,7 +1534,7 @@ class Sylk extends Component {
                 }
             }
             if (this.currentRoute === '/login') {
-                this.changeRoute('/ready');
+                this.changeRoute('/ready', 'register failed');
             }
 
         } else if (newState === 'registered') {
@@ -1525,6 +1542,12 @@ class Sylk extends Component {
                 clearTimeout(this.registrationFailureTimer);
                 this.registrationFailureTimer = null;
             }
+
+            utils.timestampedLog('Request sync messages from server starting with', this.lastSyncedMessageId);
+
+            this.state.account.syncConversations(this.lastSyncedMessageId);
+            this._sendPushToken();
+            this.replayJournal();
 
             this.setState({loading: null,
                            registrationKeepalive: true,
@@ -2108,22 +2131,23 @@ class Sylk extends Component {
                 account.on('conferenceCall', this.outgoingConference);
                 account.on('registrationStateChanged', this.registrationStateChanged);
                 account.on('incomingCall', this.incomingCallFromWebSocket);
-                account.on('message', this.incomingMessage);
+                account.on('incomingMessage', this.incomingMessage);
+                account.on('syncConversations', this.syncConversations);
+                account.on('removeConversation', this.removeConversation);
+                account.on('removeMessage', this.removeMessage);
+                account.on('outgoingMessage', this.outgoingMessage);
                 account.on('messageStateChanged', this.messageStateChanged);
                 account.on('missedCall', this.missedCall);
                 account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
                 //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
                 this.setState({account: account});
-                this._sendPushToken();
                 account.register();
                 storage.set('account', {
                     accountId: this.state.accountId,
                     password: this.state.password
                 });
 
-                if (!this.state.keys) {
-                    this.generateKeys();
-                }
+                this.generateKeys();
 
             } else {
                 this.showRegisterFailure(408);
@@ -3000,8 +3024,6 @@ class Sylk extends Component {
             return;
         }
 
-        const toUtf8 = RNSimpleCrypto.utils.convertArrayBufferToUtf8;
-
         password = password.trim();
         const public_key = this.state.keys.public.replace(/\r/g, '').trim();
         const private_key = this.state.keys.private.replace(/\r/g, '').trim();
@@ -3025,8 +3047,8 @@ class Sylk extends Component {
     async savePrivateKey(password) {
         utils.timestampedLog('Save encrypted private key');
         password = password.trim();
-        await RNSimpleCrypto.AES.decrypt(this.state.privateKey, password).then((keyPair) => {
-            utils.timestampedLog('Decrypted PGP key pair', keyPair);
+        await OpenPGP.decryptSymmetric(this.state.privateKey, password).then((keyPair) => {
+            utils.timestampedLog('Decrypted PGP private pair');
             this.processPrivateKey(keyPair);
         }).catch((error) => {
             console.log('Error decrypting PGP private key:', error);
@@ -3105,18 +3127,13 @@ class Sylk extends Component {
 
         key = key.replace(/\r/g, '').trim();
 
+        if (!key.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----")) {
+            console.log('Cannot find the start of PGP public key');
+            return;
+        }
+
         if (!key.endsWith("-----END PGP PUBLIC KEY BLOCK-----")) {
             console.log('Cannot find the end of PGP public key');
-            return;
-        }
-
-        if (!key.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----")) {
-            console.log('Cannot find the beginning of PGP public key');
-            return;
-        }
-
-        if (key.indexOf('Max-Forwards:') > -1) {
-            // TODO temporary fix for message corruption inside Janus
             return;
         }
 
@@ -3129,11 +3146,11 @@ class Sylk extends Component {
         }
 
         if (myContacts[uri].publicKey === key) {
-            console.log('Public key of', uri, 'did not change');
+            //console.log('Public key of', uri, 'did not change');
             return;
         }
 
-        console.log('Public key of', uri, 'saved');
+        utils.timestampedLog('Public key of', uri, 'saved');
 
         const publicKeyHash = await RNSimpleCrypto.SHA.sha1(key);
         this.saveSystemMessage(uri, 'Public key received', 'incoming');
@@ -3149,10 +3166,8 @@ class Sylk extends Component {
     _sendMessage(uri, text, id) {
         // Send outgoing messages
         if (this.state.account && text) {
-            console.log('Sending outgoing message', id);
             this.state.account.sendMessage(uri, text, {id: id});
-        } else {
-            console.log('Cannot send message');
+            utils.timestampedLog('Message', id, 'was sent');
         }
     }
 
@@ -3177,9 +3192,9 @@ class Sylk extends Component {
         renderMessages[uri].push(message);
         this.setState({messages: renderMessages});
 
-        if (uri in  this.state.myContacts && this.state.myContacts[uri].publicKey && message.contentType !== 'text/pgp-public-key') {
+        if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && message.contentType !== 'text/pgp-public-key') {
             await OpenPGP.encrypt(message.text, this.state.myContacts[uri].publicKey).then((encryptedMessage) => {
-                console.log('Outgoing encrypted message to', uri);
+                //console.log('Outgoing encrypted message to', uri);
                 this._sendMessage(uri, encryptedMessage, message._id);
             }).catch((error) => {
                 console.log('Failed to encrypt message:', error);
@@ -3275,7 +3290,7 @@ class Sylk extends Component {
         let state = obj.state;
         let uri;
 
-        utils.timestampedLog('Message state changed for message', id, state);
+        utils.timestampedLog('Message', id, 'was', state);
 
         let query;
 
@@ -3291,6 +3306,8 @@ class Sylk extends Component {
             query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
         } else if (state == 'forbidden') {
             query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+        } else if (state == 'received') {
+            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
         }
 
         //console.log(query);
@@ -3303,13 +3320,15 @@ class Sylk extends Component {
         });
     }
 
-    async deleteMessage(id, uri) {
-        utils.timestampedLog('Delete message', id);
+    async deleteMessage(id, uri, local=true) {
+        utils.timestampedLog('Message', id, 'was deleted');
         let query;
         // TODO send request to server
         query = "DELETE from messages where msg_id = '" + id + "'";
         //console.log(query);
-        this.addJournal(id, 'delete');
+        if (local) {
+            this.addJournal(id, 'removeMessage', {uri: uri});
+        }
         await this.ExecuteQuery(query).then((results) => {
             this.deleteRenderMessage(id, uri);
             // console.log('SQL update OK');
@@ -3405,7 +3424,6 @@ class Sylk extends Component {
                     });
 
                     if (changes) {
-                        console.log('Message', id, 'updated');
                         this.setState({messages: renderedMessages});
                     }
                 } else {
@@ -3435,7 +3453,7 @@ class Sylk extends Component {
 
         myContacts[uri].timestamp = formatted_date;
         myContacts[uri].unread = 0;
-        myContacts[uri].lastMessage = content.substring(0, 25);
+        myContacts[uri].lastMessage = content.substring(0, 35);
 
         this.saveMyContacts(myContacts);
     }
@@ -3447,7 +3465,7 @@ class Sylk extends Component {
         this.ExecuteQuery(query).then((results) => {
             console.log('Message', id, 'pinned');
             this.updateRenderMessage(id, 'pinned')
-            this.addJournal(id, 'pinned');
+            this.addJournal(id, 'pinMessage');
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -3460,7 +3478,7 @@ class Sylk extends Component {
         //console.log(query);
         this.ExecuteQuery(query).then((results) => {
             this.updateRenderMessage(id, 'unpinned')
-            this.addJournal(id, 'unpinned');
+            this.addJournal(id, 'unPinMessage');
             console.log('Message', id, 'unpinned');
         }).catch((error) => {
             console.log('SQL query:', query);
@@ -3469,7 +3487,47 @@ class Sylk extends Component {
      }
 
      async addJournal(id, action, data={}) {
-         //console.log('Add journal entry:', action, id);
+        //console.log('Add journal entry:', action, id);
+        this.mySyncJournal[uuid.v4()] = {id: id, action: action, data: data};
+        this.replayJournal();
+     }
+
+     async replayJournal() {
+        utils.timestampedLog('Sync journal');
+        let op;
+        let executed_ops = [];
+
+        Object.keys(this.mySyncJournal).forEach((key) => {
+            executed_ops.push(key);
+            op = this.mySyncJournal[key];
+            if (op.action === 'removeConversation') {
+                this.state.account.removeConversation(op.id, (error) => {
+                    // TODO: add period and delete remote flags
+                    if (!error) {
+                        utils.timestampedLog(op.action, op.id, 'journal operation was completed');
+                        executed_ops.push(key);
+                    } else {
+                        utils.timestampedLog(op.action, op.id, 'journal operation failed:', error);
+                    }
+                });
+
+            } else if (op.action === 'removeMessage') {
+                this.state.account.removeMessage({id: op.id, receiver: op.data.uri}, (error) => {
+                    if (!error) {
+                        utils.timestampedLog(op.action, op.id, 'journal operation completed');
+                        executed_ops.push(key);
+                    } else {
+                        utils.timestampedLog(op.action, op.id, 'journal operation failed:', error);
+                    }
+                });
+            }
+        });
+
+        executed_ops.forEach((key) => {
+            delete this.mySyncJournal[key];
+        });
+
+        storage.set('mySyncJournal', this.mySyncJournal);
      }
 
      async confirmRead(uri){
@@ -3477,7 +3535,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Confirm read messages for', uri);
+        //console.log('Confirm read messages for', uri);
         let query;
         let displayed = [];
 
@@ -3487,7 +3545,7 @@ class Sylk extends Component {
         await this.ExecuteQuery(query).then((results) => {
             let rows = results.rows;
             if (rows.length > 0) {
-                console.log('We must confirm read of', rows.length, 'messages');
+                //console.log('We must confirm read of', rows.length, 'messages');
             }
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
@@ -3526,7 +3584,7 @@ class Sylk extends Component {
     }
 
     async resetUnreadCount(uri) {
-        console.log('Reset read count for', uri);
+        //console.log('Reset read count for', uri);
         let myContacts = this.state.myContacts;
         if (uri in myContacts && myContacts[uri].unread > 0) {
             myContacts[uri].unread = 0;
@@ -3535,23 +3593,22 @@ class Sylk extends Component {
     }
 
     async sendDispositionNotification(message) {
-        console.log('Confirm read message', message.msg_id);
         let query;
         let result = {};
 
         this.state.account.sendDispositionNotification(message.from_uri, message.msg_id, message.timestamp, 'displayed',(error) => {
             if (!error) {
-                console.log('Displayed notification for message', message.msg_id, 'was sent');
+                utils.timestampedLog('Message', message.msg_id, 'was displayed');
                 return true;
             } else {
-                console.log('Displayed notification for message', message.msg_id, 'failed');
+                utils.timestampedLog('Displayed notification for message', message.msg_id, 'send failed');
                 return false;
             }
         });
      }
 
      async getMessages(uri, limit=200){
-        console.log('Get messages with', uri);
+        //console.log('Get messages with', uri);
         let messages = this.state.messages;
         let msg;
         let query;
@@ -3609,7 +3666,7 @@ class Sylk extends Component {
                 }
 
                 if (i == 0 && !image && item.to_uri in myContacts && !myContacts[item.to_uri].lastMessage) {
-                    myContacts[item.to_uri].lastMessage = content.substring(0, 25);
+                    myContacts[item.to_uri].lastMessage = content.substring(0, 35);
                     this.saveMyContacts(myContacts);
                 }
 
@@ -3647,10 +3704,13 @@ class Sylk extends Component {
         });
     }
 
-    async deleteMessages(uri, period="0", deleteRemote=false) {
+    async deleteMessages(uri, local=true, period="0", deleteRemote=false) {
         console.log('Purge messages with', uri, 'for', period, 'hours');
         let query;
-        this.addJournal(uri, 'delete_messages');
+
+        if (local) {
+            this.addJournal(uri, 'removeConversation', {period: period, deleteRemote: deleteRemote});
+        }
         query = "DELETE FROM messages where (from_uri = '"
             + uri
             + "' or to_uri = '"
@@ -3662,9 +3722,8 @@ class Sylk extends Component {
         }
 
         await this.ExecuteQuery(query).then((result) => {
-            console.log('SQL delete messages OK', query);
             if (!period || period === "0") {
-                console.log('Remove all messages');
+                //console.log('Remove all messages');
                 if (uri in this.state.myContacts) {
                     let myContacts = this.state.myContacts;
                     myContacts[uri].read = 0;
@@ -3712,7 +3771,158 @@ class Sylk extends Component {
         }
     }
 
-    async incomingMessage(message) {
+    async outgoingMessage(message, sync=false) {
+        utils.timestampedLog('Outgoing message', message.id);
+        if (message.content.indexOf('?OTRv3') > -1) {
+            return;
+        }
+
+        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
+            console.log('Received my own PGP private key');
+            this.setState({showImportPrivateKeyModal: true,
+                               privateKey: message.content});
+            return;
+        }
+
+        if (message.contentType === 'text/pgp-public-key') {
+           return;
+        }
+
+        if (message.contentType === 'message/imdn') {
+           return;
+        }
+
+        let decryptedBody = message.content;
+        // TODO: we need to decrypt our own messages too, but how if we only encrypted using remote public key?
+
+        this.saveOutgoingChatUri(message.receiver, decryptedBody);
+
+        let pending = 0;
+        let sent = 0;
+        let received = 0;
+
+        if (message.state == 'delivered') {
+            sent = 1;
+        } else if (message.state == 'displayed') {
+            received = 1;
+            sent = 1;
+        } else if (message.state == 'failed') {
+            sent = 1;
+        } else if (message.state == 'error') {
+            sent = 1;
+        } else if (message.state == 'forbidden') {
+            sent = 1;
+        }
+
+        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, "
+            + " direction, pending, sent, received) VALUES ('"
+            + message.id
+            + "', '"
+            + message.timestamp
+            + "', '"
+            + base64.encode(decryptedBody)
+            + "', '"
+            + message.contentType
+            + "', '"
+            + message.sender.uri
+            + "', '"
+            + message.receiver
+            + "', '"
+            + 'outgoing'
+            + "', "
+            + pending + ", " + sent + ", " + received
+            + ")";
+
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((result) => {
+            //console.log('SQL insert message OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+
+        if (!sync) {
+            this.lastSyncedMessageId = message.id;
+            storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
+        }
+    }
+
+    async removeMessage(message, recipient=null) {
+        if (recipient === null) {
+            recipient = message.state === 'received' ? message.receiver : message.sender.uri;
+        }
+
+        await this.deleteMessage(message.id, recipient, false).then((result) => {
+            console.log('Message', id, 'to', recipient, 'removed');
+        }).catch((error) => {
+            console.log('Failed to remove message', message.id, 'to', recipient);
+        });
+
+        let renderMessages = this.state.messages;
+        if (Object.keys(renderMessages).indexOf(recipient) === -1) {
+            return;
+        }
+
+        let existingMessages = renderMessages[recipient];
+        let newMessages = [];
+
+        existingMessages.forEach((msg) => {
+            if (msg.id === message.id) {
+                return;
+            }
+            newMessages.push(msg);
+        });
+
+        renderMessages[recipient] = newMessages;
+        this.setState({messages: renderMessages});
+    }
+
+    async removeConversation(message) {
+        await this.deleteMessages(message.content, false, 0, false).then((result) => {
+            console.log('Conversation with', message.content, 'was removed');
+        }).catch((error) => {
+            console.log('Failed to delete conversation with', message.content);
+        });
+
+        let renderMessages = this.state.messages;
+        if (Object.keys(renderMessages).indexOf(message.content) === -1) {
+            return;
+        }
+
+        delete renderMessages[message.content];
+        this.setState({messages: renderMessages});
+    }
+
+    async syncConversations(messages) {
+        console.log('Sync', messages.length, 'events from server');
+        messages.forEach((message) => {
+            //console.log('Process message', message);
+
+            if (message.contentType === 'application/sylk-message-remove') {
+                this.removeMessage(message, message.content.contact);
+
+            } else if (message.contentType === 'application/sylk-conversation-remove') {
+                this.removeConversation(message);
+
+            } else if (message.contentType === 'message/imdn') {
+                this.messageStateChanged({messageId: message.id, state: message.state});
+
+            } else {
+                if (message.sender.uri === this.state.account.id) {
+                    this.incomingMessage(message, true);
+                } else {
+                    this.outgoingMessage(message);
+                }
+            }
+
+            this.lastSyncedMessageId = message.id;
+        });
+        storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
+    }
+
+    async incomingMessage(message, sync=false) {
+        utils.timestampedLog('Message', message.id, 'was received');
         // Handle incoming messages
         if (message.content.indexOf('?OTRv3') > -1) {
             return;
@@ -3724,9 +3934,11 @@ class Sylk extends Component {
         }
 
         if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
-            console.log('Received my own PGP private key');
-            this.setState({showImportPrivateKeyModal: true,
-                           privateKey: message.content});
+            if (!sync) {
+                console.log('Received PGP private key from another device');
+                this.setState({showImportPrivateKeyModal: true,
+                               privateKey: message.content});
+            }
             return;
         }
 
@@ -3734,35 +3946,41 @@ class Sylk extends Component {
 
         if (is_encrypted) {
             if (!this.state.keys || !this.state.keys.private) {
-                console.log('Missing private key, cannot decrypt message');
-                this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: no private key', 'incoming');
+                if (!sync) {
+                    console.log('Missing private key, cannot decrypt message');
+                    this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: no private key', 'incoming');
+                }
             } else {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                    console.log('Incoming message decrypted');
-                    this.handleIncomingMessage(message, decryptedBody);
+                    //console.log('Incoming message decrypted');
+                    this.handleIncomingMessage(message, decryptedBody, sync);
                 }).catch((error) => {
-                    console.log('Failed to decrypt message:', error);
-                    this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: wrong public key', 'incoming');
+                    if (!sync) {
+                        console.log('Failed to decrypt message:', error);
+                        this.sendPublicKey(message.sender.uri);
+                        //this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: wrong public key', 'incoming');
+                    }
                 });
             }
         } else {
             //console.log('Incoming message is not encrypted');
-            this.handleIncomingMessage(message, message.content);
+            this.handleIncomingMessage(message, message.content, sync, message.contentType);
+        }
+
+        if (!sync) {
+            this.lastSyncedMessageId = message.id;
+            storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
         }
     }
 
-    handleIncomingMessage(message, decryptedBody) {
-
+    handleIncomingMessage(message, decryptedBody, sync=false, contentType='text/plain') {
         let content = decryptedBody || message.content;
 
-        if (content.indexOf('Max-Forwards:') > -1) {
-            // TODO temporary fix for message corruption inside Janus
+        this.saveIncomingMessage(message.sender.uri, message, content, contentType);
+
+        if (sync) {
             return;
         }
-
-        this.playIncomingSound();
-
-        this.saveIncomingMessage(message.sender.uri, message, decryptedBody);
 
         let renderMessages = this.state.messages;
         if (Object.keys(renderMessages).indexOf(message.sender.uri) === -1) {
@@ -3804,8 +4022,15 @@ class Sylk extends Component {
         });
     }
 
-    async saveIncomingMessage(uri, message, decryptedBody=null) {
+    async saveIncomingMessage(uri, message, decryptedBody=null, contentType='text/plain') {
         var content = decryptedBody || message.content;
+        const state = message.state;
+
+        let received = 0;
+
+        if (message.dispositionState === 'displayed') {
+            received = 1;
+        }
 
         let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES ('"
             + message.id
@@ -3819,19 +4044,22 @@ class Sylk extends Component {
             + message.sender.uri
             + "', '"
             + this.state.account.id
-            + "', 'incoming', 0"
+            + "', 'incoming', "
+            + received
             + ")";
 
         //console.log(query);
         await this.ExecuteQuery(query).then((result) => {
-            this.updateUnreadMessages(uri, message.sender.toString(), content);
+            this.updateUnreadMessages(uri, message.sender.toString(), content, contentType);
         }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
+            //console.log('SQL query:', query);
+            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+                console.log('SQL error:', error);
+            }
         });
     }
 
-    async updateUnreadMessages(uri, name='', content='') {
+    async updateUnreadMessages(uri, name='', content='', contentType='text/html') {
         let current_datetime = new Date();
         let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
 
@@ -3849,9 +4077,15 @@ class Sylk extends Component {
             myContacts[uri].unread = 1;
         }
 
-        myContacts[uri].lastMessage = content.substring(0, 25);
+        if (contentType === 'text/html') {
+            content = utils.html2Text(content);
+        } else if (contentType.indexOf('image/') > -1) {
+            content = 'Image';
+        }
+
+        myContacts[uri].lastMessage = content.substring(0, 35);
         myContacts[uri].timestamp = formatted_date;
-        console.log(uri, 'has', myContacts[uri].unread, 'unread messages');
+        //console.log(uri, 'has', myContacts[uri].unread, 'unread messages');
 
         this.saveMyContacts(myContacts);
     }
@@ -3903,7 +4137,7 @@ class Sylk extends Component {
 
         if (uri in myContacts) {
             console.log('Delete contact', uri);
-            this.deleteMessages(uri),
+            this.deleteMessages(uri);
             delete myContacts[uri];
             this.saveMyContacts(myContacts);
         }
@@ -4053,7 +4287,6 @@ class Sylk extends Component {
     }
 
     saveMyContacts(myContacts) {
-        console.log('Save myContacts');
         storage.set('myContacts', myContacts);
         this.setState({myContacts: myContacts});
     }
@@ -4768,7 +5001,7 @@ class Sylk extends Component {
                        defaultDomain: config.defaultDomain
                        });
 
-        this.changeRoute('/login');
+        this.changeRoute('/login', 'user logout');
         return null;
     }
 
