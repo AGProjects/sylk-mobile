@@ -3995,9 +3995,9 @@ class Sylk extends Component {
 
             } else {
                 if (message.sender.uri === this.state.account.id) {
-                    this.incomingMessage(message, true);
-                } else {
                     this.outgoingMessage(message);
+                } else {
+                    this.incomingMessage(message, true);
                 }
             }
 
