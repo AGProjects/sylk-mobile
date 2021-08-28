@@ -1001,7 +1001,11 @@ class Sylk extends Component {
     }
 
     backPressed() {
-        console.log('Back button pressed');
+        console.log('Back button pressed in route', this.currentRoute);
+
+        if (this.currentRoute === '/ready' && this.state.selectedContact) {
+            this.goBackToHome();
+        }
 
         if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
             let call = this.state.currentCall || this.state.incomingCall;
@@ -4625,6 +4629,7 @@ class Sylk extends Component {
                     displayName = {this.state.displayName}
                     organization = {this.state.organization}
                     selectedContact = {this.state.selectedContact}
+                    messages = {this.state.messages}
                     replicateKey = {this.sendPrivateKey}
                     publicKeyHash = {publicKeyHash}
                     publicKey = {publicKey}

@@ -47,7 +47,8 @@ class NavigationBar extends Component {
             publicKey: this.props.publicKey,
             showEditContactModal: false,
             showPublicKey: false,
-            myInvitedParties: this.props.myInvitedParties
+            myInvitedParties: this.props.myInvitedParties,
+            messages: this.props.messages
         }
 
         this.menuRef = React.createRef();
@@ -68,6 +69,7 @@ class NavigationBar extends Component {
                        publicKeyHash: nextProps.publicKeyHash,
                        publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
+                       messages: nextProps.messages,
                        myInvitedParties: nextProps.myInvitedParties
                        });
     }
@@ -234,6 +236,13 @@ class NavigationBar extends Component {
         let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
 
+        let hasMessages = false;
+        if (this.state.selectedContact) {
+            if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.remoteParty) > -1 && this.state.messages[this.state.selectedContact.remoteParty].length > 0) {
+                hasMessages = true;
+            }
+        }
+
         let displayName = this.state.selectedContact ? this.state.selectedContact.displayName : this.state.displayName;
         let organization = this.state.selectedContact ? this.state.selectedContact.organization : this.state.organization;
         let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : 'Block';
@@ -286,9 +295,15 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
                         <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/>
                         <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
+                        { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
+                        : null}
+                        { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
+                        : null}
+                        { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my PGP key..."/>
+                        : null}
                         {this.props.publicKeyHash ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show PGP key..."/>
                         : null}
@@ -430,7 +445,8 @@ NavigationBar.propTypes = {
     addContact         : PropTypes.func,
     deleteContact      : PropTypes.func,
     deletePublicKey    : PropTypes.func,
-    sendPublicKey      : PropTypes.func
+    sendPublicKey      : PropTypes.func,
+    messages           : PropTypes.object
 };
 
 export default NavigationBar;
