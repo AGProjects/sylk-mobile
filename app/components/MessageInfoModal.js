@@ -30,25 +30,30 @@ class MessageInfoModal extends Component {
             return (null);
         }
 
+        let status = 'Message is on the way';
+
+        if (this.state.message.failed) {
+            status = 'Message could not be delivered';
+        } else if (this.state.message.received) {
+            status = 'Message was read';
+        } else if (this.state.message.sent) {
+            status = 'Message was delivered, but not read';
+        } else if (this.state.message.pending) {
+            status = 'Message is not yet sent';
+        }
+
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
                      <DataTable>
                         <DataTable.Row>
-                          <DataTable.Cell>Message info</DataTable.Cell>
+                          <DataTable.Cell>Status</DataTable.Cell>
                         </DataTable.Row>
                         <DataTable.Row>
-                          <DataTable.Cell>{this.state.message.createdAt}</DataTable.Cell>
+                          <DataTable.Cell>{status}</DataTable.Cell>
                         </DataTable.Row>
 
-                        <DataTable.Row>
-                          <DataTable.Cell>{this.state.message.sent ? 'Delivered' : 'Not yet delivered'}</DataTable.Cell>
-                        </DataTable.Row>
-
-                        <DataTable.Row>
-                          <DataTable.Cell>{this.state.message.received ? 'Read' : 'Not yet read'}</DataTable.Cell>
-                        </DataTable.Row>
                       </DataTable>
                     </Surface>
                 </DialogType>
