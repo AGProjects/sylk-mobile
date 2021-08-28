@@ -36,18 +36,18 @@ class MessageInfoModal extends Component {
                     <Surface style={styles.container}>
                      <DataTable>
                         <DataTable.Row>
-                          <DataTable.Cell>Message {this.props.message._id}</DataTable.Cell>
+                          <DataTable.Cell>Message info</DataTable.Cell>
                         </DataTable.Row>
                         <DataTable.Row>
-                          <DataTable.Cell>{this.props.message.createdAt}</DataTable.Cell>
-                        </DataTable.Row>
-
-                        <DataTable.Row>
-                          <DataTable.Cell>{this.props.message.sent ? 'Delivered' : 'Not yet delivered'}</DataTable.Cell>
+                          <DataTable.Cell>{this.state.message.createdAt}</DataTable.Cell>
                         </DataTable.Row>
 
                         <DataTable.Row>
-                          <DataTable.Cell>{this.props.message.received ? 'Read' : 'Not yet delivered'}</DataTable.Cell>
+                          <DataTable.Cell>{this.state.message.sent ? 'Delivered' : 'Not yet delivered'}</DataTable.Cell>
+                        </DataTable.Row>
+
+                        <DataTable.Row>
+                          <DataTable.Cell>{this.state.message.received ? 'Read' : 'Not yet read'}</DataTable.Cell>
                         </DataTable.Row>
                       </DataTable>
                     </Surface>
