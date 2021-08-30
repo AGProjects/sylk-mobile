@@ -91,6 +91,8 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
 
     if (sylkMessage.contentType === 'text/html') {
         content = html2Text(content);
+    } else if (sylkMessage.contentType === 'text/plain') {
+        content = content;
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
         image = `data:${sylkMessage.contentType};base64,${btoa(content)}`
     } else {

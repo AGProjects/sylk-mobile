@@ -3831,96 +3831,6 @@ class Sylk extends Component {
         }
     }
 
-    async outgoingMessage(message, sync=false) {
-        utils.timestampedLog('Outgoing message', message.id, 'to', message.receiver);
-        if (message.content.indexOf('?OTRv3') > -1) {
-            return;
-        }
-
-        if (message.contentType === 'text/pgp-public-key') {
-           return;
-        }
-
-        if (message.contentType === 'message/imdn') {
-           return;
-        }
-
-        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id && !sync) {
-            console.log('Received my own PGP private key');
-            this.setState({showImportPrivateKeyModal: true,
-                               privateKey: message.content});
-            return;
-        }
-
-        const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
-        let content = message.content;
-
-        if (is_encrypted) {
-            await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                // console.log('Outgoing message decrypted');
-                content = decryptedBody;
-            }).catch((error) => {
-                console.log('Failed to decrypt my own message:', error);
-                return;
-            });
-        }
-
-        this.saveOutgoingChatUri(message.receiver, content);
-
-        let pending = 0;
-        let sent = 0;
-        let received = null;
-
-        if (message.state == 'delivered') {
-            sent = 1;
-        } else if (message.state == 'displayed') {
-            received = 1;
-            sent = 1;
-        } else if (message.state == 'failed') {
-            sent = 1;
-            received = 0;
-        } else if (message.state == 'error') {
-            sent = 1;
-            received = 0;
-        } else if (message.state == 'forbidden') {
-            sent = 1;
-            received = 0;
-        }
-
-        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, "
-            + " direction, pending, sent, received) VALUES ('"
-            + message.id
-            + "', '"
-            + message.timestamp
-            + "', '"
-            + base64.encode(content)
-            + "', '"
-            + message.contentType
-            + "', '"
-            + message.sender.uri
-            + "', '"
-            + message.receiver
-            + "', '"
-            + 'outgoing'
-            + "', "
-            + pending + ", " + sent + ", " + received
-            + ")";
-
-        //console.log(query);
-
-        await this.ExecuteQuery(query).then((result) => {
-            //console.log('SQL insert message OK');
-        }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
-        });
-
-        if (!sync) {
-            this.lastSyncedMessageId = message.id;
-            storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
-        }
-    }
-
     async removeMessage(message, recipient=null) {
         if (recipient === null) {
             recipient = message.state === 'received' ? message.receiver : message.sender.uri;
@@ -4074,6 +3984,133 @@ class Sylk extends Component {
 
         renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message, decryptedBody));
         this.setState({messages: renderMessages});
+    }
+
+    async outgoingMessage(message, sync=false) {
+        utils.timestampedLog('Outgoing message', message.id, 'to', message.receiver);
+        if (message.content.indexOf('?OTRv3') > -1) {
+            return;
+        }
+
+        if (message.contentType === 'text/pgp-public-key') {
+           return;
+        }
+
+        if (message.contentType === 'message/imdn') {
+           return;
+        }
+
+        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id && !sync) {
+            console.log('Received my own PGP private key');
+            this.setState({showImportPrivateKeyModal: true,
+                               privateKey: message.content});
+            return;
+        }
+
+        const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
+        let content = message.content;
+        let image;
+
+        if (message.contentType === 'text/html') {
+            content = utils.html2text(content);
+        } else if (message.contentType.indexOf('image/') > -1) {
+            image = `data:${message.contentType};base64,${btoa(content)}`
+        }
+
+        if (is_encrypted) {
+            await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
+                // console.log('Outgoing message decrypted');
+                content = decryptedBody;
+            }).catch((error) => {
+                console.log('Failed to decrypt my own message:', error);
+                return;
+            });
+        }
+
+        this.saveOutgoingChatUri(message.receiver, content);
+
+        console.log(message.state);
+
+        let pending = 0;
+        let sent = 0;
+        let received = null;
+        let failed = 0;
+
+        if (message.state == 'pending') {
+            pending = 1;
+        } else if (message.state == 'delivered') {
+            sent = 1;
+        } else if (message.state == 'displayed') {
+            received = 1;
+            sent = 1;
+        } else if (message.state == 'failed') {
+            sent = 1;
+            received = 0;
+            failed = 1;
+        } else if (message.state == 'error') {
+            sent = 1;
+            received = 0;
+            failed = 1;
+        } else if (message.state == 'forbidden') {
+            sent = 1;
+            received = 0;
+        }
+
+        let query = "INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, "
+            + " direction, pending, sent, received) VALUES ('"
+            + message.id
+            + "', '"
+            + message.timestamp
+            + "', '"
+            + base64.encode(content)
+            + "', '"
+            + message.contentType
+            + "', '"
+            + message.sender.uri
+            + "', '"
+            + message.receiver
+            + "', '"
+            + 'outgoing'
+            + "', "
+            + pending + ", " + sent + ", " + received
+            + ")";
+
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((result) => {
+            //console.log('SQL insert message OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+
+        if (!sync) {
+            this.lastSyncedMessageId = message.id;
+            storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
+
+            let renderMessages = this.state.messages;
+            if (Object.keys(renderMessages).indexOf(message.receiver) === -1) {
+                renderMessages[message.receiver] = [];
+            }
+
+            let msg = {
+                _id: message.id,
+                text: content,
+                image: image,
+                createdAt: message.timestamp,
+                direction: 'outgoing',
+                sent: sent === 1 ? true : false,
+                received: received === 1 ? true : false,
+                pending: pending === 1 ? true : false,
+                system: message.system === 1 ? true : false,
+                failed: failed,
+                user: {}
+                }
+
+            renderMessages[message.receiver].push(msg);
+            this.setState({messages: renderMessages});
+
+        }
     }
 
     async saveSystemMessage(uri, content, direction, missed=false) {
