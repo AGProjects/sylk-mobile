@@ -373,6 +373,10 @@ class HistoryTileBox extends Component {
         this.setState({showMessageModal: false, message: null});
     }
 
+    loadEarlierMessages() {
+        this.props.loadEarlierMessages();
+    }
+
     onSendMessage(messages) {
         let uri;
         if (!this.state.selectedContact) {
@@ -1004,6 +1008,8 @@ class HistoryTileBox extends Component {
             }
         }
 
+        let showLoadEarlier = (this.state.selectedContact && this.state.myContacts[this.state.selectedContact.remoteParty].totalMessages > messages.length) ? true: false;
+
         return (
             <SafeAreaView style={container}>
               {items.length === 1 ?
@@ -1020,6 +1026,7 @@ class HistoryTileBox extends Component {
                 renderItem={this.renderItem}
                 listKey={item => item.id}
                 key={this.props.orientation}
+                loadEarlier
              />
              }
 
@@ -1039,6 +1046,8 @@ class HistoryTileBox extends Component {
                   inverted={false}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
+                  loadEarlier={showLoadEarlier}
+                  onLoadEarlier={this.loadEarlierMessages}
                 />
               </View>
               : (items.length === 1) ?
@@ -1055,6 +1064,8 @@ class HistoryTileBox extends Component {
                   inverted={false}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
+                  loadEarlier={showLoadEarlier}
+                  onLoadEarlier={this.loadEarlierMessages}
                 />
               </View>
               : null
@@ -1122,7 +1133,8 @@ HistoryTileBox.propTypes = {
     inviteContacts  : PropTypes.bool,
     selectedContacts: PropTypes.array,
     toggleBlocked   : PropTypes.func,
-    togglePinned    : PropTypes.func
+    togglePinned    : PropTypes.func,
+    loadEarlierMessages: PropTypes.func
 };
 
 

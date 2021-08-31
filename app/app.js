@@ -262,7 +262,10 @@ class Sylk extends Component {
             inviteContacts: false,
             selectedContacts: [],
             pinned: false,
-            callContact: null
+            callContact: null,
+            messageLimit: 100,
+            messageZoomFactor: 1,
+            messageStart: 0
         };
 
         utils.timestampedLog('Init app');
@@ -892,7 +895,8 @@ class Sylk extends Component {
             if (route === '/ready' && this.state.selectedContact) {
                 this.setState({
                                 selectedContact: null,
-                                targetUri: ''
+                                targetUri: '',
+                                messageZoomFactor: 1
                                 });
             }
             return;
@@ -3521,6 +3525,9 @@ class Sylk extends Component {
 
         myContacts[uri].timestamp = formatted_date;
         myContacts[uri].unread = 0;
+        if (myContacts[uri].totalMessages) {
+            myContacts[uri].totalMessages = myContacts[uri].totalMessages + 1;
+        }
         myContacts[uri].lastMessage = content.substring(0, 35);
 
         this.saveMyContacts(myContacts);
@@ -3682,26 +3689,77 @@ class Sylk extends Component {
         });
      }
 
-     async getMessages(uri, limit=200){
-        //console.log('Get messages with', uri);
+
+    loadEarlierMessages() {
+        if (!this.state.selectedContact) {
+            return;
+        }
+
+        let myContacts = this.state.myContacts;
+        let uri = this.state.selectedContact.remoteParty;
+        let limit = this.state.messageLimit * this.state.messageZoomFactor;
+
+        if (myContacts[uri].totalMessages < limit) {
+            console.log('No more messages for', uri);
+            return;
+        }
+
+        let messageZoomFactor = this.state.messageZoomFactor;
+        messageZoomFactor = messageZoomFactor + 1;
+        this.setState({messageZoomFactor: messageZoomFactor});
+
+        setTimeout(() => {
+            this.getMessages(this.state.selectedContact.remoteParty);
+        }, 10);
+    }
+
+     async getMessages(uri){
+        console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
         let messages = this.state.messages;
         let msg;
         let query;
+        let rows = 0;
+        let myContacts = this.state.myContacts;
+        let total = 0;
+
+        let limit = this.state.messageLimit * this.state.messageZoomFactor;
+
+/*
+        if (uri in myContacts && myContacts[uri].totalMessages) {
+            //console.log(myContacts[uri].totalMessages, 'messages with', uri, 'from cache');
+            total = myContacts[uri].totalMessages;
+        } else {
+        */
+            query = "SELECT count(*) as rows FROM messages where from_uri = '"
+                + uri
+                + "' or to_uri = '"
+                + uri
+                + "';";
+
+            await this.ExecuteQuery(query).then((results) => {
+                rows = results.rows;
+                total = rows.item(0).rows;
+                //console.log(total, 'messages with', uri, 'from database');
+            }).catch((error) => {
+                console.log('SQL query:', query);
+                console.log('SQL error:', error);
+            });
+//        }
 
         query = "SELECT * FROM messages where from_uri = '"
             + uri
             + "' or to_uri = '"
             + uri
             + "' order by id desc limit "
+            + this.state.messageStart
+            + " , "
             + limit
             + ";";
 
-        // TODO add pagination, reload older messages
-
         //console.log(query);
+
         await this.ExecuteQuery(query).then((results) => {
             //console.log('SQL get messages OK');
-            let myContacts = this.state.myContacts;
 
             let rows = results.rows;
             messages[uri] = [];
@@ -3710,7 +3768,6 @@ class Sylk extends Component {
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
-                //console.log(item);
                 content = base64.decode(item.content);
                 if (item.content_type === 'text/html') {
                     content = utils.html2text(content);
@@ -3722,8 +3779,9 @@ class Sylk extends Component {
                     content = 'Unknown message type received ' + item.content_type;
                 }
 
-                if (i == 0 && !image && item.to_uri in myContacts && !myContacts[item.to_uri].lastMessage) {
+                if (i == 0 && !image && item.to_uri in myContacts) {
                     myContacts[item.to_uri].lastMessage = content.substring(0, 35);
+                    myContacts[item.to_uri].totalMessages = total;
                     this.saveMyContacts(myContacts);
                 }
 
@@ -3747,6 +3805,7 @@ class Sylk extends Component {
                 messages[uri].push(msg);
             }
 
+            messages[uri].sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1);
             messages[uri].reverse();
 
             if (messages[uri].length > 0) {
@@ -4197,6 +4256,10 @@ class Sylk extends Component {
             myContacts[uri].unread = myContacts[uri].unread + 1;
         } else {
             myContacts[uri].unread = 1;
+        }
+
+        if (myContacts[uri].totalMessages) {
+            myContacts[uri].totalMessages = myContacts[uri].totalMessages + 1;
         }
 
         if (contentType === 'text/html') {
@@ -4735,6 +4798,7 @@ class Sylk extends Component {
                     updateSelection = {this.updateSelection}
                     togglePinned = {this.togglePinned}
                     pinned = {this.state.pinned}
+                    loadEarlierMessages = {this.loadEarlierMessages}
                 />
 
                 <ImportPrivateKeyModal

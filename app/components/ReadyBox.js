@@ -472,6 +472,7 @@ class ReadyBox extends Component {
                             toggleBlocked={this.props.toggleBlocked}
                             togglePinned = {this.props.togglePinned}
                             pinned = {this.state.pinned}
+                            loadEarlierMessages = {this.props.loadEarlierMessages}
                         />
                     </View>
 
@@ -553,7 +554,8 @@ ReadyBox.propTypes = {
     sendPublicKey   : PropTypes.func,
     inviteContacts  : PropTypes.bool,
     selectedContacts: PropTypes.array,
-    updateSelection : PropTypes.func
+    updateSelection : PropTypes.func,
+    loadEarlierMessages: PropTypes.func
 };
 
 
