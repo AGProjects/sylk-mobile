@@ -1257,8 +1257,8 @@ class Sylk extends Component {
         this.pushtoken = token;
     }
 
-    _sendPushToken() {
-        if ((this.state.account && this.pushtoken && !this.tokenSent)) {
+    _sendPushToken(account) {
+        if ((this.pushtoken && !this.tokenSent)) {
             let token = null;
 
             if (Platform.OS === 'ios') {
@@ -1267,7 +1267,7 @@ class Sylk extends Component {
                 token = this.pushtoken;
             }
             utils.timestampedLog('Push token sent to server');
-            this.state.account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
+            account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
             this.tokenSent = true;
         }
     }
@@ -1554,7 +1554,6 @@ class Sylk extends Component {
             utils.timestampedLog('Request sync messages from server starting with', this.lastSyncedMessageId);
 
             this.state.account.syncConversations(this.lastSyncedMessageId);
-            this._sendPushToken();
             this.replayJournal();
 
             this.setState({loading: null,
@@ -2148,6 +2147,7 @@ class Sylk extends Component {
                 account.on('missedCall', this.missedCall);
                 account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
                 //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
+                this._sendPushToken(account);
                 this.setState({account: account});
                 account.register();
                 storage.set('account', {
@@ -2162,6 +2162,7 @@ class Sylk extends Component {
             }
         });
     }
+
 
     setDevice(device) {
         const oldDevices = Object.assign({}, this.state.devices);
