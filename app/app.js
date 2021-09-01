@@ -3022,7 +3022,7 @@ class Sylk extends Component {
         // Send outgoing messages
         if (this.state.account && this.state.keys && this.state.keys.public) {
             console.log('Sending public key to', uri);
-            this.state.account.sendMessage(uri, this.state.keys.public, {}, 'text/pgp-public-key');
+            this.state.account.sendMessage(uri, this.state.keys.public, 'text/pgp-public-key');
         } else {
             console.log('No public key available');
         }
@@ -3048,7 +3048,7 @@ class Sylk extends Component {
 
         await OpenPGP.encryptSymmetric(keyPair, password, KeyOptions).then((encryptedBuffer) => {
             utils.timestampedLog('Sending encrypted private key');
-            this.state.account.sendMessage(this.state.account.id, encryptedBuffer, {}, 'text/pgp-private-key');
+            this.state.account.sendMessage(this.state.account.id, encryptedBuffer, 'text/pgp-private-key');
         }).catch((error) => {
             console.log('Error encrypting private key:', error);
         });
@@ -3164,7 +3164,7 @@ class Sylk extends Component {
 
         const publicKeyHash = await RNSimpleCrypto.SHA.sha1(key);
         this.saveSystemMessage(uri, 'Public key received', 'incoming');
-        this.saveSystemMessage(uri, 'Key id ' + publicKeyHash, 'incoming');
+        //this.saveSystemMessage(uri, 'Key id ' + publicKeyHash, 'incoming');
 
         myContacts[uri].publicKey = key;
         myContacts[uri].publicKeyHash = publicKeyHash;
@@ -3176,7 +3176,7 @@ class Sylk extends Component {
     _sendMessage(uri, text, id) {
         // Send outgoing messages
         if (this.state.account) {
-            let message = this.state.account.sendMessage(uri, text, {id: id});
+            let message = this.state.account.sendMessage(uri, text, 'text/plain', {id: id});
             //console.log(message);
             //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
         }
