@@ -2140,6 +2140,7 @@ class Sylk extends Component {
                 account.on('incomingCall', this.incomingCallFromWebSocket);
                 account.on('incomingMessage', this.incomingMessage);
                 account.on('syncConversations', this.syncConversations);
+                account.on('readConversation', this.readConversation);
                 account.on('removeConversation', this.removeConversation);
                 account.on('removeMessage', this.removeMessage);
                 account.on('outgoingMessage', this.outgoingMessage);
@@ -3593,6 +3594,16 @@ class Sylk extends Component {
                     }
                 });
 
+            } else if (op.action === 'readConversation') {
+                this.state.account.markConversationRead(op.id, (error) => {
+                    if (!error) {
+                        utils.timestampedLog(op.action, op.id, 'journal operation completed');
+                        executed_ops.push(key);
+                    } else {
+                        utils.timestampedLog(op.action, op.id, 'journal operation failed:', error);
+                    }
+                });
+
             } else if (op.action === 'removeMessage') {
                 this.state.account.removeMessage({id: op.id, receiver: op.data.uri}, (error) => {
                     if (!error) {
@@ -3666,12 +3677,15 @@ class Sylk extends Component {
         this.resetUnreadCount(uri);
     }
 
-    async resetUnreadCount(uri) {
+    async resetUnreadCount(uri, sync=false) {
         //console.log('Reset read count for', uri);
         let myContacts = this.state.myContacts;
         if (uri in myContacts && myContacts[uri].unread > 0) {
             myContacts[uri].unread = 0;
             this.saveMyContacts(myContacts);
+            if (!sync) {
+                this.addJournal(uri, 'readConversation');
+            }
         }
     }
 
