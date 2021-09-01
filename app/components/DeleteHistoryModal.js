@@ -64,7 +64,7 @@ class DeleteHistoryModal extends Component {
 
                         </View>
                          <Text style={styles.body}>
-                             Confirm deletion conversions with {this.state.uri}
+                             Confirm deletion of all messages with {this.state.uri}
                          </Text>
                         <View style={styles.checkBoxGroupRow}>
                             <RadioButton.Group onValueChange={newValue => this.setPeriod(newValue)} value={this.state.period}>
@@ -77,12 +77,7 @@ class DeleteHistoryModal extends Component {
                                 <RadioButton value="24" />
                               </View>
                               <View style={styles.checkButton}>
-                                <Text>Last week</Text>
-                                <RadioButton value="168" />
-                              </View>
-
-                              <View style={styles.checkButton}>
-                                <Text>All</Text>
+                                <Text>   All</Text>
                                 <RadioButton value="0" />
                               </View>
                             </RadioButton.Group>
@@ -91,7 +86,6 @@ class DeleteHistoryModal extends Component {
                         {canDeleteRemote ?
                             <View style={styles.checkBoxRow}>
                               <Text>Delete from recipient too</Text>
-
                                 <Checkbox
                                   status={this.state.remoteDelete ? 'checked' : 'unchecked'}
                                   onPress={() => {this.toggleRemoteDelete()}}

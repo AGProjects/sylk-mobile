@@ -3389,19 +3389,29 @@ class Sylk extends Component {
         let changes = false;
         let renderedMessages = this.state.messages;
         let newRenderedMessages = [];
+        let myContacts = this.state.myContacts;
+        let content;
+
         if (uri in this.state.messages) {
             renderedMessages[uri].forEach((m) => {
                 if (m._id !== id) {
                     newRenderedMessages.push(m);
                 } else {
                     changes = true;
+                    content = m.content;
                 }
             });
 
             renderedMessages[uri] = newRenderedMessages;
+            if (uri in myContacts) {
+                myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
+                if (content && myContacts[uri].lastMessage && content.indexOf(myContacts[uri].lastMessage) > -1) {
+                    myContacts[uri].lastMessage = null;
+                }
+            }
         }
         if (changes) {
-            this.setState({messages: renderedMessages});
+            this.setState({messages: renderedMessages, myContacts: myContacts});
         }
     }
 
@@ -3571,7 +3581,7 @@ class Sylk extends Component {
 
      async replayJournal() {
         if (!this.state.account) {
-            utils.timestampedLog('Sync journal later...');
+            utils.timestampedLog('Sync journal later when going online...');
             return;
         }
 
@@ -3715,7 +3725,7 @@ class Sylk extends Component {
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
         if (myContacts[uri].totalMessages < limit) {
-            console.log('No more messages for', uri);
+            //console.log('No more messages for', uri);
             return;
         }
 
@@ -3761,6 +3771,10 @@ class Sylk extends Component {
             });
 //        }
 
+        if (uri in myContacts) {
+            myContacts[uri].totalMessages = total;
+        }
+
         query = "SELECT * FROM messages where from_uri = '"
             + uri
             + "' or to_uri = '"
@@ -3780,6 +3794,8 @@ class Sylk extends Component {
             messages[uri] = [];
             let content;
             let image;
+            let ts;
+            let last_message;
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
@@ -3794,18 +3810,13 @@ class Sylk extends Component {
                     content = 'Unknown message type received ' + item.content_type;
                 }
 
-                if (i == 0 && !image && item.to_uri in myContacts) {
-                    myContacts[item.to_uri].lastMessage = content.substring(0, 35);
-                    myContacts[item.to_uri].totalMessages = total;
-                    this.saveMyContacts(myContacts);
-                }
-
                 let failed = (item.pending === 0 && item.received === 0 && item.sent === 1) ? true: false,
 
                 msg = {
                     _id: item.msg_id,
                     text: content,
                     image: image,
+                    timestamp: Date.parse(item.timestamp),
                     createdAt: item.timestamp,
                     sent: ((item.sent === 1 || item.received === 1) && !failed) ? true : false,
                     direction: item.direction,
@@ -3820,12 +3831,23 @@ class Sylk extends Component {
                 messages[uri].push(msg);
             }
 
-            messages[uri].sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1);
-            messages[uri].reverse();
+            messages[uri].sort((a, b) => (a.timestamp > b.timestamp) ? 1 : -1);
+            //console.log(messages[uri]);
+            //messages[uri].reverse();
 
             if (messages[uri].length > 0) {
                 console.log('Got', messages[uri].length, 'messages for', uri);
-                //console.log(messages[uri]);
+                let last_item = messages[uri][messages[uri].length -1];
+                if (!last_item.image) {
+                    last_message = last_item.text.substring(0, 35);
+                }
+            }
+
+            if (uri in myContacts) {
+                if (last_message) {
+                    myContacts[uri].lastMessage = last_message;
+                }
+                this.saveMyContacts(myContacts);
             }
 
             this.setState({messages: messages});
@@ -3931,8 +3953,13 @@ class Sylk extends Component {
             newMessages.push(msg);
         });
 
+        let myContacts = this.state.myContacts;
+        if (uri in myContacts && myContacts[recipient].totalMessages) {
+            myContacts[recipient].totalMessages = myContacts[recipient].totalMessages - 1;
+        }
+
         renderMessages[recipient] = newMessages;
-        this.setState({messages: renderMessages});
+        this.setState({messages: renderMessages, myContacts: myContacts});
     }
 
     async removeConversation(obj, sync=false) {
@@ -3955,6 +3982,11 @@ class Sylk extends Component {
         this.removeContact(uri);
     }
 
+    async readConversation(obj, sync=false) {
+        let uri = sync ? obj.content: obj;
+        this.resetUnreadCount(uri, sync)
+    }
+
     removeContact(uri) {
         let myContacts = this.state.myContacts;
         if (uri in myContacts) {
@@ -3973,6 +4005,9 @@ class Sylk extends Component {
 
             } else if (message.contentType === 'application/sylk-conversation-remove') {
                 this.removeConversation(message, true);
+
+            } else if (message.contentType === 'application/sylk-conversation-read') {
+                this.readConversation(message, true);
 
             } else if (message.contentType === 'message/imdn') {
                 this.messageStateChanged({messageId: message.id, state: message.state});

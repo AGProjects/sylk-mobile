@@ -1008,7 +1008,7 @@ class HistoryTileBox extends Component {
             }
         }
 
-        let showLoadEarlier = (this.state.selectedContact && this.state.myContacts[this.state.selectedContact.remoteParty].totalMessages > messages.length) ? true: false;
+        let showLoadEarlier = (this.state.myContacts && this.state.selectedContact && this.state.myContacts[this.state.selectedContact.remoteParty].totalMessages > messages.length) ? true: false;
 
         return (
             <SafeAreaView style={container}>
