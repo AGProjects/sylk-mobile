@@ -2,6 +2,8 @@ import PropTypes from 'prop-types'
 import React from 'react'
 //import * as ImagePicker from 'expo-image-picker';
 
+import DocumentPicker from 'react-native-document-picker';
+
 import {
   StyleSheet,
   Text,
@@ -46,7 +48,7 @@ export default class CustomActions extends React.Component {
     ]
 
     options = [
-      'Curious, huh?',
+      'Choose photo from library',
       'Cancel',
     ]
     const cancelButtonIndex = options.length - 1
@@ -59,7 +61,7 @@ export default class CustomActions extends React.Component {
         const { onSend } = this.props
         switch (buttonIndex) {
           case 0:
-            pickImageAsync(onSend)
+            this.onAttachFile();
             return
           case 1:
             takePictureAsync(onSend)
@@ -69,6 +71,34 @@ export default class CustomActions extends React.Component {
       },
     )
   }
+
+    onAttachFile = async () => { try { const results = await DocumentPicker.pick({ type: [DocumentPicker.types.allFiles], });
+
+       console.log(results);
+       let res = results[0];
+       let type = res.name.slice(res.name.lastIndexOf('.') + 1);
+       if (
+             res.type == 'application/pdf' ||
+             res.type == 'image/jpeg' ||
+             res.type == 'image/png' ||
+             res.type == 'image/jpg'
+       ) {
+             this.props.onSendWithFile(res);
+       } else {
+             alert(`${type} is not allowed. Only images types are supported.`);
+       }
+     } catch (err) {
+       //Handling any exception (If any)
+       if (DocumentPicker.isCancel(err)) {
+         //If user canceled the document selection
+         // alert('Canceled from single doc picker');
+       } else {
+         //For Unknown Error
+         // alert('Unknown Error: ' + JSON.stringify(err));
+         throw err;
+       }
+     }
+    };
 
   renderIcon = () => {
     if (this.props.renderIcon) {
@@ -130,6 +160,7 @@ CustomActions.defaultProps = {
 
 CustomActions.propTypes = {
   onSend: PropTypes.func,
+  onSendWithFile: PropTypes.func,
   options: PropTypes.object,
   renderIcon: PropTypes.func,
   containerStyle: ViewPropTypes.style,

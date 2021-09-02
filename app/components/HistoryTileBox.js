@@ -164,7 +164,7 @@ class HistoryTileBox extends Component {
 
     renderCustomActions = props =>
     (
-      <CustomChatActions {...props} onSend={this.onSendFromUser} />
+      <CustomChatActions {...props} onSend={this.onSendFromUser} onSendWithFile={this.onSendWithFile}/>
     )
 
     onSendFromUser() {
@@ -375,6 +375,34 @@ class HistoryTileBox extends Component {
 
     loadEarlierMessages() {
         this.props.loadEarlierMessages();
+    }
+
+    onSendWithFile(selectedFile) {
+        console.log('onSendWithFile');
+        let uri;
+        if (!this.state.selectedContact) {
+            if (this.state.targetUri && this.state.chat) {
+                 let contacts = this.searchedContact(this.state.targetUri);
+                 if (contacts.length !== 1) {
+                     return;
+                }
+                 uri = contacts[0].remoteParty;
+            } else {
+                return;
+            }
+        } else {
+            uri = this.state.selectedContact.remoteParty;
+        }
+
+        let imageData = {
+            name: selectedFile.name,
+            type: selectedFile.type,
+            size: selectedFile.size,
+            uri: selectedFile.uri
+        };
+
+        console.log('Sending image', imageData);
+        //this.props.sendMessage(uri, message);
     }
 
     onSendMessage(messages) {
