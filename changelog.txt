@@ -1,3 +1,36 @@
+  tag sync-offline-beta Thu Sep  2 11:42:04 -03 2021
+
+  * Added offline messaging
+  * Added real-time replication for read-messages
+  * Added real-time replication for delete-messages
+  * Added real-time replication for delete-conversations
+  * Added message replication functions
+  * Added loading of earlier messages
+  * Added OpenPGP public key management
+  * Simplify message status modal
+  * Fixed refreshing message info
+  * Improve contextual menu and back navigation
+  * Improve web calls contacts
+  * Navigation fixes
+  * Replace ios token separator # with -
+  * Added react-native-openpgp dependency
+  * Added react-native-fast-openpgp dependency
+  * Implement OpenPGP encryption
+  * Added functions to attach photos to messages
+  * Make key exchange compatible with python
+  * Improve contact diplay with chat on subtitle line
+  * Improve add contact panel
+  * Added navigation between call and chat for same contact
+  * Improve look and feel
+  * Improve contact management
+  * Contacts search fixes
+  * Fixed navigating to home screen
+  * Landscape fixes
+  * Added modal panel to confirm message deletion
+  * Improve display of contacts cards
+  * Added menu items for calls
+  * Contact fixes
+
 iOS 1.3.8 & Android 1.61.0 / Wed Nov 18 11:36:26 -03 2020
 
  * Fixed waking up from OS dialer
