@@ -3841,6 +3841,8 @@ class Sylk extends Component {
                 if (!last_item.image) {
                     last_message = last_item.text.substring(0, 35);
                 }
+            } else {
+                last_message = null;
             }
 
             if (uri in myContacts) {
