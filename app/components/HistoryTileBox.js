@@ -171,7 +171,6 @@ class HistoryTileBox extends Component {
         console.log('On send from user...');
     }
 
-
     getMessages(contact) {
         if (!contact) {
             return;
@@ -378,7 +377,6 @@ class HistoryTileBox extends Component {
     }
 
     onSendWithFile(selectedFile) {
-        console.log('onSendWithFile');
         let uri;
         if (!this.state.selectedContact) {
             if (this.state.targetUri && this.state.chat) {
@@ -394,14 +392,14 @@ class HistoryTileBox extends Component {
             uri = this.state.selectedContact.remoteParty;
         }
 
-        let imageData = {
+        let fileData = {
             name: selectedFile.name,
             type: selectedFile.type,
             size: selectedFile.size,
             uri: selectedFile.uri
         };
 
-        console.log('Sending image', imageData);
+        console.log('Sending file', fileData);
         //this.props.sendMessage(uri, message);
     }
 
@@ -487,7 +485,7 @@ class HistoryTileBox extends Component {
                 remoteParty: uri.toLowerCase(),
                 displayName: displayName,
                 organization: this.state.myContacts[uri].organization,
-                unread: this.state.myContacts[uri].unread ? this.state.myContacts[uri].unread.toString() : "0",
+                unread: this.state.myContacts[uri].unread,
                 startTime: this.state.myContacts[uri].timestamp,
                 stopTime: this.state.myContacts[uri].timestamp,
                 media: ['chat'],
@@ -709,10 +707,6 @@ class HistoryTileBox extends Component {
                 if (currentMessage.direction === 'outgoing') {
                     if (currentMessage.failed) {
                         options.push('Resend')
-                    } else {
-                        if (!currentMessage.received) {
-                            options.push('Delete after read')
-                        }
                     }
                 }
             }
@@ -764,10 +758,6 @@ class HistoryTileBox extends Component {
                         if (this.state.targetUri.indexOf('@videoconference') === -1) {
                             if (currentMessage.failed) {
                                 this.props.reSendMessage(currentMessage, this.state.targetUri);
-                            } else {
-                                if (!currentMessage.received) {
-                                    this.props.expireMessage(currentMessage._id, 300);
-                                }
                             }
                         }
 
@@ -888,7 +878,6 @@ class HistoryTileBox extends Component {
             items.concat(history.filter(historyItem => this.matchContact(historyItem, this.state.targetUri) && historyItem.tags.indexOf('missed') > -1));
         } else {
             items = chatContacts.filter(chatItem => this.matchContact(chatItem, this.state.targetUri));
-
             searchExtraItems = searchExtraItems.concat(this.state.contacts);
             searchExtraItems = searchExtraItems.concat(this.favoriteContacts);
             searchExtraItems = searchExtraItems.concat(this.videoTest);
@@ -901,6 +890,8 @@ class HistoryTileBox extends Component {
                 matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri));
             } else if (this.state.selectedContact && this.state.selectedContact.type === 'contact') {
                 matchedContacts.push(this.state.selectedContact);
+            } else if (this.state.selectedContact) {
+                items = [this.state.selectedContact];
             }
 
             items = items.concat(matchedContacts);
@@ -938,8 +929,8 @@ class HistoryTileBox extends Component {
                 item.tags = [];
             }
 
-            if (!item.unread) {
-                item.unread = "0";
+            if (!Array.isArray(item.unread)) {
+                item.unread = [];
             }
 
             if (this.state.favoriteUris.indexOf(item.remoteParty) > -1 && item.tags.indexOf('favorite') === -1) {
@@ -1012,7 +1003,7 @@ class HistoryTileBox extends Component {
         const borderClass = (messages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
 
         if (items.length === 1) {
-            items[0].unread = "0";
+            items[0].unread = [];
             if (items[0].tags.toString() === 'syntetic') {
                 messages = [];
             }
@@ -1153,7 +1144,6 @@ HistoryTileBox.propTypes = {
     sendMessage     : PropTypes.func,
     reSendMessage   : PropTypes.func,
     deleteMessage   : PropTypes.func,
-    expireMessage   : PropTypes.func,
     pinMessage      : PropTypes.func,
     unpinMessage    : PropTypes.func,
     deleteMessages   : PropTypes.func,

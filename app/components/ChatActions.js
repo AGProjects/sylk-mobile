@@ -48,7 +48,7 @@ export default class CustomActions extends React.Component {
     ]
 
     options = [
-      'Choose photo from library',
+      'Curious, huh?',
       'Cancel',
     ]
     const cancelButtonIndex = options.length - 1

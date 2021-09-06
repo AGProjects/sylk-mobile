@@ -2,8 +2,7 @@ import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import utils from '../utils';
 import { Text, View } from 'react-native'
-import { Avatar, Badge, withBadge } from 'react-native-paper';
-import BadgeView from 'react-native-badge-view';
+import { Avatar} from 'react-native-paper';
 
 const UserIcon = (props) => {
 
@@ -26,35 +25,30 @@ const UserIcon = (props) => {
 
     if (photo) {
          return (
-            <BadgeView parentView={<Avatar.Image source={{uri: photo}} size={avatarSize} />}
-                       badgeText={props.unread}/>
+           <Avatar.Image source={{uri: photo}} size={avatarSize} />
                 );
     }
 
     if (props.identity.uri && props.identity.uri.search('anonymous') !== -1) {
          return (
-            <BadgeView parentView={ <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />}
-                       badgeText={props.unread}/>
+            <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="user" />
                 );
     }
 
     if (props.identity.uri && props.identity.uri.search('videoconference') !== -1) {
          return (
-            <BadgeView parentView={<Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />}
-                       badgeText={props.unread}/>
+            <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />
                 );
     }
 
     return (
-        <BadgeView parentView={<Avatar.Text style={{backgroundColor: color}} size={avatarSize} label={initials.toUpperCase()} />}
-                   badgeText={props.unread}/>
+        <Avatar.Text style={{backgroundColor: color}} size={avatarSize} label={initials.toUpperCase()} />
             );
 };
 
 UserIcon.propTypes = {
     identity: PropTypes.object.isRequired,
     large: PropTypes.bool,
-    unread: PropTypes.string,
     carousel: PropTypes.bool
 };
 

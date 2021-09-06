@@ -21,7 +21,6 @@
     "react-native": "0.61.5",
     "react-native-autocomplete-input": "^4.2.0",
     "react-native-background-timer": "2.1.1",
-    "react-native-badge-view": "^2.0.1",
     "react-native-base64": "^0.2.1",
     "react-native-callkeep": "^4.0.1",
     "react-native-contacts": "^5.2.3",
@@ -31,6 +30,7 @@
     "react-native-document-picker": "^6.0.4",
     "react-native-draw-overlay": "^1.0.1",
     "react-native-dtmf": "nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9",
+    "react-native-elements": "^3.4.2",
     "react-native-email-link": "1.7.5",
     "react-native-fast-openpgp": "^1.6.5",
     "react-native-fs": "^2.16.6",
@@ -41,6 +41,7 @@
     "react-native-material-drawer": "^0.0.5",
     "react-native-paper": "^3.4.0",
     "react-native-randombytes": "^3.6.1",
+    "react-native-safe-area-context": "^3.3.2",
     "react-native-share": "^3.3.3",
     "react-native-simple-crypto": "^0.2.15",
     "react-native-snap-carousel": "^3.8.4",
@@ -55,6 +56,7 @@
     "react-native-voip-push-notification": "2.1.0",
     "react-native-webrtc": "nimbleape/react-native-webrtc#2f716bed0cbcf4aa4441886f890c40cd5f8dff81",
     "react-router-native": "^5.1.2",
+    "sqlstring": "^2.3.2",
     "xss": "^1.0.8"
   },
   "devDependencies": {

@@ -236,7 +236,7 @@ class NavigationBar extends Component {
         let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
 
-        let hasMessages = false;
+        let hasMessages = true;
         if (this.state.selectedContact) {
             if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.remoteParty) > -1 && this.state.messages[this.state.selectedContact.remoteParty].length > 0) {
                 hasMessages = true;
@@ -329,6 +329,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                         <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title="Export PGP key..." />
+                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                         <Divider/>
                         {extraMenu ?

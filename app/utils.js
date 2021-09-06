@@ -90,7 +90,7 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
     }
 
     if (sylkMessage.contentType === 'text/html') {
-        content = html2Text(content);
+        content = html2text(content);
     } else if (sylkMessage.contentType === 'text/plain') {
         content = content;
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
@@ -116,7 +116,7 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
         }
 }
 
-function html2Text(content) {
+function html2text(content) {
     content = xss(content, {
               whiteList: [], // empty, means filter out all tags
               stripIgnoreTag: true, // filter out all HTML not in the whitelist
@@ -284,4 +284,4 @@ exports.findContact = findContact;
 exports.sylkToRenderMessage = sylkToRenderMessage;
 exports.isAnonymous = isAnonymous;
 exports.escapeHtml = escapeHtml;
-exports.html2Text = html2Text;
+exports.html2text = html2text;

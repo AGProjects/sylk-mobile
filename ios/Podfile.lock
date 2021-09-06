@@ -267,9 +267,13 @@ PODS:
     - React
   - react-native-contacts (5.2.3):
     - React
+  - react-native-document-picker (6.0.4):
+    - React-Core
   - react-native-fast-openpgp (1.6.5):
     - React
   - react-native-randombytes (3.6.1):
+    - React-Core
+  - react-native-safe-area-context (3.3.2):
     - React-Core
   - react-native-simple-crypto (0.2.15):
     - React
@@ -367,8 +371,10 @@ DEPENDENCIES:
   - React-jsinspector (from `../node_modules/react-native/ReactCommon/jsinspector`)
   - react-native-background-timer (from `../node_modules/react-native-background-timer`)
   - react-native-contacts (from `../node_modules/react-native-contacts`)
+  - react-native-document-picker (from `../node_modules/react-native-document-picker`)
   - react-native-fast-openpgp (from `../node_modules/react-native-fast-openpgp`)
   - react-native-randombytes (from `../node_modules/react-native-randombytes`)
+  - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-simple-crypto (from `../node_modules/react-native-simple-crypto`)
   - react-native-splash-screen (from `../node_modules/react-native-splash-screen`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
@@ -454,10 +460,14 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-background-timer"
   react-native-contacts:
     :path: "../node_modules/react-native-contacts"
+  react-native-document-picker:
+    :path: "../node_modules/react-native-document-picker"
   react-native-fast-openpgp:
     :path: "../node_modules/react-native-fast-openpgp"
   react-native-randombytes:
     :path: "../node_modules/react-native-randombytes"
+  react-native-safe-area-context:
+    :path: "../node_modules/react-native-safe-area-context"
   react-native-simple-crypto:
     :path: "../node_modules/react-native-simple-crypto"
   react-native-splash-screen:
@@ -551,8 +561,10 @@ SPEC CHECKSUMS:
   React-jsinspector: fa0ecc501688c3c4c34f28834a76302233e29dc0
   react-native-background-timer: 1b6e6b4e10f1b74c367a1fdc3c72b67c619b222b
   react-native-contacts: e342f93e42bbaac13729e551ffa35ad4a5b90a45
+  react-native-document-picker: a7950caaee8587002c9acbc7fe497a342094d93a
   react-native-fast-openpgp: f79c11db92a059ab2a93142a2d8d4d0f1888ff5a
   react-native-randombytes: 421f1c7d48c0af8dbcd471b0324393ebf8fe7846
+  react-native-safe-area-context: 584dc04881deb49474363f3be89e4ca0e854c057
   react-native-simple-crypto: 499ddd9f317932677e50393e58e7a72bca2a86e1
   react-native-splash-screen: 200d11d188e2e78cea3ad319964f6142b6384865
   react-native-sqlite-storage: 418ef4afc5e6df6ce3574c4617e5f0b65cffde55

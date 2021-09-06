@@ -1,5 +1,6 @@
 ﻿import React, { Component, Fragment} from 'react';
 import { View, SafeAreaView, FlatList } from 'react-native';
+import { Badge } from 'react-native-elements'
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
@@ -111,7 +112,7 @@ class HistoryCard extends Component {
             pinned: nextProps.pinned,
             messages: nextProps.messages,
             lastMessage: nextProps.contact.lastMessage,
-            unread: nextProps.chat ? "0": nextProps.unread || "0"
+            unread: nextProps.unread
         });
     }
 
@@ -364,7 +365,7 @@ class HistoryCard extends Component {
                 <View style={styles.rowContent}>
                     <Card.Content style={styles.cardContent}>
                         <View style={styles.avatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.state} unread={this.state.unread}/>
+                            <UserIcon style={styles.userIcon} identity={this.state} unread={this.state.unread.length.toString()}/>
                         </View>
 
                         <View style={styles.mainContent}>
@@ -398,8 +399,11 @@ class HistoryCard extends Component {
                     <View style={styles.rightContent}>
                         { this.state.selected ?
                         <Icon name='check-circle' size={30} />
-                        :
-                        null
+                        : null
+                        }
+                        {this.state.unread.length ?
+                        <Badge value={this.state.unread.length} status="error"  textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
+                        : null
                         }
                     </View>
                 </View>
@@ -434,7 +438,7 @@ HistoryCard.propTypes = {
     myDisplayNames : PropTypes.object,
     messages       : PropTypes.array,
     pinned         : PropTypes.bool,
-    unread         : PropTypes.string,
+    unread         : PropTypes.array,
     toggleBlocked  : PropTypes.func,
     sendPublicKey  : PropTypes.func
 };

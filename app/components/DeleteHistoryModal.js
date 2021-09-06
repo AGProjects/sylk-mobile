@@ -21,18 +21,28 @@ class DeleteHistoryModal extends Component {
             show: this.props.show,
             uri: this.props.uri,
             period: "0",
-            remoteDelete: false
+            remoteDelete: false,
+            confirm: false
         }
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({show: nextProps.show, displayName: nextProps.displayName, uri: nextProps.uri});
+        this.setState({show: nextProps.show,
+                       displayName: nextProps.displayName,
+                       uri: nextProps.uri,
+                       confirm: nextProps.confirm
+                       });
     }
 
     deleteMessages(event) {
         event.preventDefault();
-        this.props.deleteMessages(this.state.uri, true, this.state.period, this.state.remoteDelete);
-        this.props.close();
+        if (this.state.confirm) {
+            this.setState({confirm: false});
+            this.props.deleteMessages(this.state.uri, true, this.state.period, this.state.remoteDelete);
+            this.props.close();
+        } else {
+            this.setState({confirm: true});
+        }
     }
 
     setPeriod(value) {
@@ -43,11 +53,14 @@ class DeleteHistoryModal extends Component {
         this.setState({remoteDelete: !this.state.remoteDelete})
     }
 
-
     render() {
 
         let identity = {uri: this.state.uri, displayName: this.state.displayName};
         let canDeleteRemote = this.state.uri && this.state.uri.indexOf('@videoconference') === -1;
+        canDeleteRemote = false;
+        let canDeleteByTime = false;
+
+        let deleteLabel = this.state.confirm ? 'Confirm': 'Delete';
 
         return (
             <Portal>
@@ -55,7 +68,9 @@ class DeleteHistoryModal extends Component {
                     <Surface style={styles.container}>
                         <View style={styles.titleContainer}>
                             <View style={styles.titleContainer}>
+                            { this.state.uri ?
                                 <UserIcon style={styles.avatar} identity={identity}/>
+                            : null}
                             </View>
 
                             <View style={styles.titleContainer}>
@@ -63,9 +78,18 @@ class DeleteHistoryModal extends Component {
                            </View>
 
                         </View>
-                         <Text style={styles.body}>
-                             Confirm deletion of all messages with {this.state.uri}
-                         </Text>
+                            { this.state.uri ?
+                             <Text style={styles.body}>
+                                 Confirm deletion of all messages with {this.state.uri}
+                             </Text>
+                             :
+                             <Text style={styles.body}>
+                               Please confirm the deletion of all messages. This cannot be undone.
+                             </Text>
+                            }
+
+                         { canDeleteByTime ?
+
                         <View style={styles.checkBoxGroupRow}>
                             <RadioButton.Group onValueChange={newValue => this.setPeriod(newValue)} value={this.state.period}>
                               <View style={styles.checkButton}>
@@ -82,6 +106,7 @@ class DeleteHistoryModal extends Component {
                               </View>
                             </RadioButton.Group>
                         </View>
+                        : null}
 
                         {canDeleteRemote ?
                             <View style={styles.checkBoxRow}>
@@ -101,7 +126,7 @@ class DeleteHistoryModal extends Component {
                             onPress={this.deleteMessages}
                             icon="delete"
                             accessibilityLabel="Delete messages"
-                            >Delete
+                            > {deleteLabel}
                         </Button>
                         </View>
                     </Surface>
