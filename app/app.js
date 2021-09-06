@@ -3354,6 +3354,7 @@ class Sylk extends Component {
 
         //console.log(query);
         await this.ExecuteQuery(query).then((results) => {
+            this.updateRenderMessage(id, state);
             this.lastSyncedMessageId = id;
             storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
             // console.log('SQL update OK');
@@ -3393,7 +3394,7 @@ class Sylk extends Component {
 
         //console.log(query);
         this.ExecuteQuery(query).then((results) => {
-            // console.log('SQL update OK');
+            //console.log('SQL update OK');
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -3498,7 +3499,7 @@ class Sylk extends Component {
             let rows = results.rows;
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
-                content = base64.decode(item.content);
+                content = item.content;
                 this.sendPendingMessage(item.to_uri, content, item.msg_id);
             }
 
@@ -3569,8 +3570,6 @@ class Sylk extends Component {
                     if (changes) {
                         this.setState({messages: renderedMessages});
                     }
-                } else {
-                    //console.log('Messages for', uri, 'are not rendered now');
                 }
             }
 
@@ -3858,7 +3857,6 @@ class Sylk extends Component {
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
-                //content = base64.decode(item.content);
                 content = item.content;
                 let timestamp = JSON.parse(item.timestamp, _parseSQLDate);
 
@@ -4409,13 +4407,6 @@ class Sylk extends Component {
         const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
 
         let content = message.content;
-        let image;
-
-        if (message.contentType === 'text/html') {
-            content = utils.html2text(content);
-        } else if (message.contentType.indexOf('image/') > -1) {
-            image = `data:${message.contentType};base64,${btoa(content)}`
-        }
 
         if (is_encrypted) {
             await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
@@ -4495,14 +4486,6 @@ class Sylk extends Component {
         const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
 
         let content = message.content;
-        let image;
-
-        if (message.contentType === 'text/html') {
-            content = utils.html2text(content);
-        } else if (message.contentType.indexOf('image/') > -1) {
-            image = `data:${message.contentType};base64,${btoa(content)}`
-        }
-
         if (is_encrypted) {
             await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
                 //console.log('Sync outgoing message', message.id, 'decrypted to', message.receiver);

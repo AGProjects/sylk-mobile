@@ -329,7 +329,6 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                         <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title="Export PGP key..." />
-                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                         <Divider/>
                         {extraMenu ?

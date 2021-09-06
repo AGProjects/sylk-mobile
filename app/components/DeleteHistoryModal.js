@@ -74,14 +74,19 @@ class DeleteHistoryModal extends Component {
                             </View>
 
                             <View style={styles.titleContainer}>
-                               <Dialog.Title style={styles.title}>Delete conversions</Dialog.Title>
+                               <Dialog.Title style={styles.title}>Delete messages</Dialog.Title>
                            </View>
 
                         </View>
                             { this.state.uri ?
+                        <View>
                              <Text style={styles.body}>
-                                 Confirm deletion of all messages with {this.state.uri}
+                                 Confirm deletion of all messages with {this.state.uri}.
                              </Text>
+                             <Text style={styles.body}>
+                                 The messages will not be removed from remote party.
+                             </Text>
+                        </View>
                              :
                              <Text style={styles.body}>
                                Please confirm the deletion of all messages. This cannot be undone.

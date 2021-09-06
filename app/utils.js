@@ -123,8 +123,7 @@ function html2text(content) {
               stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
               // to filter out its content
             });
-    content = escapeHtml(content);
-    return content;
+    return escapeHtml(content);
 }
 
 function normalizeUri(uri, defaultDomain) {
