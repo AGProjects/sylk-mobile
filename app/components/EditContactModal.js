@@ -84,7 +84,7 @@ class EditContactModal extends Component {
     }
 
     render() {
-        if (this.props.publicKeyHash) {
+        if (this.props.publicKey) {
             let title = this.props.displayName || this.props.uri
             return (
                 <Portal>
@@ -189,7 +189,6 @@ EditContactModal.propTypes = {
     uri                : PropTypes.string,
     displayName        : PropTypes.string,
     organization       : PropTypes.string,
-    publicKeyHash      : PropTypes.string,
     publicKey          : PropTypes.string,
     myself             : PropTypes.bool,
     saveContact        : PropTypes.func,

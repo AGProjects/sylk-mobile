@@ -289,6 +289,7 @@ class Sylk extends Component {
         this.contacts = [];
         this.startedByPush = false;
         this.heartbeats = 0;
+        this.sql_contacts_keys = [];
 
         this._onFinishedPlayingSubscription = null
         this._onFinishedLoadingSubscription = null
@@ -420,7 +421,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 2}
+        this.sqlTableVersions = {'messages': 2, 'contacts': 1}
 
         this.updateTableQueries = {'messages': {1: [], 2: ['delete from messages']}
                                    };
@@ -476,6 +477,53 @@ class Sylk extends Component {
                               public: keys.public}});
     }
 
+    loadSylkContacts() {
+        let myContacts = {};
+        let blockedUris = [];
+        let favoriteUris = [];
+
+        this.ExecuteQuery("SELECT * FROM contacts",[]).then((results) => {
+            let rows = results.rows;
+            if (rows.length > 0) {
+                for (let i = 0; i < rows.length; i++) {
+                    var item = rows.item(i);
+                    this.sql_contacts_keys.push(item.uri);
+                    myContacts[item.uri] = this.newContact(item.uri);
+                    myContacts[item.uri].name = item.name;
+                    myContacts[item.uri].organization = item.organization;
+                    myContacts[item.uri].favorite = item.favorite === 1 ? true: false;
+                    myContacts[item.uri].blocked = item.blocked === 1 ? true: false;
+                    myContacts[item.uri].publicKey = item.public_key;
+                    myContacts[item.uri].tags = item.tags ? item.tags.split(',') : [];
+                    myContacts[item.uri].unread = item.unread ? item.unread.split(',') : [];
+                    myContacts[item.uri].lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
+                    myContacts[item.uri].lastMessage = item.last_message === '' ? null : item.last_message;
+                    myContacts[item.uri].timestamp = new Date(item.timestamp * 1000);
+                    //console.log('Loaded contact', myContacts[item.uri]);
+                    if (item.blocked) {
+                        blockedUris.push(item.uri);
+                    }
+                    if (item.favorite) {
+                        favoriteUris.push(item.uri);
+                    }
+                }
+
+                console.log('Loaded', rows.length, 'contacts from SQL database');
+                this.setState({myContacts: myContacts,
+                               favoriteUris: favoriteUris,
+                                blockedUris: blockedUris});
+
+            } else {
+                Object.keys(this.state.myContacts).forEach((key) => {
+                    this.saveSylkContact(key, this.state.myContacts[key]);
+                });
+                console.log('Migrated contacts to SQL storage');
+                storage.set('contactStorage', 'sql');
+                storage.remove('myContacts');
+            }
+        });
+    }
+
     loadPeople() {
         let blockedUris = [];
         let myContacts = {};
@@ -496,114 +544,97 @@ class Sylk extends Component {
             console.log('get organization error:', error);
         });
 
-        storage.get('myContacts').then((myContacts) => {
-            let myContactsObjects = {};
-            if (myContacts) {
-                Object.keys(myContacts).forEach((key) => {
-                    if (!Array.isArray(myContacts[key]['unread'])) {
-                        myContacts[key]['unread'] = [];
-                    }
+        storage.get('contactStorage').then((contactStorage) => {
+            if (contactStorage !== 'sql') {
+                storage.get('myContacts').then((myContacts) => {
+                    let myContactsObjects = {};
+                    if (myContacts) {
+                        Object.keys(myContacts).forEach((key) => {
 
-                    if(typeof(myContacts[key]) == 'string') {
-                        console.log('Convert display name object');
-                        myContactsObjects[key] = {'name': myContacts[key]}
+                            if (!Array.isArray(myContacts[key]['unread'])) {
+                                myContacts[key]['unread'] = [];
+                            }
+
+                            if(typeof(myContacts[key]) == 'string') {
+                                console.log('Convert display name object');
+                                myContactsObjects[key] = {'name': myContacts[key]}
+                            } else {
+                                myContactsObjects[key] = myContacts[key];
+                            }
+
+                        });
+                        myContacts = myContactsObjects;
                     } else {
-                        myContactsObjects[key] = myContacts[key];
+                        myContacts = {};
                     }
-                });
-                myContacts = myContactsObjects;
-            } else {
-                myContacts = {};
-            }
 
-            console.log('Loaded', Object.keys(myContacts).length, 'contacts');
+                    console.log('Loaded', Object.keys(myContacts).length, 'contacts');
 
-            this.setState({myContacts: myContacts});
+                    this.setState({myContacts: myContacts});
 
-            storage.get('favoriteUris').then((favoriteUris) => {
-                favoriteUris = favoriteUris.filter(item => item !== null);
-                //console.log('My favorites:', favoriteUris);
-                this.setState({favoriteUris: favoriteUris});
+                    storage.get('favoriteUris').then((favoriteUris) => {
+                        favoriteUris = favoriteUris.filter(item => item !== null);
+                        //console.log('My favorites:', favoriteUris);
+                        this.setState({favoriteUris: favoriteUris});
 
-                favoriteUris.forEach((uri) => {
-                    if (uri in myContacts) {
-                        myContacts[uri].favorite = true;
-                    } else {
-                        myContacts[uri] = {name: '', favorite: true};
-                    }
-                });
+                        favoriteUris.forEach((uri) => {
+                            if (uri in myContacts) {
+                                myContacts[uri].favorite = true;
+                            } else {
+                                myContacts[uri] = {name: '', favorite: true};
+                            }
+                        });
 
-                storage.remove('favoriteUris');
-                this.saveMyContacts(myContacts);
+                        storage.remove('favoriteUris');
 
-            }).catch((error) => {
-                //console.log('get favoriteUris error:', error);
-                let uris = Object.keys(myContacts);
-                uris.forEach((uri) => {
-                    if (myContacts[uri].favorite) {
-                        favoriteUris.push(uri);
-                    }
-                });
+                    }).catch((error) => {
+                        //console.log('get favoriteUris error:', error);
+                        let uris = Object.keys(myContacts);
+                        uris.forEach((uri) => {
+                            if (myContacts[uri].favorite) {
+                                favoriteUris.push(uri);
+                            }
+                        });
 
-                console.log('Loaded', favoriteUris.length, 'favorites');
-                this.setState({favoriteUris: favoriteUris});
-            });
+                        console.log('Loaded', favoriteUris.length, 'favorites');
+                        this.setState({favoriteUris: favoriteUris});
+                    });
 
-            storage.get('blockedUris').then((blockedUris) => {
-                blockedUris = blockedUris.filter(item => item !== null);
-                console.log('My blockedUris:', blockedUris);
-                this.setState({blockedUris: blockedUris});
+                    storage.get('blockedUris').then((blockedUris) => {
+                        blockedUris = blockedUris.filter(item => item !== null);
+                        console.log('My blockedUris:', blockedUris);
+                        this.setState({blockedUris: blockedUris});
 
-                blockedUris.forEach((uri) => {
-                    if (uri in myContacts) {
-                        myContacts[uri].blocked = true;
-                    } else {
-                        myContacts[uri] = {name: '', blocked: true};
-                    }
-                });
+                        blockedUris.forEach((uri) => {
+                            if (uri in myContacts) {
+                                myContacts[uri].blocked = true;
+                            } else {
+                                myContacts[uri] = {name: '', blocked: true};
+                            }
+                        });
 
-                storage.remove('blockedUris');
-                this.saveMyContacts(myContacts);
+                        storage.remove('blockedUris');
 
-            }).catch((error) => {
-                //console.log('get favoriteUris error:', error);
-                let uris = Object.keys(myContacts);
-                uris.forEach((uri) => {
-                    if (myContacts[uri].blocked) {
-                        blockedUris.push(uri);
-                    }
-                });
+                    }).catch((error) => {
+                        //console.log('get favoriteUris error:', error);
+                        let uris = Object.keys(myContacts);
+                        uris.forEach((uri) => {
+                            if (myContacts[uri].blocked) {
+                                blockedUris.push(uri);
+                            }
+                        });
 
-                console.log('Loaded', blockedUris.length, 'blocked uris');
-                this.setState({blockedUris: blockedUris});
-            });
+                        console.log('Loaded', blockedUris.length, 'blocked uris');
+                        this.setState({blockedUris: blockedUris});
+                    });
 
-            this.calculateHashes();
-
-        }).catch((error) => {
-            console.log('get myContacts error:', error);
-        });
-    }
-
-    calculateHashes() {
-        let publicKeyHash;
-        let myContacts = this.state.myContacts;
-        let mustUpdate = false;
-        let public_key;
-        Object.keys(this.state.myContacts).forEach((key) => {
-            if (myContacts[key].publicKey && !myContacts[key].publicKeyHash) {
-                public_key = myContacts[key].publicKey.replace(/\r/g, '').trim();
-                RNSimpleCrypto.SHA.sha1(public_key).then((publicKeyHash) => {
-                    mustUpdate = true;
-                    myContacts[key].publicKeyHash = publicKeyHash;
                 }).catch((error) => {
-                    console.log('SHA error:', error);
+                    console.log('get myContacts error:', error);
                 });
+
             }
         });
-        if (mustUpdate) {
-            this.saveMyContacts(myContacts);
-        }
+
     }
 
     async initSQL() {
@@ -645,6 +676,7 @@ class Sylk extends Component {
             console.log('SQL version table creation error:', error);
         });
 
+
         let create_table_messages = "CREATE TABLE IF NOT EXISTS 'messages' ( \
                                     'id' INTEGER PRIMARY KEY AUTOINCREMENT, \
                                     'msg_id' TEXT UNIQUE, \
@@ -671,6 +703,29 @@ class Sylk extends Component {
             //console.log('SQL messages table OK');
         }).catch((error) => {
             console.log(create_table_messages);
+            console.log('SQL messages table creation error:', error);
+        });
+
+        //this.ExecuteQuery("DROP TABLE 'contacts';");
+        let create_table_contacts = "CREATE TABLE IF NOT EXISTS 'contacts' ( \
+                                    'uri' TEXT PRIMARY KEY, \
+                                    'account' TEXT, \
+                                    'name' TEXT, \
+                                    'organization' TEXT, \
+                                    'tags' BLOB, \
+                                    'public_key' TEXT, \
+                                    'timestamp' INTEGER, \
+                                    'blocked' INTEGER default 0, \
+                                    'favorite' INTEGER default 0, \
+                                    'last_message' TEXT, \
+                                    'last_message_id' TEXT, \
+                                    'unread_messages' TEXT ) \
+                                    ";
+
+        this.ExecuteQuery(create_table_contacts).then((success) => {
+            //console.log('SQL messages table OK');
+        }).catch((error) => {
+            console.log(create_table_contacts);
             console.log('SQL messages table creation error:', error);
         });
 
@@ -749,7 +804,7 @@ class Sylk extends Component {
     */
 
     ExecuteQuery = (sql, params = []) => new Promise((resolve, reject) => {
-        //console.log('Execute SQL query:', sql, params);
+        //console.log('-- Execute SQL query:', sql, params);
         this.db.transaction((trans) => {
           trans.executeSql(sql, params, (trans, results) => {
             resolve(results);
@@ -760,7 +815,7 @@ class Sylk extends Component {
         });
       });
 
-    async loadContacts() {
+    async loadDeviceContacts() {
         Contacts.checkPermission((err, permission) => {
             if (permission === Contacts.PERMISSION_UNDEFINED) {
               Contacts.requestPermission((err, requestedContactsPermissionResult) => {
@@ -1060,7 +1115,7 @@ class Sylk extends Component {
 
         getPhoneNumber().then(phoneNumber => {
             this.setState({myPhoneNumber: phoneNumber});
-            this.loadContacts();
+            this.loadDeviceContacts();
         });
 
         this.listenforPushNotifications();
@@ -2066,6 +2121,8 @@ class Sylk extends Component {
             loading   : 'Connecting...'
         });
 
+        this.loadSylkContacts();
+
         if (this.state.connection === null) {
             utils.timestampedLog('Web socket handle registration for', accountId);
 
@@ -2143,6 +2200,7 @@ class Sylk extends Component {
                 this._sendPushToken(account);
                 this.setState({account: account});
                 account.register();
+
                 storage.set('account', {
                     accountId: this.state.accountId,
                     password: this.state.password
@@ -3034,6 +3092,75 @@ class Sylk extends Component {
         });
     }
 
+    async saveSylkContact(uri, contact) {
+        if (this.sql_contacts_keys.indexOf(uri) > -1) {
+            this.updateSylkContact(uri, contact);
+            return;
+        }
+
+        let params;
+        let unread_messages = [];
+        let blocked = contact.blocked ? 1: 0;
+        let favorite = contact.favorite ? 1: 0;
+        let current_datetime = new Date();
+
+        const unixTime = Math.floor(current_datetime / 1000);
+        contact.timestamp = current_datetime;
+
+        contact = this.sanitizeContact(uri, contact);
+        unread_messages = contact.unread.toString();
+
+        params = [this.state.accountId, unixTime, contact.uri, contact.name || '', contact.organization || '', unread_messages || '', blocked, favorite, contact.publicKey || ''];
+        await this.ExecuteQuery("INSERT INTO contacts (account, timestamp, uri, name, organization, unread_messages, blocked, favorite, public_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+            console.log('SQL inserted contact', contact.uri);
+            this.sql_contacts_keys.push(contact.uri);
+        }).catch((error) => {
+            if (error.message.indexOf('UNIQUE constraint failed') > -1) {
+                this.updateSylkContact(uri, contact);
+            } else {
+                console.log('Save contact SQL error:', error);
+            }
+        });
+
+        let myContacts = this.state.myContacts;
+        myContacts[uri] = contact;
+        this.setState({myContacts: myContacts});
+    }
+
+    async deleteSylkContact(uri) {
+        await this.ExecuteQuery("DELETE from contacts where uri = ?", [uri]).then((result) => {
+            console.log('SQL deleted contact', uri);
+        }).catch((error) => {
+            console.log('Delete contact SQL error:', error);
+        });
+
+        let myContacts = this.state.myContacts;
+        if (uri in myContacts) {
+            delete myContacts[uri];
+            this.setState({myContacts: myContacts});
+        }
+    }
+
+    async updateSylkContact(uri, contact) {
+        contact = this.sanitizeContact(uri, contact);
+
+        let unixTime = Math.floor(contact.timestamp / 1000);
+        let blocked = contact.blocked ? 1: 0;
+        let favorite = contact.favorite ? 1: 0;
+        let unread_messages = contact.unread.toString();
+        let params = [unixTime, contact.name || '', contact.organization || '', blocked, favorite, unread_messages || '', contact.publicKey || '', contact.uri, this.state.accountId];
+
+        await this.ExecuteQuery("update contacts set timestamp = ?, name = ?, organization = ?, blocked = ?, favorite = ?, unread_messages = ?, public_key = ? where uri = ? and account = ?", params).then((result) => {
+            console.log('SQL updated contact', contact.uri);
+        }).catch((error) => {
+            console.log('SQL error:', error);
+        });
+
+        let myContacts = this.state.myContacts;
+        myContacts[uri] = contact;
+        this.setState({myContacts: myContacts});
+    }
+
     async sendPrivateKey(password) {
         if (!this.state.account) {
             console.log('No account');
@@ -3168,14 +3295,11 @@ class Sylk extends Component {
 
         utils.timestampedLog('Public key of', uri, 'saved');
 
-        const publicKeyHash = await RNSimpleCrypto.SHA.sha1(key);
         this.saveSystemMessage(uri, 'Public key received', 'incoming');
         //this.saveSystemMessage(uri, 'Key id ' + publicKeyHash, 'incoming');
 
         myContacts[uri].publicKey = key;
-        myContacts[uri].publicKeyHash = publicKeyHash;
-        this.saveMyContacts(myContacts);
-
+        this.saveSylkContact(uri, myContacts[uri]);
         this.sendPublicKey(uri);
     }
 
@@ -3213,10 +3337,8 @@ class Sylk extends Component {
 
         console.log('Public key of', uri, 'saved');
 
-        const publicKeyHash = await RNSimpleCrypto.SHA.sha1(key);
         myContacts[uri].publicKey = key;
-        myContacts[uri].publicKeyHash = publicKeyHash;
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
     }
 
     _sendMessage(uri, text, id, contentType='text/plain') {
@@ -3581,8 +3703,6 @@ class Sylk extends Component {
 
     async saveOutgoingChatUri(uri, content='') {
         //console.log('saveOutgoingChatUri', uri);
-        let current_datetime = new Date();
-        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
         let query;
 
         let myContacts = this.state.myContacts;
@@ -3593,15 +3713,15 @@ class Sylk extends Component {
             myContacts[uri] = {};
         }
 
-        myContacts[uri].timestamp = formatted_date;
         myContacts[uri].unread = [];
         if (myContacts[uri].totalMessages) {
             myContacts[uri].totalMessages = myContacts[uri].totalMessages + 1;
         }
         myContacts[uri].lastMessage = content.substring(0, 35);
         myContacts[uri].lastMessageId = null;
+        myContacts[uri].timestamp = new Date();
 
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
     }
 
      pinMessage(id) {
@@ -3751,7 +3871,8 @@ class Sylk extends Component {
         if (uri in myContacts) {
             if (myContacts[uri].unread.length > 0) {
                 myContacts[uri].unread = [];
-                this.saveMyContacts(myContacts);
+                this.setState({myContacts: myContacts});
+                this.saveSylkContact(uri, myContacts[uri]);
                 this.addJournal(uri, 'readConversation');
             }
         }
@@ -3896,7 +4017,7 @@ class Sylk extends Component {
             if (messages[uri].length > 0) {
                 console.log('Retrieved', messages[uri].length, 'messages for', uri, 'from database');
                 let last_item = messages[uri][messages[uri].length -1];
-                if (!last_item.image) {
+                if (!last_item.image && !last_item.system) {
                     last_message = last_item.text.substring(0, 35);
                     last_message_id = last_item.id;
                 }
@@ -3908,8 +4029,8 @@ class Sylk extends Component {
                 if (last_message) {
                     myContacts[uri].lastMessage = last_message;
                     myContacts[uri].lastMessageId = last_message_id;
+                    this.saveSylkContact(uri, myContacts[uri]);
                 }
-                this.saveMyContacts(myContacts);
             }
 
             this.setState({messages: messages});
@@ -3927,13 +4048,13 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
 
         if (uri) {
-            if (uri.indexOf('@videoconference.') > -1) {
-                uri = uri.split('@')[0];
-            }
-
             if (local) {
-                console.log('Purge messages locally with', uri);
                 this.addJournal(uri, 'removeConversation');
+                let conf_uri = uri;
+                if (uri.indexOf('@') === -1) {
+                    const conf_uri = uri + '@videoconference.' + this.state.defaultDomain;
+                }
+                this.deleteHistoryEntry(conf_uri);
             }
 
             query = "DELETE FROM messages where (from_uri = '"
@@ -3957,11 +4078,9 @@ class Sylk extends Component {
                     myContacts[uri].read = 0;
                     myContacts[uri].lastMessage = null;
                     myContacts[uri].lastMessageId = null;
-                    myContacts[uri].timestamp = '';
                 });
 
-                this.saveMyContacts(myContacts);
-                this.setState({messages: {}});
+                this.setState({messages: {}, myContacts: myContacts});
                 this.lastSyncedMessageId = null;
                 storage.set('lastSyncedMessageId', null);
 
@@ -4092,10 +4211,7 @@ class Sylk extends Component {
 
     removeContact(uri) {
         let myContacts = this.state.myContacts;
-        if (uri in myContacts) {
-            delete myContacts[uri];
-            this.saveMyContacts(myContacts);
-        }
+        this.deleteSylkContact(uri);
 
         let renderMessages = this.state.messages;
 
@@ -4163,7 +4279,7 @@ class Sylk extends Component {
         let existingMessages;
         let formatted_date;
         let newMessages = [];
-        let new_uris = {};
+        let sync_uris = {};
         let last_timestamp;
         let stats = {state: 0,
                      remove: 0,
@@ -4182,7 +4298,14 @@ class Sylk extends Component {
             if (message.contentType === 'application/sylk-message-remove') {
                 idx = 'remove' + message.id;
                 this.add_sync_pending_item(idx);
+
+                if (Object.keys(myContacts).indexOf(message.content.contact) === -1) {
+                    myContacts[message.content.contact] = {};
+                }
+                sync_uris[message.content.contact] = last_timestamp;
+
                 this.deleteMessageSync(message.id, message.content.contact);
+
                 if (message.content.contact in renderMessages) {
                     existingMessages = renderMessages[message.content.contact];
                     newMessages = [];
@@ -4216,6 +4339,7 @@ class Sylk extends Component {
                 stats.delete = stats.delete + 1;
 
             } else if (message.contentType === 'application/sylk-conversation-remove') {
+                sync_uris[message.content] = last_timestamp;
                 if (message.content in myContacts) {
                     delete myContacts[message.content];
                 }
@@ -4228,10 +4352,11 @@ class Sylk extends Component {
 
             } else if (message.contentType === 'application/sylk-conversation-read') {
                 if (Object.keys(myContacts).indexOf(message.content) === -1) {
-                    myContacts[message.content] = this.newContact(message.content);
+                    myContacts[message.content] = {};
                 }
-
+                sync_uris[message.content] = last_timestamp;
                 myContacts[message.content].unread = [];
+                myContacts[message.content].timestamp = new Date();
                 stats.read = stats.read + 1;
 
             } else if (message.contentType === 'message/imdn') {
@@ -4244,23 +4369,21 @@ class Sylk extends Component {
 
                 if (message.sender.uri === this.state.account.id) {
                     if (Object.keys(myContacts).indexOf(message.receiver) === -1) {
-                        myContacts[message.receiver] = this.newContact(message.receiver);
+                        myContacts[message.receiver] = {};
                     }
-                    myContacts[message.receiver].timestamp = message.timestamp.getFullYear() + "-" + utils.appendLeadingZeroes(message.timestamp.getMonth() + 1) + "-" + utils.appendLeadingZeroes(message.timestamp.getDate()) + " " + utils.appendLeadingZeroes(message.timestamp.getHours()) + ":" + utils.appendLeadingZeroes(message.timestamp.getMinutes()) + ":" + utils.appendLeadingZeroes(message.timestamp.getSeconds());
-
+                    sync_uris[message.receiver] = last_timestamp;
+                    myContacts[message.receiver].timestamp = message.timestamp;
                     stats.outgoing = stats.outgoing + 1;
                     this.outgoingMessageSync(message);
                 } else {
-                    if (Object.keys(myContacts).indexOf(message.sender.uri) === -1) {
-                        myContacts[message.sender.uri] = this.newContact(message.sender.uri);
-                    }
-
                     if (message.state !== "received") {
+                        if (Object.keys(myContacts).indexOf(message.sender.uri) === -1) {
+                            myContacts[message.sender.uri] = {};
+                        }
+                        myContacts[message.sender.uri].timestamp = message.timestamp;
                         myContacts[message.sender.uri].unread.push(message.id);
                         myContacts[message.sender.uri].lastMessageId = message.id;
                     }
-
-                    myContacts[message.sender.uri].timestamp = message.timestamp.getFullYear() + "-" + utils.appendLeadingZeroes(message.timestamp.getMonth() + 1) + "-" + utils.appendLeadingZeroes(message.timestamp.getDate()) + " " + utils.appendLeadingZeroes(message.timestamp.getHours()) + ":" + utils.appendLeadingZeroes(message.timestamp.getMinutes()) + ":" + utils.appendLeadingZeroes(message.timestamp.getSeconds());
 
                     stats.incoming = stats.incoming + 1;
                     this.incomingMessageSync(message);
@@ -4276,8 +4399,15 @@ class Sylk extends Component {
             });
         }
 
-        this.setState({messages: renderMessages, myContacts: myContacts});
-        storage.set('myContacts', myContacts);
+        this.setState({messages: renderMessages});
+
+        // sync changed myContacts with SQL database
+        Object.keys(sync_uris).forEach((uri) => {
+            if (uri !== this.state.accountId) {
+                this.saveSylkContact(uri, myContacts[uri]);
+            }
+        });
+
         storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
         console.log('Last sync id is', this.lastSyncedMessageId);
     }
@@ -4397,7 +4527,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id && !sync) {
+        if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
             console.log('Received my own PGP private key');
             this.setState({showImportPrivateKeyModal: true,
                                privateKey: message.content});
@@ -4462,7 +4592,7 @@ class Sylk extends Component {
     }
 
     async outgoingMessageSync(message) {
-        //console.log('Sync outgoing message', message.id, 'to', message.receiver);
+        console.log('Sync outgoing message', message.id, 'to', message.receiver);
         if (message.content.indexOf('?OTRv3') > -1) {
             this.remove_sync_pending_item(message.id);
             return;
@@ -4492,6 +4622,7 @@ class Sylk extends Component {
                 content = decryptedBody;
                 if (message.contentType === 'application/sylk-contact-update') {
                     this.contactSync(content);
+                    this.remove_sync_pending_item(message.id);
                     return;
                 }
             }).catch((error) => {
@@ -4543,7 +4674,7 @@ class Sylk extends Component {
         let params = [uuid.v4(), JSON.stringify(timestamp), content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, 1, direction];
         await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, pending, system, direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             if (missed) {
-                this.updateUnreadMessages(uri);
+                this.addUnreadMessage(uri);
             }
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
@@ -4557,7 +4688,7 @@ class Sylk extends Component {
         let received = message.state === "received" ? 1: 0;
         let params = [message.id, JSON.stringify(message.timestamp), content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
         await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            this.updateUnreadMessages(uri, message.sender.toString(), content, contentType, message.id);
+            this.addUnreadMessage(uri, message.sender.toString(), content, contentType, message.id);
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('SQL error:', error);
@@ -4570,8 +4701,7 @@ class Sylk extends Component {
         let received = message.state === "received" ? 1: 0;
         let params = [message.id, JSON.stringify(message.timestamp), content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
         this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            //this.updateUnreadMessages(uri, message.sender.toString(), content, contentType, message.id);
-            // TODO: this must be done at the end
+           //
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('SQL error:', error);
@@ -4579,10 +4709,7 @@ class Sylk extends Component {
         });
     }
 
-    async updateUnreadMessages(uri, name='', content='', contentType='text/html', id=null) {
-        let current_datetime = new Date();
-        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
-
+    async addUnreadMessage(uri, name='', content='', contentType='text/html', id=null) {
         let myContacts = this.state.myContacts;
 
         if (uri in myContacts) {
@@ -4593,6 +4720,7 @@ class Sylk extends Component {
         }
 
         myContacts[uri].unread.push(id);
+        myContacts[uri].timestamp = new Date();
 
         if (myContacts[uri].totalMessages) {
             myContacts[uri].totalMessages = myContacts[uri].totalMessages + 1;
@@ -4605,14 +4733,11 @@ class Sylk extends Component {
         }
 
         myContacts[uri].lastMessage = content.substring(0, 35);
-        myContacts[uri].timestamp = formatted_date;
         if (id) {
             myContacts[uri].lastMessageId = id;
         }
 
-        //console.log(uri, 'has', myContacts[uri].unread, 'unread messages');
-
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -4677,10 +4802,8 @@ class Sylk extends Component {
 
         if (uri in myContacts) {
             myContacts[uri].publicKey = null;
-            myContacts[uri].publicKeyHash = null;
             console.log('Public key of', uri, 'deleted');
-            this.saveMyContacts(myContacts);
-            //
+            this.saveSylkContact(uri, myContacts[uri]);
         }
     }
 
@@ -4694,6 +4817,7 @@ class Sylk extends Component {
                           blocked: false,
                           unread: [],
                           tags: [],
+                          publicKey: null,
                           lastMessageId: null,
                           timestamp: formatted_date,
                           lastMessage: null
@@ -4702,9 +4826,6 @@ class Sylk extends Component {
     }
 
     saveContact(uri, displayName, organization='') {
-        let current_datetime = new Date();
-        let formatted_date = current_datetime.getFullYear() + "-" + utils.appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + utils.appendLeadingZeroes(current_datetime.getDate()) + " " + utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
-
         displayName = displayName.trim();
         uri = uri.trim().toLowerCase();
 
@@ -4725,13 +4846,13 @@ class Sylk extends Component {
         myContacts[uri].organization = organization;
         myContacts[uri].name = displayName;
         myContacts[uri].uri = uri;
-        myContacts[uri].timestamp = formatted_date;
+        myContacts[uri].timestamp = new Date();
 
         myContacts[uri] = this.sanitizeContact(uri, myContacts[uri]);
 
         this.replicateContact(myContacts[uri]);
 
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
 
         let selectedContact = this.state.selectedContact;
         if (selectedContact && selectedContact.remoteParty === uri) {
@@ -4763,7 +4884,7 @@ class Sylk extends Component {
         new_contact.organization = contact.organization;
         new_contact.blocked = contact.blocked;
         new_contact.favorite = contact.favorite;
-        new_contact.timestamp = contact.timestamp;
+        new_contact.timestamp = Math.floor(contact.timestamp / 1000);
         new_contact.tags = contact.tags;
 
         content = JSON.stringify(new_contact);
@@ -4778,7 +4899,6 @@ class Sylk extends Component {
     }
 
     contactSync(json_contact) {
-
         let contact;
 
         contact = JSON.parse(json_contact);
@@ -4799,12 +4919,12 @@ class Sylk extends Component {
         myContacts[uri].uri = uri;
         myContacts[uri].name = contact.name;
         myContacts[uri].organization = contact.organization;
-        myContacts[uri].timestamp = contact.timestamp;
+        myContacts[uri].timestamp = new Date(contact.timestamp * 1000);
         myContacts[uri].tags = contact.tags;
 
         myContacts[uri] = this.sanitizeContact(uri, myContacts[uri]);
 
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
 
         this.updateFavorite(uri, contact.favorite);
         this.updateBlocked(uri, contact.blocked);
@@ -4812,7 +4932,8 @@ class Sylk extends Component {
     }
 
     sanitizeContact(uri, contact) {
-        //console.log('sanitizeContact', contact);
+        //console.log('sanitizeContact', uri, contact);
+
         let idx;
         contact.uri = uri;
 
@@ -4826,6 +4947,10 @@ class Sylk extends Component {
 
         if (!contact.tags) {
             contact.tags = [];
+        }
+
+        if (!contact.unread) {
+            contact.unread = [];
         }
 
         idx = contact.tags.indexOf('favorite');
@@ -4873,8 +4998,6 @@ class Sylk extends Component {
             return;
         }
 
-        storage.set('favoriteUris', favoriteUris);
-
         if (uri in myContacts) {
         } else {
             myContacts[uri] = this.newContact(uri);
@@ -4891,7 +5014,7 @@ class Sylk extends Component {
             myContacts[uri].tags.push('favorite');
         }
 
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
         this.setState({favoriteUris: favoriteUris, refreshFavorites: !this.state.refreshFavorites});
 
     }
@@ -4919,7 +5042,9 @@ class Sylk extends Component {
             myContacts[uri].tags.push('favorite');
         }
 
-        this.saveMyContacts(myContacts);
+        myContacts[uri].timestamp = new Date();
+
+        this.saveSylkContact(uri, myContacts[uri]);
 
         let idx = favoriteUris.indexOf(uri);
         if (idx === -1) {
@@ -4931,8 +5056,6 @@ class Sylk extends Component {
             favorite = false;
             console.log(uri, 'is not favorite');
         }
-
-        storage.set('favoriteUris', favoriteUris);
 
         this.replicateContact(myContacts[uri]);
         this.setState({favoriteUris: favoriteUris, refreshFavorites: !this.state.refreshFavorites});
@@ -4954,8 +5077,9 @@ class Sylk extends Component {
         myContacts[uri] = this.sanitizeContact(uri, myContacts[uri]);
 
         myContacts[uri].blocked = !myContacts[uri].blocked;
+        myContacts[uri].timestamp = new Date();
 
-        this.saveMyContacts(myContacts);
+        this.saveSylkContact(uri, myContacts[uri]);
 
         let idx = blockedUris.indexOf(uri);
         if (idx === -1) {
@@ -4968,7 +5092,6 @@ class Sylk extends Component {
             console.log(uri, 'is not blocked');
         }
 
-        storage.set('blockedUris', blockedUris);
         this.setState({blockedUris: blockedUris, selectedContact: null});
 
         this.replicateContact(myContacts[uri]);
@@ -4997,7 +5120,6 @@ class Sylk extends Component {
         }
 
         this.setState({blockedUris: blockedUris});
-        storage.set('blockedUris', blockedUris);
 
         if (uri in myContacts) {
         } else {
@@ -5008,7 +5130,6 @@ class Sylk extends Component {
 
         myContacts[uri].blocked = blocked;
 
-
         idx = myContacts[uri].tags.indexOf('blocked');
         if (idx > -1) {
             myContacts[uri].tags.splice(idx, 1);
@@ -5016,12 +5137,7 @@ class Sylk extends Component {
             myContacts[uri].tags.push('blocked');
         }
 
-        this.saveMyContacts(myContacts);
-    }
-
-    saveMyContacts(myContacts) {
-        storage.set('myContacts', myContacts);
-        this.setState({myContacts: myContacts});
+        this.saveSylkContact(uri, myContacts[uri]);
     }
 
     appendInvitedParties(room, uris) {
@@ -5086,7 +5202,6 @@ class Sylk extends Component {
                 history.splice(i,1);
             }
         }
-
         storage.set('history', history);
         this.setState({localHistory: history});
     }
@@ -5249,18 +5364,14 @@ class Sylk extends Component {
     }
 
     ready() {
-        let publicKeyHash;
         let publicKey;
         let call = this.state.currentCall || this.state.incomingCall;
 
         if (this.state.selectedContact) {
             const uri = this.state.selectedContact.remoteParty;
-            if (uri in this.state.myContacts && this.state.myContacts[uri].publicKeyHash) {
-                publicKeyHash = this.state.myContacts[uri].publicKeyHash;
+            if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
                 publicKey = this.state.myContacts[uri].publicKey;
             }
-        } else {
-            publicKeyHash = this.state.keys ? this.state.keys.publicKeyHash : null;
         }
 
         return (
@@ -5286,7 +5397,6 @@ class Sylk extends Component {
                     selectedContact = {this.state.selectedContact}
                     messages = {this.state.messages}
                     replicateKey = {this.sendPrivateKey}
-                    publicKeyHash = {publicKeyHash}
                     publicKey = {publicKey}
                     deleteMessages = {this.deleteMessages}
                     toggleFavorite = {this.toggleFavorite}

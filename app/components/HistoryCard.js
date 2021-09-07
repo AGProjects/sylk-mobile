@@ -80,7 +80,6 @@ class HistoryCard extends Component {
             chat: this.props.chat,
             pinned: this.props.pinned,
             publicKey: this.props.contact.publicKey,
-            publicKeyHash: this.props.contact.publicKeyHash,
             menuVisible: false
         }
 
@@ -214,7 +213,7 @@ class HistoryCard extends Component {
         let subtitle = uri;
         let description;
 
-        if (this.props.contact.startTime && this.props.contact.startTime.indexOf("1970-01-01") === -1) {
+        if (this.props.contact.startTime) {
             description = moment(this.props.contact.startTime).format('MMM D HH:mm');
         }
 

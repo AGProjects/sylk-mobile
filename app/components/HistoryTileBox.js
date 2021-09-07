@@ -267,13 +267,20 @@ class HistoryTileBox extends Component {
 
     getLocalHistory() {
         let history = this.state.localHistory;
-        history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         let known = [];
         let uri;
 
         history = history.filter((elem) => {
             uri = elem.remoteParty.toLowerCase();
+
+            if (elem.startTime) {
+                elem.startTime = new Date(elem.startTime);
+            }
+
+            if (elem.stopTime) {
+                elem.stopTime = new Date(elem.stopTime);
+            }
 
             if (uri.indexOf('@videoconference') === -1) {
                 return;
@@ -295,6 +302,8 @@ class HistoryTileBox extends Component {
                 return elem;
             }
         });
+
+        history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1)
 
         return history;
     }
@@ -490,7 +499,6 @@ class HistoryTileBox extends Component {
                 stopTime: this.state.myContacts[uri].timestamp,
                 media: ['chat'],
                 publicKey: this.state.myContacts[uri].publicKey ? this.state.myContacts[uri].publicKey : null,
-                publicKeyHash: this.state.myContacts[uri].publicKeyHash ? this.state.myContacts[uri].publicKeyHash : null,
                 label: label,
                 id: uuid.v4(),
                 lastMessage: this.state.myContacts[uri].lastMessage,
@@ -649,12 +657,14 @@ class HistoryTileBox extends Component {
                         elem.media = ['audio'];
                     }
 
+                    //localTime = momenttz.tz(elem.startTime, elem.timezone).toDate();
+                    //moment(localTime).format('YYYY-MM-DD HH:mm:ss');
 
                     if (elem.timezone !== undefined) {
                         localTime = momenttz.tz(elem.startTime, elem.timezone).toDate();
-                        elem.startTime = moment(localTime).format('YYYY-MM-DD HH:mm:ss');
+                        elem.startTime = localTime;
                         localTime = momenttz.tz(elem.stopTime, elem.timezone).toDate();
-                        elem.stopTime = moment(localTime).format('YYYY-MM-DD HH:mm:ss');
+                        elem.stopTime = localTime;
                     }
 
                     if (elem.direction === 'received' && elem.duration === 0) {
@@ -906,9 +916,6 @@ class HistoryTileBox extends Component {
         items = items.filter((elem) => {
             if (known.indexOf(elem.remoteParty) <= -1) {
                 known.push(elem.remoteParty);
-                if (!elem.startTime) {
-                    elem.startTime = '1970-01-01 01:01:01'
-                }
                 return elem;
             }
         });
@@ -979,6 +986,7 @@ class HistoryTileBox extends Component {
             } else if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
                 filteredItems.push(item);
             }
+
         });
 
         items = filteredItems;

@@ -43,7 +43,6 @@ class NavigationBar extends Component {
             accountId: this.props.accountId,
             displayName: this.props.displayName,
             organization: this.props.organization,
-            publicKeyHash: this.props.publicKeyHash,
             publicKey: this.props.publicKey,
             showEditContactModal: false,
             showPublicKey: false,
@@ -66,7 +65,6 @@ class NavigationBar extends Component {
                        organization: nextProps.organization,
                        proximity: nextProps.proximity,
                        inCall: nextProps.inCall,
-                       publicKeyHash: nextProps.publicKeyHash,
                        publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
@@ -304,7 +302,7 @@ class NavigationBar extends Component {
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my PGP key..."/>
                         : null}
-                        {this.props.publicKeyHash ?
+                        {this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show PGP key..."/>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
@@ -380,7 +378,6 @@ class NavigationBar extends Component {
                     saveContact={this.saveContact}
                     deleteContact={this.props.deleteContact}
                     deletePublicKey={this.props.deletePublicKey}
-                    publicKeyHash={this.state.showPublicKey ? this.state.publicKeyHash: null}
                     publicKey={this.state.showPublicKey ? this.state.publicKey: null}
                 />
 
