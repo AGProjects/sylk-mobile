@@ -276,6 +276,8 @@ class HistoryTileBox extends Component {
 
             if (elem.startTime) {
                 elem.startTime = new Date(elem.startTime);
+            } else {
+                return;
             }
 
             if (elem.stopTime) {
@@ -986,6 +988,7 @@ class HistoryTileBox extends Component {
             } else if (this.state.blockedUris.indexOf(item.remoteParty) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
                 filteredItems.push(item);
             }
+            //console.log(item.startTime, item.type, item.remoteParty);
 
         });
 

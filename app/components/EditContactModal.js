@@ -165,6 +165,7 @@ class EditContactModal extends Component {
                             >Save
                         </Button>
 
+                        { !this.state.myself ?
                         <Button
                             mode="contained"
                             disabled={this.state.myself}
@@ -174,6 +175,7 @@ class EditContactModal extends Component {
                             accessibilityLabel="Delete"
                             >{this.state.confirm ? 'Confirm delete': 'Delete'}
                         </Button>
+                        : null}
                         </View>
                     </Surface>
                 </DialogType>

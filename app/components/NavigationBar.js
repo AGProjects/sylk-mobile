@@ -131,7 +131,11 @@ class NavigationBar extends Component {
                 this.props.sendPublicKey(this.state.selectedContact.remoteParty);
                 break;
             case 'exportPrivateKey':
-                this.toggleExportPrivateKeyModal();
+                if (this.state.publicKey) {
+                    this.toggleExportPrivateKeyModal();
+                } else {
+                    this.props.showImportModal();
+                }
                 break;
             case 'showPublicKey':
                 this.setState({showEditContactModal: !this.state.showEditContactModal, showPublicKey: true});
@@ -256,6 +260,9 @@ class NavigationBar extends Component {
         }
 
         let extraMenu = false;
+        let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
+        //let showEditModal = this.state.showEditContactModal;
+        let showEditModal = this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey) || false
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -290,6 +297,7 @@ class NavigationBar extends Component {
                             />
                         }
                     >
+
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
                         <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/>
                         <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
@@ -300,10 +308,10 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
                         : null}
                         { hasMessages ?
-                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my PGP key..."/>
+                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
                         {this.props.publicKey ?
-                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show PGP key..."/>
+                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
@@ -326,8 +334,9 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
-                        <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title="Export PGP key..." />
+                        <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />
                         <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
+                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         <Divider/>
                         {extraMenu ?
                         <View>
@@ -369,7 +378,7 @@ class NavigationBar extends Component {
                 />
 
                 <EditContactModal
-                    show={this.state.showEditContactModal || !this.state.displayName}
+                    show={showEditModal}
                     close={this.toggleEditContactModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.remoteParty : this.state.accountId}
                     displayName={displayName}
@@ -443,7 +452,8 @@ NavigationBar.propTypes = {
     deleteContact      : PropTypes.func,
     deletePublicKey    : PropTypes.func,
     sendPublicKey      : PropTypes.func,
-    messages           : PropTypes.object
+    messages           : PropTypes.object,
+    showImportModal    : PropTypes.func
 };
 
 export default NavigationBar;

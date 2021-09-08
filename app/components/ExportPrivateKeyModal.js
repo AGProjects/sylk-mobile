@@ -61,7 +61,7 @@ class ExportPrivateKeyModal extends Component {
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>Export PGP private key</Dialog.Title>
+                        <Dialog.Title style={styles.title}>Export private key</Dialog.Title>
                          <Text style={styles.body}>
                              To replicate messages on multiple devices
                              you need the same private key on all of them.

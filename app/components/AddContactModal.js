@@ -67,7 +67,7 @@ class AddContactModal extends Component {
                             onChangeText={this.onUriChange}
                             value={this.state.uri}
                             required
-                            autoCapitalize="email"
+                            autoCapitalize="none"
                         />
 
                        <TextInput
