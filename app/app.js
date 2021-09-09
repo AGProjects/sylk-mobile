@@ -4521,8 +4521,10 @@ class Sylk extends Component {
                         myContacts[uri] = this.newContact(uri);
                     }
                     myContacts[uri].timestamp = message.timestamp;
-                    myContacts[uri].unread.push(message.id);
-                    myContacts[uri].lastMessageId = message.id;
+                    if (message.dispositionNotification.indexOf('display') > -1) {
+                        myContacts[uri].unread.push(message.id);
+                        myContacts[uri].lastMessageId = message.id;
+                    }
 
                     stats.incoming = stats.incoming + 1;
                     this.incomingMessageSync(message);
@@ -4611,7 +4613,7 @@ class Sylk extends Component {
     }
 
     async incomingMessageSync(message) {
-        //console.log('Sync incoming message', message.contentType, message.id, 'from', message.sender.uri);
+        //console.log('Sync incoming message', message);
         // Handle incoming messages
         if (message.content.indexOf('?OTRv3') > -1) {
             this.remove_sync_pending_item(message.id);
@@ -4869,17 +4871,22 @@ class Sylk extends Component {
         var content = decryptedBody || message.content;
         let received = 0;
         let imdn_msg;
-        if (!message.dispositionState) {
+        if (message.dispositionNotification.indexOf('positive-delivery') > -1) {
             imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri}
             if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
                 received = 1;
             }
-        } else if (message.dispositionState === 'displayed') {
+        } else {
+            //console.log('Incoming message', message.id, 'was already delivered');
+            received = 1;
+        }
+
+        if (message.dispositionNotification.indexOf('display') === -1) {
+            //console.log('Incoming message', message.id, 'was already read');
             received = 2;
         }
 
         let params = [message.id, JSON.stringify(message.timestamp), content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
-        //console.log('Save incoming messages message.id with received =', received);
         this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
