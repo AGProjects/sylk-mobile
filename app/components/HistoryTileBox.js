@@ -830,6 +830,7 @@ class HistoryTileBox extends Component {
     }
 
     render() {
+        //console.log('Render contacts');
 
         let searchExtraItems = [];
         let items = [];

@@ -3701,15 +3701,45 @@ class Sylk extends Component {
     }
 
     async sendPendingMessages() {
-        let query = "SELECT * from messages where pending = 1 and content_type like 'text/%'";
-        //console.log(query);
+        let query;
         let content;
+
+        query = "SELECT * from messages where pending = 1 and content_type like 'text/%'";
+        //console.log(query);
         await this.ExecuteQuery(query,[]).then((results) => {
             let rows = results.rows;
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 content = item.content;
                 this.sendPendingMessage(item.to_uri, content, item.msg_id);
+            }
+
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+
+        query = "SELECT * FROM messages where direction = 'incoming' and system is null and received = 0";
+        //console.log(query);
+
+        await this.ExecuteQuery(query).then((results) => {
+            //console.log('SQL get messages OK');
+
+            let rows = results.rows;
+            let imdn_msg;
+            for (let i = 0; i < rows.length; i++) {
+                var item = rows.item(i);
+                let timestamp = JSON.parse(item.timestamp, _parseSQLDate);
+                imdn_msg = {id: item.msg_id, timestamp: timestamp, from_uri: item.from_uri}
+                if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
+                    query = "UPDATE messages set received = 1 where id = " + item.id;
+                    //console.log(query);
+                    this.ExecuteQuery(query).then((results) => {
+                    }).catch((error) => {
+                        console.log('SQL query:', query);
+                        console.log('SQL error:', error);
+                    });
+                }
             }
 
         }).catch((error) => {
@@ -3911,7 +3941,7 @@ class Sylk extends Component {
         let query;
         let displayed = [];
 
-        query = "SELECT * FROM messages where from_uri = '" + uri + "' and received = 0 and system is NULL";
+        query = "SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and system is NULL";
         //console.log(query);
 
         await this.ExecuteQuery(query).then((results) => {
@@ -3937,7 +3967,7 @@ class Sylk extends Component {
                     i = i + 1;
                 });
 
-                query = "UPDATE messages set received = 1 where msg_id in (" + sql_ids + ")";
+                query = "UPDATE messages set received = 2 where msg_id in (" + sql_ids + ")";
                 //console.log(query);
                 this.ExecuteQuery(query).then((results) => {
                     //console.log('Sent disposition saved for', displayed.length, 'messages');
@@ -3968,19 +3998,21 @@ class Sylk extends Component {
         }
     }
 
-    async sendDispositionNotification(message) {
+    async sendDispositionNotification(message, state='displayed') {
         let query;
         let result = {};
-
-        this.state.account.sendDispositionNotification(message.from_uri, message.msg_id, message.timestamp, 'displayed',(error) => {
+        let id = message.msg_id || message.id;
+        this.state.account.sendDispositionNotification(message.from_uri, id, message.timestamp, state,(error) => {
             if (!error) {
-                utils.timestampedLog('Message', message.msg_id, 'was displayed now');
+                utils.timestampedLog('Message', id, 'was', state, 'now');
                 return true;
             } else {
-                utils.timestampedLog('Displayed notification for message', message.msg_id, 'send failed');
+                utils.timestampedLog(state, 'notification for message', id, 'send failed:', error);
                 return false;
             }
         });
+
+        return false;
     }
 
     loadEarlierMessages() {
@@ -4107,7 +4139,7 @@ class Sylk extends Component {
             messages[uri].sort((a, b) => (a.createdAt > b.createdAt) ? 1 : -1);
 
             if (messages[uri].length > 0) {
-                console.log('Retrieved', messages[uri].length, 'messages for', uri, 'from database');
+                console.log('Got', messages[uri].length, 'messages for', uri, 'from database');
                 let last_item = messages[uri][messages[uri].length -1];
                 if (!last_item.image && !last_item.system && last_item.text.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
                     last_message = last_item.text.substring(0, 35);
@@ -4485,14 +4517,12 @@ class Sylk extends Component {
                     stats.outgoing = stats.outgoing + 1;
                     this.outgoingMessageSync(message);
                 } else {
-                    if (message.state !== "received") {
-                        if (Object.keys(myContacts).indexOf(uri) === -1) {
-                            myContacts[uri] = this.newContact(uri);
-                        }
-                        myContacts[uri].timestamp = message.timestamp;
-                        myContacts[uri].unread.push(message.id);
-                        myContacts[uri].lastMessageId = message.id;
+                    if (Object.keys(myContacts).indexOf(uri) === -1) {
+                        myContacts[uri] = this.newContact(uri);
                     }
+                    myContacts[uri].timestamp = message.timestamp;
+                    myContacts[uri].unread.push(message.id);
+                    myContacts[uri].lastMessageId = message.id;
 
                     stats.incoming = stats.incoming + 1;
                     this.incomingMessageSync(message);
@@ -4824,7 +4854,7 @@ class Sylk extends Component {
 
     async saveIncomingMessage(uri, message, decryptedBody=null, contentType='text/plain') {
         var content = decryptedBody || message.content;
-        let received = message.state === "received" ? 1: 0;
+        let received = 1;
         let params = [message.id, JSON.stringify(message.timestamp), content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
         await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             this.addUnreadMessage(uri, message.sender.toString(), content, contentType, message.id);
@@ -4837,10 +4867,20 @@ class Sylk extends Component {
 
     saveIncomingMessageSync(uri, message, decryptedBody=null, contentType='text/plain') {
         var content = decryptedBody || message.content;
-        let received = message.state === "received" ? 1: 0;
+        let received = 0;
+        let imdn_msg;
+        if (!message.dispositionState) {
+            imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri}
+            if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
+                received = 1;
+            }
+        } else if (message.dispositionState === 'displayed') {
+            received = 2;
+        }
+
         let params = [message.id, JSON.stringify(message.timestamp), content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
+        //console.log('Save incoming messages message.id with received =', received);
         this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-           //
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('SQL error:', error);
@@ -4854,8 +4894,8 @@ class Sylk extends Component {
         if (uri in myContacts) {
             //
         } else {
-            myContacts[uri] = {'name': name};
-            myContacts[uri].unread = [];
+            myContacts[uri] = this.newContact(uri)
+            myContacts[uri].name = name;
         }
 
         myContacts[uri].unread.push(id);
