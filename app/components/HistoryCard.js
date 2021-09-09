@@ -266,9 +266,9 @@ class HistoryCard extends Component {
         if (this.props.contact.tags.indexOf('history') > -1) {
             duration = moment.duration(this.state.duration, 'seconds').format('HH:mm:ss', {trim: false});
 
-            if (this.state.direction === 'received' && this.state.duration === 0) {
+            if (this.state.direction === 'incoming' && this.state.duration === 0) {
                 duration = 'missed';
-            } else if (this.state.direction === 'placed' && this.state.duration === 0) {
+            } else if (this.state.direction === 'outgoing' && this.state.duration === 0) {
                 duration = 'cancelled';
             }
         }
@@ -373,7 +373,7 @@ class HistoryCard extends Component {
 
                             <Caption style={styles.description}>
                                 {this.state.direction ?
-                                <Icon name={this.state.direction == 'received' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
+                                <Icon name={this.state.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
                                 : null}
                                 {description}
 

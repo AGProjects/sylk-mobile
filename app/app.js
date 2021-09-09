@@ -530,7 +530,9 @@ class Sylk extends Component {
             if (rows.length > 0) {
                 for (let i = 0; i < rows.length; i++) {
                     var item = rows.item(i);
+
                     this.sql_contacts_keys.push(item.uri);
+
                     myContacts[item.uri] = this.newContact(item.uri);
                     myContacts[item.uri].name = item.name;
                     myContacts[item.uri].organization = item.organization;
@@ -1524,6 +1526,7 @@ class Sylk extends Component {
     }
 
     selectContact(contact) {
+        //console.log('select contact', contact);
         this.setState({selectedContact: contact});
     }
 
@@ -3169,7 +3172,6 @@ class Sylk extends Component {
             contact = this.sanitizeContact(uri, contact);
         }
 
-        //console.log('saveSylkContact', contact);
         if (this.sql_contacts_keys.indexOf(uri) > -1) {
             this.updateSylkContact(uri, contact);
             return;
@@ -3191,6 +3193,17 @@ class Sylk extends Component {
         await this.ExecuteQuery("INSERT INTO contacts (account, timestamp, uri, name, organization, unread_messages, tags, participants, blocked, favorite, public_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL inserted contact', contact.uri);
             this.sql_contacts_keys.push(contact.uri);
+            let myContacts = this.state.myContacts;
+            myContacts[uri] = contact;
+
+            let myInvitedParties = this.state.myInvitedParties;
+            let room = uri.split('@')[0];
+
+            if (room in myInvitedParties) {
+                myInvitedParties[room] = contact.participants;
+            }
+
+            this.setState({myContacts: myContacts, myInvitedParties: myInvitedParties});
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
                 this.updateSylkContact(uri, contact);
@@ -3199,67 +3212,57 @@ class Sylk extends Component {
             }
         });
 
-        let myContacts = this.state.myContacts;
-        myContacts[uri] = contact;
-
-        let myInvitedParties = this.state.myInvitedParties;
-        let room = uri.split('@')[0];
-
-        if (room in myInvitedParties) {
-            myInvitedParties[room] = contact.participants;
-        }
-
-        this.setState({myContacts: myContacts, myInvitedParties: myInvitedParties});
-    }
-
-    async deleteSylkContact(uri) {
-        await this.ExecuteQuery("DELETE from contacts where uri = ?", [uri]).then((result) => {
-            //console.log('SQL deleted contact', uri);
-        }).catch((error) => {
-            console.log('Delete contact SQL error:', error);
-        });
-
-        let myInvitedParties = this.state.myInvitedParties;
-        let room = uri.split('@')[0];
-
-        if (room in myInvitedParties) {
-            delete myInvitedParties[room];
-            this.setState({myInvitedParties: myInvitedParties});
-        }
-
-        let myContacts = this.state.myContacts;
-        if (uri in myContacts) {
-            delete myContacts[uri];
-            this.setState({myContacts: myContacts});
-        }
     }
 
     async updateSylkContact(uri, contact) {
+        //console.log('updateSylkContact', contact);
         let unixTime = Math.floor(contact.timestamp / 1000);
         let blocked = contact.blocked ? 1: 0;
         let favorite = contact.favorite ? 1: 0;
         let unread_messages = contact.unread.toString();
         let tags = contact.tags.toString();
         let participants = contact.participants.toString();
-        let params = [unixTime, contact.name || '', contact.organization || '', blocked, favorite, unread_messages || '', contact.publicKey || '', tags, participants, contact.uri, this.state.accountId];
+        let params = [contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', blocked, favorite, unread_messages || '', contact.publicKey || '', tags, participants, contact.uri, this.state.accountId];
 
-        await this.ExecuteQuery("update contacts set timestamp = ?, name = ?, organization = ?, blocked = ?, favorite = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ? where uri = ? and account = ?", params).then((result) => {
+        await this.ExecuteQuery("update contacts set last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, blocked = ?, favorite = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ? where uri = ? and account = ?", params).then((result) => {
             //console.log('SQL updated contact', contact.uri);
+            let myContacts = this.state.myContacts;
+            myContacts[uri] = contact;
+            let myInvitedParties = this.state.myInvitedParties;
+            let room = uri.split('@')[0];
+
+            if (room in myInvitedParties) {
+                myInvitedParties[room] = contact.participants;
+            }
+
+            this.setState({myContacts: myContacts, myInvitedParties: myInvitedParties});
         }).catch((error) => {
             console.log('SQL error:', error);
         });
-
-        let myContacts = this.state.myContacts;
-        myContacts[uri] = contact;
-        let myInvitedParties = this.state.myInvitedParties;
-        let room = uri.split('@')[0];
-
-        if (room in myInvitedParties) {
-            myInvitedParties[room] = contact.participants;
-        }
-
-        this.setState({myContacts: myContacts, myInvitedParties: myInvitedParties});
     }
+
+    async deleteSylkContact(uri) {
+        await this.ExecuteQuery("DELETE from contacts where uri = ?", [uri]).then((result) => {
+            //console.log('SQL deleted contact', uri);
+            let myInvitedParties = this.state.myInvitedParties;
+            let room = uri.split('@')[0];
+
+            if (room in myInvitedParties) {
+                delete myInvitedParties[room];
+                this.setState({myInvitedParties: myInvitedParties});
+            }
+
+            let myContacts = this.state.myContacts;
+            if (uri in myContacts) {
+                delete myContacts[uri];
+                this.setState({myContacts: myContacts});
+            }
+        }).catch((error) => {
+            console.log('Delete contact SQL error:', error);
+        });
+
+    }
+
 
     async replicatePrivateKey(password) {
         if (!this.state.account) {
@@ -3453,7 +3456,16 @@ class Sylk extends Component {
         }
 
         renderMessages[uri].push(message);
-        this.setState({messages: renderMessages});
+
+        if (this.state.selectedContact) {
+            let selectedContact = this.state.selectedContact;
+            selectedContact.lastMessage = message.text.substring(0, 35);
+            selectedContact.startTime = message.createdAt;
+            selectedContact.direction = 'outgoing';
+            this.setState({selectedContact: selectedContact, messages: renderMessages});
+        } else {
+            this.setState({messages: renderMessages});
+        }
 
         if (message.contentType !== 'text/pgp-public-key') {
             let public_keys = this.state.keys.public;
@@ -4049,27 +4061,20 @@ class Sylk extends Component {
 
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
-/*
-        if (uri in myContacts && myContacts[uri].totalMessages) {
-            //console.log(myContacts[uri].totalMessages, 'messages with', uri, 'from cache');
-            total = myContacts[uri].totalMessages;
-        } else {
-*/
-            query = "SELECT count(*) as rows FROM messages where from_uri = '"
-                + uri
-                + "' or to_uri = '"
-                + uri
-                + "';";
+        query = "SELECT count(*) as rows FROM messages where from_uri = '"
+            + uri
+            + "' or to_uri = '"
+            + uri
+            + "';";
 
-            await this.ExecuteQuery(query).then((results) => {
-                rows = results.rows;
-                total = rows.item(0).rows;
-                //console.log(total, 'messages with', uri, 'from database');
-            }).catch((error) => {
-                console.log('SQL query:', query);
-                console.log('SQL error:', error);
-            });
-//        }
+        await this.ExecuteQuery(query).then((results) => {
+            rows = results.rows;
+            total = rows.item(0).rows;
+            //console.log(total, 'messages with', uri, 'from database');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
 
         if (uri in myContacts) {
             myContacts[uri].totalMessages = total;
@@ -4097,11 +4102,13 @@ class Sylk extends Component {
             let ts;
             let last_message;
             let last_message_id;
+            let last_direction;
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 content = item.content;
                 let timestamp = JSON.parse(item.timestamp, _parseSQLDate);
+                last_direction = item.direction;
 
                 if (item.content_type === 'text/html') {
                     content = utils.html2text(content);
@@ -4137,6 +4144,7 @@ class Sylk extends Component {
             }
 
             messages[uri].sort((a, b) => (a.createdAt > b.createdAt) ? 1 : -1);
+            console.log('Got', messages[uri].length, 'messages for', uri, 'from database');
 
             if (messages[uri].length > 0) {
                 console.log('Got', messages[uri].length, 'messages for', uri, 'from database');
@@ -4148,7 +4156,7 @@ class Sylk extends Component {
             }
 
             if (uri in myContacts) {
-                if (last_message) {
+                if (last_message && last_message != myContacts[uri].lastMessage) {
                     myContacts[uri].lastMessage = last_message;
                     myContacts[uri].lastMessageId = last_message_id;
                     this.saveSylkContact(uri, myContacts[uri]);
@@ -4512,12 +4520,15 @@ class Sylk extends Component {
                     update_uris[uri] = last_timestamp;
                     if (message.contentType !== 'application/sylk-contact-update') {
                         myContacts[uri].lastMessageId = message.id;
+                        myContacts[uri].lastMessage = null;
                         lastMessages[uri] = message.id;
                     }
                     stats.outgoing = stats.outgoing + 1;
                     this.outgoingMessageSync(message);
                 } else {
                     myContacts[uri].lastMessageId = message.id;
+                    myContacts[uri].lastMessage = null;
+
                     lastMessages[uri] = message.id;
 
                     if (message.dispositionNotification.indexOf('display') > -1) {
@@ -4611,7 +4622,16 @@ class Sylk extends Component {
         }
 
         renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message, decryptedBody));
-        this.setState({messages: renderMessages});
+
+        if (this.state.selectedContact) {
+            let selectedContact = this.state.selectedContact;
+            selectedContact.lastMessage = content.substring(0, 35);
+            selectedContact.startTime = message.timestamp;
+            selectedContact.direction = 'incoming';
+            this.setState({selectedContact: selectedContact, messages: renderMessages});
+        } else {
+            this.setState({messages: renderMessages});
+        }
     }
 
     async incomingMessageSync(message) {
@@ -4650,7 +4670,7 @@ class Sylk extends Component {
                 });
             }
         } else {
-            console.log('Incoming message', message.id, 'not encrypted from', message.sender.uri);
+            //console.log('Incoming message', message.id, 'not encrypted from', message.sender.uri);
             this.saveIncomingMessageSync(message.sender.uri, message, null, message.contentType);
         }
 
@@ -4658,7 +4678,7 @@ class Sylk extends Component {
     }
 
     async outgoingMessage(message) {
-        utils.timestampedLog('Outgoing message', message.id, 'to', message.receiver);
+        console.log('Outgoing message', message.id, 'to', message.receiver);
         if (message.content.indexOf('?OTRv3') > -1) {
             return;
         }
@@ -4684,10 +4704,11 @@ class Sylk extends Component {
         if (is_encrypted) {
             await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
                 console.log('Outgoing message', message.id, 'decrypted to', message.receiver, message.contentType);
+                content = decryptedBody;
                 if (message.contentType === 'application/sylk-contact-update') {
-                    this.contactSync(decryptedBody);
+                    this.contactSync(content);
                 } else {
-                    this.saveMessageSql(message, decryptedBody);
+                    this.saveMessageSql(message, content);
                     this.lastSyncedMessageId = message.id;
                     storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
 
@@ -4710,6 +4731,15 @@ class Sylk extends Component {
 
                     if (content && content.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
                         myContacts[uri].lastMessage = content.substring(0, 35);
+                        myContacts[uri].lastMessageId = message.id;
+
+                        if (this.state.selectedContact) {
+                            let selectedContact = this.state.selectedContact;
+                            selectedContact.lastMessage = myContacts[uri].lastMessage;
+                            selectedContact.startTime = message.timestamp;
+                            selectedContact.direction = 'outgoing';
+                            this.setState({selectedContact: selectedContact});
+                        }
                     }
 
                     this.saveSylkContact(uri, myContacts[uri]);
@@ -4784,10 +4814,10 @@ class Sylk extends Component {
                 //console.log('Sync outgoing message', message.id, 'decrypted to', message.receiver);
                 if (message.contentType === 'application/sylk-contact-update') {
                     this.contactSync(decryptedBody);
-                    this.remove_sync_pending_item(message.id);
                 } else {
                     this.saveMessageSql(message, decryptedBody);
                 }
+                this.remove_sync_pending_item(message.id);
             }).catch((error) => {
                 console.log('Failed to decrypt my own message:', error);
                 this.remove_sync_pending_item(message.id);
@@ -4796,10 +4826,10 @@ class Sylk extends Component {
         } else {
             if (message.contentType === 'application/sylk-contact-update') {
                 this.contactSync(content);
-                this.remove_sync_pending_item(message.id);
             } else {
                 this.saveMessageSql(message);
             }
+            this.remove_sync_pending_item(message.id);
         }
     }
 
@@ -4838,8 +4868,6 @@ class Sylk extends Component {
                 console.log('SQL error:', error);
             }
         });
-
-        this.remove_sync_pending_item(message.id);
     }
 
     async saveSystemMessage(uri, content, direction, missed=false) {
@@ -4873,19 +4901,19 @@ class Sylk extends Component {
         var content = decryptedBody || message.content;
         let received = 0;
         let imdn_msg;
-        if (message.dispositionNotification.indexOf('positive-delivery') > -1) {
-            imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri}
-            if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
-                received = 1;
-            }
-        } else {
-            //console.log('Incoming message', message.id, 'was already delivered');
-            received = 1;
-        }
-
         if (message.dispositionNotification.indexOf('display') === -1) {
             //console.log('Incoming message', message.id, 'was already read');
             received = 2;
+        } else {
+            if (message.dispositionNotification.indexOf('positive-delivery') > -1) {
+                imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri}
+                if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
+                    received = 1;
+                }
+            } else {
+                console.log('Incoming message', message.id, 'from', message.sender.uri, 'was already delivered');
+                received = 1;
+            }
         }
 
         let params = [message.id, JSON.stringify(message.timestamp), content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];

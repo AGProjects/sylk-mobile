@@ -561,12 +561,12 @@ class HistoryTileBox extends Component {
             }
 
             if (data.received) {
-                data.received.map(elem => {elem.direction = 'received'; return elem});
+                data.received.map(elem => {elem.direction = 'incoming'; return elem});
                 history = history.concat(data.received);
             }
 
             if (data.placed) {
-                data.placed.map(elem => {elem.direction = 'placed'; return elem});
+                data.placed.map(elem => {elem.direction = 'outgoing'; return elem});
                 history = history.concat(data.placed);
             }
 
