@@ -4402,6 +4402,7 @@ class Sylk extends Component {
         let existingMessages;
         let formatted_date;
         let newMessages = [];
+        let lastMessages = {};
         let update_uris = {};
         let last_timestamp;
         let stats = {state: 0,
@@ -4415,6 +4416,7 @@ class Sylk extends Component {
             last_timestamp = message.timestamp;
             i = i + 1;
             //console.log('Process journal', i, 'of', messages.length, message.contentType);
+            uri = null;
 
             if (message.contentType === 'application/sylk-message-remove') {
                 uri = message.content.contact;
@@ -4431,15 +4433,14 @@ class Sylk extends Component {
                 }
             }
 
+            if (uri && Object.keys(myContacts).indexOf(uri) === -1) {
+                myContacts[uri] = this.newContact(uri);
+            }
             //console.log('Sync', message.timestamp, message.contentType, uri);
 
             if (message.contentType === 'application/sylk-message-remove') {
                 idx = 'remove' + message.id;
                 this.add_sync_pending_item(idx);
-
-                if (Object.keys(myContacts).indexOf(uri) === -1) {
-                    myContacts[uri] = this.newContact(uri);
-                }
 
                 this.deleteMessageSync(message.id, uri);
 
@@ -4456,10 +4457,6 @@ class Sylk extends Component {
                     renderMessages[uri] = newMessages;
                 }
 
-                if (myContacts[uri].totalMessages) {
-                    myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
-                }
-
                 let idx = myContacts[uri].unread.indexOf(message.id);
 
                 if (idx > -1) {
@@ -4469,6 +4466,10 @@ class Sylk extends Component {
                 if (myContacts[uri].lastMessageId === message.id) {
                     myContacts[uri].lastMessage = null;
                     myContacts[uri].lastMessageId = null;
+                }
+
+                if (uri in lastMessages && lastMessages[uri] === message.id) {
+                    delete lastMessages[uri];
                 }
 
                 stats.delete = stats.delete + 1;
@@ -4482,6 +4483,10 @@ class Sylk extends Component {
                     delete update_uris[uri];
                 }
 
+                if (uri in lastMessages) {
+                    delete lastMessages[uri];
+                }
+
                 if (uri in renderMessages) {
                     delete renderMessages[uri];
                 }
@@ -4491,12 +4496,8 @@ class Sylk extends Component {
                 stats.remove = stats.remove + 1;
 
             } else if (message.contentType === 'application/sylk-conversation-read') {
-                if (Object.keys(myContacts).indexOf(uri) === -1) {
-                    myContacts[uri] = this.newContact(uri);
-                }
-
                 update_uris[uri] = last_timestamp;
-                myContacts[uri].timestamp = new Date();
+                myContacts[uri].unread = [];
                 stats.read = stats.read + 1;
 
             } else if (message.contentType === 'message/imdn') {
@@ -4505,27 +4506,23 @@ class Sylk extends Component {
 
             } else {
                 this.add_sync_pending_item(message.id);
+                myContacts[uri].timestamp = message.timestamp;
 
                 if (message.sender.uri === this.state.account.id) {
+                    update_uris[uri] = last_timestamp;
                     if (message.contentType !== 'application/sylk-contact-update') {
-                        update_uris[uri] = last_timestamp;
-                        if (Object.keys(myContacts).indexOf(uri) === -1) {
-                            myContacts[uri] = this.newContact(message.content);
-                        }
-                        myContacts[uri].timestamp = message.timestamp;
+                        myContacts[uri].lastMessageId = message.id;
+                        lastMessages[uri] = message.id;
                     }
                     stats.outgoing = stats.outgoing + 1;
                     this.outgoingMessageSync(message);
                 } else {
-                    if (Object.keys(myContacts).indexOf(uri) === -1) {
-                        myContacts[uri] = this.newContact(uri);
-                    }
-                    myContacts[uri].timestamp = message.timestamp;
+                    myContacts[uri].lastMessageId = message.id;
+                    lastMessages[uri] = message.id;
+
                     if (message.dispositionNotification.indexOf('display') > -1) {
                         myContacts[uri].unread.push(message.id);
-                        myContacts[uri].lastMessageId = message.id;
                     }
-
                     stats.incoming = stats.incoming + 1;
                     this.incomingMessageSync(message);
                 }
@@ -4550,6 +4547,11 @@ class Sylk extends Component {
                 this.saveSylkContact(uri, myContacts[uri]);
             }
         });
+
+        Object.keys(lastMessages).forEach((uri) => {
+            // TODO update lastMessage content for each contact
+        });
+
 
         storage.set('lastSyncedMessageId', this.lastSyncedMessageId);
     }
