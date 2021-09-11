@@ -1,0 +1,37 @@
+.portraitContainer {
+    flex: 1;
+    flex-direction: column;
+}
+
+.contactsPortraitContainer {
+    flex: 1;
+    flex-direction: column;
+}
+
+.chatPortraitContainer {
+    flex: 6;
+    margin-top: 15px;
+}
+
+.landscapeContainer {
+    flex: 1;
+    flex-direction: row;
+}
+
+.contactsLandscapeContainer {
+    flex: 1;
+    flex-direction: row;
+}
+
+.chatLandscapeContainer {
+    flex: 1;
+}
+
+.chatBorder {
+    border-width: 0px;
+    margin: 1px;
+    border-radius: 5px;
+    border-color: gray;
+}
+
+
