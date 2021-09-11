@@ -399,9 +399,9 @@ class ConferenceBox extends Component {
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
 
             if (isPhoneNumber) {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', username);
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', username);
             } else {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'remoteParty', uri);
+                var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', uri);
             }
 
             if (contact_obj) {

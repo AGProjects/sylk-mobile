@@ -6,7 +6,7 @@ import { View, Platform} from 'react-native';
 import { IconButton, Title, Button } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
-import HistoryTileBox from './HistoryTileBox';
+import ContactsListBox from './ContactsListBox';
 import FooterBox from './FooterBox';
 import URIInput from './URIInput';
 import config from '../config';
@@ -27,7 +27,7 @@ class ReadyBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             historyFilter: null,
-            missedCalls: false,
+            missedCalls: this.props.missedCalls,
             isLandscape: this.props.isLandscape,
             participants: null,
             myInvitedParties: this.props.myInvitedParties,
@@ -53,7 +53,19 @@ class ReadyBox extends Component {
         }
 
         if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
-            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.remoteParty)});
+            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
+        }
+
+        if (nextProps.missedCalls.length === 0 && this.state.historyFilter === 'missed') {
+            this.setState({'historyFilter': null});
+        }
+
+        if (nextProps.blockedUris.length === 0 && this.state.historyFilter === 'blocked') {
+            this.setState({'historyFilter': null});
+        }
+
+        if (nextProps.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') {
+            this.setState({'historyFilter': null});
         }
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
@@ -64,6 +76,9 @@ class ReadyBox extends Component {
                         selectedContacts: nextProps.selectedContacts,
                         selectedContact: nextProps.selectedContact,
                         pinned: nextProps.pinned,
+                        favoriteUris: nextProps.favoriteUris,
+                        blockedUris: nextProps.blockedUris,
+                        missedCalls: nextProps.missedCalls,
                         isLandscape: nextProps.isLandscape});
     }
 
@@ -77,14 +92,6 @@ class ReadyBox extends Component {
 
     componentWillUnmount() {
         this.ended = true;
-    }
-
-    setMissedCalls(flag) {
-        if (this.ended) {
-            return;
-        }
-
-        this.setState({missedCalls: flag});
     }
 
     filterHistory(filter) {
@@ -145,7 +152,7 @@ class ReadyBox extends Component {
 
     handleTargetChange(value, contact) {
         if (this.state.inviteContacts && contact) {
-             const uri = contact.remoteParty;
+             const uri = contact.uri;
              this.props.updateSelection(uri);
              return;
         }
@@ -321,6 +328,12 @@ class ReadyBox extends Component {
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
 
+        /*
+        console.log('Render missedCalls', this.state.missedCalls);
+        console.log('Render blockedUris', this.state.blockedUris);
+        console.log('Render favoriteUris', this.state.favoriteUris);
+        */
+
         let uri = this.state.targetUri.toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
@@ -426,13 +439,12 @@ class ReadyBox extends Component {
                                 : null}
                     </View>
                     <View style={[historyContainer, borderClass]}>
-                        <HistoryTileBox
+                        <ContactsListBox
                             contacts={this.state.contacts}
                             targetUri={this.state.targetUri}
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             selectedContact={this.state.selectedContact}
-                            setMissedCalls={this.setMissedCalls}
                             isTablet={this.props.isTablet}
                             chat={this.state.chat}
                             isLandscape={this.state.isLandscape}
@@ -442,11 +454,9 @@ class ReadyBox extends Component {
                             refreshHistory={this.props.refreshHistory}
                             refreshFavorites={this.props.refreshFavorites}
                             localHistory={this.props.localHistory}
-                            cacheHistory={this.props.cacheHistory}
-                            serverHistory={this.props.serverHistory}
+                            saveHistory={this.props.saveHistory}
                             myDisplayName={this.state.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
-                            deleteHistoryEntry={this.props.deleteHistoryEntry}
                             saveInvitedParties={this.props.saveInvitedParties}
                             myInvitedParties = {this.state.myInvitedParties}
                             favoriteUris={this.props.favoriteUris}
@@ -473,6 +483,7 @@ class ReadyBox extends Component {
                             togglePinned = {this.props.togglePinned}
                             pinned = {this.state.pinned}
                             loadEarlierMessages = {this.props.loadEarlierMessages}
+                            newContactFunc = {this.props.newContactFunc}
                         />
                     </View>
 
@@ -485,7 +496,7 @@ class ReadyBox extends Component {
                        {this.state.historyFilter !== null ? <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>: null}
                        {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
                        {(this.state.blockedUris.length > 0 && this.state.historyFilter !== 'blocked')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
-                       {(this.state.missedCalls && this.state.historyFilter !== 'missed')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
+                       {(this.state.missedCalls.length > 0 && this.state.historyFilter !== 'missed')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
                     </View>
                     : null}
 
@@ -524,12 +535,10 @@ ReadyBox.propTypes = {
     isLandscape     : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
     refreshFavorites: PropTypes.bool,
-    cacheHistory    : PropTypes.func,
-    serverHistory   : PropTypes.array,
+    saveHistory     : PropTypes.func,
     localHistory    : PropTypes.array,
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
-    deleteHistoryEntry: PropTypes.func,
     toggleFavorite  : PropTypes.func,
     myInvitedParties: PropTypes.object,
     toggleBlocked   : PropTypes.func,
@@ -555,7 +564,9 @@ ReadyBox.propTypes = {
     inviteContacts  : PropTypes.bool,
     selectedContacts: PropTypes.array,
     updateSelection : PropTypes.func,
-    loadEarlierMessages: PropTypes.func
+    loadEarlierMessages: PropTypes.func,
+    newContactFunc  : PropTypes.func,
+    missedCalls     : PropTypes.array
 };
 
 

@@ -19,8 +19,14 @@ applications and WebRTC browsers.
 Features
 --------
 
+Sylk Mobile is part of Sylk Suite, a set of real-time communications applications using IETF SIP protocol and WebRTC specifications.  With it you can call to any other SIP address and you can receive calls from SIP applications and WebRTC browsers.
+
+Features
+
 * 1-to-1 audio and video calls
-* Multiparty conferencing
+* Text messaging
+* Synchronization of multiple devices 
+* Multiparty video conferencing
 * Call history entries management
 * Native address book lookup
 * Native OS telephony integration
@@ -30,3 +36,4 @@ Features
 * Support for tablets and phones
 * Interoperable with SIP clients
 * Receive calls from the web
+

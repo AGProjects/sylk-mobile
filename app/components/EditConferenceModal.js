@@ -83,7 +83,7 @@ class EditConferenceModal extends Component {
         }
 
         if (uris) {
-            this.props.saveInvitedParties(this.state.selectedContact.remoteParty, uris);
+            this.props.saveInvitedParties(this.state.selectedContact.uri, uris);
             this.setState({participants: null});
         }
         this.props.close();

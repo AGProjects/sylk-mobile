@@ -205,10 +205,10 @@ class ConferenceModal extends Component {
         let participants = this.state.participants;
         let els = participants;
         if (els.length === 1) {
-            participants = contact.remoteParty;
+            participants = contact.uri;
         } else {
             els.pop(-1);
-            els.push(contact.remoteParty);
+            els.push(contact.uri);
             participants = els.toString(',');
         }
 

@@ -18,7 +18,7 @@ class ExportPrivateKeyModal extends Component {
             password: this.props.password,
             show: this.props.show,
             sent: this.props.sent,
-            status: 'Key id: ' + this.props.publicKeyHash
+            status: ''
         }
     }
 

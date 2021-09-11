@@ -57,7 +57,8 @@
     "react-native-webrtc": "nimbleape/react-native-webrtc#2f716bed0cbcf4aa4441886f890c40cd5f8dff81",
     "react-router-native": "^5.1.2",
     "sqlstring": "^2.3.2",
-    "xss": "^1.0.8"
+    "xss": "^1.0.8",
+    "xtypejs": "^0.7.1"
   },
   "devDependencies": {
     "@babel/core": "^7.7.4",

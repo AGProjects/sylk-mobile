@@ -181,7 +181,7 @@ class InviteParticipantsModal extends Component {
         if (text.length > 1) {
             filteredContacts = this.props.lookupContacts(text);
             let already_added = this.state.participants.replace(/\s+,\s+/g, ",").split(',');
-            filteredContacts = filteredContacts.filter(x => !already_added.includes(x.remoteParty) && this.isValidUri(x.remoteParty));
+            filteredContacts = filteredContacts.filter(x => !already_added.includes(x.uri) && this.isValidUri(x.uri));
 
             if (filteredContacts.length > 0) {
                searching = true;
@@ -198,10 +198,10 @@ class InviteParticipantsModal extends Component {
         let participants = this.state.participants.replace(/\s+,\s+/g, ",");
         let els = participants.split(',');
         if (els.length === 1) {
-            participants = contact.remoteParty;
+            participants = contact.uri;
         } else {
             els.pop(-1);
-            els.push(contact.remoteParty);
+            els.push(contact.uri);
             participants = els.toString(',');
         }
 
@@ -232,7 +232,7 @@ class InviteParticipantsModal extends Component {
                                         <TouchableOpacity
                                               onPress={() => {this.updateParticipants(item);}}>
                                               <Text style={styles.autocompleteSearchBoxTextItem}>
-                                                  {item.displayName ? item.displayName + ' ('+ item.remoteParty + ')' : item.remoteParty}
+                                                  {item.displayName ? item.displayName + ' ('+ item.uri + ')' : item.uri}
                                               </Text>
                                         </TouchableOpacity>
                                         )}

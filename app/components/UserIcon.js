@@ -9,7 +9,7 @@ const UserIcon = (props) => {
     if (!props.identity) {
         return (null)
     }
-    const name = props.identity.displayName || props.identity.uri;
+    const name = props.identity.name || props.identity.uri;
     const photo = props.identity.photo;
 
     let initials = '';

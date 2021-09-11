@@ -28,6 +28,7 @@ class NavigationBar extends Component {
             showAboutModal: false,
             inCall: this.props.inCall,
             showCallMeMaybeModal: false,
+            contactsLoaded: this.props.contactsLoaded,
             showEditContactModal: false,
             showEditConferenceModal: false,
             showExportPrivateKeyModal: false,
@@ -44,7 +45,6 @@ class NavigationBar extends Component {
             displayName: this.props.displayName,
             organization: this.props.organization,
             publicKey: this.props.publicKey,
-            showEditContactModal: false,
             showPublicKey: false,
             myInvitedParties: this.props.myInvitedParties,
             messages: this.props.messages
@@ -61,6 +61,7 @@ class NavigationBar extends Component {
 
         this.setState({registrationState: nextProps.registrationState,
                        connection: nextProps.connection,
+                       contactsLoaded: nextProps.contactsLoaded,
                        displayName: nextProps.displayName,
                        organization: nextProps.organization,
                        proximity: nextProps.proximity,
@@ -109,7 +110,7 @@ class NavigationBar extends Component {
                 this.toggleAddContactModal();
                 break;
             case 'editContact':
-                if (this.state.selectedContact && this.state.selectedContact.remoteParty.indexOf('@videoconference') > -1) {
+                if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                     this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
                 } else {
                     this.setState({showEditContactModal: !this.state.showEditContactModal});
@@ -119,16 +120,16 @@ class NavigationBar extends Component {
                 this.setState({showDeleteHistoryModal: !this.state.showDeleteHistoryModal});
                 break;
             case 'toggleFavorite':
-                this.props.toggleFavorite(this.state.selectedContact.remoteParty);
+                this.props.toggleFavorite(this.state.selectedContact.uri);
                 break;
             case 'toggleBlocked':
-                this.props.toggleBlocked(this.state.selectedContact.remoteParty);
+                this.props.toggleBlocked(this.state.selectedContact.uri);
                 break;
             case 'togglePinned':
-                this.props.togglePinned(this.state.selectedContact.remoteParty);
+                this.props.togglePinned(this.state.selectedContact.uri);
                 break;
             case 'sendPublicKey':
-                this.props.sendPublicKey(this.state.selectedContact.remoteParty);
+                this.props.sendPublicKey(this.state.selectedContact.uri);
                 break;
             case 'exportPrivateKey':
                 if (this.state.publicKey) {
@@ -162,7 +163,7 @@ class NavigationBar extends Component {
         }
 
         if (this.state.selectedContact) {
-            this.props.saveContact(this.state.selectedContact.remoteParty, displayName, organization);
+            this.props.saveContact(this.state.selectedContact.uri, displayName, organization);
         } else {
             this.setState({displayName: displayName});
             this.props.saveContact(this.state.accountId, displayName, organization);
@@ -179,12 +180,12 @@ class NavigationBar extends Component {
     }
 
     audioCall() {
-        let uri = this.state.selectedContact.remoteParty;
+        let uri = this.state.selectedContact.uri;
         this.props.startCall(uri, {audio: true, video: false});
     }
 
     videoCall() {
-        let uri = this.state.selectedContact.remoteParty;
+        let uri = this.state.selectedContact.uri;
         this.props.startCall(uri, {audio: true, video: true});
     }
 
@@ -240,7 +241,7 @@ class NavigationBar extends Component {
 
         let hasMessages = true;
         if (this.state.selectedContact) {
-            if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.remoteParty) > -1 && this.state.messages[this.state.selectedContact.remoteParty].length > 0) {
+            if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) > -1 && this.state.messages[this.state.selectedContact.uri].length > 0) {
                 hasMessages = true;
             }
         }
@@ -253,7 +254,7 @@ class NavigationBar extends Component {
 
         let invitedParties = [];
         if (this.state.selectedContact) {
-            let uri = this.state.selectedContact.remoteParty.split('@')[0];
+            let uri = this.state.selectedContact.uri.split('@')[0];
             if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
                 invitedParties = this.state.myInvitedParties[uri];
             }
@@ -261,8 +262,8 @@ class NavigationBar extends Component {
 
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
-        //let showEditModal = this.state.showEditContactModal;
-        let showEditModal = this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey) || false
+        let showEditModal = this.state.contactsLoaded && (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null) || false)
+
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -366,7 +367,7 @@ class NavigationBar extends Component {
                 <DeleteHistoryModal
                     show={this.state.showDeleteHistoryModal}
                     close={this.toggleDeleteHistoryModal}
-                    uri={this.state.selectedContact ? this.state.selectedContact.remoteParty : null}
+                    uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={displayName}
                     deleteMessages={this.props.deleteMessages}
                 />
@@ -380,7 +381,7 @@ class NavigationBar extends Component {
                 <EditContactModal
                     show={showEditModal}
                     close={this.toggleEditContactModal}
-                    uri={this.state.selectedContact ? this.state.selectedContact.remoteParty : this.state.accountId}
+                    uri={this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId}
                     displayName={displayName}
                     organization={organization}
                     myself={this.state.selectedContact ? false : true}
@@ -393,7 +394,7 @@ class NavigationBar extends Component {
                 <EditConferenceModal
                     show={this.state.showEditConferenceModal}
                     close={this.toggleEditConferenceModal}
-                    room={this.state.selectedContact ? this.state.selectedContact.remoteParty.split('@')[0]: ''}
+                    room={this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0]: ''}
                     invitedParties={invitedParties}
                     selectedContact={this.state.selectedContact}
                     toggleFavorite={this.props.toggleFavorite}
@@ -424,6 +425,7 @@ NavigationBar.propTypes = {
     toggleProximity    : PropTypes.func.isRequired,
     showLogs           : PropTypes.func.isRequired,
     inCall             : PropTypes.bool,
+    contactsLoaded     : PropTypes.bool,
     proximity          : PropTypes.bool,
     displayName        : PropTypes.string,
     organization       : PropTypes.string,
