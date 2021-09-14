@@ -24,8 +24,12 @@ class NavigationBar extends Component {
         super(props);
         autoBind(this);
 
+        let displayName = this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName;
+        let organization = this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization;
+
         this.state = {
             showAboutModal: false,
+            syncConversations: this.props.syncConversations,
             inCall: this.props.inCall,
             showCallMeMaybeModal: false,
             contactsLoaded: this.props.contactsLoaded,
@@ -42,12 +46,14 @@ class NavigationBar extends Component {
             mute: false,
             menuVisible: false,
             accountId: this.props.accountId,
-            displayName: this.props.displayName,
-            organization: this.props.organization,
+            account: this.props.account,
+            displayName: displayName,
+            organization: organization,
             publicKey: this.props.publicKey,
             showPublicKey: false,
             myInvitedParties: this.props.myInvitedParties,
-            messages: this.props.messages
+            messages: this.props.messages,
+            userClosed: false
         }
 
         this.menuRef = React.createRef();
@@ -59,12 +65,18 @@ class NavigationBar extends Component {
             this.setState({accountId: nextProps.accountId});
         }
 
+        let displayName = nextProps.selectedContact ? nextProps.selectedContact.name : nextProps.displayName;
+        let organization = nextProps.selectedContact ? nextProps.selectedContact.organization : nextProps.organization;
+
         this.setState({registrationState: nextProps.registrationState,
                        connection: nextProps.connection,
+                       syncConversations: nextProps.syncConversations,
                        contactsLoaded: nextProps.contactsLoaded,
-                       displayName: nextProps.displayName,
-                       organization: nextProps.organization,
+                       displayName: displayName,
+                       organization: organization,
                        proximity: nextProps.proximity,
+                       account: nextProps.account,
+                       userClosed: nextProps.userClosed,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
@@ -201,13 +213,27 @@ class NavigationBar extends Component {
         this.setState({showDeleteHistoryModal: !this.state.showDeleteHistoryModal});
     }
 
-    toggleEditContactModal() {
-        this.setState({showEditContactModal: !this.state.showEditContactModal,
+    showEditContactModal() {
+        this.setState({showEditContactModal: true,
                        showPublicKey: false});
     }
 
+    hideEditContactModal() {
+        this.setState({showEditContactModal: false,
+                       showPublicKey: false,
+                       userClosed: true});
+    }
+
+    toggleEditContactModal() {
+        if (this.state.showEditContactModal) {
+            this.hideEditContactModal();
+        } else {
+            this.showEditContactModal();
+        };
+    }
+
     toggleEditConferenceModal() {
-        this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
+        this.setState({showDeleteHistoryModal: !this.state.showEditConferenceModal});
     }
 
     toggleExportPrivateKeyModal() {
@@ -239,15 +265,13 @@ class NavigationBar extends Component {
         let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
 
-        let hasMessages = true;
+        let hasMessages = false;
         if (this.state.selectedContact) {
             if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) > -1 && this.state.messages[this.state.selectedContact.uri].length > 0) {
                 hasMessages = true;
             }
         }
 
-        let displayName = this.state.selectedContact ? this.state.selectedContact.displayName : this.state.displayName;
-        let organization = this.state.selectedContact ? this.state.selectedContact.organization : this.state.organization;
         let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : 'Block';
         let favoriteTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
         let favoriteIcon = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
@@ -262,8 +286,8 @@ class NavigationBar extends Component {
 
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
-        let showEditModal = this.state.contactsLoaded && (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null) || false)
 
+        let showEditModal = !this.state.syncConversations && this.state.contactsLoaded && (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null && !this.state.userClosed)) || false;
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -275,7 +299,7 @@ class NavigationBar extends Component {
                     title="Sylk"
                     titleStyle={titleStyle}
                     subtitleStyle={subtitleStyle}
-                    subtitle={this.props.isTablet? null: (this.state.accountId + ' (' + this.state.displayName + ')')}
+                    subtitle={this.props.isTablet? null: ((this.state.accountId || 'Loading...') + (this.state.displayName ? ' (' + this.state.displayName + ')' : ''))}
                 />
                 {this.props.isTablet?
                 <Text style={subtitleStyle}>{subtitle}</Text>
@@ -304,7 +328,8 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
-                        : null}
+                        : null
+                        }
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
                         : null}
@@ -334,7 +359,10 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account" title="Add contact..."/>
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
+                        {!this.state.syncConversations ?
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
+                        : null}
+
                         <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />
                         <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
@@ -368,7 +396,7 @@ class NavigationBar extends Component {
                     show={this.state.showDeleteHistoryModal}
                     close={this.toggleDeleteHistoryModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
-                    displayName={displayName}
+                    displayName={this.state.displayName}
                     deleteMessages={this.props.deleteMessages}
                 />
 
@@ -380,10 +408,10 @@ class NavigationBar extends Component {
 
                 <EditContactModal
                     show={showEditModal}
-                    close={this.toggleEditContactModal}
+                    close={this.hideEditContactModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId}
-                    displayName={displayName}
-                    organization={organization}
+                    displayName={this.state.displayName}
+                    organization={this.state.organization}
                     myself={this.state.selectedContact ? false : true}
                     saveContact={this.saveContact}
                     deleteContact={this.props.deleteContact}
@@ -455,7 +483,8 @@ NavigationBar.propTypes = {
     deletePublicKey    : PropTypes.func,
     sendPublicKey      : PropTypes.func,
     messages           : PropTypes.object,
-    showImportModal    : PropTypes.func
+    showImportModal    : PropTypes.func,
+    syncConversations   : PropTypes.bool
 };
 
 export default NavigationBar;

@@ -25,7 +25,7 @@ class ExportPrivateKeyModal extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({show: nextProps.show,
                        password: nextProps.password,
-                       status: nextProps.status ? nextProps.status : 'Key id: ' + this.props.publicKeyHash,
+                       status: nextProps.status || '',
                        publicKeyHash: nextProps.publicKeyHash,
                        sent: nextProps.password === this.state.password
                        });

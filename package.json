@@ -53,6 +53,7 @@
     "react-native-swipe-list-view": "^3.2.3",
     "react-native-uuid": "^1.4.9",
     "react-native-vector-icons": "^6.6.0",
+    "react-native-version-number": "^0.3.6",
     "react-native-voip-push-notification": "2.1.0",
     "react-native-webrtc": "nimbleape/react-native-webrtc#2f716bed0cbcf4aa4441886f890c40cd5f8dff81",
     "react-router-native": "^5.1.2",

@@ -138,12 +138,19 @@ class ContactCard extends Component {
                           this.state.contact.tags.indexOf('test') === -1 &&
                           this.state.contact.tags !== ["syntetic"];
 
-        //console.log('Render contact', this.state.contact);
 
         let uri = this.state.contact.uri;
         let username =  uri.split('@')[0];
         let domain =  uri.split('@')[1];
         let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+        if (uri === 'demo_google@sip2sip.info') {
+            //console.log('Render contact', this.state.contact);
+        }
+
+        if (uri === 'mi@sip2sip.info') {
+            //console.log('Render contact', this.state.contact);
+        }
 
         let name = this.state.contact.name;
         if (this.state.contact.organization) {

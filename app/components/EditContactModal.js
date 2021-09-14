@@ -158,7 +158,7 @@ class EditContactModal extends Component {
                         <Button
                             mode="contained"
                             style={styles.button}
-                            disabled={!this.state.displayName || this.state.confirm}
+                            disabled={this.state.confirm}
                             onPress={this.saveContact}
                             icon="content-save"
                             accessibilityLabel="Save contact details"

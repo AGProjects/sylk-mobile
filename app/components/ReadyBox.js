@@ -328,11 +328,9 @@ class ReadyBox extends Component {
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
 
-        /*
-        console.log('Render missedCalls', this.state.missedCalls);
-        console.log('Render blockedUris', this.state.blockedUris);
-        console.log('Render favoriteUris', this.state.favoriteUris);
-        */
+        //console.log('Render missedCalls', this.state.missedCalls, 'selected contact', this.state.selectedContact ? true: false);
+        //console.log('Render blockedUris', this.state.blockedUris);
+        //> 10console.log('Render favoriteUris', this.state.favoriteUris);
 
         let uri = this.state.targetUri.toLowerCase();
         var uri_parts = uri.split("/");
@@ -373,6 +371,13 @@ class ReadyBox extends Component {
         if (this.state.call && this.state.call.hasOwnProperty('_participants')) {
             callType = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
         }
+
+        let showTagButtons = (
+                              (this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 || this.state.missedCalls.length > 0) ||
+                              (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') ||
+                              (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked') ||
+                              (this.state.missedCalls.length === 0 && this.state.historyFilter === 'missed')
+                              ) && !this.state.chat;
 
         return (
             <Fragment>
@@ -487,18 +492,16 @@ class ReadyBox extends Component {
                         />
                     </View>
 
-                    {(((this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 ) ||
-                      (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') ||
-                      (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked') ||
-                      (this.state.historyFilter === 'missed')) &&
-                      !this.state.chat) ?
+                    {showTagButtons ?
+
                     <View style={styles.historyButtonGroup}>
                        {this.state.historyFilter !== null ? <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>: null}
                        {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
                        {(this.state.blockedUris.length > 0 && this.state.historyFilter !== 'blocked')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
-                       {(this.state.missedCalls.length > 0 && this.state.historyFilter !== 'missed')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
+                       {(this.state.missedCalls.length > 0 && this.state.historyFilter !== 'missed') ? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
                     </View>
-                    : null}
+                    : null
+                    }
 
                     {this.props.isTablet && 0?
                     <View style={styles.footer}>

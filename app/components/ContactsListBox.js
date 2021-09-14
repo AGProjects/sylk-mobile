@@ -319,7 +319,6 @@ class ContactsListBox extends Component {
 
         let history = [];
         let localTime;
-        let hasMissedCalls = false;
 
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
@@ -439,7 +438,6 @@ class ContactsListBox extends Component {
 
                     if (elem.direction === 'incoming' && elem.duration === 0) {
                         elem.tags.push('missed');
-                        hasMissedCalls = true;
                     }
                     return elem;
                 });
@@ -645,6 +643,8 @@ class ContactsListBox extends Component {
             items = items.concat(matchedContacts);
         }
 
+        //console.log('Matched items', items);
+
         if (this.state.targetUri && items.length == 0) {
             items = items.concat(this.searchedContact(this.state.targetUri));
         }
@@ -668,33 +668,6 @@ class ContactsListBox extends Component {
 
         items.forEach((item) => {
             item.showActions = false;
-
-            if (!item.tags) {
-                item.tags = [];
-            }
-
-            if (!Array.isArray(item.unread)) {
-                item.unread = [];
-            }
-
-            if (this.state.favoriteUris.indexOf(item.uri) > -1 && item.tags.indexOf('favorite') === -1) {
-                item.tags.push('favorite');
-            }
-
-            if (this.state.blockedUris.indexOf(item.uri) > -1 && item.tags.indexOf('blocked') === -1) {
-                item.tags.push('blocked');
-            }
-
-            let idx = item.tags.indexOf('blocked');
-            if (this.state.blockedUris.indexOf(item.uri) === -1 && idx > -1) {
-                item.tags.splice(idx, 1);
-            }
-
-            idx = item.tags.indexOf('favorite');
-
-            if (this.state.favoriteUris.indexOf(item.uri) === -1 && idx > -1) {
-                item.tags.splice(idx, 1);
-            }
 
             if (item.uri === this.echoTest.uri) {
                 item.name = this.echoTest.name;
@@ -762,7 +735,6 @@ class ContactsListBox extends Component {
         const borderClass = (messages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
 
         if (items.length === 1) {
-            items[0].unread = [];
             if (items[0].tags.toString() === 'syntetic') {
                 messages = [];
             }

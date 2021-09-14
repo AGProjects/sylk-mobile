@@ -85,6 +85,11 @@ class ImportPrivateKeyModal extends Component {
                                 maxLength={6}
                                 name="password"
                                 label="Enter pincode"
+                                onSubmitEditing={()=>{
+                                    if (this.state.password.length === 6) {
+                                        this.props.saveFunc(this.state.password);
+                                    }
+                                }}
                                 onChangeText={this.onInputChange}
                                 required
                                 defaultValue={this.state.password}
@@ -116,13 +121,15 @@ class ImportPrivateKeyModal extends Component {
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>{'Private key'}</Dialog.Title>
+                            <Dialog.Title style={styles.title}>{'First device?'}</Dialog.Title>
                              <Text style={styles.body}>
                                  To decrypt previous messages you need to copy your private key from another device.
-                                 On another device, chose menu option 'Export private key'.
                             </Text>
                              <Text style={styles.body}>
-                                 If this is the first device, generate a new key.
+                                 On another device using the same account, go to menu option 'Export private key'.
+                            </Text>
+                             <Text style={styles.body}>
+                                 If this is the first device, just generate a new key by pressing the button bellow.
                             </Text>
                             <View style={styles.buttonRow}>
                             <Button
