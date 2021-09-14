@@ -13,7 +13,6 @@ function handleLink(event) {
     Linking.openURL('https://ag-projects.com');
 }
 
-
 const AboutModal = (props) => {
     return (
         <Portal>
@@ -22,7 +21,7 @@ const AboutModal = (props) => {
                     <Dialog.Title style={styles.title}>About Sylk</Dialog.Title>
                     <Text style={styles.body}>Sylk is part of Sylk Suite, a set of real-time
                     communications applications using IETF SIP protocol and WebRTC specifications.</Text>
-                    
+
                     <Text style={styles.version}> Version {VersionNumber.appVersion}</Text>
                     <Text onPress={() => handleLink()} style={styles.link}>Copyright &copy; AG Projects</Text>
                 </Surface>

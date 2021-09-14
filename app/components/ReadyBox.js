@@ -328,10 +328,6 @@ class ReadyBox extends Component {
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
 
-        //console.log('Render missedCalls', this.state.missedCalls, 'selected contact', this.state.selectedContact ? true: false);
-        //console.log('Render blockedUris', this.state.blockedUris);
-        //> 10console.log('Render favoriteUris', this.state.favoriteUris);
-
         let uri = this.state.targetUri.toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {

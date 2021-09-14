@@ -851,7 +851,6 @@ class Sylk extends Component {
                                     'timestamp' TEXT, \
                                     'unix_timestamp' INTEGER default 0, \
                                     'content' BLOB, \
-                                    'content_encrypted' BLOB, \
                                     'content_type' TEXT, \
                                     'from_uri' TEXT, \
                                     'to_uri' TEXT, \
@@ -5704,9 +5703,6 @@ class Sylk extends Component {
             storage.set('displayName', contact.name);
             storage.set('organization', contact.organization);
             this.setState({displayName: contact.name, organization: contact.organization});
-            console.log('handleReplicateContact MYSELF');
-        } else {
-            console.log('handleReplicateContact', uri);
         }
 
         let uri = contact.uri;
