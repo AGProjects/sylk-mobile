@@ -1,4 +1,12 @@
-Android 2.1.4 & Android 1.70.0 / Sat Sep 11 15:47:27 -03 2021
+iOS 2.1.5 & Android 1.71 Tue Sep 14 12:53:26 -03 2021
+
+  * Message synchronization fixes
+  * Support for multiple accounts
+  * Speed improvements
+  * Various bug fixes
+
+
+iOS 2.1.4 & Android 1.70 / Sat Sep 11 15:47:27 -03 2021
 
   * Edit contact fixes
   * Fixed deleting all messages for current account 
@@ -7,7 +15,7 @@ Android 2.1.4 & Android 1.70.0 / Sat Sep 11 15:47:27 -03 2021
   * Show software version in About panel
 
 
-iOS 2.1.3 & Android 1.69.0 / Thu Sep 09 10:05:37 -03 2021
+iOS 2.1.3 & Android 1.69 / Thu Sep 09 10:05:37 -03 2021
 
   * Added offline messaging
   * Added real-time replication for read-messages
@@ -40,7 +48,7 @@ iOS 2.1.3 & Android 1.69.0 / Thu Sep 09 10:05:37 -03 2021
   * Added menu items for calls
   * Contact fixes
 
-iOS 1.3.8 & Android 1.61.0 / Wed Nov 18 11:36:26 -03 2020
+iOS 1.3.8 & Android 1.61 / Wed Nov 18 11:36:26 -03 2020
 
  * Fixed waking up from OS dialer
  * Fixed Call id when starting conference from the system
