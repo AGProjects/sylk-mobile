@@ -289,6 +289,8 @@ class Sylk extends Component {
         this.newSyncMessagesCount = 0;
         this.syncStartTimestamp = null;
 
+        this.syncRequested = false;
+
         this.syncTimer = null;
         this.lastSyncedMessageId = null;
         this.outgoingMedia = null;
@@ -496,6 +498,7 @@ class Sylk extends Component {
 
     loadKeysFromSQL() {
         let keys = {};
+        let lastSyncId;
 
         this.ExecuteQuery("SELECT * FROM keys where account = ?",[this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -509,11 +512,19 @@ class Sylk extends Component {
                     this.saveLastSyncId(this.lastSyncedMessageId);
                     console.log('Migrated last sync id to SQL database');
                     storage.remove('lastSyncedMessageId');
+                    lastSyncId = this.lastSyncedMessageId;
                 } else {
                     if (item.last_sync_id) {
                         console.log('Loaded last sync id from SQL database', item.last_sync_id);
                     }
                     this.setState({keys: keys, lastSyncId: item.last_sync_id});
+                    lastSyncId = item.last_sync_id;
+                }
+
+                if (this.state.registrationState ==='registered' && !this.syncRequested) {
+                    this.syncRequested = true;
+                    console.log('Request sync messages from server', lastSyncId);
+                    this.state.account.syncConversations(lastSyncId);
                 }
 
             } else {
@@ -1678,6 +1689,7 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'closed':
+                this.syncRequested = false;
                 if (this.state.connection) {
                     utils.timestampedLog('Web socket was terminated');
                     this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
@@ -1692,6 +1704,7 @@ class Sylk extends Component {
                 this.callKeeper.setAvailable(true);
                 break;
             case 'disconnected':
+                this.syncRequested = false;
                 if (this.registrationFailureTimer) {
                     clearTimeout(this.registrationFailureTimer);
                     this.registrationFailureTimer = null;
@@ -1825,8 +1838,9 @@ class Sylk extends Component {
                            defaultDomain: this.state.account ? this.state.account.id.split('@')[1]: null
                            });
 
-            if (this.state.keys && this.state.keys.private) {
-                utils.timestampedLog('Request sync messages from server', this.state.lastSyncId);
+            if (this.state.keys && !this.syncRequested) {
+                this.syncRequested = true;
+                console.log('Request sync messages from server', this.state.lastSyncId);
                 this.state.account.syncConversations(this.state.lastSyncId);
             }
 
@@ -2365,6 +2379,11 @@ class Sylk extends Component {
             if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password);
+            } else if (this.state.connection.state !== 'ready') {
+                this._notificationCenter.postSystemNotification('Waiting for Internet connection');
+                if (this.currentRoute === '/login' && this.state.accountVerified) {
+                    this.changeRoute('/ready', 'start_up');
+                }
             }
         }
     }
@@ -2403,7 +2422,6 @@ class Sylk extends Component {
                     this.processRegistration(accountId, password);
             }, 10000);
         }
-
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
@@ -4368,7 +4386,7 @@ class Sylk extends Component {
             let params = [id];
             console.log('Failed to decrypt message:', error);
             this.ExecuteQuery("update messages set encrypted = 3 where msg_id = ?", params).then((result) => {
-                //console.log('SQL updated message decrypted', id);
+                //console.log('SQL updated message decrypted', id, 'rows affected', result.rowsAffected);
             }).catch((error) => {
                 console.log('SQL message update error:', error);
             });
@@ -4414,10 +4432,12 @@ class Sylk extends Component {
             let messages_to_decrypt = [];
             let decryptingMessages = {};
             let msg;
+            let enc;
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 content = item.content;
+                //console.log(item);
                 last_direction = item.direction;
                 let timestamp;
                 let unix_timestamp;
@@ -4433,7 +4453,11 @@ class Sylk extends Component {
 
                 if (is_encrypted) {
                     myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
-                    if (item.encrypted !== "3") {
+                    if (item.encrypted === null) {
+                        item.encrypted = 1;
+                    }
+                    enc = parseInt(item.encrypted);
+                    if (enc && enc !== 3 ) {
                         if (uri in decryptingMessages) {
                         } else {
                             decryptingMessages[uri] = [];
@@ -4449,7 +4473,8 @@ class Sylk extends Component {
                     } else if (item.content_type.indexOf('image/') > -1) {
                         image = `data:${item.content_type};base64,${btoa(content)}`
                     } else {
-                        content = 'Unknown message type received ' + item.content_type;
+                        console.log('Unknown message', item.msg_id, 'type', item.content_type);
+                        myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
                         continue;
                     }
 
@@ -4459,12 +4484,11 @@ class Sylk extends Component {
             }
 
             messages[uri].sort((a, b) => (a.createdAt > b.createdAt) ? 1 : -1);
-            console.log('Got', messages[uri].length, 'messages for', uri, 'from database');
+            console.log('Got', messages[uri].length, 'messages for', uri, 'from SQL database');
 
             if (messages[uri].length > 0) {
-                console.log('Got', messages[uri].length, 'messages for', uri, 'from database');
                 let last_item = messages[uri][messages[uri].length -1];
-                if (!last_item.image && !last_item.system && last_item.text.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
+                if (!last_item.image && !last_item.system) {
                     last_message = last_item.text.substring(0, 35);
                     last_message_id = last_item.id;
                 }
@@ -4492,7 +4516,7 @@ class Sylk extends Component {
     async deleteMessages(uri, local=true) {
         let query;
 
-        console.log('Purge messages for', uri);
+        console.log('Delete messages for', uri);
         let myContacts = this.state.myContacts;
 
         if (uri) {
@@ -4853,6 +4877,7 @@ class Sylk extends Component {
             let diff = (Date.now() - this.syncStartTimestamp)/ 1000;
             this.syncStartTimestamp = null;
             console.log('Sync ended after', diff, 'seconds');
+            this._notificationCenter.postSystemNotification('Messages in sync with server');
         }
     }
 
@@ -4880,6 +4905,7 @@ class Sylk extends Component {
             this.add_sync_pending_item('sync_in_progress');
         } else {
             console.log('Messages are in sync with the server');
+            this._notificationCenter.postSystemNotification('Messages in sync with server');
         }
 
         let i = 0;
@@ -6584,6 +6610,7 @@ class Sylk extends Component {
 
     logout() {
         console.log('Logout');
+        this.syncRequested = false;
         this.callKeeper.setAvailable(false);
 
         if (!this.mustLogout && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
@@ -6615,10 +6642,13 @@ class Sylk extends Component {
                                 });
 
         this.setState({account: null,
+                       displayName: '',
                        contactsLoaded: false,
                        registrationState: null,
                        registrationKeepalive: false,
                        status: null,
+                       keys: null,
+                       lastSyncId: null,
                        accountVerified: false,
                        autoLogin: false,
                        myContacts: {},

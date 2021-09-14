@@ -22,7 +22,8 @@ class DeleteHistoryModal extends Component {
             uri: this.props.uri,
             period: "0",
             remoteDelete: false,
-            confirm: false
+            confirm: false,
+            hasMessages: this.props.hasMessages
         }
     }
 
@@ -30,7 +31,8 @@ class DeleteHistoryModal extends Component {
         this.setState({show: nextProps.show,
                        displayName: nextProps.displayName,
                        uri: nextProps.uri,
-                       confirm: nextProps.confirm
+                       confirm: nextProps.confirm,
+                       hasMessages: nextProps.hasMessages
                        });
     }
 
@@ -61,7 +63,7 @@ class DeleteHistoryModal extends Component {
         let canDeleteByTime = false;
 
         let deleteLabel = this.state.confirm ? 'Confirm': 'Delete';
-
+        if (this.state.hasMessages) {
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
@@ -138,6 +140,46 @@ class DeleteHistoryModal extends Component {
                 </DialogType>
             </Portal>
         );
+        } else {
+        return (
+            <Portal>
+                <DialogType visible={this.state.show} onDismiss={this.props.close}>
+                    <Surface style={styles.container}>
+                        <View style={styles.titleContainer}>
+                            <View style={styles.titleContainer}>
+                            { this.state.uri ?
+                                <UserIcon style={styles.avatar} identity={identity}/>
+                            : null}
+                            </View>
+
+                            <View style={styles.titleContainer}>
+                               <Dialog.Title style={styles.title}>Delete contact</Dialog.Title>
+                           </View>
+
+                        </View>
+                        <View>
+                             <Text style={styles.body}>
+                                 Confirm deletion of contact {this.state.uri}
+                             </Text>
+                        </View>
+
+                        <View style={styles.buttonRow}>
+
+                        <Button
+                            mode="contained"
+                            style={styles.button}
+                            onPress={this.deleteMessages}
+                            icon="delete"
+                            accessibilityLabel="Delete"
+                            > {deleteLabel}
+                        </Button>
+                        </View>
+                    </Surface>
+                </DialogType>
+            </Portal>
+        );
+
+        }
     }
 }
 
@@ -147,7 +189,8 @@ DeleteHistoryModal.propTypes = {
     close              : PropTypes.func.isRequired,
     uri                : PropTypes.string,
     displayName        : PropTypes.string,
-    deleteMessages     : PropTypes.func
+    deleteMessages     : PropTypes.func,
+    hasMessages        : PropTypes.bool
 };
 
 export default DeleteHistoryModal;

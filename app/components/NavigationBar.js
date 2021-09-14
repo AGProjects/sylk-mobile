@@ -61,6 +61,7 @@ class NavigationBar extends Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
+
         if (nextProps.account !== null && nextProps.account.id !== this.state.accountId) {
             this.setState({accountId: nextProps.accountId});
         }
@@ -76,7 +77,7 @@ class NavigationBar extends Component {
                        organization: organization,
                        proximity: nextProps.proximity,
                        account: nextProps.account,
-                       userClosed: nextProps.userClosed,
+                       userClosed: true,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
@@ -287,7 +288,14 @@ class NavigationBar extends Component {
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
 
-        let showEditModal = !this.state.syncConversations && this.state.contactsLoaded && (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null && !this.state.userClosed)) || false;
+        let showEditModal = false;
+        if (this.state.selectedContact) {
+            showEditModal = this.state.showEditContactModal;
+        } else {
+            showEditModal = !this.state.syncConversations && this.state.contactsLoaded &&
+                                 (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null && !this.state.userClosed))
+                                 || false;
+        }
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -322,13 +330,14 @@ class NavigationBar extends Component {
                             />
                         }
                     >
-
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
                         <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/>
                         <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
-                        : null
+                        :
+
+                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         }
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
@@ -397,6 +406,7 @@ class NavigationBar extends Component {
                     close={this.toggleDeleteHistoryModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={this.state.displayName}
+                    hasMessages={hasMessages}
                     deleteMessages={this.props.deleteMessages}
                 />
 
