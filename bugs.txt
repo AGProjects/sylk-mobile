@@ -1,0 +1,32 @@
+https://github.com/APSL/react-native-version-number/issues/26
+
+React native navigation back arrow missing on iOS 14
+----------------------------------------------------
+
+https://stackoverflow.com/questions/64116871/react-native-navigation-back-arrow-missing-on-ios-14
+On old react patch node_modules/react-native/Libraries/Image/RCTUIImageViewAnimated.m
+
+Tag iOS 2.1.6
+
+Replace
+
+- (void)displayLayer:(CALayer *)layer
+{
+  if (_currentFrame) {
+    layer.contentsScale = self.animatedImageScale;
+    layer.contents = (__bridge id)_currentFrame.CGImage;
+  }
+}
+with
+
+- (void)displayLayer:(CALayer *)layer
+{
+  if (_currentFrame) {
+    layer.contentsScale = self.animatedImageScale;
+    layer.contents = (__bridge id)_currentFrame.CGImage;
+  } else {
+    [super displayLayer:layer];
+  }
+}
+
+
