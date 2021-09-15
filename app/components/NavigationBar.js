@@ -290,7 +290,7 @@ class NavigationBar extends Component {
 
         let showEditModal = false;
         if (this.state.selectedContact) {
-            showEditModal = this.state.showEditContactModal;
+            showEditModal = this.state.showEditContactModal && !this.state.syncConversations;
         } else {
             showEditModal = !this.state.syncConversations && this.state.contactsLoaded &&
                                  (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null && !this.state.userClosed))
@@ -348,8 +348,9 @@ class NavigationBar extends Component {
                         {this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
+                        <Divider />
+                        <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
 
                     </Menu>
                 :
@@ -385,6 +386,7 @@ class NavigationBar extends Component {
                         </View>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
+                        <Divider />
                         <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
                     </Menu>
                     }

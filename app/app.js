@@ -4240,6 +4240,7 @@ class Sylk extends Component {
         idx = myContacts[uri].tags.indexOf('missed');
         if (idx > -1) {
             myContacts[uri].tags.splice(idx, 1);
+            myContacts[uri].unread = [];
             changes = true;
         }
 
@@ -4341,10 +4342,10 @@ class Sylk extends Component {
             if (uri in decryptingMessages) {
                 pending_messages = decryptingMessages[uri];
                 idx = pending_messages.indexOf(id);
-                if (pending_messages.length > 4) {
+                if (pending_messages.length > 10) {
                     let status = 'Decrypting ' + pending_messages.length + ' messages with';
                     this._notificationCenter.postSystemNotification(status, {body: uri});
-                } else if (pending_messages.length === 4) {
+                } else if (pending_messages.length === 10) {
                     let status = 'All messages decrypted';
                     this._notificationCenter.postSystemNotification(status);
                 }
@@ -4876,8 +4877,10 @@ class Sylk extends Component {
         if (this.syncStartTimestamp) {
             let diff = (Date.now() - this.syncStartTimestamp)/ 1000;
             this.syncStartTimestamp = null;
-            console.log('Sync ended after', diff, 'seconds');
-            this._notificationCenter.postSystemNotification('Messages in sync with server');
+            if (diff > 3) {
+                console.log('Sync ended after', diff, 'seconds');
+                this._notificationCenter.postSystemNotification('Messages in sync with server');
+            }
         }
     }
 
@@ -4902,10 +4905,8 @@ class Sylk extends Component {
         let renderMessages = this.state.messages;
         if (messages.length > 0) {
             console.log('Sync', messages.length, 'events from server');
+            this._notificationCenter.postSystemNotification('Syncing messages with the server');
             this.add_sync_pending_item('sync_in_progress');
-        } else {
-            console.log('Messages are in sync with the server');
-            this._notificationCenter.postSystemNotification('Messages in sync with server');
         }
 
         let i = 0;
@@ -5484,8 +5485,8 @@ class Sylk extends Component {
                 myContacts[uri] = this.newContact(uri);
             }
 
-            if (!myContacts[uri].name) {
-                myContacts[uri].name = message.sender.toString();
+            if (myContacts[uri].name === null || myContacts[uri].name === '' && message.sender.displayName) {
+                myContacts[uri].name = message.sender.displayName;
             }
 
             if (message.timestamp > myContacts[uri].timestamp) {
