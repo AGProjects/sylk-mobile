@@ -97,7 +97,10 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 * Gem (for installing gem files)
 * Fastlane (for deploying to testflight/google play store)
 * Cocoapods (for handling iOS Pods) 
-  sudo gem install cocoapods
+  - Install RVM: curl -L https://get.rvm.io | bash -s stable
+  - Update ruby: rvm install rvm install ruby
+  - Add LC_ALL="en_US.UTF-8" to .bach_profile
+  - sudo gem install cocoapods
 * watchman (for helping watch files during development)
   brew install watchman or port install watchman
 
