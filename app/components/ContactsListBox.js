@@ -483,10 +483,11 @@ class ContactsListBox extends Component {
         if (currentMessage && currentMessage.text) {
             let options = ['Copy']
             options.push('Delete');
+            const showResend = currentMessage.failed;
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
-                    if (currentMessage.failed) {
+                    if (showResend) {
                         options.push('Resend')
                     }
                 }
@@ -537,7 +538,7 @@ class ContactsListBox extends Component {
                         break;
                     case 2:
                         if (this.state.targetUri.indexOf('@videoconference') === -1) {
-                            if (currentMessage.failed) {
+                            if (showResend) {
                                 this.props.reSendMessage(currentMessage, this.state.targetUri);
                             }
                         }

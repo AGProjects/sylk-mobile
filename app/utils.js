@@ -63,7 +63,10 @@ function generateUniqueId() {
     return uniqueId;
 }
 
-function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
+function sylkToRenderMessage(sylkMessage, decryptedBody=null, direction='incoming') {
+    console.log(sylkToRenderMessage, sylkMessage);
+    direction = direction || sylkMessage.direction;
+
     /*
     export interface IMessage {
       _id: string | number
@@ -106,13 +109,10 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null) {
         text: content,
         image: image,
         createdAt: sylkMessage.timestamp,
-        received: true,
-        direction: 'incoming',
+        received: direction === 'incoming',
+        direction: direction,
         system: system,
-        user: {
-          _id: sylkMessage.sender.uri,
-          name: sylkMessage.sender.toString()
-            }
+        user: direction === 'incoming' ? {_id: sylkMessage.sender.uri, name: sylkMessage.sender.toString()} : {}
         }
 }
 

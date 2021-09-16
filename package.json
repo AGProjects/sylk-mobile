@@ -98,7 +98,7 @@
     "react": "^16.9.0",
     "react-mixin": "^4.0.0",
     "react-native-sass-transformer": "^1.4.0",
-    "react-native-sylkrtc": "agprojects/react-native-sylkrtc.js#01d003f472121fe35859a53bb461ec44e921873b",
+    "react-native-sylkrtc": "agprojects/react-native-sylkrtc.js#d4d1e8ebd605825e9c31e50575a6f7e4b779911d",
     "react-notification-system": "^0.2.17",
     "react-router-component": "^0.39.1",
     "react-test-renderer": "16.9.0",

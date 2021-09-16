@@ -1530,7 +1530,7 @@ class Sylk extends Component {
             } else if (Platform.OS === 'android') {
                 token = this.pushtoken;
             }
-            //utils.timestampedLog('Push token sent to server');
+            utils.timestampedLog('Push token for app', bundleId, 'sent:', token);
             account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
             this.tokenSent = true;
         }
@@ -2373,6 +2373,7 @@ class Sylk extends Component {
             let connection = sylkrtc.createConnection({server: config.wsServer});
             utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
             connection.on('stateChanged', this.connectionStateChanged);
+            connection.on('publicKey', this.publicKeyReceived);
             this.setState({connection: connection});
 
         } else {
@@ -2872,6 +2873,7 @@ class Sylk extends Component {
     }
 
     _onNotificationReceivedBackground(notification) {
+
         let notificationContent = notification.getData();
 
         const event = notificationContent['event'];
@@ -2906,6 +2908,9 @@ class Sylk extends Component {
             utils.timestampedLog('Push notification: cancel call', callUUID);
             VoipPushNotification.presentLocalNotification({alertBody:'Call cancelled'});
             this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
+        } else if (event === 'message') {
+            utils.timestampedLog('Push for messages received');
+            VoipPushNotification.presentLocalNotification({alertBody:'Messages received'});
         }
 
         /*
@@ -3552,7 +3557,7 @@ class Sylk extends Component {
         }
 
         if (myContacts[uri].publicKey === key) {
-            //console.log('Public key of', uri, 'did not change');
+            console.log('Public key of', uri, 'did not change');
             return;
         }
 
@@ -3604,11 +3609,11 @@ class Sylk extends Component {
         this.saveSylkContact(uri, myContacts[uri], 'savePublicKeySync');
     }
 
-    _sendMessage(uri, text, id, contentType='text/plain') {
+    _sendMessage(uri, text, id, contentType, timestamp) {
         // Send outgoing messages
         if (this.state.account) {
             //console.log('Send', contentType, 'message', id, 'to', uri);
-            let message = this.state.account.sendMessage(uri, text, contentType, {id: id});
+            let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp});
             //console.log(message);
             //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
         }
@@ -3628,6 +3633,26 @@ class Sylk extends Component {
             renderMessages[uri] = [];
         }
 
+        let public_keys;
+
+        if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
+            public_keys = this.state.keys.public + "\n" + this.state.myContacts[uri].publicKey;
+        }
+
+        if (message.contentType !== 'text/pgp-public-key' && public_keys) {
+            await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
+                this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
+            }).catch((error) => {
+                console.log('Failed to encrypt message:', error);
+                this.outgoingMessageStateChanged(message._id, 'failed');
+                //this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
+            });
+
+        } else {
+            console.log('Outgoing non-encrypted message to', uri);
+            this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
+        }
+
         renderMessages[uri].push(message);
 
         if (this.state.selectedContact) {
@@ -3641,31 +3666,11 @@ class Sylk extends Component {
             this.setState({messages: renderMessages});
         }
 
-        if (message.contentType !== 'text/pgp-public-key') {
-            let public_keys = this.state.keys.public;
-
-            if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
-                public_keys = public_keys + "\n" + this.state.myContacts[uri].publicKey;
-            }
-
-            await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
-                this._sendMessage(uri, encryptedMessage, message._id);
-            }).catch((error) => {
-                console.log('Failed to encrypt message:', error);
-                this.outgoingMessageStateChanged(message._id, 'failed');
-                //this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
-            });
-
-        } else {
-            console.log('Outgoing non-encrypted message to', uri);
-            this._sendMessage(uri, message.text, message._id);
-        }
     }
 
     async reSendMessage(message, uri) {
         await this.deleteMessage(message._id, uri).then((result) => {
             message._id = uuid.v4();
-            message.createdAt = new Date();
             this.sendMessage(uri, message);
         }).catch((error) => {
             console.log('Failed to delete old messages');
@@ -3903,13 +3908,13 @@ class Sylk extends Component {
         this.remove_sync_pending_item(idx);
     }
 
-    async sendPendingMessage(uri, text, id) {
+    async sendPendingMessage(uri, text, id, contentType, timestamp) {
         utils.timestampedLog('Outgoing pending message', id);
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
             let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
             await OpenPGP.encrypt(text, public_keys).then((encryptedMessage) => {
                 //console.log('Outgoing encrypted message to', uri);
-                this._sendMessage(uri, encryptedMessage, id);
+                this._sendMessage(uri, encryptedMessage, id, contentType, timestamp);
             }).catch((error) => {
                 console.log('Failed to encrypt message:', error);
                 this.outgoingMessageStateChanged(id, 'failed');
@@ -3917,7 +3922,7 @@ class Sylk extends Component {
             });
         } else {
             //console.log('Outgoing non-encrypted message to', uri);
-            this._sendMessage(uri, text, id);
+            this._sendMessage(uri, text, id, contentType, timestamp);
         }
     }
 
@@ -3934,7 +3939,8 @@ class Sylk extends Component {
                 }
                 var item = rows.item(i);
                 content = item.content;
-                this.sendPendingMessage(item.to_uri, content, item.msg_id);
+                let timestamp = new Date(item.unix_timestamp * 1000);
+                this.sendPendingMessage(item.to_uri, content, item.msg_id, item.content_type, timestamp);
             }
 
         }).catch((error) => {
@@ -3982,8 +3988,9 @@ class Sylk extends Component {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
+                //console.log(item);
                 uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
-                //console.log('Message uri', uri, 'new state', state);
+                console.log('Message uri', uri, 'new state', state);
                 if (uri in this.state.messages) {
                     let renderedMessages = this.state.messages;
 
@@ -4029,6 +4036,9 @@ class Sylk extends Component {
 
                     if (changes) {
                         this.setState({messages: renderedMessages});
+                        if (state === 'failed') {
+                            this.updateRenderMessage(uri, 'Message delivery failed', 'incoming');
+                        }
                     }
                 }
             }
@@ -4416,6 +4426,14 @@ class Sylk extends Component {
 
         if (uri in myContacts) {
             myContacts[uri].totalMessages = total;
+        } else {
+            myContacts = this.newContact(uri);
+        }
+
+        if (!myContacts[uri].publicKey) {
+            if (this.state.connection) {
+                this.state.connection.lookupPublicKey(uri);
+            }
         }
 
         query = "SELECT * FROM messages where (from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) order by id desc limit ?, ?";
@@ -5104,6 +5122,14 @@ class Sylk extends Component {
         }
     }
 
+    async publicKeyReceived(message) {
+        if (message.publicKey) {
+            this.savePublicKey(message.uri, message.publicKey.trim());
+        } else {
+            console.log('No public key available on server for', message.uri);
+        }
+    }
+
     async incomingMessage(message) {
         utils.timestampedLog('Message', message.id, 'was received', message);
         // Handle incoming messages
@@ -5157,7 +5183,7 @@ class Sylk extends Component {
             renderMessages[message.sender.uri] = [];
         }
 
-        renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message, decryptedBody));
+        renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message, decryptedBody, 'incoming'));
 
         if (this.state.selectedContact) {
             let selectedContact = this.state.selectedContact;
@@ -5269,6 +5295,12 @@ class Sylk extends Component {
                             selectedContact.lastCallDuration = null;
                             this.setState({selectedContact: selectedContact});
                         }
+
+                        let renderMessages = this.state.messages;
+                        if (Object.keys(renderMessages).indexOf(uri) > -1) {
+                            renderMessages[uri].push(utils.sylkToRenderMessage(message, content, 'outgoing'));
+                            this.setState({renderMessages: renderMessages});
+                        }
                     }
 
                     this.saveSylkContact(uri, myContacts[uri], 'outgoingMessage');
@@ -5308,10 +5340,15 @@ class Sylk extends Component {
                     myContacts[uri].lastMessage = content.substring(0, 35);
                 }
 
+                let renderMessages = this.state.messages;
+                if (Object.keys(renderMessages).indexOf(uri) > -1) {
+                    renderMessages[uri].push(utils.sylkToRenderMessage(message, content, 'outgoing'));
+                    this.setState({renderMessages: renderMessages});
+                }
+
                 this.saveSylkContact(uri, myContacts[uri], 'outgoingMessage');
             }
         }
-
     }
 
     async outgoingMessageSync(message) {
@@ -5461,13 +5498,39 @@ class Sylk extends Component {
     async saveSystemMessage(uri, content, direction, missed=false) {
         let timestamp = new Date();
         let unix_timestamp = Math.floor(timestamp / 1000);
-        let params = [uuid.v4(), JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, 1, direction];
+        let id = uuid.v4();
+        let params = [id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, 1, direction];
+
         await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, pending, system, direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+            this.renderSystemMessage(uri, content, direction, timestamp);
+
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('SQL error:', error);
             }
         });
+    }
+
+    async renderSystemMessage(uri, content, direction, timestamp) {
+        let renderMessages = this.state.messages;
+        if (Object.keys(renderMessages).indexOf(uri) > - 1) {
+            let msg;
+
+            msg = {
+                _id: uuid.v4(),
+                text: content,
+                createdAt: timestamp,
+                direction: direction,
+                sent: true,
+                pending: false,
+                system: true,
+                failed: false,
+                user: direction == 'incoming' ? {_id: uri, name: uri} : {}
+                }
+
+            renderMessages[uri].push(msg);
+            this.setState({renderMessages: renderMessages});
+        }
     }
 
     async saveIncomingMessage(message, decryptedBody=null) {
@@ -5711,7 +5774,7 @@ class Sylk extends Component {
         this.saveOutgoingRawMessage(id, this.state.accountId, this.state.accountId, content, contentType);
 
         await OpenPGP.encrypt(content, this.state.keys.public).then((encryptedMessage) => {
-            this._sendMessage(this.state.accountId, encryptedMessage, id, contentType);
+            this._sendMessage(this.state.accountId, encryptedMessage, id, contentType, contact.timestamp);
         }).catch((error) => {
             console.log('Failed to encrypt contact:', error);
         });
