@@ -3521,6 +3521,10 @@ class Sylk extends Component {
                            privateKeyImportSuccess: true});
 
             if (this.state.account) {
+                this.state.account.sendMessage(uri, 'Private key imported on another device', 'text/pgp-public-key-imported');
+            }
+
+            if (this.state.account) {
                 this.state.account.syncConversations();
             }
 
@@ -5142,6 +5146,11 @@ class Sylk extends Component {
             return;
         }
 
+        if (message.contentType === 'text/pgp-public-key-imported') {
+            this.setState({showImportPrivateKeyModal: false, privateKey: null});
+            return;
+        }
+
         if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
             console.log('Received PGP private key from another device');
             this.setState({showImportPrivateKeyModal: true,
@@ -5209,6 +5218,10 @@ class Sylk extends Component {
         if (message.contentType === 'text/pgp-public-key') {
             this.remove_sync_pending_item(message.id);
             this.savePublicKeySync(message.sender.uri, message.content);
+            return;
+        }
+
+        if (message.contentType === 'text/pgp-public-key-imported') {
             return;
         }
 
