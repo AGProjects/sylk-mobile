@@ -1,3 +1,12 @@
+iOS 2.1.8 & Android 1.73 Fri Sep 17 10:53:30 -03 2021
+
+  * Fixed enrollment on smaller screens
+  * Message synchronization fixes
+  * Fixed crash when searching contacts
+  * Use photos from addressbook for matched contacts
+  * Fixed crash when adding a new contact
+
+
 iOS 2.1.7 & Android 1.72 Thu Sep 16 16:07:47 -03 2021
 
   * Added OpenPGP key lookup
