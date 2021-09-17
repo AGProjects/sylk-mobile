@@ -20,7 +20,7 @@ const AboutModal = (props) => {
                 <Surface style={styles.container}>
                     <Dialog.Title style={styles.title}>About Sylk</Dialog.Title>
                     <Text style={styles.body}>Sylk is part of Sylk Suite, a set of real-time
-                    communications applications using IETF SIP protocol and WebRTC specifications.</Text>
+                    communications applications using IETF SIP protocol and WebRTC specifications</Text>
 
                     <Text style={styles.version}> Version {VersionNumber.appVersion}</Text>
                     <Text onPress={() => handleLink()} style={styles.link}>Copyright &copy; AG Projects</Text>
