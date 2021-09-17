@@ -63,8 +63,8 @@ class DeleteHistoryModal extends Component {
         let canDeleteByTime = false;
 
         let deleteLabel = this.state.confirm ? 'Confirm': 'Delete';
-        if (this.state.hasMessages) {
-        return (
+        if (this.state.hasMessages || !this.state.uri) {
+            return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
@@ -91,7 +91,9 @@ class DeleteHistoryModal extends Component {
                         </View>
                              :
                              <Text style={styles.body}>
-                               Please confirm the deletion of all messages. This cannot be undone.
+                               Please confirm the deletion of all messages from this device.
+                               {"\n"}{"\n"}
+                               The messages can still be retrieved later from the server.
                              </Text>
                             }
 
