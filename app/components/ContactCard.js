@@ -342,6 +342,8 @@ class ContactCard extends Component {
             subtitle = subtitle + label;
         }
 
+        let unread = this.state.contact && this.state.contact.unread ? this.state.contact.length : 0;
+
         return (
             <Fragment>
                 <Card style={[cardContainerClass, {height: cardHeight}]}
@@ -351,7 +353,7 @@ class ContactCard extends Component {
                 <View style={styles.rowContent}>
                     <Card.Content style={styles.cardContent}>
                         <View style={styles.avatarContent}>
-                            <UserIcon style={styles.userIcon} identity={this.state.contact} unread={this.state.contact.unread.length}/>
+                            <UserIcon style={styles.userIcon} identity={this.state.contact} unread={unread}/>
                         </View>
 
                         <View style={styles.mainContent}>
@@ -387,8 +389,8 @@ class ContactCard extends Component {
                         <Icon name='check-circle' size={30} />
                         : null
                         }
-                        {this.state.contact.unread.length ?
-                        <Badge value={this.state.contact.unread.length} status="error"  textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
+                        {unread ?
+                        <Badge value={unread} status="error"  textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
                         : null
                         }
                     </View>

@@ -151,6 +151,7 @@ class ReadyBox extends Component {
     }
 
     handleTargetChange(value, contact) {
+        //console.log('handleTargetChange', value, contact);
         if (this.state.inviteContacts && contact) {
              const uri = contact.uri;
              this.props.updateSelection(uri);
@@ -217,11 +218,20 @@ class ReadyBox extends Component {
 
     handleChat(event) {
         event.preventDefault();
+        let targetUri;
         if (!this.state.chat && !this.state.selectedContact && this.state.targetUri.toLowerCase().indexOf('@') === -1) {
-           this.setState({targetUri: this.getTargetUri(this.state.targetUri)});
+           targetUri = this.getTargetUri(this.state.targetUri);
+           this.setState({targetUri: targetUri});
         }
 
+        let chat = !this.state.chat;
+
         let uri = this.state.targetUri.toLowerCase();
+        if (chat && !this.selectedContact && targetUri) {
+            let contact = this.props.newContactFunc(targetUri, null, {src: 'new chat'});
+            this.handleTargetChange(targetUri, contact);
+        }
+
         this.setState({chat: !this.state.chat});
     }
 

@@ -51,10 +51,10 @@ class ContactsListBox extends Component {
             filter: this.props.filter
         }
 
-        this.echoTest = this.props.newContactFunc('4444@sylk.link', 'Test microphone');
+        this.echoTest = this.props.newContactFunc('4444@sylk.link', 'Test microphone', {src: 'cl'});
         this.echoTest.tags.push('test');
 
-        this.videoTest = this.props.newContactFunc('3333@sylk.link', 'Test video');
+        this.videoTest = this.props.newContactFunc('3333@sylk.link', 'Test video', {src: 'cl'});
         this.videoTest.tags.push('test');
 
         this.ended = false;
@@ -295,13 +295,19 @@ class ContactsListBox extends Component {
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
-    searchedContact(uri) {
+    searchedContact(uri, contact=null) {
         let contacts = [];
+        /*
         if (uri.indexOf('@') === -1) {
             uri = uri + '@' + this.props.defaultDomain;
         }
+        */
 
-        const item = this.props.newContactFunc(uri.toLowerCase());
+        const item = this.props.newContactFunc(uri.toLowerCase(), null, {src: 'search_contact'});
+        if (contact) {
+            item.name = contact.name;
+            item.photo = contact.photo;
+        }
         item.tags.push('syntetic');
         contacts.push(item);
         return contacts;
@@ -460,11 +466,11 @@ class ContactsListBox extends Component {
             return false;
         }
 
-        if (contact.uri.toLowerCase().startsWith(filter.toLowerCase())) {
+        if (contact.name && contact.name.toLowerCase().indexOf(filter.toLowerCase()) > -1) {
             return true;
         }
 
-        if (contact.contacts && contact.contacts.toLowerCase().indexOf(filter.toLowerCase()) > -1) {
+        if (contact.uri.toLowerCase().startsWith(filter.toLowerCase())) {
             return true;
         }
 
@@ -600,8 +606,6 @@ class ContactsListBox extends Component {
     }
 
     render() {
-        //console.log('Render contacts with filter', this.state.filter);
-
         let searchExtraItems = [];
         let items = [];
         let matchedContacts = [];
@@ -644,11 +648,18 @@ class ContactsListBox extends Component {
             items = items.concat(matchedContacts);
         }
 
-        //console.log('Matched items', items);
-
-        if (this.state.targetUri && items.length == 0) {
-            items = items.concat(this.searchedContact(this.state.targetUri));
+        if (this.state.targetUri) {
+            items = items.concat(this.searchedContact(this.state.targetUri, this.state.selectedContact));
         }
+
+        /*
+        i = 0;
+        items.forEach((item) => {
+            i = i + 1;
+            console.log('---');
+            console.log(i, 'Matched item', item);
+        });
+        */
 
         const known = [];
         items = items.filter((elem) => {

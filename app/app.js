@@ -604,8 +604,7 @@ class Sylk extends Component {
                         continue;
                     }
 
-                    myContacts[item.uri] = this.newContact(item.uri);
-                    myContacts[item.uri].name = item.name;
+                    myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init'});
                     myContacts[item.uri].organization = item.organization;
                     myContacts[item.uri].publicKey = item.public_key;
                     myContacts[item.uri].direction = item.direction;
@@ -618,6 +617,13 @@ class Sylk extends Component {
                     myContacts[item.uri].lastCallId = item.last_call_id;
                     myContacts[item.uri].lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
                     myContacts[item.uri].lastCallDuration = item.last_call_duration;
+
+                    let ab_contacts = this.lookupContacts(item.uri);
+                    if (ab_contacts.length > 0) {
+                        myContacts[item.uri].photo = ab_contacts[0].photo;
+                        myContacts[item.uri].label = ab_contacts[0].label;
+                        myContacts[item.uri].tags.push('contact');
+                    }
 
                     if (myContacts[item.uri].tags.indexOf('missed') > -1) {
                         missedCalls.push(item.last_call_id);
@@ -646,7 +652,7 @@ class Sylk extends Component {
                         favoriteUris.push(item.uri);
                     }
 
-                    console.log('Load contact', item.uri, item.name);
+                    //console.log('Load contact', item.uri, item.name);
                 }
 
                 storage.get('cachedHistory').then((history) => {
@@ -1074,15 +1080,8 @@ class Sylk extends Component {
                                                     label: number['label'],
                                                     tags: ['contact']};
                                 contact_cards.push(contact_card);
+                                //console.log('Added AB contact', name, number_stripped);
                                 seen_uris.set(number_stripped, true);
-                                var contact_card = {id: uuid.v4(),
-                                                    name: name,
-                                                    uri: number_stripped,
-                                                    type: 'contact',
-                                                    photo: photo,
-                                                    label: number['label'],
-                                                    tags: ['contact']
-                                                    };
                             }
                         }
                     });
@@ -1091,7 +1090,6 @@ class Sylk extends Component {
                         let email_stripped =  email['email'].replace(/\s|\(|\)/g, '');
                         if (!seen_uris.has(email_stripped)) {
                             //console.log(name, email['label'], email_stripped);
-                            //console.log('   ---->    ', email['label'], email_stripped);
                             var contact_card = {id: uuid.v4(),
                                                 name: name,
                                                 uri: email_stripped,
@@ -1143,6 +1141,7 @@ class Sylk extends Component {
                 this.setState({
                                 selectedContact: null,
                                 targetUri: '',
+                                messages: [],
                                 messageZoomFactor: 1
                                 });
             }
@@ -1672,7 +1671,6 @@ class Sylk extends Component {
     }
 
     selectContact(contact) {
-        //console.log('select contact', contact);
         this.setState({selectedContact: contact});
     }
 
@@ -2225,7 +2223,7 @@ class Sylk extends Component {
                     reason = 'Unacceptable media';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/5\d\d/)) {
-                    reason = 'Server failure';
+                    reason = 'Server failure: ' + reason;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/904/)) {
                     // Sofia SIP: WAT
@@ -2258,11 +2256,13 @@ class Sylk extends Component {
                     }
 
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
+                    this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
+                    if (missed) {
+                        this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
+                    }
                 }
-
-                this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
 
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
 
@@ -3734,16 +3734,23 @@ class Sylk extends Component {
         }
     }
 
-    async messageStateChanged(obj) {
+    async messageStateChanged(id, state, data) {
         // valid API states: pending -> accepted -> delivered -> displayed,
         // error, failed or forbidden
         // valid UI render states: pending, read, received
 
-        let id = obj.messageId;
-        let state = obj.state;
+        let reason = data.reason;
+        let code = data.code;
+        let failed = state === 'failed';
+
+        if (failed && code) {
+            if (code > 500 || code === 408) {
+                utils.timestampedLog('Message', id, 'failed on server:', reason, code);
+                return;
+            }
+        }
 
         utils.timestampedLog('Message', id, 'is', state);
-
         let query;
 
         if (state == 'accepted') {
@@ -3754,7 +3761,7 @@ class Sylk extends Component {
             query = "UPDATE messages set received = 1, sent = 1, pending = 0 where msg_id = '" + id + "'";
         } else if (state == 'received') {
             query = "UPDATE messages set sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'failed') {
+        } else if (failed) {
             query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
         } else if (state == 'error') {
             query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
@@ -3764,7 +3771,7 @@ class Sylk extends Component {
 
         //console.log(query);
         await this.ExecuteQuery(query).then((results) => {
-            this.updateRenderMessage(id, state);
+            this.updateRenderMessage(id, state, reason, code);
             this.saveLastSyncId(id);
             // console.log('SQL update OK');
         }).catch((error) => {
@@ -3979,7 +3986,7 @@ class Sylk extends Component {
         });
     }
 
-    async updateRenderMessage(id, state) {
+    async updateRenderMessage(id, state, reason=null, code=null) {
         let query;
         let uri;
         let changes = false;
@@ -4041,7 +4048,11 @@ class Sylk extends Component {
                     if (changes) {
                         this.setState({messages: renderedMessages});
                         if (state === 'failed') {
-                            this.updateRenderMessage(uri, 'Message delivery failed', 'incoming');
+                            reason = 'Message delivery failed: ' + reason;
+                            if (code) {
+                                reason = reason + '('+ code + ')';
+                            }
+                            this.renderSystemMessage(uri, reason, 'incoming');
                         }
                     }
                 }
@@ -4408,7 +4419,7 @@ class Sylk extends Component {
         });
     }
 
-    async getMessages(uri){
+    async getMessages(uri) {
         //console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
         let messages = this.state.messages;
         let msg;
@@ -4416,6 +4427,11 @@ class Sylk extends Component {
         let rows = 0;
         let myContacts = this.state.myContacts;
         let total = 0;
+
+        if (Object.keys(myContacts).indexOf(uri) === -1) {
+            this.setState({messages: {}});
+            return;
+        }
 
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
@@ -4428,11 +4444,7 @@ class Sylk extends Component {
             console.log('SQL error:', error);
         });
 
-        if (uri in myContacts) {
-            myContacts[uri].totalMessages = total;
-        } else {
-            myContacts = this.newContact(uri);
-        }
+        myContacts[uri].totalMessages = total;
 
         if (!myContacts[uri].publicKey) {
             if (this.state.connection) {
@@ -5706,7 +5718,8 @@ class Sylk extends Component {
         }
     }
 
-    newContact(uri, name=null) {
+    newContact(uri, name=null, data={}) {
+        //console.log('Create new contact', uri, data);
         let current_datetime = new Date();
 
         const contact = { id: uuid.v4(),
@@ -5722,7 +5735,7 @@ class Sylk extends Component {
         return contact;
     }
 
-    saveContact(uri, displayName, organization='') {
+    saveContact(uri, displayName='', organization='') {
         displayName = displayName.trim();
         uri = uri.trim().toLowerCase();
 
@@ -5739,7 +5752,6 @@ class Sylk extends Component {
         } else {
             myContacts[uri] = this.newContact(uri);
         }
-
 
         myContacts[uri].organization = organization;
         myContacts[uri].name = displayName;
@@ -6588,28 +6600,16 @@ class Sylk extends Component {
         return false;
     }
 
-    lookupContacts(text, addressbook=true, favorites=true) {
+    lookupContacts(text) {
         let contacts = [];
 
-        if (addressbook) {
-            const addressbook_contacts = this.contacts.filter(contact => this.matchContact(contact, text));
-            addressbook_contacts.forEach((c) => {
-                const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.uri.toLowerCase(), false));
-                if (existing_contacts.length === 0) {
-                    contacts.push(c);
-                }
-            });
-        }
-
-        if (favorites) {
-            const favorite_contacts = this.favoritesContacts.filter(contact => this.matchContact(contact, text));
-            favorite_contacts.forEach((c) => {
-                const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.uri.toLowerCase(), false));
-                if (existing_contacts.length === 0) {
-                    contacts.push(c);
-                }
-            });
-        }
+        const addressbook_contacts = this.contacts.filter(contact => this.matchContact(contact, text));
+        addressbook_contacts.forEach((c) => {
+            const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.uri.toLowerCase(), false));
+            if (existing_contacts.length === 0) {
+                contacts.push(c);
+            }
+        });
         return contacts;
     }
 

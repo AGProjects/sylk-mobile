@@ -7,14 +7,13 @@
 
 .row {
     color: black;
-    font-size: 16;
-    height: 55px;
+    font-size: 14;
 }
 
 .container {
     padding: 10px;
     width: 100%;
-    padding-bottom: 40px;
+    padding-bottom: 0px;
 }
 
 .inner {
@@ -23,10 +22,10 @@
 }
 
 .button {
-    margin-top: 30px;
+    margin-top: 0px;
     border-radius: 1px;
     border: 0px;
-    width: 150;
     margin: 0 auto;
-    margin-top: 30px;
+    margin-top: 20px;
+    margin-bottom: 20px;
 }

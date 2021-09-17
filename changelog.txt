@@ -1,3 +1,10 @@
+iOS 2.1.7 & Android 1.72 Thu Sep 16 16:07:47 -03 2021
+
+  * Added OpenPGP key lookup
+  * Message synchronization fixes and improvements
+  * Various bug fixes
+
+
 iOS 2.1.5 & Android 1.71 Tue Sep 14 12:53:26 -03 2021
 
   * Message synchronization fixes

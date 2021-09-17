@@ -64,7 +64,7 @@ function generateUniqueId() {
 }
 
 function sylkToRenderMessage(sylkMessage, decryptedBody=null, direction='incoming') {
-    console.log(sylkToRenderMessage, sylkMessage);
+    //console.log(sylkToRenderMessage, sylkMessage);
     direction = direction || sylkMessage.direction;
 
     /*

@@ -42,12 +42,12 @@ class EnrollmentModal extends Component {
         let valid_input = !this.state.enrolling &&
                           this.state.displayName !== '' &&
                           this.state.username !== '' &&
-                          this.state.username.length > 2 &&
+                          this.state.username.length > 3 &&
                           this.state.password !== '' &&
                           this.state.password2 !== '' &&
                           this.state.password === this.state.password2 &&
                           this.state.password.length > 4 &&
-                          this.state.email !== '';
+                          this.state.email.indexOf('@') > -1;
         return valid_input;
     }
 
@@ -101,21 +101,25 @@ class EnrollmentModal extends Component {
             buttonIcon = "cog";
         }
 
+        let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+        let validEmail = email_reg.test(this.state.email);
+        let validUsername = this.state.username && this.state.username.length > 3;
+
         return (
             <Portal>
                     <DialogType visible={this.props.show} onDismiss={this.onHide}>
+                    <Dialog.Title style={styles.title}>Create account</Dialog.Title>
                     <LoadingScreen
                     text={loadingText}
                     show={this.state.enrolling}
                     />
                     <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>Create account</Dialog.Title>
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Display name"
                             name="displayName"
                             type="text"
-                            placeholder="Displayed on remote devices"
+                            placeholder="Will be seen by your contacts"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'displayName');}}
                             required
                             value={this.state.displayName}
@@ -123,6 +127,7 @@ class EnrollmentModal extends Component {
                             returnKeyType="next"
                             onSubmitEditing={() => this.emailInput.focus()}
                         />
+                        { this.state.displayName ?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="E-mail"
@@ -130,6 +135,7 @@ class EnrollmentModal extends Component {
                             name="email"
                             autoCapitalize="none"
                             placeholder="Used to recover the password"
+                            value={this.state.email}
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'email');}}
                             required value={this.state.email}
                             disabled={this.state.enrolling}
@@ -139,6 +145,9 @@ class EnrollmentModal extends Component {
                             }}
                             onSubmitEditing={() => this.usernameInput.focus()}
                         />
+                        :
+                        null }
+                        { validEmail?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Username"
@@ -155,6 +164,10 @@ class EnrollmentModal extends Component {
                             }}
                             onSubmitEditing={() => this.passwordInput.focus()}
                         />
+                        : null}
+
+                        { validUsername ?
+
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Password"
@@ -171,6 +184,9 @@ class EnrollmentModal extends Component {
                             }}
                             onSubmitEditing={() => this.password2Input.focus()}
                         />
+                        : null}
+
+                        { this.state.username && this.state.password != this.state.password2 ?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Verify password"
@@ -185,6 +201,7 @@ class EnrollmentModal extends Component {
                                 this.password2Input = ref;
                             }}
                         />
+                        : null}
                         <Button
                             mode="contained"
                             style={styles.button}
