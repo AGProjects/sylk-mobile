@@ -3630,8 +3630,6 @@ class Sylk extends Component {
 
         message.direction = 'outgoing';
 
-        this.saveOutgoingMessage(uri, message);
-
         let renderMessages = this.state.messages;
         if (Object.keys(renderMessages).indexOf(uri) === -1) {
             renderMessages[uri] = [];
@@ -3646,7 +3644,9 @@ class Sylk extends Component {
         if (message.contentType !== 'text/pgp-public-key' && public_keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
+                this.saveOutgoingMessage(uri, message, 1);
             }).catch((error) => {
+                this.saveOutgoingMessage(uri, message, 2);
                 console.log('Failed to encrypt message:', error);
                 this.outgoingMessageStateChanged(message._id, 'failed');
                 //this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
@@ -3654,6 +3654,7 @@ class Sylk extends Component {
 
         } else {
             console.log('Outgoing non-encrypted message to', uri);
+            this.saveOutgoingMessage(uri, message);
             this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
         }
 
@@ -3681,12 +3682,12 @@ class Sylk extends Component {
         });
     }
 
-    async saveOutgoingMessage(uri, message) {
+    async saveOutgoingMessage(uri, message, encrypted=0) {
         this.saveOutgoingChatUri(uri, message.text);
         //console.log('saveOutgoingMessage', message.text);
         let unix_timestamp = Math.floor(message.createdAt / 1000);
-        let params = [message._id, JSON.stringify(message.createdAt), unix_timestamp, message.text, "text/plain", this.state.accountId, uri, "outgoing", "1"];
-        await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let params = [message._id, JSON.stringify(message.createdAt), unix_timestamp, message.text, "text/plain", this.state.accountId, uri, "outgoing", "1", encrypted];
+        await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL insert message OK');
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
@@ -5286,7 +5287,7 @@ class Sylk extends Component {
                 if (message.contentType === 'application/sylk-contact-update') {
                     this.handleReplicateContact(content);
                 } else {
-                    this.saveOutgoingMessageSql(message, content);
+                    this.saveOutgoingMessageSql(message, content, 1);
                     this.saveLastSyncId(message.id);
 
                     let myContacts = this.state.myContacts;
