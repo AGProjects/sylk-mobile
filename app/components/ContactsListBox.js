@@ -25,6 +25,8 @@ class ContactsListBox extends Component {
         super(props);
         autoBind(this);
 
+        this.chatListRef = React.createRef();
+
         this.state = {
             accountId: this.props.account ? this.props.account.id : null,
             password: this.props.password,
@@ -48,7 +50,8 @@ class ContactsListBox extends Component {
             inviteContacts: this.props.inviteContacts,
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
-            filter: this.props.filter
+            filter: this.props.filter,
+            scrollToBottom: true
         }
 
         this.echoTest = this.props.newContactFunc('4444@sylk.link', 'Test microphone', {src: 'cl'});
@@ -128,6 +131,10 @@ class ContactsListBox extends Component {
                 }
 
                 this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
+                if (!this.state.scrollToBottom) {
+                    this.scrollToMessage(1);
+                }
+
             }
         }
 
@@ -237,6 +244,7 @@ class ContactsListBox extends Component {
     }
 
     loadEarlierMessages() {
+        this.setState({scrollToBottom: false});
         this.props.loadEarlierMessages();
     }
 
@@ -593,6 +601,15 @@ class ContactsListBox extends Component {
         )
     }
 
+    scrollToMessage(id) {
+        //console.log('scrollToMessage', id);
+        //https://github.com/FaridSafi/react-native-gifted-chat/issues/938
+        this.chatListRef.current?._messageContainerRef?.current?.scrollToIndex({
+            animated: true,
+            index: id
+          });
+    }
+
     get showChat() {
        if (this.props.selectedContact && this.props.selectedContact.tags && this.props.selectedContact.tags.indexOf('blocked') > -1) {
            return false;
@@ -794,7 +811,7 @@ class ContactsListBox extends Component {
 
              {this.showChat ?
              <View style={[chatContainer, borderClass]}>
-                <GiftedChat
+                <GiftedChat ref={this.chatListRef}
                   messages={messages}
                   onSend={this.onSendMessage}
                   alwaysShowSend={true}
@@ -804,7 +821,7 @@ class ContactsListBox extends Component {
                   renderInputToolbar={chatInputClass}
                   renderBubble={this.renderMessageBubble}
                   shouldUpdateMessage={this.shouldUpdateMessage}
-                  scrollToBottom={true}
+                  scrollToBottom={this.state.scrollToBottom}
                   inverted={false}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
@@ -822,7 +839,7 @@ class ContactsListBox extends Component {
                   onLongPress={this.onLongMessagePress}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   onPress={this.onLongMessagePress}
-                  scrollToBottom={true}
+                  scrollToBottom={this.state.scrollToBottom}
                   inverted={false}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll

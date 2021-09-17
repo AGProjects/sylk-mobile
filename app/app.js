@@ -4314,7 +4314,7 @@ class Sylk extends Component {
         this.setState({messageZoomFactor: messageZoomFactor});
 
         setTimeout(() => {
-            this.getMessages(this.state.selectedContact.remoteParty);
+            this.getMessages(this.state.selectedContact.uri);
         }, 10);
     }
 
@@ -4456,7 +4456,7 @@ class Sylk extends Component {
         query = "SELECT * FROM messages where (from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) order by id desc limit ?, ?";
 
         await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
-            //console.log('SQL get messages OK');
+            //console.log('SQL get messages OK', results.rows.length);
 
             let rows = results.rows;
             messages[uri] = [];
@@ -4473,7 +4473,6 @@ class Sylk extends Component {
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 content = item.content;
-                //console.log(item);
                 last_direction = item.direction;
                 let timestamp;
                 let unix_timestamp;
@@ -4486,6 +4485,7 @@ class Sylk extends Component {
                     timestamp = new Date(item.unix_timestamp * 1000);
                 }
                 const is_encrypted =  content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+
 
                 if (is_encrypted) {
                     myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
@@ -4520,7 +4520,7 @@ class Sylk extends Component {
             }
 
             messages[uri].sort((a, b) => (a.createdAt > b.createdAt) ? 1 : -1);
-            console.log('Got', messages[uri].length, 'messages for', uri, 'from SQL database');
+            console.log('Got', messages[uri].length, 'out of', total, 'messages for', uri, 'from SQL database');
 
             if (messages[uri].length > 0) {
                 let last_item = messages[uri][messages[uri].length -1];
@@ -5148,7 +5148,7 @@ class Sylk extends Component {
     }
 
     async incomingMessage(message) {
-        utils.timestampedLog('Message', message.id, 'was received', message);
+        utils.timestampedLog('Message', message.id, 'was received');
         // Handle incoming messages
         if (message.content.indexOf('?OTRv3') > -1) {
             return;
