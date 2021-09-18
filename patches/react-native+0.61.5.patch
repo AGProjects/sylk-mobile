@@ -1,0 +1,21 @@
+diff --git a/node_modules/react-native/Libraries/Animated/release/.npmignore b/node_modules/react-native/Libraries/Animated/release/.gitignore
+similarity index 100%
+rename from node_modules/react-native/Libraries/Animated/release/.npmignore
+rename to node_modules/react-native/Libraries/Animated/release/.gitignore
+diff --git a/node_modules/react-native/Libraries/Image/RCTUIImageViewAnimated.m b/node_modules/react-native/Libraries/Image/RCTUIImageViewAnimated.m
+index 01aa75f..4ef8307 100644
+--- a/node_modules/react-native/Libraries/Image/RCTUIImageViewAnimated.m
++++ b/node_modules/react-native/Libraries/Image/RCTUIImageViewAnimated.m
+@@ -269,6 +269,8 @@ - (void)displayLayer:(CALayer *)layer
+   if (_currentFrame) {
+     layer.contentsScale = self.animatedImageScale;
+     layer.contents = (__bridge id)_currentFrame.CGImage;
++  } else {
++    [super displayLayer:layer];
+   }
+ }
+ 
+diff --git a/node_modules/react-native/ReactCommon/hermes/inspector/tools/msggen/.npmignore b/node_modules/react-native/ReactCommon/hermes/inspector/tools/msggen/.gitignore
+similarity index 100%
+rename from node_modules/react-native/ReactCommon/hermes/inspector/tools/msggen/.npmignore
+rename to node_modules/react-native/ReactCommon/hermes/inspector/tools/msggen/.gitignore

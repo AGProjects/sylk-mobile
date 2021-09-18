@@ -1,0 +1,16 @@
+diff --git a/node_modules/react-native-document-picker/src/index.tsx b/node_modules/react-native-document-picker/src/index.tsx
+index bcecf34..8bfb3a5 100644
+--- a/node_modules/react-native-document-picker/src/index.tsx
++++ b/node_modules/react-native-document-picker/src/index.tsx
+@@ -1,6 +1,6 @@
+ import { Platform, NativeModules } from 'react-native'
+ import invariant from 'invariant'
+-import type { PlatformTypes, SupportedPlatforms } from './fileTypes'
++import { PlatformTypes, SupportedPlatforms } from './fileTypes'
+ import { perPlatformTypes } from './fileTypes'
+ 
+ export type DocumentPickerResponse = {
+diff --git a/node_modules/react-native-document-picker/windows/.npmignore b/node_modules/react-native-document-picker/windows/.gitignore
+similarity index 100%
+rename from node_modules/react-native-document-picker/windows/.npmignore
+rename to node_modules/react-native-document-picker/windows/.gitignore
