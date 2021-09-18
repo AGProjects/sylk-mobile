@@ -101,15 +101,6 @@
     margin-left: 3px;
 }
 
-.historyButtonGroup {
-    flex-direction: row;
-    justify-content: center;
-}
-
-.historyButton {
-    width:33%;
-}
-
 .buttonGroup {
     flex-direction: row;
     padding-top: 5px;
@@ -170,3 +161,22 @@
     border-radius: 10px;
     border: 1px;
 }
+
+.navigationContainer {
+    border: 0.5px;
+}
+
+.navigationButtonGroup {
+    flex-direction: row;
+    justify-content: center;
+    flex: 1;
+}
+
+.navigationButton {
+}
+
+.navigationButtonSelected {
+    background-color: rgba(#6DAA63, .9);
+}
+
+

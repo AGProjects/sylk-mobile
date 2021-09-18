@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { View, Platform} from 'react-native';
+import { FlatList, View, Platform} from 'react-native';
 import { IconButton, Title, Button } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
@@ -333,6 +333,18 @@ class ReadyBox extends Component {
         return false;
     }
 
+    renderNavigationItem(object) {
+        if (!object.item.enabled) {
+            return (null);
+        }
+
+        let title = object.item.title;
+        let key = object.item.key;
+        let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
+
+        return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
+    }
+
     render() {
         let uriClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
@@ -349,6 +361,8 @@ class ReadyBox extends Component {
                 uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
             }
         }
+
+        //console.log('Render missed calls', this.state.missedCalls);
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
@@ -378,12 +392,14 @@ class ReadyBox extends Component {
             callType = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
         }
 
-        let showTagButtons = (
-                              (this.state.favoriteUris.length > 0 || this.state.blockedUris.length  > 0 || this.state.missedCalls.length > 0) ||
-                              (this.state.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') ||
-                              (this.state.blockedUris.length === 0 && this.state.historyFilter === 'blocked') ||
-                              (this.state.missedCalls.length === 0 && this.state.historyFilter === 'missed')
-                              ) && !this.state.chat;
+        let navigationMenuData = [
+                                  {key: null, title: 'All', enabled: true, selected: !this.state.historyFilter},
+                                  {key: 'calls', title: 'Calls', enabled: true, selected: this.state.historyFilter === 'calls'},
+                                  {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyFilter === 'chat'},
+                                  {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyFilter === 'missed'},
+                                  {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyFilter === 'favorite'},
+                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'}
+                                  ];
 
         return (
             <Fragment>
@@ -498,16 +514,17 @@ class ReadyBox extends Component {
                         />
                     </View>
 
-                    {showTagButtons ?
-
-                    <View style={styles.historyButtonGroup}>
-                       {this.state.historyFilter !== null ? <Button style={styles.historyButton} onPress={() => {this.filterHistory(null)}}>Show all</Button>: null}
-                       {(this.state.favoriteUris.length > 0  && this.state.historyFilter !== 'favorite')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('favorite')}}>Favorites</Button> :  null}
-                       {(this.state.blockedUris.length > 0 && this.state.historyFilter !== 'blocked')? <Button style={styles.historyButton} onPress={() => {this.filterHistory('blocked')}}>Blocked</Button> : null}
-                       {(this.state.missedCalls.length > 0 && this.state.historyFilter !== 'missed') ? <Button style={styles.historyButton} onPress={() => {this.filterHistory('missed')}}>Missed</Button> : null}
+                    { !this.state.selectedContact ?
+                    <View style={styles.navigationContainer}>
+                    <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                        horizontal={true}
+                        data={navigationMenuData}
+                        extraData={this.state}
+                        keyExtractor={(item, index) => item.key}
+                        renderItem={this.renderNavigationItem}
+                    />
                     </View>
-                    : null
-                    }
+                    : null}
 
                     {this.props.isTablet && 0?
                     <View style={styles.footer}>

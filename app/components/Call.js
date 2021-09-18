@@ -587,6 +587,7 @@ class Call extends Component {
     }
 
     lookupContact() {
+        // TODO this must lookup in myContacts
         let photo = null;
         let remoteUri = this.state.remoteUri || '';
         let remoteDisplayName = this.state.remoteDisplayName || '';

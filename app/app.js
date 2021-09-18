@@ -3521,7 +3521,7 @@ class Sylk extends Component {
                            privateKeyImportSuccess: true});
 
             if (this.state.account) {
-                this.state.account.sendMessage(uri, 'Private key imported on another device', 'text/pgp-public-key-imported');
+                this.state.account.sendMessage(this.state.accountId, 'Private key imported on another device', 'text/pgp-public-key-imported');
             }
 
             if (this.state.account) {
@@ -4242,7 +4242,7 @@ class Sylk extends Component {
     }
 
     async resetUnreadCount(uri) {
-        //console.log('---resetUnreadCount', uri);
+        //console.log('--- resetUnreadCount', uri);
         let myContacts = this.state.myContacts;
         let missedCalls = this.state.missedCalls;
         let idx;
@@ -4253,20 +4253,26 @@ class Sylk extends Component {
         }
 
         if (myContacts[uri].unread.length > 0) {
-                myContacts[uri].unread.forEach((id) => {
-                    idx = missedCalls.indexOf(id);
-                    if (idx > -1) {
-                        missedCalls.splice(idx, 1);
-                    }
-                });
             myContacts[uri].unread = [];
+            myContacts[uri].unread.forEach((id) => {
+                idx = missedCalls.indexOf(id);
+                if (idx > -1) {
+                    missedCalls.splice(idx, 1);
+                }
+            });
             changes = true;
+        }
+
+        if (myContacts[uri].lastCallId) {
+            idx = missedCalls.indexOf(myContacts[uri].lastCallId);
+            if (idx > -1) {
+                missedCalls.splice(idx, 1);
+            }
         }
 
         idx = myContacts[uri].tags.indexOf('missed');
         if (idx > -1) {
             myContacts[uri].tags.splice(idx, 1);
-            myContacts[uri].unread = [];
             changes = true;
         }
 
@@ -4302,6 +4308,7 @@ class Sylk extends Component {
 
         let myContacts = this.state.myContacts;
         let uri = this.state.selectedContact.uri;
+        console.log('loadEarlierMessages', uri);
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
         if (myContacts[uri].totalMessages < limit) {
@@ -4421,7 +4428,8 @@ class Sylk extends Component {
     }
 
     async getMessages(uri) {
-        //console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
+        this.resetUnreadCount(uri);
+        console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
         let messages = this.state.messages;
         let msg;
         let query;
@@ -6460,6 +6468,11 @@ class Sylk extends Component {
             callState = this.state.callsState[call.id];
         }
 
+        if (this.state.targetUri in this.state.myContacts && !this.state.callContact) {
+            let callContact = this.state.myContacts[this.state.targetUri];
+            this.setState({callContact: callContact});
+        }
+
         return (
             <Call
                 account = {this.state.account}
@@ -6687,7 +6700,6 @@ class Sylk extends Component {
     }
 
     logout() {
-        console.log('Logout');
         this.syncRequested = false;
         this.callKeeper.setAvailable(false);
 

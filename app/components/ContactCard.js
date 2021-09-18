@@ -138,19 +138,10 @@ class ContactCard extends Component {
                           this.state.contact.tags.indexOf('test') === -1 &&
                           this.state.contact.tags !== ["syntetic"];
 
-
         let uri = this.state.contact.uri;
         let username =  uri.split('@')[0];
         let domain =  uri.split('@')[1];
         let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-
-        if (uri === 'demo_google@sip2sip.info') {
-            //console.log('Render contact', this.state.contact);
-        }
-
-        if (uri === 'mi@sip2sip.info') {
-            //console.log('Render contact', this.state.contact);
-        }
 
         let name = this.state.contact.name;
         if (this.state.contact.organization) {
@@ -336,13 +327,13 @@ class ContactCard extends Component {
         let showSubtitle = (showActions || this.state.isTablet || !description);
         let label = this.state.contact.label ? (" (" +this.state.contact.label + ")" ) : '';
         if (this.state.contact.lastMessage) {
-            subtitle = this.state.contact.lastMessage;
+            subtitle = this.state.contact.lastMessage.split("\n")[0];
             //description = description + ': ' + this.state.contact.lastMessage;
         } else {
             subtitle = subtitle + label;
         }
 
-        let unread = this.state.contact && this.state.contact.unread ? this.state.contact.length : 0;
+        let unread = (this.state.contact && this.state.contact.unread) ? this.state.contact.unread.length : 0;
 
         return (
             <Fragment>
