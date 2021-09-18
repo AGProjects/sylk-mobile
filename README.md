@@ -90,6 +90,7 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 * NVM
   https://heynode.com/tutorial/install-nodejs-locally-nvm/
 * Yarn (for package management)
+  curl -o- -L https://yarnpkg.com/install.sh | bash 
 * GPG (for git-crypt)
 * Git-Crypt (for keeping a google upload key keystore secret)
 * XCode
