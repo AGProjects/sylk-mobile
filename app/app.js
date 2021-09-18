@@ -655,6 +655,24 @@ class Sylk extends Component {
                     //console.log('Load contact', item.uri, item.name);
                 }
 
+                let test_numbers = [
+                                    {uri: '4444@sylk.link', name: 'Test microphone'},
+                                    {uri: '3333@sylk.link', name: 'Test video'}
+                                    ];
+
+                test_numbers.forEach((item) => {
+                    if (Object.keys(myContacts).indexOf(item.uri) === -1) {
+                        myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init'});
+                        myContacts[item.uri].tags.push('test');
+                        this.saveSylkContact(item.uri, myContacts[item.uri], 'init');
+                    } else {
+                        if (myContacts[item.uri].tags.indexOf('test') === -1) {
+                            myContacts[item.uri].tags.push('test');
+                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init');
+                        }
+                    }
+                });
+
                 storage.get('cachedHistory').then((history) => {
                     if (history) {
                         //this.cachedHistory = history;

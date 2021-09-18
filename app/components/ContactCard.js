@@ -68,7 +68,6 @@ class ContactCard extends Component {
             pinned: this.props.pinned
         }
 
-
         this.menuRef = React.createRef();
     }
 
@@ -138,6 +137,8 @@ class ContactCard extends Component {
                           this.state.contact.tags.indexOf('test') === -1 &&
                           this.state.contact.tags !== ["syntetic"];
 
+        let tags = this.state.contact ? this.state.contact.tags : [];
+
         let uri = this.state.contact.uri;
         let username =  uri.split('@')[0];
         let domain =  uri.split('@')[1];
@@ -161,11 +162,7 @@ class ContactCard extends Component {
             }
         }
 
-        if (username.indexOf('3333@') > -1) {
-            showBlockButton = false;
-        }
-
-        if (username.indexOf('4444@') > -1) {
+        if (tags.indexOf('test') > -1) {
             showBlockButton = false;
         }
 

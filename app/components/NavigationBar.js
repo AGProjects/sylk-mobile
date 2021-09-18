@@ -251,6 +251,7 @@ class NavigationBar extends Component {
 
         let statusIcon = null;
         let statusColor = 'green';
+        let tags = [];
 
         statusIcon = 'check-circle';
         if (!this.state.connection || this.state.connection.state !== 'ready') {
@@ -271,6 +272,7 @@ class NavigationBar extends Component {
             if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) > -1 && this.state.messages[this.state.selectedContact.uri].length > 0) {
                 hasMessages = true;
             }
+            tags = this.state.selectedContact.tags;
         }
 
         let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : 'Block';
@@ -333,24 +335,34 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
                         <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/>
                         <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
+
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
-                        :
-
-                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
+                        : null
                         }
-                        { hasMessages ?
+
+                        { !hasMessages && tags.indexOf('test') === -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
+                        : null}
+
+                        { hasMessages && tags.indexOf('test') === -1?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
                         : null}
-                        { hasMessages ?
+
+                        { hasMessages && tags.indexOf('test') === -1?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
+
                         {this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
+                        {tags.indexOf('test') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
+                        : null}
                         <Divider />
+                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
+                        : null}
 
                     </Menu>
                 :

@@ -54,12 +54,6 @@ class ContactsListBox extends Component {
             scrollToBottom: true
         }
 
-        this.echoTest = this.props.newContactFunc('4444@sylk.link', 'Test microphone', {src: 'cl'});
-        this.echoTest.tags.push('test');
-
-        this.videoTest = this.props.newContactFunc('3333@sylk.link', 'Test video', {src: 'cl'});
-        this.videoTest.tags.push('test');
-
         this.ended = false;
     }
 
@@ -375,16 +369,6 @@ class ContactsListBox extends Component {
                         return null;
                     }
 
-                    if (elem.remoteParty.split('@')[0] === '3333') {
-                        elem.uri = this.videoTest.uri;
-                        elem.label = this.videoTest.label;
-                    }
-
-                    if (elem.remoteParty.split('@')[0] === '4444') {
-                        elem.uri = this.echoTest.uri;
-                        elem.label = this.echoTest.label;
-                    }
-
                     if (known.indexOf(elem.uri) > -1) {
                         return null;
                     }
@@ -646,6 +630,10 @@ class ContactsListBox extends Component {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['favorite']));
         } else if (this.state.filter === 'blocked') {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['blocked']));
+        } else if (this.state.filter === 'test') {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['test']));
+        } else if (this.state.filter === 'conference') {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['conference']));
         } else if (this.state.filter === 'missed') {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri) && contact.tags.indexOf('missed') > -1);
         } else {
@@ -686,25 +674,8 @@ class ContactsListBox extends Component {
             }
         });
 
-        if (!this.state.targetUri && !this.state.filter && !this.state.inviteContacts) {
-            if (!this.findObjectByKey(items, 'uri', this.echoTest.uri)) {
-                items.push(this.echoTest);
-            }
-            if (!this.findObjectByKey(items, 'uri', this.videoTest.uri)) {
-                items.push(this.videoTest);
-            }
-        }
-
         items.forEach((item) => {
             item.showActions = false;
-
-            if (item.uri === this.echoTest.uri) {
-                item.name = this.echoTest.name;
-            }
-
-            if (item.uri === this.videoTest.uri) {
-                item.name = this.videoTest.name;
-            }
 
             if (item.uri.indexOf('@videoconference.') === -1) {
                 item.conference = false;

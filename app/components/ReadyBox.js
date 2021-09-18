@@ -393,12 +393,14 @@ class ReadyBox extends Component {
         }
 
         let navigationMenuData = [
-                                  {key: null, title: 'All', enabled: true, selected: !this.state.historyFilter},
-                                  {key: 'calls', title: 'Calls', enabled: true, selected: this.state.historyFilter === 'calls'},
+                                  {key: null, title: 'All', enabled: this.state.historyFilter, selected: !this.state.historyFilter},
+                                  {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyFilter === 'history'},
                                   {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyFilter === 'chat'},
                                   {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyFilter === 'missed'},
                                   {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyFilter === 'favorite'},
-                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'}
+                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'},
+                                  {key: 'conference', title: 'Conference', enabled: true, selected: this.state.historyFilter === 'conference'},
+                                  {key: 'test', title: 'Test', enabled: true, selected: this.state.historyFilter === 'test'}
                                   ];
 
         return (
