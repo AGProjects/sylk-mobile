@@ -29,6 +29,7 @@ const RegisterBox = (props) => {
                 <RegisterForm
                     registrationInProgress={props.registrationInProgress}
                     handleRegistration={props.handleRegistration}
+                    handleEnrollment={props.handleEnrollment}
                     autoLogin={props.autoLogin}
                     orientation={props.orientation}
                     isTablet={props.isTablet}
@@ -43,6 +44,7 @@ const RegisterBox = (props) => {
 
 RegisterBox.propTypes = {
     handleRegistration     : PropTypes.func.isRequired,
+    handleEnrollment       : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool,
     autoLogin              : PropTypes.bool,
     orientation            : PropTypes.string,

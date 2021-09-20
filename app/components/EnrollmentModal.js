@@ -38,16 +38,16 @@ class EnrollmentModal extends Component {
         });
     }
 
-    validInput() {
+    get validInput() {
         let valid_input = !this.state.enrolling &&
-                          this.state.displayName !== '' &&
-                          this.state.username !== '' &&
-                          this.state.username.length > 3 &&
-                          this.state.password !== '' &&
-                          this.state.password2 !== '' &&
-                          this.state.password === this.state.password2 &&
-                          this.state.password.length > 4 &&
-                          this.state.email.indexOf('@') > -1;
+                           this.state.displayName.length > 2 &&
+                           this.state.username.length > 3 &&
+                           this.state.password !== '' &&
+                           this.state.password2 !== '' &&
+                           this.state.password === this.state.password2 &&
+                           this.state.password.length > 4 &&
+                           this.state.email.indexOf('@') > -1;
+
         return valid_input;
     }
 
@@ -76,11 +76,13 @@ class EnrollmentModal extends Component {
                           return;
                       }
                       if (data.success) {
-                          this.props.handleEnrollment({accountId: data.sip_address,
-                                                       password: this.state.password});
+                          this.props.handleEnrollment({id: data.sip_address,
+                                                       password: this.state.password,
+                                                       displayName: this.state.displayName,
+                                                       email: this.state.email});
                           this.setState(this.initialState);
                       } else if (data.error === 'user_exists') {
-                          this.setState({error: 'Username already exists. Chose another!', errorVisible: true});
+                          this.setState({error: 'Username is taken. Chose another one!', errorVisible: true});
                       } else {
                           this.setState({error: data.error_message, errorVisible: true});
                       }
@@ -103,7 +105,7 @@ class EnrollmentModal extends Component {
 
         let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
         let validEmail = email_reg.test(this.state.email);
-        let validUsername = this.state.username && this.state.username.length > 3;
+        let validUsername = this.state.username.length > 3;
 
         return (
             <Portal>
@@ -125,9 +127,9 @@ class EnrollmentModal extends Component {
                             value={this.state.displayName}
                             disabled={this.state.enrolling}
                             returnKeyType="next"
-                            onSubmitEditing={() => this.emailInput.focus()}
+                            onSubmitEditing={() => this.emailInput ? this.emailInput.focus() : null}
                         />
-                        { this.state.displayName ?
+                        { this.state.displayName.length > 2 ?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="E-mail"
@@ -143,7 +145,7 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.emailInput = ref;
                             }}
-                            onSubmitEditing={() => this.usernameInput.focus()}
+                            onSubmitEditing={() => this.usernameInput ? this.usernameInput.focus() : null}
                         />
                         :
                         null }
@@ -162,7 +164,7 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.usernameInput = ref;
                             }}
-                            onSubmitEditing={() => this.passwordInput.focus()}
+                            onSubmitEditing={() => this.passwordInput ? this.passwordInput.focus(): null}
                         />
                         : null}
 
@@ -182,11 +184,11 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.passwordInput = ref;
                             }}
-                            onSubmitEditing={() => this.password2Input.focus()}
+                            onSubmitEditing={() => this.password2Input ? this.password2Input.focus(): null}
                         />
                         : null}
 
-                        { this.state.username && this.state.password != this.state.password2 ?
+                        { this.state.password.length > 4 && this.state.password != this.state.password2 ?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Verify password"
@@ -202,18 +204,19 @@ class EnrollmentModal extends Component {
                             }}
                         />
                         : null}
+
                         <Button
                             mode="contained"
                             style={styles.button}
                             icon={buttonIcon}
-                            disabled={!this.validInput()}
+                            disabled={!this.validInput}
                             onPress={this.enroll}
                         >
                             {buttonText}
                         </Button>
                         <Snackbar
                             visible={this.state.errorVisible}
-                            duration={2000}
+                            duration={4000}
                             onDismiss={() => this.setState({ errorVisible: false })}
                         >
                             {this.state.error}

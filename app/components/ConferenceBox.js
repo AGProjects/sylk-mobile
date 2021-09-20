@@ -373,7 +373,7 @@ class ConferenceBox extends Component {
 
         const giftedChatMessage = utils.sylkToRenderMessage(sylkMessage);
         this.setState({messages: GiftedChat.append(this.state.messages, [giftedChatMessage])});
-        this.props.saveMessage(this.props.remoteUri.split('@')[0], giftedChatMessage);
+        this.props.saveMessage(this.props.remoteUri, giftedChatMessage);
     }
 
     onSendMessage(messages) {
@@ -382,7 +382,7 @@ class ConferenceBox extends Component {
         }
         messages.forEach((message) => {
             this.props.call.sendMessage(message.text, 'text/plain')
-            this.props.saveMessage(this.props.remoteUri.split('@')[0], message);
+            this.props.saveMessage(this.props.remoteUri, message);
 
         });
         this.setState({messages: GiftedChat.append(this.state.messages, messages)});

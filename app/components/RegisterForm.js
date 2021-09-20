@@ -18,7 +18,23 @@ function isASCII(str) {
 }
 
 function handleLink(event) {
-    Linking.openURL('https://mdns.sipthor.net/sip_login_reminder.phtml');
+    let link = 'https://mdns.sipthor.net/sip_login_reminder.phtml';
+    storage.get('last_signup').then((last_signup) => {
+        if (last_signup) {
+            storage.get('signup').then((signup) => {
+                if (signup) {
+                    let email = signup[last_signup];
+                    link = link + '?sip_filter=' + last_signup + '&email_filter=' + email;
+                }
+                console.log('Opening link', link);
+                Linking.openURL(link);
+            });
+        } else {
+            console.log('Opening link', link);
+            Linking.openURL(link);
+        }
+    });
+
 }
 
 class RegisterForm extends Component {
@@ -68,14 +84,14 @@ class RegisterForm extends Component {
         }
 
         Keyboard.dismiss();
-        this.props.handleRegistration(account, this.state.password, true);
+        this.props.handleRegistration(account, this.state.password);
     }
 
     handleEnrollment(account) {
         this.setState({showEnrollmentModal: false});
-        if (account !== null) {
-            this.setState({accountId: account.accountId, password: account.password, registering: true});
-            this.props.handleRegistration(account.accountId, account.password);
+        if (account) {
+            this.setState({accountId: account.id, password: account.password, registering: true});
+            this.props.handleEnrollment(account);
         }
     }
 
@@ -177,6 +193,7 @@ class RegisterForm extends Component {
 RegisterForm.propTypes = {
     classes                : PropTypes.object,
     handleRegistration     : PropTypes.func.isRequired,
+    handleEnrollment       : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool.isRequired,
     autoLogin              : PropTypes.bool,
     orientation            : PropTypes.string,

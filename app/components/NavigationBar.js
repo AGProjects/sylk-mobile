@@ -31,7 +31,7 @@ class NavigationBar extends Component {
             showAboutModal: false,
             syncConversations: this.props.syncConversations,
             inCall: this.props.inCall,
-            showCallMeMaybeModal: false,
+            showCallMeMaybeModal: this.props.showCallMeMaybeModal,
             contactsLoaded: this.props.contactsLoaded,
             showEditContactModal: false,
             showEditConferenceModal: false,
@@ -48,6 +48,7 @@ class NavigationBar extends Component {
             accountId: this.props.accountId,
             account: this.props.account,
             displayName: displayName,
+            email: this.props.email,
             organization: organization,
             publicKey: this.props.publicKey,
             showPublicKey: false,
@@ -74,6 +75,7 @@ class NavigationBar extends Component {
                        syncConversations: nextProps.syncConversations,
                        contactsLoaded: nextProps.contactsLoaded,
                        displayName: displayName,
+                       email: nextProps.email,
                        organization: organization,
                        proximity: nextProps.proximity,
                        account: nextProps.account,
@@ -82,7 +84,8 @@ class NavigationBar extends Component {
                        publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
-                       myInvitedParties: nextProps.myInvitedParties
+                       myInvitedParties: nextProps.myInvitedParties,
+                       showCallMeMaybeModal: nextProps.showCallMeMaybeModal
                        });
     }
 
@@ -93,7 +96,7 @@ class NavigationBar extends Component {
                 this.toggleAboutModal();
                 break;
             case 'callMeMaybe':
-                this.toggleCallMeMaybeModal();
+                this.props.toggleCallMeMaybeModal();
                 break;
             case 'displayName':
                 this.toggleEditContactModal();
@@ -170,7 +173,7 @@ class NavigationBar extends Component {
         this.setState({menuVisible: false});
     }
 
-    saveContact(displayName, organization='') {
+    saveContact(displayName, organization='', email='') {
         if (!displayName) {
             return;
         }
@@ -179,7 +182,7 @@ class NavigationBar extends Component {
             this.props.saveContact(this.state.selectedContact.uri, displayName, organization);
         } else {
             this.setState({displayName: displayName});
-            this.props.saveContact(this.state.accountId, displayName, organization);
+            this.props.saveContact(this.state.accountId, displayName, organization, email);
         }
     }
 
@@ -204,10 +207,6 @@ class NavigationBar extends Component {
 
     toggleAddContactModal() {
         this.setState({showAddContactModal: !this.state.showAddContactModal});
-    }
-
-    toggleCallMeMaybeModal() {
-        this.setState({showCallMeMaybeModal: !this.state.showCallMeMaybeModal});
     }
 
     toggleDeleteHistoryModal() {
@@ -410,7 +409,7 @@ class NavigationBar extends Component {
 
                 <CallMeMaybeModal
                     show={this.state.showCallMeMaybeModal}
-                    close={this.toggleCallMeMaybeModal}
+                    close={this.props.toggleCallMeMaybeModal}
                     callUrl={callUrl}
                     notificationCenter={this.props.notificationCenter}
                 />
@@ -435,7 +434,9 @@ class NavigationBar extends Component {
                     close={this.hideEditContactModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId}
                     displayName={this.state.displayName}
+                    edit={this.state.email}
                     organization={this.state.organization}
+                    email={this.state.email}
                     myself={this.state.selectedContact ? false : true}
                     saveContact={this.saveContact}
                     deleteContact={this.props.deleteContact}
@@ -480,6 +481,7 @@ NavigationBar.propTypes = {
     contactsLoaded     : PropTypes.bool,
     proximity          : PropTypes.bool,
     displayName        : PropTypes.string,
+    email              : PropTypes.string,
     organization       : PropTypes.string,
     account            : PropTypes.object,
     accountId          : PropTypes.string,
@@ -508,7 +510,9 @@ NavigationBar.propTypes = {
     sendPublicKey      : PropTypes.func,
     messages           : PropTypes.object,
     showImportModal    : PropTypes.func,
-    syncConversations   : PropTypes.bool
+    syncConversations   : PropTypes.bool,
+    showCallMeMaybeModal: PropTypes.bool,
+    toggleCallMeMaybeModal : PropTypes.func
 };
 
 export default NavigationBar;

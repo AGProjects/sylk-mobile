@@ -100,7 +100,8 @@ class ContactsListBox extends Component {
         if (nextProps.selectedContact !== this.state.selectedContact) {
             this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact) {
-                this.getMessages(nextProps.selectedContact);
+               this.setState({scrollToBottom: true});
+               this.getMessages(nextProps.selectedContact);
             }
         };
 
@@ -112,10 +113,6 @@ class ContactsListBox extends Component {
             let renderMessages = [];
             if (this.state.selectedContact) {
                 let uri = this.state.selectedContact.uri;
-                let username = uri.split('@')[0];
-                if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
-                    uri = username;
-                }
 
                 if (nextProps.messages && nextProps.messages.hasOwnProperty(uri)) {
                     renderMessages = nextProps.messages[uri];
@@ -125,11 +122,13 @@ class ContactsListBox extends Component {
                 }
 
                 this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
-                if (!this.state.scrollToBottom) {
-                    this.scrollToMessage(1);
+                if (!this.state.scrollToBottom && renderMessages.length > 0) {
+                    this.scrollToMessage(0);
                 }
 
             }
+        } else {
+            this.setState({renderMessages: []});
         }
 
         this.setState({isLandscape: nextProps.isLandscape,
@@ -159,14 +158,7 @@ class ContactsListBox extends Component {
         if (!contact) {
             return;
         }
-        let uri = contact.uri;
-
-        if (uri.indexOf('@videoconference') > -1) {
-            let username = uri.split('@')[0];
-            uri = username;
-        }
-
-        this.props.getMessages(uri);
+        this.props.getMessages(contact.uri);
     }
 
     setTargetUri(uri, contact) {
@@ -412,8 +404,6 @@ class ContactsListBox extends Component {
                     }
 
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {
-                        elem.name = elem.uri.split('@')[0];
-                        elem.uri = elem.uri.split('@')[0] + '@' + this.props.config.defaultConferenceDomain;
                         elem.conference = true;
                         elem.media = ['audio', 'video', 'chat'];
                     }
@@ -454,6 +444,10 @@ class ContactsListBox extends Component {
     }
 
     matchContact(contact, filter='', tags=[]) {
+        if (!contact) {
+            return false;
+        }
+
         if (tags.length > 0 && !tags.some(item => contact.tags.includes(item))) {
             return false;
         }
@@ -599,7 +593,8 @@ class ContactsListBox extends Component {
            return false;
        }
 
-       if (this.props.selectedContact || this.state.targetUri) {
+//       if (this.props.selectedContact || this.state.targetUri) {
+       if (this.props.selectedContact) {
            return true;
        }
 
@@ -656,15 +651,6 @@ class ContactsListBox extends Component {
         if (this.state.targetUri) {
             items = items.concat(this.searchedContact(this.state.targetUri, this.state.selectedContact));
         }
-
-        /*
-        i = 0;
-        items.forEach((item) => {
-            i = i + 1;
-            console.log('---');
-            console.log(i, 'Matched item', item);
-        });
-        */
 
         const known = [];
         items = items.filter((elem) => {

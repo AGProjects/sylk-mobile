@@ -20,6 +20,7 @@ class EditContactModal extends Component {
             displayName: this.props.displayName,
             organization: this.props.organization,
             show: this.props.show,
+            email: this.props.email,
             myself: this.props.myself,
             uri: this.props.uri,
             confirm: false
@@ -29,6 +30,7 @@ class EditContactModal extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({show: nextProps.show,
                        displayName: nextProps.displayName,
+                       email: nextProps.email,
                        uri: nextProps.uri,
                        myself: nextProps.myself,
                        organization: nextProps.organization
@@ -37,7 +39,7 @@ class EditContactModal extends Component {
 
     saveContact(event) {
         event.preventDefault();
-        this.props.saveContact(this.state.displayName, this.state.organization);
+        this.props.saveContact(this.state.displayName, this.state.organization, this.state.email);
         this.setState({confirm: false});
         this.props.close();
     }
@@ -53,6 +55,14 @@ class EditContactModal extends Component {
         this.setState({confirm: false});
         this.props.deleteContact(this.state.uri);
         this.props.close();
+    }
+
+    validEmail() {
+        if (!this.state.email) {
+            return true;
+        }
+        let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+        return email_reg.test(this.state.email);
     }
 
     deletePublicKey(event) {
@@ -83,7 +93,12 @@ class EditContactModal extends Component {
         this.setState({organization: value});
     }
 
+    onEmailChange(value) {
+        this.setState({email: value});
+    }
+
     render() {
+
         if (this.props.publicKey) {
             let title = this.props.displayName || this.props.uri
             return (
@@ -144,6 +159,8 @@ class EditContactModal extends Component {
                             autoCapitalize="words"
                         />
 
+                       { !this.state.myself ?
+
                        <TextInput
                             mode="flat"
                             name="organization"
@@ -153,12 +170,24 @@ class EditContactModal extends Component {
                             required
                             autoCapitalize="words"
                         />
+                        :
+                       <TextInput
+                            mode="flat"
+                            name="email"
+                            label="Email"
+                            placeholder="Used to recover the password"
+                            onChangeText={this.onEmailChange}
+                            defaultValue={this.state.email}
+                            required
+                            autoCapitalize="none"
+                        />
+                        }
 
                         <View style={styles.buttonRow}>
                         <Button
                             mode="contained"
                             style={styles.button}
-                            disabled={this.state.confirm}
+                            disabled={this.state.confirm || (this.state.myself && !this.validEmail())}
                             onPress={this.saveContact}
                             icon="content-save"
                             accessibilityLabel="Save contact details"
@@ -190,6 +219,7 @@ EditContactModal.propTypes = {
     close              : PropTypes.func.isRequired,
     uri                : PropTypes.string,
     displayName        : PropTypes.string,
+    email              : PropTypes.string,
     organization       : PropTypes.string,
     publicKey          : PropTypes.string,
     myself             : PropTypes.bool,

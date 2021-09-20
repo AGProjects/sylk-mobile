@@ -107,15 +107,12 @@ class ReadyBox extends Component {
         if (uri.indexOf('@videoconference') > -1) {
             return true;
         }
+
         if (uri.indexOf('@guest') > -1) {
             return true;
         }
 
         if (uri.indexOf('3333@') > -1) {
-            return true;
-        }
-
-        if (uri.indexOf('4444@') > -1) {
             return true;
         }
 
@@ -185,7 +182,7 @@ class ReadyBox extends Component {
             contact = null;
         }
 
-        new_value = new_value.replace(' ','');
+        //new_value = new_value.replace(' ','');
 
         this.props.selectContact(contact);
         this.setState({targetUri: new_value});
@@ -393,14 +390,14 @@ class ReadyBox extends Component {
         }
 
         let navigationMenuData = [
-                                  {key: null, title: 'All', enabled: this.state.historyFilter, selected: !this.state.historyFilter},
+                                  {key: null, title: 'All', enabled: true, selected: false},
                                   {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyFilter === 'history'},
                                   {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyFilter === 'chat'},
                                   {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyFilter === 'missed'},
                                   {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyFilter === 'favorite'},
                                   {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'},
                                   {key: 'conference', title: 'Conference', enabled: true, selected: this.state.historyFilter === 'conference'},
-                                  {key: 'test', title: 'Test', enabled: true, selected: this.state.historyFilter === 'test'}
+                                  {key: 'test', title: 'Test', enabled: true, selected: this.state.historyFilter === 'test'},
                                   ];
 
         return (
@@ -518,13 +515,13 @@ class ReadyBox extends Component {
 
                     { !this.state.selectedContact ?
                     <View style={styles.navigationContainer}>
-                    <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                        horizontal={true}
-                        data={navigationMenuData}
-                        extraData={this.state}
-                        keyExtractor={(item, index) => item.key}
-                        renderItem={this.renderNavigationItem}
-                    />
+                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                            horizontal={true}
+                            data={navigationMenuData}
+                            extraData={this.state}
+                            keyExtractor={(item, index) => item.key}
+                            renderItem={this.renderNavigationItem}
+                        />
                     </View>
                     : null}
 
