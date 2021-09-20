@@ -1210,7 +1210,7 @@ class Sylk extends Component {
                 this.setState({
                                 selectedContact: null,
                                 targetUri: '',
-                                messages: [],
+                                messages: {},
                                 messageZoomFactor: 1
                                 });
             }
