@@ -1460,6 +1460,8 @@ class Sylk extends Component {
             VoipPushNotification.registerVoipToken();
 
             PushNotificationIOS.addEventListener('register', this._boundOnPushRegistered);
+            PushNotificationIOS.addEventListener('localNotification', this.onLocalNotification);
+            PushNotificationIOS.addEventListener('notification', this.onRemoteNotification);
 
             //let permissions = await checkIosPermissions();
             //if (!permissions.alert) {
@@ -1521,6 +1523,77 @@ class Sylk extends Component {
                 });
         }
     }
+
+    sendLocalNotificationWithSound (){
+        console.log('sendLocalNotificationWithSound');
+        //PushNotificationIOS.addNotificationRequest({
+        PushNotificationIOS.presentLocalNotification({
+          id: 'notificationWithSound',
+          title: 'Sample Title',
+          subtitle: 'Sample Subtitle',
+          body: 'Sample local notification with custom sound',
+          sound: 'customSound.wav',
+          badge: 1,
+        });
+    };
+
+    sendNotification (title, subtitle, body) {
+        DeviceEventEmitter.emit('remoteNotificationReceived', {
+          remote: true,
+          aps: {
+            alert: {title: title, subtitle: subtitle, body: body},
+            sound: 'default',
+            category: 'REACT_NATIVE',
+            'content-available': 1,
+            'mutable-content': 1,
+          },
+        });
+    };
+
+    sendSilentNotification () {
+        DeviceEventEmitter.emit('remoteNotificationReceived', {
+          remote: true,
+          aps: {
+            category: 'REACT_NATIVE',
+            'content-available': 1,
+          },
+        });
+    };
+
+    onRemoteNotification(notification) {
+        const title = notification.getAlert().title;
+        const subtitle = notification.getAlert().subtitle;
+        const body = notification.getAlert().body;
+        const message = notification.getMessage();
+        const content_available = notification.getContentAvailable();
+        const category = notification.getCategory();
+        const badge = notification.getBadgeCount();
+        const sound = notification.getSound();
+        const isClicked = notification.getData().userInteraction === 1;
+
+        console.log('Got remote notification', title, subtitle, body);
+        this.sendLocalNotification(title + ' ' + subtitle, body);
+    };
+
+    sendLocalNotification (title, body) {
+        PushNotificationIOS.presentLocalNotification({
+          alertTitle: title,
+          alertBody: body
+        });
+    };
+
+    onLocalNotification(notification) {
+        console.log('Got local notification', notification);
+        const title = notification.getAlert().title;
+        const subtitle = notification.getAlert().subtitle;
+        const body = notification.getAlert().body;
+        const message = notification.getMessage();
+        const content_available = notification.getContentAvailable();
+        const category = notification.getCategory();
+        const badge = notification.getBadgeCount();
+        const sound = notification.getSound();
+        const isClicked = notification.getData().userInteraction === 1;
+    };
 
     cancelIncomingCall(callUUID) {
         if (this.unmounted) {
