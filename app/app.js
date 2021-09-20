@@ -619,7 +619,6 @@ class Sylk extends Component {
         }
 
         //this.resetStorage();
-
         this.ExecuteQuery("SELECT * FROM contacts where account = ? order by timestamp desc",[this.state.accountId]).then((results) => {
             let rows = results.rows;
             let idx;
@@ -761,6 +760,8 @@ class Sylk extends Component {
                     }
                 });
 
+                this.updateTotalUread(myContacts);
+
                 console.log('Loaded', rows.length, 'contacts from SQL database for account', this.state.accountId);
                 this.setState({myContacts: myContacts,
                                missedCalls: missedCalls,
@@ -807,7 +808,6 @@ class Sylk extends Component {
                         }
                     }
                 });
-
                 this.setState({contactsLoaded: true});
             }, 3000);
 
@@ -3779,7 +3779,6 @@ class Sylk extends Component {
         } else {
             this.setState({messages: renderMessages});
         }
-
     }
 
     async reSendMessage(message, uri) {
@@ -4383,6 +4382,8 @@ class Sylk extends Component {
             myContacts[uri].tags.splice(idx, 1);
             changes = true;
         }
+
+        this.updateTotalUread(myContacts);
 
         if (changes) {
             this.saveSylkContact(uri, myContacts[uri], 'resetUnreadCount');
@@ -5231,6 +5232,8 @@ class Sylk extends Component {
             last_id = message.id;
         });
 
+        this.updateTotalUread(myContacts);
+
         /*
         if (messages.length > 0) {
             Object.keys(stats).forEach((key) => {
@@ -5717,6 +5720,8 @@ class Sylk extends Component {
                 myContacts[uri].lastMessageId = message.id;
             }
 
+            this.updateTotalUread(myContacts);
+
             this.saveSylkContact(uri, myContacts[uri], 'saveIncomingMessage');
 
         }).catch((error) => {
@@ -5849,6 +5854,18 @@ class Sylk extends Component {
         return contact;
     }
 
+    updateTotalUread(myContacts=null) {
+        let total_unread = 0;
+        myContacts = myContacts || this.state.myContacts;
+        Object.keys(myContacts).forEach((uri) => {
+            total_unread = total_unread + myContacts[uri].unread.length;
+        });
+
+        console.log('Total unread messages', total_unread)
+
+        PushNotificationIOS.setApplicationIconBadgeNumber(total_unread);
+    }
+
     saveContact(uri, displayName='', organization='', email='') {
 
         displayName = displayName.trim();
@@ -5858,7 +5875,7 @@ class Sylk extends Component {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
-        console.log('Save contact', displayName, 'with uri', uri);
+        //console.log('Save contact', displayName, 'with uri', uri);
 
         let myContacts = this.state.myContacts;
 
@@ -6390,6 +6407,8 @@ class Sylk extends Component {
             myContacts[uri].conference = item.conference;
             myContacts[uri].tags = tags;
             i = i + 1;
+
+            this.updateTotalUread(myContacts);
 
             this.saveSylkContact(uri, this.state.myContacts[uri], 'saveHistory');
 
