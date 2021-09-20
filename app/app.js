@@ -4265,6 +4265,11 @@ class Sylk extends Component {
         if (content.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
             myContacts[uri].lastMessage = content.substring(0, 35);
         }
+
+        if (myContacts[uri].tags.indexOf('chat') === -1) {
+            myContacts[uri].tags.push('chat');
+        }
+
         myContacts[uri].lastMessageId = null;
         myContacts[uri].lastCallDuration = null;
         myContacts[uri].timestamp = new Date();
