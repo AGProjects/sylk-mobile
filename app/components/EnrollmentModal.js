@@ -188,7 +188,7 @@ class EnrollmentModal extends Component {
                         />
                         : null}
 
-                        { this.state.password.length > 4 && this.state.password != this.state.password2 ?
+                        { validUsername ?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Verify password"
