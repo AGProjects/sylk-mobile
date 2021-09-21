@@ -5262,6 +5262,9 @@ class Sylk extends Component {
 
                 if (message.sender.uri === this.state.account.id) {
                     if (message.contentType !== 'application/sylk-contact-update') {
+                        if (myContacts[uri].tags.indexOf('blocked') > -1) {
+                            return;
+                        }
                         myContacts[uri].lastMessageId = message.id;
                         myContacts[uri].lastMessage = null; // need to be loaded later after decryption
                         myContacts[uri].lastCallDuration = null;
@@ -5279,6 +5282,9 @@ class Sylk extends Component {
                     stats.outgoing = stats.outgoing + 1;
                     this.outgoingMessageSync(message);
                 } else {
+                    if (myContacts[uri].tags.indexOf('blocked') > -1) {
+                        return;
+                    }
                     if (message.timestamp > myContacts[uri].timestamp) {
                         updateContactUris[uri] = message.timestamp;
                         myContacts[uri].timestamp = message.timestamp;
@@ -5750,18 +5756,23 @@ class Sylk extends Component {
 
     async saveIncomingMessage(message, decryptedBody=null) {
         let myContacts = this.state.myContacts;
+        let uri = message.sender.uri;
+        if (uri in myContacts) {
+            //
+        } else {
+            myContacts[uri] = this.newContact(uri);
+        }
+
+        if (myContacts[uri].tags.indexOf('blocked') > -1) {
+            return;
+        }
+
         var content = decryptedBody || message.content;
+
         let received = 1;
         let unix_timestamp = Math.floor(message.timestamp / 1000);
         let params = [message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
         await this.ExecuteQuery("INSERT INTO messages (msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            let uri = message.sender.uri;
-
-            if (uri in myContacts) {
-                //
-            } else {
-                myContacts[uri] = this.newContact(uri);
-            }
 
             if (myContacts[uri].name === null || myContacts[uri].name === '' && message.sender.displayName) {
                 myContacts[uri].name = message.sender.displayName;
