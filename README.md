@@ -236,3 +236,8 @@ fastlane android beta
 ### Patches
 
 We utilise the [patch-package](https://www.npmjs.com/package/patch-package) module in order to patch the `react-native-callkeep` module instead of maintaining a complete fork. See their README on how to make changes to the patch and how those patches get installed automatically within this project on install of npm modules.
+
+### Update sylkrts.js
+
+yarn add -D AGProjects/sylkrtc.js
+
