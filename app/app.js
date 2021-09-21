@@ -1520,6 +1520,8 @@ class Sylk extends Component {
                         this.incomingCallFromPush(callUUID, from, displayName, mediaType);
                     } else if (event === 'cancel') {
                         this.cancelIncomingCall(callUUID);
+                    } else if (event === 'message') {
+                        console.log('New messages on Sylk server');
                     }
                 });
         }
@@ -1584,16 +1586,8 @@ class Sylk extends Component {
     };
 
     onLocalNotification(notification) {
-        console.log('Got local notification', notification);
-        const title = notification.getAlert().title;
-        const subtitle = notification.getAlert().subtitle;
-        const body = notification.getAlert().body;
-        const message = notification.getMessage();
-        const content_available = notification.getContentAvailable();
-        const category = notification.getCategory();
-        const badge = notification.getBadgeCount();
-        const sound = notification.getSound();
-        const isClicked = notification.getData().userInteraction === 1;
+        //console.log('Got local notification', notification);
+        this.updateTotalUread();
     };
 
     cancelIncomingCall(callUUID) {
@@ -5942,7 +5936,9 @@ class Sylk extends Component {
 
         console.log('Total unread messages', total_unread)
 
-        PushNotificationIOS.setApplicationIconBadgeNumber(total_unread);
+        if (Platform.OS == 'ios') {
+            PushNotificationIOS.setApplicationIconBadgeNumber(total_unread);
+        }
     }
 
     saveContact(uri, displayName='', organization='', email='') {
