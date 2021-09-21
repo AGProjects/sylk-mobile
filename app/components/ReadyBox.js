@@ -72,6 +72,7 @@ class ReadyBox extends Component {
                         messages: nextProps.messages,
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
+                        contacts: nextProps.contacts,
                         inviteContacts: nextProps.inviteContacts,
                         selectedContacts: nextProps.selectedContacts,
                         selectedContact: nextProps.selectedContact,

@@ -283,7 +283,8 @@ class Sylk extends Component {
             decryptingMessages: {},
             purgeMessages: [],
             showCallMeMaybeModal: false,
-            enrollment: false
+            enrollment: false,
+            contacts: []
         };
 
         utils.timestampedLog('Init app');
@@ -305,7 +306,6 @@ class Sylk extends Component {
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
         this.registrationFailureTimer = null;
-        this.contacts = [];
         this.startedByPush = false;
         this.heartbeats = 0;
         this.sql_contacts_keys = [];
@@ -1173,7 +1173,8 @@ class Sylk extends Component {
                     });
                 }
 
-              this.contacts = contact_cards;
+              this.setState({contacts: contact_cards});
+              console.log('Added', contact_cards.length, 'addressbook entries');
             }
           })
     }
@@ -6370,7 +6371,7 @@ class Sylk extends Component {
                                 onAccept={this.callKeepAcceptCall}
                                 onReject={this.callKeepRejectCall}
                                 show={this.state.showIncomingModal}
-                                contacts = {this.contacts}
+                                contacts = {this.state.contacts}
                             />
 
                             <LogsModal
@@ -6609,7 +6610,7 @@ class Sylk extends Component {
                     startConference = {this.callKeepStartConference}
                     missedTargetUri = {this.state.missedTargetUri}
                     orientation = {this.state.orientation}
-                    contacts = {this.contacts}
+                    contacts = {this.state.contacts}
                     isTablet = {this.state.isTablet}
                     isLandscape = {this.state.orientation === 'landscape'}
                     refreshHistory = {this.state.refreshHistory}
@@ -6712,7 +6713,7 @@ class Sylk extends Component {
                 speakerphoneOn = {this.speakerphoneOn}
                 speakerphoneOff = {this.speakerphoneOff}
                 callUUID = {this.state.outgoingCallUUID}
-                contacts = {this.contacts}
+                contacts = {this.state.contacts}
                 intercomDtmfTone = {this.intercomDtmfTone}
                 orientation = {this.state.orientation}
                 isTablet = {this.state.isTablet}
@@ -6835,7 +6836,7 @@ class Sylk extends Component {
     lookupContacts(text) {
         let contacts = [];
 
-        const addressbook_contacts = this.contacts.filter(contact => this.matchContact(contact, text));
+        const addressbook_contacts = this.state.contacts.filter(contact => this.matchContact(contact, text));
         addressbook_contacts.forEach((c) => {
             const existing_contacts = contacts.filter(contact => this.matchContact(contact, c.uri.toLowerCase(), false));
             if (existing_contacts.length === 0) {
