@@ -241,3 +241,7 @@ We utilise the [patch-package](https://www.npmjs.com/package/patch-package) modu
 
 yarn add -D AGProjects/sylkrtc.js
 
+### Firebase notifications reference
+
+https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages#AndroidNotification
+
