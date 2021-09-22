@@ -1,9 +1,12 @@
-iOS 2.2.3 & Android 1.81 Wed Sep 22 11:03:39 -03 2021
+iOS 2.2.4 & Android 1.8.3 Wed Sep 22 17:23:43 -03 2021
 
   * Phone calls history fixes
   * Push notifications for messaging
+  * Added gravatar
   * Update app badge on new messages
   * Message scrolling improvements
+  * Don't switch contacts when receive incoming message
+  * Fixed updating last message
   * Added load earlier messages
   * Cancel outgoing call in progress after 45 seconds
   * Improve ringtone delay
