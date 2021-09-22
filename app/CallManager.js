@@ -161,11 +161,6 @@ export default class CallManager extends events.EventEmitter {
         this.callKeep.updateDisplay(callUUID, displayName, uri);
     }
 
-    sendDTMF(callUUID, digits) {
-        utils.timestampedLog('Callkeep: send DTMF: ', digits);
-        this.callKeep.sendDTMF(callUUID, digits);
-    }
-
     setCurrentCallActive(callUUID) {
         if (Platform.OS !== 'android') {
             return;
@@ -244,6 +239,10 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnAccept(data) {
+        if (!data.callUUID) {
+            return;
+        }
+
         let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('---- Callkeep: accept callback', callUUID);
 
@@ -261,6 +260,10 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnEnd(data) {
+        if (!data.callUUID) {
+            return;
+        }
+
         // this is called both when user touches Reject and when the call ends
         let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('---- Callkeep: end callback', callUUID);
@@ -436,16 +439,34 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnMute(data) {
-        utils.timestampedLog('Callkeep: mute ' + data.muted + ' for call', data.callUUID);
-        this.toggleMute(data.callUUID, data.muted);
+        if (!data.callUUID) {
+            return;
+        }
+
+        let callUUID = data.callUUID.toLowerCase();
+        utils.timestampedLog('Callkeep: mute ' + data.muted + ' for call', callUUID);
+        this.toggleMute(callUUID, data.muted);
     }
 
     _rnDTMF(data) {
-        utils.timestampedLog('Callkeep: got dtmf for call', data.callUUID);
-        if (this._calls.has(data.callUUID.toLowerCase())) {
-            let call = this._calls.get(data.callUUID.toLowerCase());
+        if (!data.callUUID) {
+            return;
+        }
+
+        let callUUID = data.callUUID.toLowerCase();
+        utils.timestampedLog('Callkeep: got dtmf for call', callUUID);
+        if (this._calls.has(callUUID)) {
+            let call = this._calls.get(callUUID);
             utils.timestampedLog('sending webrtc dtmf', data.digits)
             call.sendDtmf(data.digits);
+        }
+    }
+
+    sendDTMF(callUUID, digits) {
+        let call = this._calls.get(callUUID);
+        if (call) {
+            utils.timestampedLog('Callkeep: send DTMF: ', digits);
+            call.sendDtmf(digits);
         }
     }
 
@@ -628,8 +649,13 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
-        //utils.timestampedLog("Callkeep: STARTED NATIVE CALL", data.callUUID);
-        if (!this._calls.has(data.callUUID)) {
+        if (!data.callUUID) {
+            return;
+        }
+
+        let callUUID = data.callUUID.toLowerCase();
+        //utils.timestampedLog("Callkeep: STARTED NATIVE CALL", callUUID);
+        if (!this._calls.has(callUUID)) {
             // call has started from OS native dialer
             this.startCallFromOutside(data);
         }

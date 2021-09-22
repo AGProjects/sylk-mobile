@@ -103,7 +103,7 @@ class EnrollmentModal extends Component {
             buttonIcon = "cog";
         }
 
-        let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+        let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
         let validEmail = email_reg.test(this.state.email);
         let validUsername = this.state.username.length > 3;
 

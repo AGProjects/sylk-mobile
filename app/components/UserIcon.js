@@ -9,6 +9,7 @@ const UserIcon = (props) => {
     if (!props.identity) {
         return (null)
     }
+
     const name = props.identity.name || props.identity.uri;
     const photo = props.identity.photo;
 
@@ -16,6 +17,8 @@ const UserIcon = (props) => {
     if (name) {
         initials = name.split(' ', 2).map(x => x[0]).join('');
     }
+
+    //console.log('Avatar', props.identity);
 
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
     let avatarSize = props.large ? 130: 60;

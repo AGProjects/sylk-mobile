@@ -7803,6 +7803,11 @@ react-native-parsed-text@0.0.22:
   dependencies:
     prop-types "^15.7.x"
 
+react-native-push-notification@^8.1.0:
+  version "8.1.0"
+  resolved "https://registry.yarnpkg.com/react-native-push-notification/-/react-native-push-notification-8.1.0.tgz#16bb3755287a005cd8341c48535d9c78856b58b8"
+  integrity sha512-ZgRM1rYm+nhnACval7k44T28PwwtFdzG3pv/rhrVHgrioAbxzQOVFJOny956w42s5av4PPcKsr8yJ940HJCKTA==
+
 react-native-randombytes@^3.6.1:
   version "3.6.1"
   resolved "https://registry.yarnpkg.com/react-native-randombytes/-/react-native-randombytes-3.6.1.tgz#cac578093b5ca38e3e085becffdc6cbcf6f0d654"
@@ -7843,6 +7848,11 @@ react-native-share@^3.3.3:
   version "3.3.3"
   resolved "https://registry.yarnpkg.com/react-native-share/-/react-native-share-3.3.3.tgz#9f0f7c28c123e5f1d287b7923d505a05fd8bd3e9"
   integrity sha512-KFyGe7hnD7ZDJCz1kWTI5iv2MfY5weIz+aTzqyomyxxFb73rHlCRHa+NRNYvnpTntOjnqyB0/GFf1W2J9y6vJQ==
+
+react-native-shortcut-badge@^0.1.0-beta.2:
+  version "0.1.0-beta.2"
+  resolved "https://registry.yarnpkg.com/react-native-shortcut-badge/-/react-native-shortcut-badge-0.1.0-beta.2.tgz#98ed980a38b241a11e51cefcbf79058bd256d510"
+  integrity sha512-xNgYkHDh9KTqqFYSIs1jm/ZeSayeQD+FOZHNze4+Q27l0V8x8GTD9AFA0ffV6xqyZ6Xhl0XSsvHfiuVqXx9ByA==
 
 react-native-simple-crypto@^0.2.15:
   version "0.2.15"

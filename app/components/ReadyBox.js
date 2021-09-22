@@ -37,7 +37,9 @@ class ReadyBox extends Component {
             call: this.props.call,
             inviteContacts: this.props.inviteContacts,
             selectedContacts: this.props.selectedContacts,
-            pinned: this.props.pinned
+            pinned: this.props.pinned,
+            messageZoomFactor: this.props.messageZoomFactor,
+            isTyping: this.props.isTyping
         };
         this.ended = false;
     }
@@ -72,6 +74,8 @@ class ReadyBox extends Component {
                         messages: nextProps.messages,
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
+                        isTyping: nextProps.isTyping,
+                        messageZoomFactor: nextProps.messageZoomFactor,
                         contacts: nextProps.contacts,
                         inviteContacts: nextProps.inviteContacts,
                         selectedContacts: nextProps.selectedContacts,
@@ -117,6 +121,10 @@ class ReadyBox extends Component {
             return true;
         }
 
+        if (uri.indexOf('4444@') > -1) {
+            return true;
+        }
+
         return false;
     }
 
@@ -149,7 +157,7 @@ class ReadyBox extends Component {
     }
 
     handleTargetChange(value, contact) {
-        //console.log('handleTargetChange', value, contact);
+        //console.log('handleTargetChange', value, contact, 'this.state.targetUri');
         if (this.state.inviteContacts && contact) {
              const uri = contact.uri;
              this.props.updateSelection(uri);
@@ -217,17 +225,20 @@ class ReadyBox extends Component {
     handleChat(event) {
         event.preventDefault();
         let targetUri;
-        if (!this.state.chat && !this.state.selectedContact && this.state.targetUri.toLowerCase().indexOf('@') === -1) {
+
+        if (!this.state.chat && !this.state.selectedContact) {
            targetUri = this.getTargetUri(this.state.targetUri);
            this.setState({targetUri: targetUri});
         }
 
-        let chat = !this.state.chat;
+        console.log('Chat to', targetUri);
 
-        let uri = this.state.targetUri.toLowerCase();
-        if (chat && !this.selectedContact && targetUri) {
+        if (!this.state.chat && !this.selectedContact && targetUri) {
             let contact = this.props.newContactFunc(targetUri, null, {src: 'new chat'});
-            this.handleTargetChange(targetUri, contact);
+            console.log('Create synthetic contact', contact);
+            this.props.selectContact(contact);
+            this.setState({targetUri: targetUri, chat: true});
+            //this.handleTargetChange(targetUri, contact);
         }
 
         this.setState({chat: !this.state.chat});
@@ -280,54 +291,100 @@ class ReadyBox extends Component {
         this.setState({showConferenceModal: false});
     }
 
-    conferenceButtonActive() {
-        if (this.state.targetUri.indexOf('@guest.') > -1) {
-            return false;
+    get chatButtonDisabled() {
+        let uri = this.state.targetUri.trim();
+
+        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
+            return true;
         }
 
-        if (this.state.targetUri.indexOf('@') > -1 &&
-            this.state.targetUri.indexOf(config.defaultConferenceDomain) === -1) {
-            return false;
+        let username = uri.split('@')[0];
+        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+        if (isPhoneNumber) {
+            return true;
         }
 
-        let uri = this.state.targetUri.toLowerCase();
-        var uri_parts = uri.split("/");
-        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
-            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
-            // https://webrtc.sipthor.net/call/alice@example.com from external web link
-            let event = uri_parts[3];
-            if (event === 'call') {
-                return false;
+        if (uri.indexOf('@') > -1) {
+            let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
+            let validEmail = email_reg.test(uri);
+            if (!validEmail) {
+                return true;
             }
         }
 
-        if (this.state.targetUri.match(/^(\+)(\d+)$/)) {
-            return false;
+        if (this.chatDisabledForUri(uri)) {
+            return true;
         }
 
-        return true;
+        return false;
     }
 
-    get chatButtonDisabled() {
+    get callButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (this.chatDisabledForUri(uri)) {
+        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
+            return true;
+        }
+
+        if (uri.indexOf('@') > -1) {
+            let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
+            let validEmail = email_reg.test(uri);
+            if (!validEmail) {
+                console.log('Invalid chat destination');
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    get videoButtonDisabled() {
+        let uri = this.state.targetUri.trim();
+        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
+            return true;
+        }
+
+        if (uri.indexOf('4444@') > -1) {
+            return true;
+        }
+
+        let username = uri.split('@')[0];
+        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+        if (isPhoneNumber) {
             return true;
         }
 
         return this.callButtonDisabled;
     }
 
-    get callButtonDisabled() {
+    get conferenceButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (uri.indexOf(' ') > -1) {
+
+        if (!uri || uri.indexOf(' ') > -1) {
             return true;
         }
-        if (uri.length === 0 ||
-            uri.indexOf('@videoconference') > -1 ||
-            uri.indexOf('@guest') > -1
-            ) {
+
+        let username = uri.split('@')[0];
+        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
+        if (isPhoneNumber) {
             return true;
+        }
+
+        if (uri.indexOf('@') > -1 && uri.indexOf(config.defaultConferenceDomain) === -1) {
+            return true;
+        }
+
+        var uri_parts = uri.split("/");
+        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+            // https://webrtc.sipthor.net/call/alice@example.com from external web link
+            let event = uri_parts[3];
+            if (event === 'call') {
+                return true;
             }
+        }
+
         return false;
     }
 
@@ -448,13 +505,13 @@ class ReadyBox extends Component {
                                 <IconButton
                                     style={buttonClass}
                                     size={32}
-                                    disabled={this.callButtonDisabled}
+                                    disabled={this.videoButtonDisabled}
                                     onPress={this.handleVideoCall}
                                     icon="video"
                                 />
                                 <IconButton
                                     style={styles.conferenceButton}
-                                    disabled={!this.conferenceButtonActive()}
+                                    disabled={this.conferenceButtonDisabled}
                                     size={32}
                                     onPress={this.showConferenceModal}
                                     icon="account-group"
@@ -511,6 +568,8 @@ class ReadyBox extends Component {
                             pinned = {this.state.pinned}
                             loadEarlierMessages = {this.props.loadEarlierMessages}
                             newContactFunc = {this.props.newContactFunc}
+                            messageZoomFactor = {this.state.messageZoomFactor}
+                            isTyping = {this.state.isTyping}
                         />
                     </View>
 
@@ -592,7 +651,9 @@ ReadyBox.propTypes = {
     updateSelection : PropTypes.func,
     loadEarlierMessages: PropTypes.func,
     newContactFunc  : PropTypes.func,
-    missedCalls     : PropTypes.array
+    missedCalls     : PropTypes.array,
+    messageZoomFactor: PropTypes.string,
+    isTyping:      PropTypes.bool
 };
 
 

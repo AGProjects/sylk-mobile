@@ -135,7 +135,7 @@ class ContactCard extends Component {
     render () {
         let showActions = this.state.contact.showActions &&
                           this.state.contact.tags.indexOf('test') === -1 &&
-                          this.state.contact.tags !== ["syntetic"];
+                          this.state.contact.tags !== ["synthetic"];
 
         let tags = this.state.contact ? this.state.contact.tags : [];
 
@@ -148,6 +148,8 @@ class ContactCard extends Component {
         if (this.state.contact.organization) {
             //name = name + ' (' + this.state.organization + ')';
         }
+
+        //console.log('Render Contact', this.state.contact.name, this.state.contact.tags);
 
         let showBlockButton = !this.state.contact.conference && !this.state.chat;
         let showBlockDomainButton = false;

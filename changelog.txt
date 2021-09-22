@@ -1,3 +1,17 @@
+iOS 2.2.3 & Android 1.81 Wed Sep 22 11:03:39 -03 2021
+
+  * Phone calls history fixes
+  * Push notifications for messaging
+  * Update app badge on new messages
+  * Message scrolling improvements
+  * Added load earlier messages
+  * Cancel outgoing call in progress after 45 seconds
+  * Improve ringtone delay
+  * Refactor contextual message menu
+  * Fixed sorting contacts by tags
+  * Always show both password fields in Enrollment
+
+
 iOS 2.1.8 & Android 1.73 Fri Sep 17 10:53:30 -03 2021
 
   * Fixed enrollment on smaller screens

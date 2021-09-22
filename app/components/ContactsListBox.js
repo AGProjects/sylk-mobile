@@ -51,7 +51,10 @@ class ContactsListBox extends Component {
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             filter: this.props.filter,
-            scrollToBottom: true
+            scrollToBottom: true,
+            messageZoomFactor: this.props.messageZoomFactor,
+            isTyping: false,
+            isLoadingEarlier: false
         }
 
         this.ended = false;
@@ -97,6 +100,10 @@ class ContactsListBox extends Component {
             this.getServerHistory();
         }
 
+        if (nextProps.messageZoomFactor !== this.state.messageZoomFactor) {
+            this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
+        }
+
         if (nextProps.selectedContact !== this.state.selectedContact) {
             this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact) {
@@ -117,13 +124,25 @@ class ContactsListBox extends Component {
                 if (nextProps.messages && nextProps.messages.hasOwnProperty(uri)) {
                     renderMessages = nextProps.messages[uri];
                     if (this.state.renderMessages.length !== renderMessages.length) {
+                        this.setState({isLoadingEarlier: false});
                         this.props.confirmRead(uri);
+                        console.log(renderMessages.length, 'messages to render');
+                        if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
+                            let last_message_ts = this.state.renderMessages[this.state.renderMessages.length-1].createdAt;
+                            if (renderMessages[renderMessages.length-1].createdAt > last_message_ts) {
+                                this.setState({scrollToBottom: true});
+                            }
+                        }
                     }
                 }
 
-                this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
-                if (!this.state.scrollToBottom && renderMessages.length > 0) {
-                    this.scrollToMessage(0);
+                if (renderMessages !== this.state.renderMessages) {
+                    renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+                    this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
+                    if (!this.state.scrollToBottom && renderMessages.length > 0) {
+                        //console.log('Scroll to first message');
+                        //this.scrollToMessage(0);
+                    }
                 }
 
             }
@@ -140,9 +159,15 @@ class ContactsListBox extends Component {
                        inviteContacts: nextProps.inviteContacts,
                        selectedContacts: nextProps.selectedContacts,
                        pinned: nextProps.pinned,
+                       isTyping: nextProps.isTyping,
                        targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri
                        });
 
+        if (nextProps.isTyping) {
+            setTimeout(() => {
+                this.setState({isTyping: false});
+            }, 3000);
+        }
     }
 
     renderCustomActions = props =>
@@ -230,7 +255,8 @@ class ContactsListBox extends Component {
     }
 
     loadEarlierMessages() {
-        this.setState({scrollToBottom: false});
+        //console.log('Load earlier messages...');
+        this.setState({scrollToBottom: false, isLoadingEarlier: true});
         this.props.loadEarlierMessages();
     }
 
@@ -286,23 +312,26 @@ class ContactsListBox extends Component {
             */
             this.props.sendMessage(uri, message);
         });
-        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
+
+        let renderMessages = this.state.renderMessages;
+        renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+        Array.prototype.push.apply(messages, renderMessages);
+        this.setState({renderMessages: GiftedChat.append(messages, [])});
     }
 
     searchedContact(uri, contact=null) {
         let contacts = [];
-        /*
-        if (uri.indexOf('@') === -1) {
-            uri = uri + '@' + this.props.defaultDomain;
+
+        if (uri.indexOf(' ') > -1) {
+            return contacts;
         }
-        */
 
         const item = this.props.newContactFunc(uri.toLowerCase(), null, {src: 'search_contact'});
         if (contact) {
             item.name = contact.name;
             item.photo = contact.photo;
         }
-        item.tags.push('syntetic');
+        item.tags.push('synthetic');
         contacts.push(item);
         return contacts;
     }
@@ -473,8 +502,10 @@ class ContactsListBox extends Component {
 
     onLongMessagePress(context, currentMessage) {
         if (currentMessage && currentMessage.text) {
-            let options = ['Copy']
+            let options = []
+            options.push('Copy');
             options.push('Delete');
+
             const showResend = currentMessage.failed;
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
@@ -491,53 +522,32 @@ class ContactsListBox extends Component {
                 options.push('Pin');
             }
 
+            if (currentMessage.direction === 'outgoing') {
+                options.push('Info');
+            }
+
             options.push('Share');
-            options.push('Info');
             options.push('Cancel');
 
-            const cancelButtonIndex = options.length - 1;
-            const infoButtonIndex = options.length - 2;
-            const shareButtonIndex = options.length - 3;
-            const pinButtonIndex = options.length - 4;
+            let l = options.length - 1;
 
-            context.actionSheet().showActionSheetWithOptions({
-                options,
-                cancelButtonIndex,
-            }, (buttonIndex) => {
-                switch (buttonIndex) {
-                    case 0:
-                        Clipboard.setString(currentMessage.text);
-                        break;
-                    case 1:
-                        this.props.deleteMessage(currentMessage._id, this.state.targetUri);
-                        break;
-                    case pinButtonIndex:
-                        if (currentMessage.pinned) {
-                            this.props.unpinMessage(currentMessage._id);
-                        } else {
-                            this.props.pinMessage(currentMessage._id);
-                        }
-                        break;
-                    case infoButtonIndex:
-                        this.setState({message: currentMessage,
-                                       showMessageModal: true});
-
-                        break;
-                    case shareButtonIndex:
-                        this.setState({message: currentMessage,
-                                       showShareMessageModal: true
-                                       });
-                        break;
-                    case 2:
-                        if (this.state.targetUri.indexOf('@videoconference') === -1) {
-                            if (showResend) {
-                                this.props.reSendMessage(currentMessage, this.state.targetUri);
-                            }
-                        }
-
-                        break;
-                    default:
-                        break;
+            context.actionSheet().showActionSheetWithOptions({options, l}, (buttonIndex) => {
+                let action = options[buttonIndex];
+                console.log('Message action', action);
+                if (action === 'Copy') {
+                    Clipboard.setString(currentMessage.text);
+                } else if (action === 'Delete') {
+                    this.props.deleteMessage(currentMessage._id, this.state.targetUri);
+                } else if (action === 'Pin') {
+                    this.props.pinMessage(currentMessage._id);
+                } else if (action === 'Unpin') {
+                    this.props.unpinMessage(currentMessage._id);
+                } else if (action === 'Info') {
+                    this.setState({message: currentMessage, showMessageModal: true});
+                } else if (action === 'Share') {
+                    this.setState({message: currentMessage, showShareMessageModal: true});
+                } else if (action === 'Resend') {
+                    this.props.reSendMessage(currentMessage, this.state.targetUri);
                 }
             });
         }
@@ -593,7 +603,13 @@ class ContactsListBox extends Component {
            return false;
        }
 
-//       if (this.props.selectedContact || this.state.targetUri) {
+       let username = this.state.targetUri ? this.state.targetUri.split('@')[0] : null;
+       let isPhoneNumber = username ? username.match(/^(\+|0)(\d+)$/) : false;
+
+       if (isPhoneNumber) {
+           return false;
+       }
+
        if (this.props.selectedContact) {
            return true;
        }
@@ -611,6 +627,8 @@ class ContactsListBox extends Component {
             contacts.push(this.state.myContacts[uri]);
         });
 
+        //console.log('--- Render contacts scrollToBottom', this.state.scrollToBottom, 'zoom', this.state.messageZoomFactor);
+
         let chatInputClass;
 
         if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
@@ -625,8 +643,12 @@ class ContactsListBox extends Component {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['favorite']));
         } else if (this.state.filter === 'blocked') {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['blocked']));
-        } else if (this.state.filter === 'test') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['test']));
+        } else if (this.state.filter === 'chat') {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['chat']));
+        } else if (this.state.filter === 'chat') {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['chat']));
+        } else if (this.state.filter === 'calls') {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['calls']));
         } else if (this.state.filter === 'conference') {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['conference']));
         } else if (this.state.filter === 'missed') {
@@ -721,7 +743,7 @@ class ContactsListBox extends Component {
         const borderClass = (messages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
 
         if (items.length === 1) {
-            if (items[0].tags.toString() === 'syntetic') {
+            if (items[0].tags.toString() === 'synthetic') {
                 messages = [];
             }
         }
@@ -779,11 +801,14 @@ class ContactsListBox extends Component {
                   renderBubble={this.renderMessageBubble}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   scrollToBottom={this.state.scrollToBottom}
-                  inverted={false}
+                  inverted={true}
+                  maxInputLength={16000}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
                   loadEarlier={showLoadEarlier}
+                  isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
+                  isTyping={this.state.isTyping}
                 />
               </View>
               : (items.length === 1) ?
@@ -797,7 +822,7 @@ class ContactsListBox extends Component {
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   onPress={this.onLongMessagePress}
                   scrollToBottom={this.state.scrollToBottom}
-                  inverted={false}
+                  inverted={true}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                   infiniteScroll
                   loadEarlier={showLoadEarlier}
@@ -865,7 +890,9 @@ ContactsListBox.propTypes = {
     toggleBlocked   : PropTypes.func,
     togglePinned    : PropTypes.func,
     loadEarlierMessages: PropTypes.func,
-    newContactFunc  : PropTypes.func
+    newContactFunc  : PropTypes.func,
+    messageZoomFactor: PropTypes.string,
+    isTyping:      PropTypes.bool
 };
 
 

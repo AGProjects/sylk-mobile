@@ -118,7 +118,7 @@ class AudioCallBox extends Component {
 
         this.setState({remoteUri: nextProps.remoteUri,
                        remoteDisplayName: nextProps.remoteDisplayName,
-                       photo: nextProps.photo,
+                       photo: nextProps.photo ? nextProps.photo : this.state.photo,
                        declineReason: nextProps.declineReason
                        });
     }
@@ -191,7 +191,7 @@ class AudioCallBox extends Component {
         let userIconContainerClass;
 
         let remoteIdentity = {uri: this.state.remoteUri || '',
-                              displayName: this.state.remoteDisplayName || '',
+                              name: this.state.remoteDisplayName || '',
                               photo: this.state.photo
                               };
 
@@ -215,6 +215,8 @@ class AudioCallBox extends Component {
         const buttonSize = this.props.isTablet ? 40 : 34;
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         const chatButtonClass = (Platform.OS === 'ios') ? styles.iosChatButton : styles.androidChatButton;
+
+        //console.log('Call to remoteIdentity', remoteIdentity);
 
         return (
             <View style={styles.container}>

@@ -15,6 +15,7 @@ import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import PushNotification , {Importance} from "react-native-push-notification";
 import Contacts from 'react-native-contacts';
 import BackgroundTimer from 'react-native-background-timer';
 import DeepLinking from 'react-native-deep-linking';
@@ -22,6 +23,7 @@ import base64 from 'react-native-base64';
 import SoundPlayer from 'react-native-sound-player';
 import RNSimpleCrypto from "react-native-simple-crypto";
 import OpenPGP from "react-native-fast-openpgp";
+import ShortcutBadge from 'react-native-shortcut-badge';
 
 registerGlobals();
 
@@ -273,7 +275,7 @@ class Sylk extends Component {
             selectedContacts: [],
             pinned: false,
             callContact: null,
-            messageLimit: 50,
+            messageLimit: 24,
             messageZoomFactor: 1,
             messageStart: 0,
             contactsLoaded: false,
@@ -284,7 +286,8 @@ class Sylk extends Component {
             purgeMessages: [],
             showCallMeMaybeModal: false,
             enrollment: false,
-            contacts: []
+            contacts: [],
+            isTyping: false
         };
 
         utils.timestampedLog('Init app');
@@ -335,6 +338,7 @@ class Sylk extends Component {
         this.shouldUseHashRouting = false;
         this.goToReadyTimer = null;
         this.msg_sound_played_ts = null;
+        this.initialChatContact = null;
 
         storage.initialize();
         this.callKeeper = new CallManager(RNCallKeep,
@@ -618,6 +622,8 @@ class Sylk extends Component {
             }
         }
 
+        this.setState({defaultDomain: this.state.accountId.split('@')[1]});
+
         //this.resetStorage();
         this.ExecuteQuery("SELECT * FROM contacts where account = ? order by timestamp desc",[this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -652,8 +658,11 @@ class Sylk extends Component {
                     let ab_contacts = this.lookupContacts(item.uri);
                     if (ab_contacts.length > 0) {
                         myContacts[item.uri].photo = ab_contacts[0].photo;
+                        myContacts[item.uri].name = ab_contacts[0].name;
                         myContacts[item.uri].label = ab_contacts[0].label;
-                        myContacts[item.uri].tags.push('contact');
+                        if (myContacts[item.uri].tags.indexOf('contact') === -1) {
+                            myContacts[item.uri].tags.push('contact');
+                        }
                     }
 
                     if (myContacts[item.uri].tags.indexOf('missed') > -1) {
@@ -779,6 +788,17 @@ class Sylk extends Component {
                     storage.remove('myContacts');
                 }
             }
+
+            setTimeout(() => {
+                if (this.initialChatContact) {
+                    console.log('Starting chat with', this.initialChatContact);
+                    if (this.initialChatContact in this.state.myContacts) {
+                        this.selectContact(this.state.myContacts[this.initialChatContact]);
+                    }
+                    this.initialChatContact = null;
+                }
+            }, 100);
+
 
             setTimeout(() => {
                 let test_numbers = [
@@ -1349,8 +1369,6 @@ class Sylk extends Component {
 
     async componentDidMount() {
         utils.timestampedLog('App did mount');
-        this._loaded = true;
-
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
         // Start a timer that runs once after X milliseconds
         BackgroundTimer.runBackgroundTimer(() => {
@@ -1400,6 +1418,7 @@ class Sylk extends Component {
 
         this.listenforPushNotifications();
         this.listenforSoundNotifications();
+        this._loaded = true;
     }
 
     listenforSoundNotifications() {
@@ -1416,6 +1435,126 @@ class Sylk extends Component {
         this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
           //console.log('finished loading url', success, url)
         })
+    }
+
+    registerAndroidNotifications(parent) {
+
+        // Must be outside of any component LifeCycle (such as `componentDidMount`).
+        //console.log('registerAndroidNotifications');
+        PushNotification.configure({
+          // (optional) Called when Token is generated (iOS and Android)
+          onRegister: function (token) {
+            //console.log("TOKEN:", token);
+          },
+
+          // (required) Called when a remote is received or opened, or local notification is opened
+          onNotification: function (notification) {
+
+            parent.handleAndroidNotification(notification);
+
+            // process the notification
+
+            // (required) Called when a remote is received or opened, or local notification is opened
+            notification.finish(PushNotificationIOS.FetchResult.NoData);
+          },
+
+          // (optional) Called when Registered Action is pressed and invokeApp is false, if true onNotification will be called (Android)
+          onAction: function (notification) {
+            console.log("ACTION:", notification.action);
+            console.log("NOTIFICATION:", notification);
+
+            // process the action
+          },
+
+          // (optional) Called when the user fails to register for remote notifications. Typically occurs when APNS is having issues, or the device is a simulator. (iOS)
+          onRegistrationError: function(err) {
+            console.error(err.message, err);
+          },
+        });
+
+        PushNotification.createChannel(
+        {
+          channelId: "sylk-messages", // (required)
+          channelName: "My Sylk stream", // (required)
+          channelDescription: "A channel to receive Sylk Message", // (optional) default: undefined.
+          playSound: false, // (optional) default: true
+          importance: Importance.HIGH, // (optional) default: Importance.HIGH. Int value of the Android notification importance
+          vibrate: true, // (optional) default: true. Creates the default vibration pattern if true.
+        },
+        (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
+      );
+
+        PushNotification.createChannel(
+        {
+          channelId: "sylk-messages-sound", // (required)
+          channelName: "My Sylk stream", // (required)
+          channelDescription: "A channel to receive Sylk Message", // (optional) default: undefined.
+          playSound: true, // (optional) default: true
+          soundName: "default", // (optional) See `soundName` parameter of `localNotification` function
+          importance: Importance.HIGH, // (optional) default: Importance.HIGH. Int value of the Android notification importance
+          vibrate: true, // (optional) default: true. Creates the default vibration pattern if true.
+        },
+        (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
+      );
+
+        console.log('Available Sylk channels:');
+
+        PushNotification.getChannels(function (channel_ids) {
+          console.log(channel_ids); // ['channel_id_1']
+        });
+    }
+
+    handleAndroidNotification(notification) {
+        //console.log("Handle Android push notification:", notification);
+        let uri = notification.data.from_uri;
+
+        if (!uri) {
+            return;
+        }
+
+        if (uri in this.state.myContacts) {
+            this.selectContact(this.state.myContacts[uri]);
+            this.initialChatContact = null;
+        } else {
+            this.initialChatContact = uri;
+        }
+    }
+
+    sendLocalAndroidNotification(uri, content) {
+        //https://www.npmjs.com/package/react-native-push-notification
+
+        PushNotification.localNotification({
+          /* Android Only Properties */
+          channelId: "sylk-messages", // (required) channelId, if the channel doesn't exist, notification will not trigger.
+          showWhen: true, // (optional) default: true
+          autoCancel: true, // (optional) default: true
+          largeIcon: "ic_launcher", // (optional) default: "ic_launcher". Use "" for no large icon.
+          largeIconUrl: "https://icanblink.com/apple-touch-icon-180x180.png", // (optional) default: undefined
+          smallIcon: "", // (optional) default: "ic_notification" with fallback for "ic_launcher". Use "" for default small icon.
+          bigText: content, // (optional) default: "message" prop
+          subText: "New message", // (optional) default: none
+          //bigPictureUrl: "https://www.example.tld/picture.jpg", // (optional) default: undefined
+          bigLargeIcon: "ic_launcher", // (optional) default: undefined
+          bigLargeIconUrl: "https://www.example.tld/bigicon.jpg", // (optional) default: undefined
+          color: "red", // (optional) default: system default
+          vibrate: true, // (optional) default: true
+          vibration: 100, // vibration length in milliseconds, ignored if vibrate=false, default: 1000
+          priority: "high", // (optional) set notification priority, default: high
+          ignoreInForeground: true, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
+          onlyAlertOnce: true, // (optional) alert will open only once with sound and notify, default: false
+          invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
+
+          /* iOS and Android properties */
+          id: 0, // (optional) Valid unique 32 bit integer specified as string. default: Autogenerated Unique ID
+          title: uri, // (optional)
+          message: content, // (required)
+          //picture: "https://www.example.tld/picture.jpg", // (optional) Display an picture with the notification, alias of `bigPictureUrl` for Android. default: undefined
+          userInfo: {}, // (optional) default: {} (using null throws a JSON value '<null>' error)
+          playSound: false, // (optional) default: true
+          soundName: "default", // (optional) Sound to play when the notification is shown. Value of 'default' plays the default sound. It can be set to a custom sound such as 'android.resource://com.xyz/raw/my_sound'. It will look for the 'my_sound' audio file in 'res/raw' directory and play it. default: 'default' (default sound is played)
+          number: 10, // (optional) Valid 32 bit integer specified as string. default: none (Cannot be zero)
+          repeatType: "day", // (optional) Repeating interval. Check 'Repeating Notifications' section for more info.
+        });
     }
 
     listenforPushNotifications() {
@@ -1482,6 +1621,8 @@ class Sylk extends Component {
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
             VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
         } else if (Platform.OS === 'android') {
+            this.registerAndroidNotifications(this);
+
             AppState.addEventListener('focus', this._handleAndroidFocus);
             AppState.addEventListener('blur', this._handleAndroidBlur);
 
@@ -1521,7 +1662,10 @@ class Sylk extends Component {
                     } else if (event === 'cancel') {
                         this.cancelIncomingCall(callUUID);
                     } else if (event === 'message') {
-                        console.log('New messages on Sylk server');
+                        console.log('Push notification: new messages on Sylk server from', from);
+                        if (from in this.state.myContacts) {
+                            this.selectContact(this.state.myContacts[from]);
+                        }
                     }
                 });
         }
@@ -1660,6 +1804,8 @@ class Sylk extends Component {
     _sendPushToken(account) {
         if ((this.pushtoken && !this.tokenSent)) {
             let token = null;
+
+            //console.log('_sendPushToken this.pushtoken', this.pushtoken);
 
             if (Platform.OS === 'ios') {
                 token = `${this.pushkittoken}-${this.pushtoken}`;
@@ -1979,8 +2125,7 @@ class Sylk extends Component {
                            enrollment: false,
                            autoLogin: true,
                            registrationKeepalive: true,
-                           registrationState: 'registered',
-                           defaultDomain: this.state.account ? this.state.account.id.split('@')[1]: null
+                           registrationState: 'registered'
                            });
 
             if (this.state.keys && !this.syncRequested) {
@@ -2320,10 +2465,12 @@ class Sylk extends Component {
                 let play_busy_tone = !this.isConference(call);
                 let CALLKEEP_REASON;
                 let missed = false;
+                let cancelled = false;
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState === 'progress' && direction === 'outgoing') {
                         reason = 'Cancelled';
+                        cancelled = true;
                         play_busy_tone = false;
                     } else if (oldState === 'incoming') {
                         reason = 'Cancelled';
@@ -2365,6 +2512,7 @@ class Sylk extends Component {
                 } else if (reason.match(/487/)) {
                     reason = 'Cancelled';
                     play_busy_tone = false;
+                    cancelled = true;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else if (reason.match(/488/)) {
                     reason = 'Unacceptable media';
@@ -2388,6 +2536,7 @@ class Sylk extends Component {
                 if (direction === 'outgoing') {
                     this.setState({declineReason: reason});
                 }
+
                 this.stopRingback();
 
                 let msg;
@@ -2408,7 +2557,7 @@ class Sylk extends Component {
                     this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
-                    if (missed) {
+                    if (missed || cancelled) {
                         this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
                     }
                 }
@@ -2605,6 +2754,7 @@ class Sylk extends Component {
                 storage.set('account', {
                     accountId: this.state.accountId,
                     password: this.state.password
+
                 });
 
             } else {
@@ -2789,11 +2939,23 @@ class Sylk extends Component {
 
     callKeepStartCall(targetUri, options) {
         this.resetGoToReadyTimer();
+        targetUri = targetUri.trim().toLowerCase();
+
+        if (targetUri.indexOf('@') === -1) {
+            targetUri = targetUri + '@' + this.state.defaultDomain;
+        }
+
         let callUUID = options.callUUID || uuid.v4();
         this.setState({outgoingCallUUID: callUUID, reconnectingCall: false});
         utils.timestampedLog('User will start call', callUUID, 'to', targetUri);
         this.respawnConnection();
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, callUUID: callUUID});
+
+        setTimeout(() => {
+            if (this.state.currentCall && this.state.currentCall.id === callUUID && this.state.currentCall.state === 'progress') {
+                this.hangupCall(callUUID, 'cancelled_call');
+            }
+        }, 45000);
     }
 
     startCall(targetUri, options) {
@@ -3090,7 +3252,6 @@ class Sylk extends Component {
         }
     }
 
-
     backToForeground() {
         if (this.state.appState !== 'active') {
             this.callKeeper.backToForeground();
@@ -3099,6 +3260,12 @@ class Sylk extends Component {
         if (this.state.accountId) {
             this.handleRegistration(this.state.accountId, this.state.password);
         }
+
+        PushNotification.popInitialNotification((notification) => {
+            if (notification) {
+                console.log('Initial push notification', notification);
+            }
+        });
     }
 
     incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}) {
@@ -3496,7 +3663,7 @@ class Sylk extends Component {
             contact = this.newContact(uri);
         }
 
-        //console.log('saveSylkContact', uri, contact.name, 'by', origin);
+        //console.log('saveSylkContact', contact, 'by', origin);
 
         contact = this.sanitizeContact(uri, contact, 'saveSylkContact');
 
@@ -3606,7 +3773,7 @@ class Sylk extends Component {
                     this.setState({myInvitedParties: myInvitedParties});
                 }
 
-                idx = this.sql_contacts_keys.indexOf(uri);
+                let idx = this.sql_contacts_keys.indexOf(uri);
                 if (idx > -1) {
                      this.sql_contacts_keys.splice(idx, 1);
                 }
@@ -4377,9 +4544,8 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Confirm read messages for', uri);
+        //console.log('Confirm read messages for', uri);
         let displayed = [];
-
 
         await this.ExecuteQuery("SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and system is NULL and to_uri = ?", [this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -4467,6 +4633,10 @@ class Sylk extends Component {
     }
 
     async sendDispositionNotification(message, state='displayed') {
+        if (!this.state.account) {
+            return false;
+        }
+
         let query;
         let result = {};
         let id = message.msg_id || message.id;
@@ -4582,7 +4752,6 @@ class Sylk extends Component {
 
                 msg = this.sql2GiftedChat(message, content);
                 render_messages.push(msg);
-                render_messages.sort((a, b) => (a.createdAt > b.createdAt) ? 1 : -1);
                 messages[uri] = render_messages;
                 if (pending_messages.length === 0) {
                     this.confirmRead(uri);
@@ -4610,7 +4779,15 @@ class Sylk extends Component {
 
     async getMessages(uri) {
         this.resetUnreadCount(uri);
-        console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
+
+        let messages_uri = uri;
+        let isPhoneNumber = uri ? uri.match(/^(\+|0)(\d+)$/) : false;
+
+        if (isPhoneNumber) {
+            messages_uri = messages_uri + '@' + this.state.defaultDomain;
+        }
+
+        console.log('Get messages with', messages_uri, 'with zoom factor', this.state.messageZoomFactor);
         let messages = this.state.messages;
         let msg;
         let query;
@@ -4626,7 +4803,7 @@ class Sylk extends Component {
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
         query = "SELECT count(*) as rows FROM messages where (from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)";
-        await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+        await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
             //console.log(total, 'messages with', uri, 'from database');
@@ -4644,7 +4821,7 @@ class Sylk extends Component {
 
         query = "SELECT * FROM messages where (from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) order by id desc limit ?, ?";
 
-        await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
+        await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
             //console.log('SQL get messages OK', results.rows.length);
 
             let rows = results.rows;
@@ -4708,7 +4885,6 @@ class Sylk extends Component {
                 }
             }
 
-            messages[uri].sort((a, b) => (a.createdAt > b.createdAt) ? 1 : -1);
             console.log('Got', messages[uri].length, 'out of', total, 'messages for', uri, 'from SQL database');
 
             if (messages[uri].length > 0) {
@@ -5343,6 +5519,7 @@ class Sylk extends Component {
     }
 
     async incomingMessage(message) {
+
         utils.timestampedLog('Message', message.id, 'was received');
         // Handle incoming messages
         if (message.content.indexOf('?OTRv3') > -1) {
@@ -5392,6 +5569,8 @@ class Sylk extends Component {
 
     handleIncomingMessage(message, decryptedBody=null) {
         let content = decryptedBody || message.content;
+
+        //this.sendLocalAndroidNotification(message.sender.uri, content);
 
         this.saveIncomingMessage(message, decryptedBody);
 
@@ -5947,9 +6126,12 @@ class Sylk extends Component {
 
         console.log('Total unread messages', total_unread)
 
-        if (Platform.OS == 'ios') {
-            PushNotificationIOS.setApplicationIconBadgeNumber(total_unread);
-        }
+       if (Platform.OS === 'ios') {
+           PushNotification.setApplicationIconBadgeNumber(total_unread);
+       } else {
+            ShortcutBadge.setCount(total_unread);
+       }
+
     }
 
     saveContact(uri, displayName='', organization='', email='') {
@@ -6453,12 +6635,13 @@ class Sylk extends Component {
             } else {
                 myContacts[uri] = this.newContact(uri);
                 myContacts[uri].timestamp = item.timestamp;
+                myContacts[uri].name = item.name;
             }
 
             if (item.timestamp > myContacts[uri].timestamp) {
             } else {
                 if (myContacts[uri].lastCallId === item.sessionId) {
-                    return;
+                    //return;
                 }
             }
 
@@ -6658,6 +6841,8 @@ class Sylk extends Component {
                     pinned = {this.state.pinned}
                     loadEarlierMessages = {this.loadEarlierMessages}
                     newContactFunc = {this.newContact}
+                    messageZoomFactor = {this.state.messageZoomFactor}
+                    isTyping = {this.state.isTyping}
                 />
 
                 <ImportPrivateKeyModal
