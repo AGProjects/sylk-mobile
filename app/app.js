@@ -287,7 +287,9 @@ class Sylk extends Component {
             showCallMeMaybeModal: false,
             enrollment: false,
             contacts: [],
-            isTyping: false
+            isTyping: false,
+            avatarPhotos: {},
+            avatarEmails: {}
         };
 
         utils.timestampedLog('Init app');
@@ -444,7 +446,7 @@ class Sylk extends Component {
         }
 
         this.sqlTableVersions = {'messages': 3,
-                                 'contacts': 5,
+                                 'contacts': 6,
                                  'keys': 2}
 
         this.updateTableQueries = {'messages': {1: [],
@@ -463,7 +465,8 @@ class Sylk extends Component {
                                                     'drop table contacts2',
                                                     'ALTER TABLE contacts3 RENAME TO contacts'
                                                     ],
-                                                5: ['alter table contacts add column email TEXT']
+                                                5: ['alter table contacts add column email TEXT'],
+                                                6: ['alter table contacts add column photo BLOB']
                                                 },
                                    'keys': {2: ['alter table keys add column last_sync_id TEXT']}
                                    };
@@ -528,7 +531,7 @@ class Sylk extends Component {
                 var item = rows.item(0);
                 keys.public = item.public_key;
                 keys.private = item.private_key;
-                console.log('Loaded private key from SQL database for account', this.state.accountId);
+                console.log('Loaded private key for account', this.state.accountId);
                 if (!item.last_sync_id && this.lastSyncedMessageId) {
                     this.setState({keys: keys});
                     this.saveLastSyncId(this.lastSyncedMessageId);
@@ -537,7 +540,7 @@ class Sylk extends Component {
                     lastSyncId = this.lastSyncedMessageId;
                 } else {
                     if (item.last_sync_id) {
-                        console.log('Loaded last sync id from SQL database', item.last_sync_id);
+                        console.log('Loaded last sync id', item.last_sync_id);
                     }
                     this.setState({keys: keys, lastSyncId: item.last_sync_id});
                     lastSyncId = item.last_sync_id;
@@ -629,10 +632,12 @@ class Sylk extends Component {
             let rows = results.rows;
             let idx;
             let formatted_date;
+            let updated;
             //console.log(rows.length, 'SQL rows');
             if (rows.length > 0) {
                 for (let i = 0; i < rows.length; i++) {
                     var item = rows.item(i);
+                    updated = null;
 
                     this.sql_contacts_keys.push(item.uri);
 
@@ -643,6 +648,7 @@ class Sylk extends Component {
                     myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init'});
                     myContacts[item.uri].organization = item.organization;
                     myContacts[item.uri].email = item.email;
+                    myContacts[item.uri].photo = item.photo;
                     myContacts[item.uri].publicKey = item.public_key;
                     myContacts[item.uri].direction = item.direction;
                     myContacts[item.uri].tags = item.tags ? item.tags.split(',') : [];
@@ -657,11 +663,32 @@ class Sylk extends Component {
 
                     let ab_contacts = this.lookupContacts(item.uri);
                     if (ab_contacts.length > 0) {
-                        myContacts[item.uri].photo = ab_contacts[0].photo;
-                        myContacts[item.uri].name = ab_contacts[0].name;
+                        if (!myContacts[item.uri].name || myContacts[item.uri].name === '') {
+                            console.log('Update display name', myContacts[item.uri].name, 'of', item.uri, 'to', ab_contacts[0].name);
+                            myContacts[item.uri].name = ab_contacts[0].name;
+                            updated = 'name';
+                        }
+
                         myContacts[item.uri].label = ab_contacts[0].label;
                         if (myContacts[item.uri].tags.indexOf('contact') === -1) {
                             myContacts[item.uri].tags.push('contact');
+                            updated = 'tags';
+                        }
+                    }
+
+                    if (!myContacts[item.uri].photo) {
+                        var name_idx = myContacts[item.uri].name.trim().toLowerCase();
+                        if (name_idx in this.state.avatarPhotos) {
+                            myContacts[item.uri].photo = this.state.avatarPhotos[name_idx];
+                            updated = 'photo';
+                        }
+                    }
+
+                    if (!myContacts[item.uri].email) {
+                        var name_idx = myContacts[item.uri].name.trim().toLowerCase();
+                        if (name_idx in this.state.avatarEmails) {
+                            myContacts[item.uri].email = this.state.avatarEmails[name_idx];
+                            updated = 'email';
                         }
                     }
 
@@ -681,7 +708,6 @@ class Sylk extends Component {
                         this.setState({displayName: item.name, organization: item.organization});
                         if (email && !item.email) {
                             item.email = email;
-                            this.saveSylkContact(item.uri, this.state.myContacts[item.uri], 'init');
                         } else {
                             this.setState({email: item.email});
                         }
@@ -700,6 +726,10 @@ class Sylk extends Component {
 
                     if (myContacts[item.uri].tags.indexOf('favorite') > -1) {
                         favoriteUris.push(item.uri);
+                    }
+
+                    if (updated) {
+                        this.saveSylkContact(item.uri, myContacts[item.uri], 'update contact at init because of ' + updated);
                     }
 
                     //console.log('Load contact', item.uri, item.name);
@@ -771,7 +801,7 @@ class Sylk extends Component {
 
                 this.updateTotalUread(myContacts);
 
-                console.log('Loaded', rows.length, 'contacts from SQL database for account', this.state.accountId);
+                console.log('Loaded', rows.length, 'contacts account', this.state.accountId);
                 this.setState({myContacts: myContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
@@ -987,6 +1017,7 @@ class Sylk extends Component {
                                     'name' TEXT, \
                                     'organization' TEXT, \
                                     'tags' TEXT, \
+                                    'photo' BLOB, \
                                     'participants' TEXT, \
                                     'public_key' TEXT, \
                                     'timestamp' INTEGER, \
@@ -1130,6 +1161,8 @@ class Sylk extends Component {
                 let contact_cards = [];
                 let name;
                 let photo;
+                let avatarPhotos = {};
+                let avatarEmails = {};
 
                 let seen_uris = new Map();
 
@@ -1162,12 +1195,16 @@ class Sylk extends Component {
                             if (!seen_uris.has(number_stripped)) {
                                 //console.log('   ---->    ', number['label'], number_stripped);
                                 var contact_card = {id: uuid.v4(),
-                                                    name: name,
+                                                    name: name.trim(),
                                                     uri: number_stripped,
                                                     type: 'contact',
                                                     photo: photo,
                                                     label: number['label'],
                                                     tags: ['contact']};
+                                if (photo) {
+                                    var name_idx = name.trim().toLowerCase();
+                                    avatarPhotos[name_idx] = photo;
+                                }
                                 contact_cards.push(contact_card);
                                 //console.log('Added AB contact', name, number_stripped);
                                 seen_uris.set(number_stripped, true);
@@ -1180,21 +1217,30 @@ class Sylk extends Component {
                         if (!seen_uris.has(email_stripped)) {
                             //console.log(name, email['label'], email_stripped);
                             var contact_card = {id: uuid.v4(),
-                                                name: name,
+                                                name: name.trim(),
                                                 uri: email_stripped,
                                                 type: 'contact',
                                                 photo: photo,
                                                 label: email['label'],
                                                 tags: ['contact']
                                                 };
+                            var name_idx = name.trim().toLowerCase();
+                            if (photo) {
+                                avatarPhotos[name_idx] = photo;
+                            }
+
+                            if (name_idx in avatarEmails) {
+                            } else {
+                                avatarEmails[name_idx] = email_stripped;
+                            }
                             contact_cards.push(contact_card);
                             seen_uris.set(email_stripped, true);
                         }
                     });
                 }
 
-              this.setState({contacts: contact_cards});
-              console.log('Added', contact_cards.length, 'addressbook entries');
+              this.setState({contacts: contact_cards, avatarPhotos: avatarPhotos, avatarEmails: avatarEmails});
+              console.log('Loaded', contact_cards.length, 'addressbook entries');
             }
           })
     }
@@ -1513,7 +1559,9 @@ class Sylk extends Component {
         }
 
         if (uri in this.state.myContacts) {
-            this.selectContact(this.state.myContacts[uri]);
+            if (!this.state.selectedContact) {
+                this.selectContact(this.state.myContacts[uri]);
+            }
             this.initialChatContact = null;
         } else {
             this.initialChatContact = uri;
@@ -1663,8 +1711,8 @@ class Sylk extends Component {
                         this.cancelIncomingCall(callUUID);
                     } else if (event === 'message') {
                         console.log('Push notification: new messages on Sylk server from', from);
-                        if (from in this.state.myContacts) {
-                            this.selectContact(this.state.myContacts[from]);
+                        if (this.state.selectedContact && this.state.selectedContact.uri !== from) {
+                            this._notificationCenter.postSystemNotification('New message from ' + from);
                         }
                     }
                 });
@@ -3663,7 +3711,7 @@ class Sylk extends Component {
             contact = this.newContact(uri);
         }
 
-        //console.log('saveSylkContact', contact, 'by', origin);
+        console.log('saveSylkContact', uri, 'by', origin);
 
         contact = this.sanitizeContact(uri, contact, 'saveSylkContact');
 
@@ -3685,8 +3733,8 @@ class Sylk extends Component {
         let unread_messages = contact.unread.toString();
         let unixTime = Math.floor(contact.timestamp / 1000);
 
-        let params = [this.state.accountId, contact.email, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
-        await this.ExecuteQuery("INSERT INTO contacts (account, email, timestamp, uri, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let params = [this.state.accountId, contact.email, contact.photo, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
+        await this.ExecuteQuery("INSERT INTO contacts (account, email, photo, timestamp, uri, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted contact', contact.uri, 'by', origin);
             this.sql_contacts_keys.push(uri);
             let myContacts = this.state.myContacts;
@@ -3725,9 +3773,9 @@ class Sylk extends Component {
         let tags = contact.tags.toString();
         let conference = contact.conference ? 1: 0;
         let participants = contact.participants.toString();
-        let params = [contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, contact.uri, this.state.accountId];
+        let params = [contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, contact.uri, this.state.accountId];
 
-        await this.ExecuteQuery("UPDATE contacts set email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ? where uri = ? and account = ?", params).then((result) => {
+        await this.ExecuteQuery("UPDATE contacts set photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ? where uri = ? and account = ?", params).then((result) => {
             console.log('SQL updated contact', contact.uri, 'by', origin);
             let myContacts = this.state.myContacts;
             let myInvitedParties = this.state.myInvitedParties;
@@ -4006,7 +4054,7 @@ class Sylk extends Component {
 
         if (this.state.selectedContact) {
             let selectedContact = this.state.selectedContact;
-            selectedContact.lastMessage = message.text.substring(0, 35);
+            selectedContact.lastMessage = message.text.substring(0, 100);
             selectedContact.timestamp = message.createdAt;
             selectedContact.direction = 'outgoing';
             selectedContact.lastCallDuration = null;
@@ -4226,7 +4274,7 @@ class Sylk extends Component {
             renderedMessages[uri] = newRenderedMessages;
             if (uri in myContacts) {
                 myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
-                if (existingMessages.length > 0 && existingMessages[existingMessages.length - 1].id === id) {
+                if (existingMessages.length > 0 && existingMessages[0].id === id) {
                     myContacts[uri].lastMessage = null;
                     myContacts[uri].lastMessageId = null;
                 }
@@ -4425,7 +4473,7 @@ class Sylk extends Component {
         }
 
         if (content.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
-            myContacts[uri].lastMessage = content.substring(0, 35);
+            myContacts[uri].lastMessage = content.substring(0, 100);
         }
 
         if (myContacts[uri].tags.indexOf('chat') === -1) {
@@ -4436,7 +4484,7 @@ class Sylk extends Component {
         myContacts[uri].lastCallDuration = null;
         myContacts[uri].timestamp = new Date();
         myContacts[uri].direction = 'outgoing';
-
+        this.setState({myContacts: myContacts});
         this.saveSylkContact(uri, myContacts[uri], 'saveOutgoingChatUri');
     }
 
@@ -4701,7 +4749,7 @@ class Sylk extends Component {
         return msg;
     }
 
-    async decryptMessage(message) {
+    async decryptMessage(message, updateContact=false) {
         // encrypted
         // 0 not encrypted
         // 1 encrypted content
@@ -4737,6 +4785,18 @@ class Sylk extends Component {
                     pending_messages.splice(idx, 1);
                     decryptingMessages[uri] = pending_messages;
                     this.setState({decryptingMessages: decryptingMessages});
+                }
+            }
+
+            if (updateContact) {
+                let myContacts = this.state.myContacts;
+                console.log('Update contact after decryption', uri, 'message ts=', message.timestamp, content, 'Contact ts=', myContacts[uri].timestamp);
+                if (message.timestamp > myContacts[uri].timestamp) {
+                    myContacts[uri].lastMessage = content.substring(0, 100);
+                    myContacts[uri].lastMessageId = message.id;
+                    myContacts[uri].timestamp = message.timestamp;
+                    this.saveSylkContact(uri, myContacts[uri], 'decryptMessage');
+                    this.setState({myContacts: myContacts});
                 }
             }
 
@@ -4794,6 +4854,7 @@ class Sylk extends Component {
         let rows = 0;
         let myContacts = this.state.myContacts;
         let total = 0;
+        let last_messages = [];
 
         if (Object.keys(myContacts).indexOf(uri) === -1) {
             this.setState({messages: {}});
@@ -4841,6 +4902,8 @@ class Sylk extends Component {
                 content = item.content;
                 last_direction = item.direction;
                 let timestamp;
+                last_message = null;
+                last_message_id = null;
                 let unix_timestamp;
                 if (item.unix_timestamp === 0) {
                     timestamp = JSON.parse(item.timestamp, _parseSQLDate);
@@ -4885,14 +4948,19 @@ class Sylk extends Component {
                 }
             }
 
-            console.log('Got', messages[uri].length, 'out of', total, 'messages for', uri, 'from SQL database');
+            console.log('Got', messages[uri].length, 'out of', total, 'messages for', uri);
 
-            if (messages[uri].length > 0) {
-                let last_item = messages[uri][messages[uri].length -1];
-                if (!last_item.image && !last_item.system) {
-                    last_message = last_item.text.substring(0, 35);
-                    last_message_id = last_item.id;
-                }
+            last_messages = messages[uri];
+            last_messages.reverse();
+            if (last_messages.length > 0) {
+                last_messages.forEach((last_item) => {
+                    if (!last_item.image && !last_item.system) {
+                        last_message = last_item.text.substring(0, 100);
+                        last_message_id = last_item.id;
+                    } else {
+                        return;
+                    }
+                });
             }
 
             if (uri in myContacts) {
@@ -4900,13 +4968,18 @@ class Sylk extends Component {
                     myContacts[uri].lastMessage = last_message;
                     myContacts[uri].lastMessageId = last_message_id;
                     this.saveSylkContact(uri, myContacts[uri], 'getMessages');
+                    this.setState({myContacts: myContacts});
                 }
             }
 
             this.setState({messages: messages, decryptingMessages: decryptingMessages});
 
+            let i = 1;
             messages_to_decrypt.forEach((item) => {
-                this.decryptMessage(item);
+                var updateContact = messages_to_decrypt.length === i;
+                //console.log('To decrypt', messages_to_decrypt.length, 'updateContact =', updateContact);
+                this.decryptMessage(item, updateContact);
+                i = i + 1;
             });
 
         }).catch((error) => {
@@ -5098,7 +5171,7 @@ class Sylk extends Component {
 
         this.sync_pending_items.push(item);
         if (this.sync_pending_items.length == 1) {
-            console.log('Sync started ---');
+            //console.log('Sync started ---');
             this.setState({syncConversations: true});
 
             if (this.syncTimer === null) {
@@ -5583,7 +5656,7 @@ class Sylk extends Component {
 
         if (this.state.selectedContact) {
             let selectedContact = this.state.selectedContact;
-            selectedContact.lastMessage = content.substring(0, 35);
+            selectedContact.lastMessage = content.substring(0, 100);
             selectedContact.timestamp = message.timestamp;
             selectedContact.direction = 'incoming';
             selectedContact.lastCallDuration = null;
@@ -5684,7 +5757,7 @@ class Sylk extends Component {
                     }
 
                     if (content && content.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
-                        myContacts[uri].lastMessage = content.substring(0, 35);
+                        myContacts[uri].lastMessage = content.substring(0, 100);
                         myContacts[uri].lastMessageId = message.id;
 
                         if (this.state.selectedContact) {
@@ -5703,6 +5776,7 @@ class Sylk extends Component {
                         }
                     }
 
+                    this.setState({myContacts: myContacts});
                     this.saveSylkContact(uri, myContacts[uri], 'outgoingMessage');
                 }
 
@@ -5737,7 +5811,7 @@ class Sylk extends Component {
                 }
 
                 if (content && content.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
-                    myContacts[uri].lastMessage = content.substring(0, 35);
+                    myContacts[uri].lastMessage = content.substring(0, 100);
                 }
 
                 let renderMessages = this.state.messages;
@@ -5979,8 +6053,9 @@ class Sylk extends Component {
             }
 
             if (content && content.indexOf('-----BEGIN PGP MESSAGE-----') === -1) {
-                myContacts[uri].lastMessage = content.substring(0, 35);
+                myContacts[uri].lastMessage = content.substring(0, 100);
                 myContacts[uri].lastMessageId = message.id;
+                this.setState({myContacts: myContacts});
             }
 
             this.updateTotalUread(myContacts);
@@ -6124,7 +6199,7 @@ class Sylk extends Component {
             total_unread = total_unread + myContacts[uri].unread.length;
         });
 
-        console.log('Total unread messages', total_unread)
+        //console.log('Total unread messages', total_unread)
 
        if (Platform.OS === 'ios') {
            PushNotification.setApplicationIconBadgeNumber(total_unread);
@@ -6143,7 +6218,7 @@ class Sylk extends Component {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
-        //console.log('Save contact', displayName, 'with uri', uri);
+        //console.log('Save contact', uri);
 
         let myContacts = this.state.myContacts;
 
@@ -6160,6 +6235,13 @@ class Sylk extends Component {
         myContacts[uri].timestamp = new Date();
 
         myContacts[uri] = this.sanitizeContact(uri, myContacts[uri]);
+
+        if (!myContacts[uri].photo) {
+            var name_idx = myContacts[uri].name.trim().toLowerCase();
+            if (name_idx in this.state.avatarPhotos) {
+                myContacts[uri].photo = this.state.avatarPhotos[name_idx];
+            }
+        }
 
         this.replicateContact(myContacts[uri]);
 
@@ -6641,7 +6723,7 @@ class Sylk extends Component {
             if (item.timestamp > myContacts[uri].timestamp) {
             } else {
                 if (myContacts[uri].lastCallId === item.sessionId) {
-                    //return;
+                    return;
                 }
             }
 
@@ -6841,7 +6923,7 @@ class Sylk extends Component {
                     pinned = {this.state.pinned}
                     loadEarlierMessages = {this.loadEarlierMessages}
                     newContactFunc = {this.newContact}
-                    messageZoomFactor = {this.state.messageZoomFactor}
+                    messageZoomFactor = {this.state.messageZoomFactor.toString()}
                     isTyping = {this.state.isTyping}
                 />
 

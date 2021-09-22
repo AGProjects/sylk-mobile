@@ -45,17 +45,27 @@
 }
 
 .subtitle {
-    font-size:14px;
-    margin: 0px;
+    font-size:16px;
+    margin-top: -2px;
+    flex: 1;
+    margin-right: 40px;
 }
 
 .description {
     font-size:12px;
-    margin: 0px;
+    margin-bottom: 5px;
 }
 
 .avatarContent {
     margin-top: 7px;
+}
+
+.gravatar {
+    width: 60px;
+    height: 60px;
+    border-width: 2px;
+    border-color: white;
+    border-radius: 50px;
 }
 
 .mainContent {

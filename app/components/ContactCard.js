@@ -11,6 +11,7 @@ import uuid from 'react-native-uuid';
 import styles from '../assets/styles/blink/_ContactCard.scss';
 import UserIcon from './UserIcon';
 import { GiftedChat } from 'react-native-gifted-chat'
+import {Gravatar, GravatarApi} from 'react-native-gravatar';
 
 import utils from '../utils';
 
@@ -300,7 +301,7 @@ class ContactCard extends Component {
             subtitle = 'Last call cancelled';
         } else {
             if (duration) {
-                subtitle = 'Last call duration ' + duration ;
+                subtitle = 'Last call ' + duration ;
             }
         }
 
@@ -343,7 +344,12 @@ class ContactCard extends Component {
                 <View style={styles.rowContent}>
                     <Card.Content style={styles.cardContent}>
                         <View style={styles.avatarContent}>
+                            { this.state.contact.photo || ! this.state.contact.email ?
                             <UserIcon style={styles.userIcon} identity={this.state.contact} unread={unread}/>
+                            :
+                             <Gravatar options={{email: this.state.contact.email, parameters: { "size": "70", "d": "mm" }, secure: true}} style={styles.gravatar} />
+                             }
+
                         </View>
 
                         <View style={styles.mainContent}>

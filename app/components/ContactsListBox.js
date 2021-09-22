@@ -126,10 +126,9 @@ class ContactsListBox extends Component {
                     if (this.state.renderMessages.length !== renderMessages.length) {
                         this.setState({isLoadingEarlier: false});
                         this.props.confirmRead(uri);
-                        console.log(renderMessages.length, 'messages to render');
                         if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
-                            let last_message_ts = this.state.renderMessages[this.state.renderMessages.length-1].createdAt;
-                            if (renderMessages[renderMessages.length-1].createdAt > last_message_ts) {
+                            let last_message_ts = this.state.renderMessages[0].createdAt;
+                            if (renderMessages[0].createdAt > last_message_ts) {
                                 this.setState({scrollToBottom: true});
                             }
                         }
