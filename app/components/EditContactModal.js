@@ -182,6 +182,11 @@ class EditContactModal extends Component {
                             autoCapitalize="none"
                         />
                         }
+                        { this.state.myself ?
+                         <Text style={styles.emailStatus}>
+                             Used to recover a lost password
+                        </Text>
+                        : null}
 
                         <View style={styles.buttonRow}>
                         <Button

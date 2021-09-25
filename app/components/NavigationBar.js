@@ -48,6 +48,7 @@ class NavigationBar extends Component {
             accountId: this.props.accountId,
             account: this.props.account,
             displayName: displayName,
+            myDisplayName: this.props.myDisplayName,
             email: this.props.email,
             organization: organization,
             publicKey: this.props.publicKey,
@@ -75,6 +76,7 @@ class NavigationBar extends Component {
                        syncConversations: nextProps.syncConversations,
                        contactsLoaded: nextProps.contactsLoaded,
                        displayName: displayName,
+                       myDisplayName: nextProps.myDisplayName,
                        email: nextProps.email,
                        organization: organization,
                        proximity: nextProps.proximity,
@@ -121,6 +123,9 @@ class NavigationBar extends Component {
                 break;
             case 'video':
                 this.videoCall();
+                break;
+            case 'conference':
+                this.conferenceCall();
                 break;
             case 'addContact':
                 this.toggleAddContactModal();
@@ -203,6 +208,10 @@ class NavigationBar extends Component {
     videoCall() {
         let uri = this.state.selectedContact.uri;
         this.props.startCall(uri, {audio: true, video: true});
+    }
+
+    conferenceCall() {
+        this.props.showConferenceModalFunc();
     }
 
     toggleAddContactModal() {
@@ -308,7 +317,7 @@ class NavigationBar extends Component {
                     title="Sylk"
                     titleStyle={titleStyle}
                     subtitleStyle={subtitleStyle}
-                    subtitle={this.props.isTablet? null: ((this.state.accountId || 'Loading...') + (this.state.displayName ? ' (' + this.state.displayName + ')' : ''))}
+                    subtitle={this.props.isTablet? null: ((this.state.accountId || 'Loading...') + (this.state.myDisplayName ? ' (' + this.state.myDisplayName + ')' : ''))}
                 />
                 {this.props.isTablet?
                 <Text style={subtitleStyle}>{subtitle}</Text>
@@ -378,6 +387,7 @@ class NavigationBar extends Component {
                         }
                     >
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account" title="Add contact..."/>
+                        <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Conference call..."/>
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                         {!this.state.syncConversations ?
@@ -427,6 +437,7 @@ class NavigationBar extends Component {
                     show={this.state.showAddContactModal}
                     close={this.toggleAddContactModal}
                     saveContact={this.props.saveContact}
+                    defaultDomain={this.props.defaultDomain}
                 />
 
                 <EditContactModal
@@ -481,6 +492,7 @@ NavigationBar.propTypes = {
     contactsLoaded     : PropTypes.bool,
     proximity          : PropTypes.bool,
     displayName        : PropTypes.string,
+    myDisplayName      : PropTypes.string,
     email              : PropTypes.string,
     organization       : PropTypes.string,
     account            : PropTypes.object,
@@ -503,6 +515,7 @@ NavigationBar.propTypes = {
     defaultDomain      : PropTypes.string,
     favoriteUris       : PropTypes.array,
     startCall          : PropTypes.func,
+    startConference    : PropTypes.func,
     saveContact        : PropTypes.func,
     addContact         : PropTypes.func,
     deleteContact      : PropTypes.func,
@@ -512,7 +525,8 @@ NavigationBar.propTypes = {
     showImportModal    : PropTypes.func,
     syncConversations   : PropTypes.bool,
     showCallMeMaybeModal: PropTypes.bool,
-    toggleCallMeMaybeModal : PropTypes.func
+    toggleCallMeMaybeModal : PropTypes.func,
+    showConferenceModalFunc : PropTypes.func
 };
 
 export default NavigationBar;

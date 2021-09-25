@@ -147,10 +147,10 @@ class ContactCard extends Component {
 
         let name = this.state.contact.name;
         if (this.state.contact.organization) {
-            //name = name + ' (' + this.state.organization + ')';
+            name = name + ' - ' + this.state.contact.organization;
         }
 
-        //console.log('Render Contact', this.state.contact.name, this.state.contact.tags);
+        //console.log('Render Contact', this.state.contact);
 
         let showBlockButton = !this.state.contact.conference && !this.state.chat;
         let showBlockDomainButton = false;

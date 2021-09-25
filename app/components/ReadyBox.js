@@ -22,7 +22,7 @@ class ReadyBox extends Component {
             targetUri: '',
             contacts: this.props.contacts,
             selectedContact: this.props.selectedContact,
-            showConferenceModal: false,
+            showConferenceModal: this.props.showConferenceModal,
             sticky: false,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
@@ -39,7 +39,8 @@ class ReadyBox extends Component {
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             messageZoomFactor: this.props.messageZoomFactor,
-            isTyping: this.props.isTyping
+            isTyping: this.props.isTyping,
+            navigationItems: this.props.navigationItems
         };
         this.ended = false;
     }
@@ -74,7 +75,9 @@ class ReadyBox extends Component {
                         messages: nextProps.messages,
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
+                        showConferenceModal: nextProps.showConferenceModal,
                         isTyping: nextProps.isTyping,
+                        navigationItems: nextProps.navigationItems,
                         messageZoomFactor: nextProps.messageZoomFactor,
                         contacts: nextProps.contacts,
                         inviteContacts: nextProps.inviteContacts,
@@ -145,8 +148,16 @@ class ReadyBox extends Component {
             return true;
         }
 
+        if (this.props.isLandscape) {
+            return true;
+        }
+
         if (this.state.call) {
             return true;
+        }
+
+        if (!this.state.targetUri) {
+            return false;
         }
 
         if (this.state.chat && this.state.selectedContact) {
@@ -156,8 +167,10 @@ class ReadyBox extends Component {
         return true;
     }
 
-    handleTargetChange(value, contact) {
-        //console.log('handleTargetChange', value, contact, 'this.state.targetUri');
+    handleTargetChange(new_uri, contact) {
+        //console.log('---handleTargetChange new_uri =', new_uri);
+        //console.log('handleTargetChange contact =', contact);
+
         if (this.state.inviteContacts && contact) {
              const uri = contact.uri;
              this.props.updateSelection(uri);
@@ -173,7 +186,7 @@ class ReadyBox extends Component {
             this.setState({chat: false});
         }
 
-        let new_value = value;
+        let new_value = new_uri;
 
         if (contact) {
             if (this.state.targetUri === contact.uri) {
@@ -183,7 +196,7 @@ class ReadyBox extends Component {
             contact = null;
         }
 
-        if (this.state.targetUri === value) {
+        if (this.state.targetUri === new_uri) {
             new_value = '';
         }
 
@@ -192,6 +205,9 @@ class ReadyBox extends Component {
         }
 
         //new_value = new_value.replace(' ','');
+
+        //console.log('--- Select new contact', contact? contact.uri : null);
+        //console.log('--- Select new targetUri', new_value);
 
         this.props.selectContact(contact);
         this.setState({targetUri: new_value});
@@ -218,8 +234,7 @@ class ReadyBox extends Component {
 
     showConferenceModal(event) {
         event.preventDefault();
-        this.setState({showConferenceModal: true});
-        return;
+        this.props.showConferenceModalFunc();
     }
 
     handleChat(event) {
@@ -288,7 +303,7 @@ class ReadyBox extends Component {
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
         this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants});
-        this.setState({showConferenceModal: false});
+        this.props.hideConferenceModalFunc();
     }
 
     get chatButtonDisabled() {
@@ -329,7 +344,6 @@ class ReadyBox extends Component {
             let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
             let validEmail = email_reg.test(uri);
             if (!validEmail) {
-                console.log('Invalid chat destination');
                 return true;
             }
         }
@@ -360,7 +374,7 @@ class ReadyBox extends Component {
     get conferenceButtonDisabled() {
         let uri = this.state.targetUri.trim();
 
-        if (!uri || uri.indexOf(' ') > -1) {
+        if (uri.indexOf(' ') > -1) {
             return true;
         }
 
@@ -451,10 +465,12 @@ class ReadyBox extends Component {
                                   {key: null, title: 'All', enabled: true, selected: false},
                                   {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyFilter === 'history'},
                                   {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyFilter === 'chat'},
+                                  {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyFilter === 'today'},
+                                  {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyFilter === 'yesterday'},
                                   {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyFilter === 'missed'},
                                   {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyFilter === 'favorite'},
                                   {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'},
-                                  {key: 'conference', title: 'Conference', enabled: Object.keys(this.state.myInvitedParties).length >0 , selected: this.state.historyFilter === 'conference'},
+                                  {key: 'conference', title: 'Conference', enabled: Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'], selected: this.state.historyFilter === 'conference'},
                                   {key: 'test', title: 'Test', enabled: true, selected: this.state.historyFilter === 'test'},
                                   ];
 
@@ -462,18 +478,28 @@ class ReadyBox extends Component {
             <Fragment>
                 <View style={styles.container}>
                     <View >
+                        {this.showSearchBar && !this.props.isLandscape ?
+                        <View style={uriClass}>
+                            <URIInput
+                                defaultValue={this.state.targetUri}
+                                onChange={this.handleTargetChange}
+                                onSelect={this.handleTargetSelect}
+                                autoFocus={false}
+                            />
+                        </View>
+                        : null}
                         {this.showButtonsBar ?
                         <View style={uriGroupClass}>
-                            {this.showSearchBar ?
-                            <View style={uriClass}>
-                                <URIInput
-                                    defaultValue={this.state.targetUri}
-                                    onChange={this.handleTargetChange}
-                                    onSelect={this.handleTargetSelect}
-                                    autoFocus={false}
-                                />
-                            </View>
-                            : null}
+                        {this.showSearchBar && this.props.isLandscape ?
+                        <View style={uriClass}>
+                            <URIInput
+                                defaultValue={this.state.targetUri}
+                                onChange={this.handleTargetChange}
+                                onSelect={this.handleTargetSelect}
+                                autoFocus={false}
+                            />
+                        </View>
+                        : null}
 
                             {( this.state.call && this.state.call.state == 'established') ?
                             <View style={buttonGroupClass}>
@@ -653,7 +679,11 @@ ReadyBox.propTypes = {
     newContactFunc  : PropTypes.func,
     missedCalls     : PropTypes.array,
     messageZoomFactor: PropTypes.string,
-    isTyping:      PropTypes.bool
+    isTyping:      PropTypes.bool,
+    navigationItems: PropTypes.object,
+    showConferenceModal: PropTypes.bool,
+    showConferenceModalFunc: PropTypes.func,
+    hideConferenceModalFunc: PropTypes.func
 };
 
 

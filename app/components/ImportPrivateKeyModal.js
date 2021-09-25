@@ -19,7 +19,9 @@ class ImportPrivateKeyModal extends Component {
             show: this.props.show,
             privateKey: this.props.privateKey,
             status: this.props.status,
-            success: this.props.success
+            confirm: false,
+            success: this.props.success,
+            keyDifferentOnServer: this.props.keyDifferentOnServer
         }
     }
 
@@ -28,7 +30,9 @@ class ImportPrivateKeyModal extends Component {
                        password: nextProps.password,
                        privateKey: nextProps.privateKey,
                        status: nextProps.status,
-                       success: nextProps.success
+                       confirm: nextProps.confirm,
+                       success: nextProps.success,
+                       keyDifferentOnServer: nextProps.keyDifferentOnServer
                        });
 
         if (nextProps.success) {
@@ -45,8 +49,12 @@ class ImportPrivateKeyModal extends Component {
 
     generateKeys(event) {
         event.preventDefault();
-        this.props.generateKeysFunc();
-        this.props.close();
+        if (this.state.confirm) {
+            this.props.generateKeysFunc();
+            this.props.close();
+        } else {
+            this.setState({confirm: true});
+        }
     }
 
     get disableButton() {
@@ -117,20 +125,26 @@ class ImportPrivateKeyModal extends Component {
                 </Portal>
             );
         } else {
+            let title = this.state.keyDifferentOnServer ? 'Another device?' : 'First device?';
+            let generate_key_title = this.state.confirm ? 'Confirm' : 'Generate key';
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>{'First device?'}</Dialog.Title>
+                            <Dialog.Title style={styles.title}>{title}</Dialog.Title>
                              <Text style={styles.body}>
-                                 To decrypt previous messages you need to copy your private key from another device.
+                                 To decrypt messages, you need a private key from another device. On another device go to  menu option 'Export private key'.
                             </Text>
+                             { !this.state.keyDifferentOnServer ?
                              <Text style={styles.body}>
-                                 On another device using the same account, go to menu option 'Export private key'.
+                                 If this is the first device, just generate a key by pressing the button bellow.
                             </Text>
+                                 :
                              <Text style={styles.body}>
-                                 If this is the first device, just generate a new key by pressing the button bellow.
+                                 If you chose to generate a key, previous messages cannot be read on newer devices.
                             </Text>
+
+                                 }
                             <View style={styles.buttonRow}>
                             <Button
                                 mode="contained"
@@ -138,7 +152,7 @@ class ImportPrivateKeyModal extends Component {
                                 onPress={this.generateKeys}
                                 icon="content-save"
                                 accessibilityLabel="Generate key"
-                                >Generate key
+                                >{generate_key_title}
                             </Button>
                             </View>
                         </Surface>
@@ -157,6 +171,7 @@ ImportPrivateKeyModal.propTypes = {
     saveFunc           : PropTypes.func.isRequired,
     generateKeysFunc   : PropTypes.func.isRequired,
     status             : PropTypes.string,
+    keyDifferentOnServer : PropTypes.bool,
     success            : PropTypes.bool
 };
 

@@ -63,12 +63,17 @@ class AddContactModal extends Component {
                         <TextInput
                             mode="flat"
                             name="uri"
-                            label="user@domain"
+                            label="Enter user@domain"
                             onChangeText={this.onUriChange}
                             value={this.state.uri}
                             required
                             autoCapitalize="none"
                         />
+                        <Text style={styles.domain}>
+                             The domain is optional, it defaults to {this.props.defaultDomain}
+                        </Text>
+
+
 
                        <TextInput
                             mode="flat"
@@ -109,7 +114,8 @@ class AddContactModal extends Component {
 AddContactModal.propTypes = {
     show       : PropTypes.bool.isRequired,
     close      : PropTypes.func.isRequired,
-    saveContact: PropTypes.func
+    saveContact: PropTypes.func,
+    defaultDomain: PropTypes.string
 };
 
 export default AddContactModal;

@@ -33,20 +33,47 @@ class EnrollmentModal extends Component {
     }
 
     handleFormFieldChange(value, name) {
+        ///^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
+        if (name === 'username') {
+            value = value.replace(/[^\w|\.\-]/g, '').trim().toLowerCase();
+        }
         this.setState({
             [name]: value
         });
     }
 
     get validInput() {
-        let valid_input = !this.state.enrolling &&
-                           this.state.displayName.length > 2 &&
-                           this.state.username.length > 3 &&
-                           this.state.password !== '' &&
-                           this.state.password2 !== '' &&
-                           this.state.password === this.state.password2 &&
-                           this.state.password.length > 4 &&
-                           this.state.email.indexOf('@') > -1;
+        let valid_input = !this.state.enrolling;
+        let error;
+
+        valid_input = valid_input && this.state.displayName.length > 2;
+        if (!valid_input && !error) {
+            error = 'Invalid display name';
+        }
+
+        valid_input = valid_input && this.state.username.length > 3;
+        if (!valid_input && !error) {
+            error = 'Invalid username';
+        }
+
+        valid_input = valid_input && this.state.password !== '';
+        if (!valid_input && !error) {
+            error = 'Invalid password';
+        }
+
+        valid_input = valid_input && this.state.password === this.state.password2;
+        if (!valid_input && !error) {
+            error = 'Passwords not equal';
+        }
+
+        valid_input = valid_input && this.state.email.indexOf('@') > -1;
+        if (!valid_input && !error) {
+            error = 'Email not valid';
+        }
+
+        if (!valid_input) {
+            //console.log(error);
+        }
 
         return valid_input;
     }
@@ -82,7 +109,7 @@ class EnrollmentModal extends Component {
                                                        email: this.state.email});
                           this.setState(this.initialState);
                       } else if (data.error === 'user_exists') {
-                          this.setState({error: 'Username is taken. Chose another one!', errorVisible: true});
+                          this.setState({error: 'Username is taken. Choose another one!', errorVisible: true});
                       } else {
                           this.setState({error: data.error_message, errorVisible: true});
                       }

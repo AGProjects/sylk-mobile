@@ -77,13 +77,13 @@ class CallMeMaybeModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Call me, maybe?</Dialog.Title>
                         <Text style={styles.body}>
-                            Others can call you with Sylk or a SIP device at:
+                            Others can call you with SIP at:
                         </Text>
                         <Text style={styles.address}>
                          {sipUri}
                         </Text>
                         <Text style={styles.body}>
-                            or by using a Web browser at:
+                            or with a Web browser at:
                         </Text>
                         <Text style={styles.address}>
                             {this.props.callUrl}

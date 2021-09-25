@@ -476,6 +476,29 @@ class ContactsListBox extends Component {
             return false;
         }
 
+        if (tags.indexOf('today') > -1) {
+            var start = new Date();
+            start.setHours(0,0,0,0);
+            if(contact.timestamp > start) {
+                return true;
+            }
+        }
+
+        if (tags.indexOf('yesterday') > -1) {
+            var start = new Date();
+            var end = new Date();
+            end.setHours(0,0,0,0);
+            start.setDate(end.getDate() - 2);
+            start.setHours(0,0,0,0);
+            if(contact.timestamp > start && contact.timestamp < end) {
+                return true;
+            }
+        }
+
+        if (tags.indexOf('conference') > -1 && contact.conference) {
+            return true;
+        }
+
         if (tags.length > 0 && !tags.some(item => contact.tags.includes(item))) {
             return false;
         }
@@ -626,7 +649,8 @@ class ContactsListBox extends Component {
             contacts.push(this.state.myContacts[uri]);
         });
 
-        //console.log('--- Render contacts scrollToBottom', this.state.scrollToBottom, 'zoom', this.state.messageZoomFactor);
+        //console.log('--- Render contacts with selected contact', this.state.selectedContact ? this.state.selectedContact.uri: null);
+        //console.log('--- Render contacts with filter', this.state.filter);
 
         let chatInputClass;
 
@@ -638,25 +662,11 @@ class ContactsListBox extends Component {
 
         if (this.state.inviteContacts) {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
-        } else if (this.state.filter === 'favorite') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['favorite']));
-        } else if (this.state.filter === 'blocked') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['blocked']));
-        } else if (this.state.filter === 'chat') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['chat']));
-        } else if (this.state.filter === 'chat') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['chat']));
-        } else if (this.state.filter === 'calls') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['calls']));
-        } else if (this.state.filter === 'conference') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, ['conference']));
-        } else if (this.state.filter === 'missed') {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri) && contact.tags.indexOf('missed') > -1);
+        } else if (!this.state.selectedContact && this.state.filter) {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, [this.state.filter]));
         } else {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
             searchExtraItems = searchExtraItems.concat(this.state.contacts);
-            searchExtraItems = searchExtraItems.concat(this.videoTest);
-            searchExtraItems = searchExtraItems.concat(this.echoTest);
 
             if (this.state.targetUri && this.state.targetUri.length > 2 && !this.state.selectedContact) {
                 matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri));
@@ -671,6 +681,10 @@ class ContactsListBox extends Component {
 
         if (this.state.targetUri) {
             items = items.concat(this.searchedContact(this.state.targetUri, this.state.selectedContact));
+        }
+
+        if (this.state.filter && this.state.targetUri) {
+            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
         }
 
         const known = [];
