@@ -296,6 +296,8 @@ class Sylk extends Component {
             serverPublicKey: null,
             generatingKey: false,
             appStoreVersion: null,
+            firstSyncDone: false,
+            showExportPrivateKeyModal: false,
             serverQueriedForPublicKey: false,
             navigationItems: {today: false,
                               yesterday: false,
@@ -493,25 +495,28 @@ class Sylk extends Component {
         this.setState({keys: {private: keys.private,
                               public: keys.public}});
 
+        let myContacts = this.state.myContacts;
+
         if (this.state.account) {
             this.state.account.syncConversations();
             var uri = uuid.v4() + '@' + this.state.defaultDomain;
             console.log('Send 1st public to', uri);
             this.sendPublicKey(uri);
+
+            let accountId = this.state.account.id;
+
+            if (accountId in myContacts) {
+            } else {
+                myContacts[accountId] = this.newContact(accountId);
+            }
+
+            myContacts[accountId].publicKey = keys.public;
+            this.saveSylkContact(accountId, myContacts[accountId], 'PGP key generated');
+
         } else {
             console.log('Send 1st public key later');
             this.mustSendPublicKey = true;
         }
-
-        let myContacts = this.state.myContacts;
-
-        if (this.state.accountId in myContacts) {
-        } else {
-            myContacts[this.state.accountId] = this.newContact(myContacts[this.state.accountId]);
-        }
-
-        myContacts[this.state.accountId].publicKey = keys.public;
-        this.saveSylkContact(this.state.accountId, myContacts[this.state.accountId], 'PGP key generated');
 
         let current_datetime = new Date();
         const unixTime = Math.floor(current_datetime / 1000);
@@ -525,10 +530,21 @@ class Sylk extends Component {
                 console.log('Save keys SQL error:', error);
             }
         });
-
     }
 
-    async saveLastSyncId(id) {
+    async saveLastSyncId(id, force=false) {
+        if (!force) {
+            if (!this.state.keys || !this.state.keys.private) {
+               console.log('Skip saving last sync id until we have a private key');
+               return
+            }
+
+            if (!this.state.firstSyncDone) {
+               console.log('Skip saving last sync id until first sync is done');
+               return
+            }
+        }
+
         let params = [id, this.state.accountId];
         await this.ExecuteQuery("update keys set last_sync_id = ? where account = ?", params).then((result) => {
             console.log('SQL saved last sync id', id);
@@ -862,29 +878,24 @@ class Sylk extends Component {
 
             setTimeout(() => {
                 let test_numbers = [
-                                    {uri: '4444@sylk.link', name: 'Test microphone', organization: 'SIPThor.Net'},
-                                    {uri: '3333@sylk.link', name: 'Test video', organization: 'SIPThor.Net'}
+                                    {uri: '4444@sylk.link', name: 'Test microphone'},
+                                    {uri: '3333@sylk.link', name: 'Test video'}
                                     ];
 
                 test_numbers.forEach((item) => {
                     if (Object.keys(myContacts).indexOf(item.uri) === -1) {
-                        myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init', organization: item.organization});
+                        myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init'});
                         myContacts[item.uri].tags.push('test');
-                        this.saveSylkContact(item.uri, myContacts[item.uri], 'init');
+                        this.saveSylkContact(item.uri, myContacts[item.uri], 'init uri');
                     } else {
                         if (myContacts[item.uri].tags.indexOf('test') === -1) {
                             myContacts[item.uri].tags.push('test');
-                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init');
+                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init tags');
                         }
 
                         if (!myContacts[item.uri].name) {
                             myContacts[item.uri].name = item.name;
-                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init');
-                        }
-
-                        if (!myContacts[item.uri].organization) {
-                            myContacts[item.uri].organization = item.organization;
-                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init');
+                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init ma,e');
                         }
                     }
                 });
@@ -1500,7 +1511,12 @@ class Sylk extends Component {
     }
 
     checkVersion() {
-        let appId = Platform.OS === 'android' ? "com.ag-projects.sylk" : "1489960733";
+        let appId = Platform.OS === 'android' ? "com.agprojects.sylk" : "1489960733";
+        if (Platform.OS === 'android') {
+            // TODO fix me
+            return;
+        }
+
         getAppstoreAppMetadata("1489960733") //put any apps id here
         .then(appVersion => {
             console.log("Sylk app version on appstore", appVersion.version, "published on", appVersion.currentVersionReleaseDate);
@@ -2915,7 +2931,7 @@ class Sylk extends Component {
                 if (!this.serverPublicKey) {
                     console.log('We have no PGP keys here or on server');
                     this.generateKeys();
-                } else {
+                } else if (!this.state.keys || !this.state.keys.private){
                     console.log('Public PGP key exists on server but we have none');
                     this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true});
                 }
@@ -2937,9 +2953,7 @@ class Sylk extends Component {
                             console.log('Public PGP key exists on server and we have it');
                         }
                     } else {
-                        if (this.state.contactsLoaded) {
-                            this.generateKeys();
-                        } else {
+                        if (!this.state.contactsLoaded) {
                             console.log('Wait for PGP keys until contacts are loaded');
                         }
                     }
@@ -3314,6 +3328,15 @@ class Sylk extends Component {
 
     async showImportPrivateKeyModal() {
         this.setState({showImportPrivateKeyModal: true});
+    }
+
+    async hideExportPrivateKeyModal() {
+        this.setState({privateKey: null,
+                       showExportPrivateKeyModal: false});
+    }
+
+    async showExportPrivateKeyModal() {
+        this.setState({showExportPrivateKeyModal: true});
     }
 
     togglePinned() {
@@ -3865,7 +3888,7 @@ class Sylk extends Component {
             contact = this.newContact(uri);
         }
 
-        console.log('saveSylkContact', uri, 'by', origin);
+        console.log('saveSylkContact', uri, contact.name, 'by', origin);
 
         contact = this.sanitizeContact(uri, contact, 'saveSylkContact');
 
@@ -4020,7 +4043,7 @@ class Sylk extends Component {
         regexp = /(-----BEGIN PGP PUBLIC KEY BLOCK-----[^]*-----END PGP PUBLIC KEY BLOCK-----)/ig;
         match = keyPair.match(regexp);
 
-        if (match.length === 1) {
+        if (match && match.length === 1) {
             public_key = match[0];
         }
 
@@ -4046,7 +4069,7 @@ class Sylk extends Component {
 
         regexp = /(-----BEGIN PGP PUBLIC KEY BLOCK-----[^]*-----END PGP PUBLIC KEY BLOCK-----)/ig;
         match = this.state.privateKey.match(regexp);
-        if (match.length === 1) {
+        if (match && match.length === 1) {
             public_key = match[0];
         }
 
@@ -4059,13 +4082,13 @@ class Sylk extends Component {
 
             regexp = /(-----BEGIN PGP MESSAGE-----[^]*-----END PGP MESSAGE-----)/ig;
             match = this.state.privateKey.match(regexp);
-            if (match.length === 1) {
+            if (match && match.length === 1) {
                 encrypted_key = match[0];
             }
 
             if (encrypted_key) {
                 await OpenPGP.decryptSymmetric(encrypted_key, password).then((privateKey) => {
-                    utils.timestampedLog('Decrypted PGP private pair, new style');
+                    utils.timestampedLog('Decrypted PGP private pair');
                     this.setState({keyDifferentOnServer: false})
                     keyPair = public_key + "\n" + privateKey;
                     this.processPrivateKey(keyPair);
@@ -4081,9 +4104,9 @@ class Sylk extends Component {
             }
         } else {
             await OpenPGP.decryptSymmetric(this.state.privateKey, password).then((keyPair) => {
-                utils.timestampedLog('Decrypted PGP private pair, old style');
+                utils.timestampedLog('Decrypted PGP private pair');
                 this.setState({keyDifferentOnServer: false})
-                this.processPrivateKeyOld(keyPair);
+                this.processPrivateKey(keyPair);
             }).catch((error) => {
                 this.setState({privateKeyImportStatus: 'No key received'});
                 console.log('Error decrypting PGP private key:', error);
@@ -4106,13 +4129,13 @@ class Sylk extends Component {
 
         regexp = /(-----BEGIN PGP PUBLIC KEY BLOCK-----[^]*-----END PGP PUBLIC KEY BLOCK-----)/ig;
         match = keyPair.match(regexp);
-        if (match.length === 1) {
+        if (match && match.length === 1) {
             public_key = match[0];
         }
 
         regexp = /(-----BEGIN PGP PRIVATE KEY BLOCK-----[^]*-----END PGP PRIVATE KEY BLOCK-----)/ig;
         match = keyPair.match(regexp);
-        if (match.length === 1) {
+        if (match && match.length === 1) {
             private_key = match[0];
         }
 
@@ -4122,20 +4145,22 @@ class Sylk extends Component {
                 this.saveMyKey(new_keys);
                 status = 'Private key copied successfully';
 
+                if (this.state.account) {
+                    this.state.account.sendMessage(this.state.accountId, 'Private key imported on another device', 'text/pgp-public-key-imported');
+                }
+
+                if (this.state.account) {
+                    this.state.account.syncConversations();
+                }
+
             } else {
                 status = 'Private key is the same';
+                console.log(status);
             }
 
             this.setState({privateKeyImportStatus: status,
                            privateKeyImportSuccess: true});
 
-            if (this.state.account) {
-                this.state.account.sendMessage(this.state.accountId, 'Private key imported on another device', 'text/pgp-public-key-imported');
-            }
-
-            if (this.state.account) {
-                this.state.account.syncConversations();
-            }
 
         } else {
             this.setState({privateKeyImportStatus: 'Incorrect password!',
@@ -5016,7 +5041,7 @@ class Sylk extends Component {
 
             if (updateContact) {
                 let myContacts = this.state.myContacts;
-                console.log('Update contact after decryption', uri, 'message ts=', message.timestamp, content, 'Contact ts=', myContacts[uri].timestamp);
+                console.log('Update contact after decryption', uri);
                 if (message.timestamp > myContacts[uri].timestamp) {
                     myContacts[uri].lastMessage = content.substring(0, 100);
                     myContacts[uri].lastMessageId = message.id;
@@ -5656,7 +5681,7 @@ class Sylk extends Component {
             }
 
             if (message.contentType !== 'application/sylk-conversation-remove' && message.contentType !== 'application/sylk-message-remove' && uri && Object.keys(myContacts).indexOf(uri) === -1) {
-                console.log('Create a new contact', uri, message.timestamp);
+                console.log('Will add a new contact', uri);
                 myContacts[uri] = this.newContact(uri);
                 myContacts[uri].timestamp = message.timestamp;
                 //this.setState({myContacts: myContacts});
@@ -5807,8 +5832,10 @@ class Sylk extends Component {
         });
 
         if (last_id) {
-            this.saveLastSyncId(last_id);
+            this.saveLastSyncId(last_id, true);
         }
+
+        this.setState({firstSyncDone: true});
     }
 
     async publicKeyReceived(message) {
@@ -5825,8 +5852,7 @@ class Sylk extends Component {
     }
 
     async incomingMessage(message) {
-
-        utils.timestampedLog('Message', message.id, 'was received');
+        console.log('Message', message.id, message.contentType, 'was received');
         // Handle incoming messages
         if (message.content.indexOf('?OTRv3') > -1) {
             return;
@@ -5834,11 +5860,6 @@ class Sylk extends Component {
 
         if (message.contentType === 'text/pgp-public-key') {
             this.savePublicKey(message.sender.uri, message.content);
-            return;
-        }
-
-        if (message.contentType === 'text/pgp-public-key-imported') {
-            this.setState({showImportPrivateKeyModal: false, privateKey: null});
             return;
         }
 
@@ -5942,6 +5963,12 @@ class Sylk extends Component {
         }
 
         if (message.contentType === 'text/pgp-public-key') {
+            return;
+        }
+
+        if (message.contentType === 'text/pgp-public-key-imported') {
+            this.hideExportPrivateKeyModal();
+            this.hideImportPrivateKeyModal();
             return;
         }
 
@@ -6579,13 +6606,13 @@ class Sylk extends Component {
             storage.set('signup', this.signup);
         }
 
-        //console.log('Handle contact change', uri);
-
         if (contact.timestamp) {
             timestamp = new Date(contact.timestamp * 1000);
         }
 
         let myContacts = this.state.replicateContacts;
+
+        console.log('Handle handleReplicateContactSync', uri, contact.name);
 
         if (uri in myContacts) {
             if (timestamp < myContacts[uri].timestamp) {
@@ -7115,7 +7142,11 @@ class Sylk extends Component {
                     showConferenceModalFunc = {this.showConferenceModal}
                     appStoreVersion = {this.state.appStoreVersion}
                     checkVersionFunc = {this.checkVersion}
+                    showExportPrivateKeyModal = {this.state.showExportPrivateKeyModal}
+                    showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
+                    hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
                 />
+
                 <ReadyBox
                     account = {this.state.account}
                     password = {this.state.password}

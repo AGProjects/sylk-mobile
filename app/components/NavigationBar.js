@@ -36,7 +36,7 @@ class NavigationBar extends Component {
             appStoreVersion: this.props.appStoreVersion,
             showEditContactModal: false,
             showEditConferenceModal: false,
-            showExportPrivateKeyModal: false,
+            showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
             showDeleteHistoryModal: false,
             showAddContactModal: false,
             privateKeyPassword: null,
@@ -79,6 +79,7 @@ class NavigationBar extends Component {
                        displayName: displayName,
                        myDisplayName: nextProps.myDisplayName,
                        appStoreVersion: nextProps.appStoreVersion,
+                       showExportPrivateKeyModal: nextProps.showExportPrivateKeyModal,
                        email: nextProps.email,
                        organization: organization,
                        proximity: nextProps.proximity,
@@ -157,7 +158,7 @@ class NavigationBar extends Component {
                 break;
             case 'exportPrivateKey':
                 if (this.state.publicKey) {
-                    this.toggleExportPrivateKeyModal();
+                    this.showExportPrivateKeyModal();
                 } else {
                     this.props.showImportModal();
                 }
@@ -248,10 +249,10 @@ class NavigationBar extends Component {
         this.setState({showDeleteHistoryModal: !this.state.showEditConferenceModal});
     }
 
-    toggleExportPrivateKeyModal() {
+    showExportPrivateKeyModal() {
         const password = Math.random().toString().substr(2, 6);
-        this.setState({showExportPrivateKeyModal: !this.state.showExportPrivateKeyModal,
-                       privateKeyPassword: password});
+        this.setState({privateKeyPassword: password});
+        this.props.showExportPrivateKeyModalFunc()
     }
 
     render() {
@@ -482,7 +483,7 @@ class NavigationBar extends Component {
                 <ExportPrivateKeyModal
                     show={this.state.showExportPrivateKeyModal}
                     password={this.state.privateKeyPassword}
-                    close={this.toggleExportPrivateKeyModal}
+                    close={this.props.hideExportPrivateKeyModalFunc}
                     saveFunc={this.props.replicateKey}
                     publicKeyHash={this.state.publicKeyHash}
                     publicKey={this.state.publicKey}
@@ -539,7 +540,10 @@ NavigationBar.propTypes = {
     toggleCallMeMaybeModal : PropTypes.func,
     showConferenceModalFunc : PropTypes.func,
     appStoreVersion : PropTypes.object,
-    checkVersionFunc: PropTypes.func
+    checkVersionFunc: PropTypes.func,
+    showExportPrivateKeyModal: PropTypes.bool,
+    showExportPrivateKeyModalFunc: PropTypes.func,
+    hideExportPrivateKeyModalFunc: PropTypes.func
 };
 
 export default NavigationBar;
