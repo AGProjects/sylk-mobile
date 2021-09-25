@@ -19,6 +19,7 @@
     "random-string": "^0.2.0",
     "react": "16.9.0",
     "react-native": "0.61.5",
+    "react-native-appstore-version-checker": "^3.0.0",
     "react-native-autocomplete-input": "^4.2.0",
     "react-native-background-timer": "2.1.1",
     "react-native-base64": "^0.2.1",

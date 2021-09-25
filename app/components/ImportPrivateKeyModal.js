@@ -8,7 +8,6 @@ import styles from '../assets/styles/blink/_PrivateKeyModal.scss';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
-
 class ImportPrivateKeyModal extends Component {
     constructor(props) {
         super(props);

@@ -17,7 +17,7 @@ import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
-
+import VersionNumber from 'react-native-version-number';
 
 class NavigationBar extends Component {
     constructor(props) {
@@ -33,6 +33,7 @@ class NavigationBar extends Component {
             inCall: this.props.inCall,
             showCallMeMaybeModal: this.props.showCallMeMaybeModal,
             contactsLoaded: this.props.contactsLoaded,
+            appStoreVersion: this.props.appStoreVersion,
             showEditContactModal: false,
             showEditConferenceModal: false,
             showExportPrivateKeyModal: false,
@@ -77,11 +78,13 @@ class NavigationBar extends Component {
                        contactsLoaded: nextProps.contactsLoaded,
                        displayName: displayName,
                        myDisplayName: nextProps.myDisplayName,
+                       appStoreVersion: nextProps.appStoreVersion,
                        email: nextProps.email,
                        organization: organization,
                        proximity: nextProps.proximity,
                        account: nextProps.account,
                        userClosed: true,
+                       menuVisible: nextProps.menuVisible,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
                        selectedContact: nextProps.selectedContact,
@@ -254,6 +257,10 @@ class NavigationBar extends Component {
     render() {
          const muteIcon = this.state.mute ? 'bell-off' : 'bell';
 
+        if (this.state.menuVisible && !this.state.appStoreVersion) {
+            this.props.checkVersionFunc()
+        }
+
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
 
@@ -306,6 +313,8 @@ class NavigationBar extends Component {
                                  (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null && !this.state.userClosed))
                                  || false;
         }
+
+        let updateTitle = (this.state.appStoreVersion && this.state.appStoreVersion.version > VersionNumber.appVersion) ? 'Update Sylk...' : 'Check for updates...';
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -395,7 +404,7 @@ class NavigationBar extends Component {
                         : null}
 
                         <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />
-                        <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title="Check for updates..." />
+                        <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} />
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         <Divider/>
                         {extraMenu ?
@@ -415,6 +424,8 @@ class NavigationBar extends Component {
                 <AboutModal
                     show={this.state.showAboutModal}
                     close={this.toggleAboutModal}
+                    currentVersion={VersionNumber.appVersion}
+                    appStoreVersion={this.state.appStoreVersion}
                 />
 
                 <CallMeMaybeModal
@@ -526,7 +537,9 @@ NavigationBar.propTypes = {
     syncConversations   : PropTypes.bool,
     showCallMeMaybeModal: PropTypes.bool,
     toggleCallMeMaybeModal : PropTypes.func,
-    showConferenceModalFunc : PropTypes.func
+    showConferenceModalFunc : PropTypes.func,
+    appStoreVersion : PropTypes.object,
+    checkVersionFunc: PropTypes.func
 };
 
 export default NavigationBar;

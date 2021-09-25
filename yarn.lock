@@ -5945,6 +5945,11 @@ lodash.memoize@~3.0.3:
   resolved "https://registry.yarnpkg.com/lodash.memoize/-/lodash.memoize-3.0.4.tgz#2dcbd2c287cbc0a55cc42328bd0c736150d53e3f"
   integrity sha1-LcvSwofLwKVcxCMovQxzYVDVPj8=
 
+lodash.result@^4.5.2:
+  version "4.5.2"
+  resolved "https://registry.yarnpkg.com/lodash.result/-/lodash.result-4.5.2.tgz#cb45b27fb914eaa8d8ee6f0ce7b2870b87cb70aa"
+  integrity sha1-y0Wyf7kU6qjY7m8M57KHC4fLcKo=
+
 lodash.sortby@^4.7.0:
   version "4.7.0"
   resolved "https://registry.yarnpkg.com/lodash.sortby/-/lodash.sortby-4.7.0.tgz#edd14c824e2cc9c1e0b0a1b42bb5210516a42438"
@@ -7653,6 +7658,13 @@ react-mixin@^4.0.0:
     object-assign "^4.0.1"
     smart-mixin "^2.0.0"
 
+react-native-appstore-version-checker@^3.0.0:
+  version "3.0.0"
+  resolved "https://registry.yarnpkg.com/react-native-appstore-version-checker/-/react-native-appstore-version-checker-3.0.0.tgz#0c471402a09cb3fee4b0e2d031ffece5135d2009"
+  integrity sha512-qC8y4t82XqqbacDbL5O/Stsw5J8dbXAr+79IKewHWUkGZ+b7p8R3YFDw/LJId+PLoVIWnStp/zYhX+be4t9UyQ==
+  dependencies:
+    lodash.result "^4.5.2"
+
 react-native-autocomplete-input@^4.2.0:
   version "4.2.0"
   resolved "https://registry.yarnpkg.com/react-native-autocomplete-input/-/react-native-autocomplete-input-4.2.0.tgz#fcfc3d2f19134d4c3394a4e6a5aae13d8c4c9129"
@@ -7940,9 +7952,9 @@ react-native-swipe-list-view@^3.2.3:
   resolved "https://registry.yarnpkg.com/react-native-swipe-list-view/-/react-native-swipe-list-view-3.2.3.tgz#2b4aa361f26b6e55efe38a829ce122dff6c00292"
   integrity sha512-f0B92eZiO0mCk7ZFtn8tbLz4lb+mR8xzcfjFqCVSDeXnuNw7GenUMsccGnclIOhnxnip5BHvUHavlD41peGqig==
 
-react-native-sylkrtc@agprojects/react-native-sylkrtc.js#387b9bd42ad8607c30bc790a1c3c0c4f4701f3a4:
+react-native-sylkrtc@agprojects/react-native-sylkrtc.js#3f7e5e32fd76c220bc3d937e6e5f4cf82c429a42:
   version "1.5.3"
-  resolved "https://codeload.github.com/agprojects/react-native-sylkrtc.js/tar.gz/387b9bd42ad8607c30bc790a1c3c0c4f4701f3a4"
+  resolved "https://codeload.github.com/agprojects/react-native-sylkrtc.js/tar.gz/3f7e5e32fd76c220bc3d937e6e5f4cf82c429a42"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"

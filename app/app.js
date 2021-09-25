@@ -24,6 +24,7 @@ import SoundPlayer from 'react-native-sound-player';
 import RNSimpleCrypto from "react-native-simple-crypto";
 import OpenPGP from "react-native-fast-openpgp";
 import ShortcutBadge from 'react-native-shortcut-badge';
+import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
 
 registerGlobals();
 
@@ -294,6 +295,7 @@ class Sylk extends Component {
             keyDifferentOnServer: false,
             serverPublicKey: null,
             generatingKey: false,
+            appStoreVersion: null,
             serverQueriedForPublicKey: false,
             navigationItems: {today: false,
                               yesterday: false,
@@ -1493,6 +1495,20 @@ class Sylk extends Component {
         this.listenforPushNotifications();
         this.listenforSoundNotifications();
         this._loaded = true;
+
+        this.checkVersion();
+    }
+
+    checkVersion() {
+        let appId = Platform.OS === 'android' ? "com.ag-projects.sylk" : "1489960733";
+        getAppstoreAppMetadata("1489960733") //put any apps id here
+        .then(appVersion => {
+            console.log("Sylk app version on appstore", appVersion.version, "published on", appVersion.currentVersionReleaseDate);
+            this.setState({appStoreVersion: appVersion});
+        })
+        .catch(err => {
+            console.log("Error fetching app store version occurred", err);
+        });
     }
 
     listenforSoundNotifications() {
@@ -3853,12 +3869,6 @@ class Sylk extends Component {
 
         contact = this.sanitizeContact(uri, contact, 'saveSylkContact');
 
-        if (uri === this.state.accountId && origin === 'saveContact') {
-            setTimeout(() => {
-                this.showCallMeModal();
-            }, 2000);
-        }
-
         if (this.sql_contacts_keys.indexOf(uri) > -1) {
             this.updateSylkContact(uri, contact, origin);
             return;
@@ -4242,6 +4252,10 @@ class Sylk extends Component {
 
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys) {
             public_keys = this.state.keys.public + "\n" + this.state.myContacts[uri].publicKey;
+        }
+
+        if (!message.contentType) {
+            message.contentType = 'text/plain';
         }
 
         if (message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
@@ -5040,7 +5054,7 @@ class Sylk extends Component {
 
         }).catch((error) => {
             let params = [id];
-            console.log('Failed to decrypt message:', error);
+            //console.log('Failed to decrypt message:', error);
             this.ExecuteQuery("update messages set encrypted = 3 where msg_id = ?", params).then((result) => {
                 //console.log('SQL updated message decrypted', id, 'rows affected', result.rowsAffected);
             }).catch((error) => {
@@ -5845,7 +5859,7 @@ class Sylk extends Component {
                     //console.log('Incoming message', message.id, 'decrypted');
                     this.handleIncomingMessage(message, decryptedBody);
                 }).catch((error) => {
-                    console.log('Failed to decrypt message:', error);
+                    //console.log('Failed to decrypt message:', error);
                     this.sendPublicKey(message.sender.uri);
                     //this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: wrong public key', 'incoming');
                 });
@@ -6395,6 +6409,8 @@ class Sylk extends Component {
     newContact(uri, name=null, data={}) {
         //console.log('Create new contact', uri, data);
         let current_datetime = new Date();
+
+        uri = uri.trim().toLowerCase();
 
         const contact = { id: uuid.v4(),
                           uri: uri,
@@ -7097,6 +7113,8 @@ class Sylk extends Component {
                     showCallMeMaybeModal = {this.state.showCallMeMaybeModal}
                     toggleCallMeMaybeModal = {this.toggleCallMeMaybeModal}
                     showConferenceModalFunc = {this.showConferenceModal}
+                    appStoreVersion = {this.state.appStoreVersion}
+                    checkVersionFunc = {this.checkVersion}
                 />
                 <ReadyBox
                     account = {this.state.account}

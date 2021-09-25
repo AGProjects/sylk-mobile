@@ -12,6 +12,7 @@ import URIInput from './URIInput';
 import config from '../config';
 import utils from '../utils';
 import styles from '../assets/styles/blink/_ReadyBox.scss';
+import {Keyboard} from 'react-native';
 
 class ReadyBox extends Component {
     constructor(props) {
@@ -204,6 +205,10 @@ class ReadyBox extends Component {
             contact = null;
         }
 
+        if (new_value.indexOf(' ') === -1) {
+            new_value = new_value.trim().toLowerCase();
+        }
+
         //new_value = new_value.replace(' ','');
 
         //console.log('--- Select new contact', contact? contact.uri : null);
@@ -246,13 +251,18 @@ class ReadyBox extends Component {
            this.setState({targetUri: targetUri});
         }
 
-        console.log('Chat to', targetUri);
+        let uri = this.state.targetUri.trim().toLowerCase();
 
-        if (!this.state.chat && !this.selectedContact && targetUri) {
-            let contact = this.props.newContactFunc(targetUri, null, {src: 'new chat'});
+        if (!this.state.chat && !this.selectedContact && uri) {
+            if (uri.indexOf('@') === -1) {
+                uri = uri + '@' + this.props.defaultDomain;
+            }
+
+            let contact = this.props.newContactFunc(uri, null, {src: 'new chat'});
             console.log('Create synthetic contact', contact);
             this.props.selectContact(contact);
-            this.setState({targetUri: targetUri, chat: true});
+            this.setState({targetUri: uri, chat: true});
+            Keyboard.dismiss();
             //this.handleTargetChange(targetUri, contact);
         }
 
@@ -261,7 +271,7 @@ class ReadyBox extends Component {
 
     handleAudioCall(event) {
         event.preventDefault();
-        let uri = this.state.targetUri.toLowerCase();
+        let uri = this.state.targetUri.trim().toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
             // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
