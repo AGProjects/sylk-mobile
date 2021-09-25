@@ -1,21 +1,42 @@
-.title {
-    padding-top: 00px;
-    color: black;
-    margin: 0 auto;
-    font-size: 18;
-}
-
-.row {
-    color: black;
-    font-size: 14;
-}
-
 .container {
 }
 
-.inner {
-    // flex: 1;
-    // justify-content: flex-end;
+.landscape {
+    height: 200px;
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+
+.landscapeTablet {
+    height: 200px;
+    margin-bottom: 10px;
+    margin-top: 10px;
+}
+
+.portrait {
+    height: 300px;
+    margin-bottom: 10px;
+    margin-top: 10px;
+}
+
+.portraitTablet {
+    height: 400px;
+    margin-bottom: 10px;
+    margin-top: 10px;
+}
+
+.title {
+    margin-top: 0px;
+    color: black;
+    margin: 0 auto;
+    font-size: 16;
+}
+
+.row {
+    font-size: 14;
+}
+
+.snackbar {
 }
 
 .button {
@@ -23,6 +44,6 @@
     border-radius: 1px;
     border: 0px;
     margin: 0 auto;
-    margin-top: 20px;
-    margin-bottom: 20px;
+    margin-top: 10px;
+    margin-bottom: 10px;
 }

@@ -183,6 +183,8 @@ class RegisterForm extends Component {
                    show={this.state.showEnrollmentModal}
                    handleEnrollment={this.handleEnrollment}
                    phoneNumber={this.props.phoneNumber}
+                   orientation={this.props.orientation}
+                   isTablet={this.props.isTablet}
                 />
             </View>
 

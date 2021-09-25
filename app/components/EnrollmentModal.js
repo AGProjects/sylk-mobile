@@ -3,7 +3,7 @@ import { View, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import PropTypes from 'prop-types';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
-import { Dialog, Portal, Button, TextInput, Title, Surface, HelperText, Snackbar } from 'react-native-paper';
+import { Dialog, Portal, Button, TextInput, Text, Title, Surface, HelperText, Snackbar } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import LoadingScreen from './LoadingScreen';
 
@@ -33,7 +33,6 @@ class EnrollmentModal extends Component {
     }
 
     handleFormFieldChange(value, name) {
-        ///^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
         if (name === 'username') {
             value = value.replace(/[^\w|\.\-]/g, '').trim().toLowerCase();
         }
@@ -125,9 +124,16 @@ class EnrollmentModal extends Component {
         let buttonText = 'Sign Up';
         let buttonIcon = null;
         let loadingText = 'Enrolling...';
+        let containerClass;
 
         if (this.state.enrolling) {
             buttonIcon = "cog";
+        }
+
+        if (this.props.isTablet) {
+            containerClass = this.props.orientation === 'landscape' ? styles.landscapeTablet : styles.portraitTablet;
+        } else {
+            containerClass = this.props.orientation === 'landscape' ? styles.landscape : styles.portrait;
         }
 
         let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
@@ -137,18 +143,25 @@ class EnrollmentModal extends Component {
         return (
             <Portal>
                     <DialogType visible={this.props.show} onDismiss={this.onHide}>
-                    <Dialog.Title style={styles.title}>Create account</Dialog.Title>
+                    <Dialog.Title style={styles.title}>Sign Up</Dialog.Title>
                     <LoadingScreen
                     text={loadingText}
                     show={this.state.enrolling}
                     />
                     <Surface style={styles.container}>
+                    <ScrollView
+                            ref={ref => {
+                                this.scrollView = ref;
+                            }}
+
+                    style={containerClass}>
+
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Display name"
                             name="displayName"
                             type="text"
-                            placeholder="Will be seen by your contacts"
+                            placeholder="Seen by your contacts"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'displayName');}}
                             required
                             value={this.state.displayName}
@@ -156,7 +169,7 @@ class EnrollmentModal extends Component {
                             returnKeyType="next"
                             onSubmitEditing={() => this.emailInput ? this.emailInput.focus() : null}
                         />
-                        { this.state.displayName.length > 2 ?
+                        { this.state.displayName.length > 2 || true ?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="E-mail"
@@ -172,11 +185,11 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.emailInput = ref;
                             }}
-                            onSubmitEditing={() => this.usernameInput ? this.usernameInput.focus() : null}
+                            onSubmitEditing={() => this.usernameInput && validEmail ? this.usernameInput.focus() : null}
                         />
                         :
                         null }
-                        { validEmail?
+                        { validEmail || true?
                         <TextInput style={styles.row}
                             mode="flat"
                             label="Username"
@@ -191,11 +204,11 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.usernameInput = ref;
                             }}
-                            onSubmitEditing={() => this.passwordInput ? this.passwordInput.focus(): null}
+                            onSubmitEditing={() => validUsername && this.passwordInput ? this.passwordInput.focus(): null}
                         />
                         : null}
 
-                        { validUsername ?
+                        { validUsername  ?
 
                         <TextInput style={styles.row}
                             mode="flat"
@@ -211,18 +224,19 @@ class EnrollmentModal extends Component {
                             ref={ref => {
                                 this.passwordInput = ref;
                             }}
-                            onSubmitEditing={() => this.password2Input ? this.password2Input.focus(): null}
+                            onSubmitEditing={() => this.state.password.length > 4 && this.password2Input ? this.password2Input.focus(): null}
                         />
                         : null}
 
-                        { validUsername ?
+                        { validUsername    ?
                         <TextInput style={styles.row}
                             mode="flat"
-                            label="Verify password"
+                            label="Confirm password"
                             secureTextEntry={true}
                             textContentType="password"
                             name="password2"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'password2');}}
+                            onSubmitEditing={() => this.scrollView.scrollToEnd()}
                             required value={this.state.password2}
                             disabled={this.state.enrolling}
                             returnKeyType="next"
@@ -232,22 +246,31 @@ class EnrollmentModal extends Component {
                         />
                         : null}
 
+                        {this.validInput ?
+
                         <Button
                             mode="contained"
                             style={styles.button}
-                            icon={buttonIcon}
                             disabled={!this.validInput}
                             onPress={this.enroll}
-                        >
-                            {buttonText}
+                        >{buttonText}
                         </Button>
-                        <Snackbar
+                        :
+                        <Button
+                            style={styles.button}
+                        >{buttonText}
+                        </Button>
+
+                        }
+
+                        <Snackbar style={styles.snackbar}
                             visible={this.state.errorVisible}
                             duration={4000}
                             onDismiss={() => this.setState({ errorVisible: false })}
                         >
                             {this.state.error}
                         </Snackbar>
+                            </ScrollView>
                     </Surface>
                 </DialogType>
             </Portal>
@@ -258,7 +281,9 @@ class EnrollmentModal extends Component {
 EnrollmentModal.propTypes = {
     handleEnrollment: PropTypes.func.isRequired,
     show: PropTypes.bool.isRequired,
-    phoneNumber : PropTypes.string
+    phoneNumber : PropTypes.string,
+    orientation : PropTypes.string,
+    isTablet    : PropTypes.bool
 };
 
 export default EnrollmentModal;

@@ -15,7 +15,6 @@ const RegisterBox = (props) => {
         containerClass = props.orientation === 'landscape' ? styles.landscapeRegisterBox : styles.portraitRegisterBox;
     }
 
-
     return (
         <View style={containerClass}>
             <View>
