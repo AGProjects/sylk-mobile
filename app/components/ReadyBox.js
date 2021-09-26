@@ -37,6 +37,7 @@ class ReadyBox extends Component {
             chat: (this.props.selectedContact !== null) && (this.props.call !== null),
             call: this.props.call,
             inviteContacts: this.props.inviteContacts,
+            shareToContacts: this.props.shareToContacts,
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             messageZoomFactor: this.props.messageZoomFactor,
@@ -82,6 +83,7 @@ class ReadyBox extends Component {
                         messageZoomFactor: nextProps.messageZoomFactor,
                         contacts: nextProps.contacts,
                         inviteContacts: nextProps.inviteContacts,
+                        shareToContacts: nextProps.shareToContacts,
                         selectedContacts: nextProps.selectedContacts,
                         selectedContact: nextProps.selectedContact,
                         pinned: nextProps.pinned,
@@ -149,6 +151,10 @@ class ReadyBox extends Component {
             return true;
         }
 
+        if (this.state.shareToContacts) {
+            return true;
+        }
+
         if (this.props.isLandscape) {
             return true;
         }
@@ -172,7 +178,7 @@ class ReadyBox extends Component {
         //console.log('---handleTargetChange new_uri =', new_uri);
         //console.log('handleTargetChange contact =', contact);
 
-        if (this.state.inviteContacts && contact) {
+        if ((this.state.inviteContacts || this.state.shareToContacts) && contact) {
              const uri = contact.uri;
              this.props.updateSelection(uri);
              return;
@@ -235,6 +241,10 @@ class ReadyBox extends Component {
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
         }
+    }
+
+    shareContent() {
+        this.props.shareContent();
     }
 
     showConferenceModal(event) {
@@ -319,6 +329,10 @@ class ReadyBox extends Component {
     get chatButtonDisabled() {
         let uri = this.state.targetUri.trim();
 
+        if (this.state.shareToContacts) {
+            return true;
+        }
+
         if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
             return true;
         }
@@ -350,6 +364,10 @@ class ReadyBox extends Component {
             return true;
         }
 
+        if (this.state.shareToContacts) {
+            return true;
+        }
+
         if (uri.indexOf('@') > -1) {
             let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
             let validEmail = email_reg.test(uri);
@@ -371,6 +389,10 @@ class ReadyBox extends Component {
             return true;
         }
 
+        if (this.state.shareToContacts) {
+            return true;
+        }
+
         let username = uri.split('@')[0];
         let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
 
@@ -385,6 +407,10 @@ class ReadyBox extends Component {
         let uri = this.state.targetUri.trim();
 
         if (uri.indexOf(' ') > -1) {
+            return true;
+        }
+
+        if (this.state.shareToContacts) {
             return true;
         }
 
@@ -441,7 +467,8 @@ class ReadyBox extends Component {
             }
         }
 
-        //console.log('Render missed calls', this.state.missedCalls);
+        //console.log('Render share', this.state.shareToContacts, this.state.selectedContacts);
+        //this.props.fetchSharedItems();
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
@@ -481,7 +508,7 @@ class ReadyBox extends Component {
                                   {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyFilter === 'favorite'},
                                   {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'},
                                   {key: 'conference', title: 'Conference', enabled: Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'], selected: this.state.historyFilter === 'conference'},
-                                  {key: 'test', title: 'Test', enabled: true, selected: this.state.historyFilter === 'test'},
+                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts, selected: this.state.historyFilter === 'test'},
                                   ];
 
         return (
@@ -494,10 +521,12 @@ class ReadyBox extends Component {
                                 defaultValue={this.state.targetUri}
                                 onChange={this.handleTargetChange}
                                 onSelect={this.handleTargetSelect}
+                                shareToContacts={this.state.shareToContacts}
                                 autoFocus={false}
                             />
                         </View>
                         : null}
+
                         {this.showButtonsBar ?
                         <View style={uriGroupClass}>
                         {this.showSearchBar && this.props.isLandscape ?
@@ -552,11 +581,20 @@ class ReadyBox extends Component {
                                     onPress={this.showConferenceModal}
                                     icon="account-group"
                                 />
+
+                                <IconButton
+                                    style={styles.conferenceButton}
+                                    disabled={!this.state.shareToContacts}
+                                    size={32}
+                                    onPress={this.shareContent}
+                                    icon="share"
+                                />
                             </View>
                                 }
 
                         </View>
                                 : null}
+
                     </View>
                     <View style={[historyContainer, borderClass]}>
                         <ContactsListBox
@@ -597,6 +635,7 @@ class ReadyBox extends Component {
                             confirmRead = {this.props.confirmRead}
                             sendPublicKey = {this.props.sendPublicKey}
                             inviteContacts = {this.state.inviteContacts}
+                            shareToContacts = {this.state.shareToContacts}
                             selectedContacts = {this.state.selectedContacts}
                             toggleFavorite={this.props.toggleFavorite}
                             toggleBlocked={this.props.toggleBlocked}
@@ -683,6 +722,7 @@ ReadyBox.propTypes = {
     unpinMessage    : PropTypes.func,
     sendPublicKey   : PropTypes.func,
     inviteContacts  : PropTypes.bool,
+    shareToContacts  : PropTypes.bool,
     selectedContacts: PropTypes.array,
     updateSelection : PropTypes.func,
     loadEarlierMessages: PropTypes.func,
@@ -693,7 +733,10 @@ ReadyBox.propTypes = {
     navigationItems: PropTypes.object,
     showConferenceModal: PropTypes.bool,
     showConferenceModalFunc: PropTypes.func,
-    hideConferenceModalFunc: PropTypes.func
+    hideConferenceModalFunc: PropTypes.func,
+    shareContent:  PropTypes.func,
+    fetchSharedItems: PropTypes.func
+
 };
 
 

@@ -25,6 +25,7 @@ import RNSimpleCrypto from "react-native-simple-crypto";
 import OpenPGP from "react-native-fast-openpgp";
 import ShortcutBadge from 'react-native-shortcut-badge';
 import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
+//import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
 
 registerGlobals();
 
@@ -273,6 +274,8 @@ class Sylk extends Component {
             privateKeyImportStatus: '',
             privateKeyImportSuccess: false,
             inviteContacts: false,
+            shareToContacts: false,
+            shareContent: [],
             selectedContacts: [],
             pinned: false,
             callContact: null,
@@ -777,7 +780,7 @@ class Sylk extends Component {
                         this.saveSylkContact(item.uri, myContacts[item.uri], 'update contact at init because of ' + updated);
                     }
 
-                    //console.log('Load contact', item.uri, item.name);
+                    console.log('Load contact', item.uri, item.name);
                 }
 
                 storage.get('cachedHistory').then((history) => {
@@ -899,6 +902,8 @@ class Sylk extends Component {
                         }
                     }
                 });
+
+                this.getMessages();
 
             }, 500);
             this.loadMyKeys();
@@ -1353,6 +1358,7 @@ class Sylk extends Component {
                             currentCall: null,
                             callContact: null,
                             inviteContacts: false,
+                            shareToContacts: false,
                             selectedContacts: [],
                             incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
                             reconnectingCall: false,
@@ -1407,6 +1413,7 @@ class Sylk extends Component {
                         this.changeRoute('/login', 'start up');
                     }
                 });
+                this.fetchSharedItems();
              }
         }
 
@@ -1456,6 +1463,7 @@ class Sylk extends Component {
 
     async componentDidMount() {
         utils.timestampedLog('App did mount');
+
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
         // Start a timer that runs once after X milliseconds
         BackgroundTimer.runBackgroundTimer(() => {
@@ -1936,8 +1944,43 @@ class Sylk extends Component {
 
         this.setState({inFocus: true});
         this.refreshNavigationItems();
+        this.fetchSharedItems();
 
         this.respawnConnection();
+     }
+
+     fetchSharedItems() {
+        return;
+
+        console.log('fetchSharedItems...');
+        ReceiveSharingIntent.getReceivedFiles(files => {
+            // files returns as JSON Array example
+            //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
+                console.log(files);
+                if (files.length > 0) {
+                    console.log('Will share to contacts', files);
+
+                    this.setState({shareToContacts: true, shareContent: files});
+                    let item = files[0];
+                    let what = 'Share text with contacts';
+
+                    if (item.weblink) {
+                        what = 'Share web link with contacts';
+                    }
+
+                    if (item.filePath) {
+                        what = 'Share file with contacts';
+                    }
+
+                    this._notificationCenter.postSystemNotification(what);
+                } else {
+                    console.log('Nothing to share');
+                }
+            }, (error) =>{
+                console.log(error);
+            },
+            'ShareMedia' // share url protocol (must be unique to your app, suggest using your apple bundle id)
+        );
     }
 
     refreshNavigationItems() {
@@ -2926,7 +2969,6 @@ class Sylk extends Component {
         console.log('Check if PGP key exists on server....')
 
         if (this.serverQueriedForPublicKey) {
-            console.log('Server was already checked')
             if (this.state.contactsLoaded) {
                 if (!this.serverPublicKey) {
                     console.log('We have no PGP keys here or on server');
@@ -2936,7 +2978,7 @@ class Sylk extends Component {
                     this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true});
                 }
             } else {
-                console.log('Wait until contacts are loaded...');
+                console.log('Wait for PGP keys until contacts are loaded');
             }
         } else {
             account.checkIfKeyExists((key) => {
@@ -2944,7 +2986,6 @@ class Sylk extends Component {
                 this.serverQueriedForPublicKey = true;
 
                 if (key) {
-                    console.log('Public PGP key exists on server');
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== key) {
                             console.log('Public PGP key exists on server but is different than ours');
@@ -4261,6 +4302,17 @@ class Sylk extends Component {
         }
     }
 
+    textToGiftedMessage(text) {
+        return {
+            _id: uuid.v4(),
+            text: text,
+            createdAt: new Date(),
+            received: false,
+            direction: 'outgoing',
+            user: {}
+        };
+    }
+
     async sendMessage(uri, message) {
         message.sent = false;
         message.received = false;
@@ -5095,6 +5147,24 @@ class Sylk extends Component {
     }
 
     async getMessages(uri) {
+        let msg;
+        let query;
+        let rows = 0;
+        let total = 0;
+
+        if (!uri) {
+            query = "SELECT count(*) as rows FROM messages where (from_uri = ? and direction = 'outgoing') or (to_uri = ? and direction = 'incoming')";
+            await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId]).then((results) => {
+                rows = results.rows;
+                total = rows.item(0).rows;
+                console.log(total, 'total messages');
+            }).catch((error) => {
+                console.log('SQL error:', error);
+            });
+
+            return;
+        }
+
         this.resetUnreadCount(uri);
 
         let messages_uri = uri;
@@ -5106,11 +5176,7 @@ class Sylk extends Component {
 
         console.log('Get messages with', messages_uri, 'with zoom factor', this.state.messageZoomFactor);
         let messages = this.state.messages;
-        let msg;
-        let query;
-        let rows = 0;
         let myContacts = this.state.myContacts;
-        let total = 0;
         let last_messages = [];
 
         if (Object.keys(myContacts).indexOf(uri) === -1) {
@@ -5152,12 +5218,26 @@ class Sylk extends Component {
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
+                if (!item.content || !item.msg_id) {
+                    //console.log('Remove broken message', item);
+                    this.ExecuteQuery('delete from messages where id = ?', [item.id]);
+                    myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
+                    continue;
+                }
+
                 content = item.content;
+                if (!content) {
+                    content = 'Broken message';
+                }
+
                 last_direction = item.direction;
+
                 let timestamp;
                 last_message = null;
                 last_message_id = null;
+
                 let unix_timestamp;
+
                 if (item.unix_timestamp === 0) {
                     timestamp = JSON.parse(item.timestamp, _parseSQLDate);
                     unix_timestamp = Math.floor(timestamp / 1000);
@@ -5167,7 +5247,6 @@ class Sylk extends Component {
                     timestamp = new Date(item.unix_timestamp * 1000);
                 }
                 const is_encrypted =  content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
-
 
                 if (is_encrypted) {
                     myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
@@ -5606,6 +5685,11 @@ class Sylk extends Component {
                 this._notificationCenter.postSystemNotification('Messages in sync with server');
             }
         }
+
+        setTimeout(() => {
+            this.refreshNavigationItems();
+        }, 2000);
+
     }
 
     async syncConversations(messages) {
@@ -5652,6 +5736,8 @@ class Sylk extends Component {
                      delete: 0,
                      read: 0}
 
+        let purgeMessages = this.state.purgeMessages;
+
         messages.forEach((message) => {
             if (this.mustLogout) {
                 return;
@@ -5678,6 +5764,20 @@ class Sylk extends Component {
 
             if (uri) {
                 //console.log('Process journal', i, 'of', messages.length, message.contentType, uri, message.timestamp);
+            }
+
+            let d = new Date(2019);
+
+            if (message.timestamp < d) {
+                console.log('Skip broken journal with broken date', message.id);
+                purgeMessages.push(message.id);
+                return;
+            }
+
+            if (!message.content) {
+                console.log('Skip broken journal with empty body', message.id);
+                purgeMessages.push(message.id);
+                return;
             }
 
             if (message.contentType !== 'application/sylk-conversation-remove' && message.contentType !== 'application/sylk-message-remove' && uri && Object.keys(myContacts).indexOf(uri) === -1) {
@@ -5823,7 +5923,13 @@ class Sylk extends Component {
         }
         */
 
-        this.setState({messages: renderMessages, updateContactUris: updateContactUris, deletedContacts: deletedContacts});
+        this.setState({messages: renderMessages,
+                       updateContactUris: updateContactUris,
+                       deletedContacts: deletedContacts,
+                       purgeMessages: purgeMessages,
+                       firstSyncDone: true
+                       });
+
         this.remove_sync_pending_item('sync_in_progress');
 
         Object.keys(lastMessages).forEach((uri) => {
@@ -5834,8 +5940,6 @@ class Sylk extends Component {
         if (last_id) {
             this.saveLastSyncId(last_id, true);
         }
-
-        this.setState({firstSyncDone: true});
     }
 
     async publicKeyReceived(message) {
@@ -6818,6 +6922,45 @@ class Sylk extends Component {
         this.saveInvitedParties(room, uris);
     }
 
+    shareContent() {
+        if (this.state.shareContent.length === 0) {
+            return;
+        }
+
+        if (this.state.selectedContacts.length === 0) {
+            this._notificationCenter.postSystemNotification('Sharing canceled');
+        }
+
+        let item = this.state.shareContent[0];
+        let content = '';
+
+        if (item.subject) {
+            content = content + '\n\n' + item.subject;
+        }
+
+        if (item.text) {
+            content = content + '\n\n' + item.text;
+        }
+
+        if (item.weblink) {
+            content = content + '\n\n' + item.weblink;
+        }
+
+        content = content.trim();
+
+        this.state.selectedContacts.forEach((uri) => {
+            let msg = this.textToGiftedMessage(content);
+            console.log('Share external item with', uri);
+            this.sendMessage(uri, msg);
+        });
+
+        ReceiveSharingIntent.clearReceivedFiles();
+
+        this.setState({shareContent: [],
+                       selectedContacts: [],
+                       shareToContacts: false});
+    }
+
     saveInvitedParties(room, uris) {
         let uri = room;
         room = room.split('@')[0];
@@ -7016,6 +7159,7 @@ class Sylk extends Component {
             if (item.displayName && !myContacts[uri].name) {
                 myContacts[uri].name = item.displayName;
             }
+
             myContacts[uri].direction = item.direction;
             myContacts[uri].lastCallId = item.sessionId;
             myContacts[uri].lastCallDuration = item.duration;
@@ -7191,6 +7335,7 @@ class Sylk extends Component {
                     selectContact = {this.selectContact}
                     sendPublicKey = {this.sendPublicKey}
                     inviteContacts = {this.state.inviteContacts}
+                    shareToContacts = {this.state.shareToContacts}
                     selectedContacts = {this.state.selectedContacts}
                     updateSelection = {this.updateSelection}
                     togglePinned = {this.togglePinned}
@@ -7203,6 +7348,8 @@ class Sylk extends Component {
                     showConferenceModal = {this.state.showConferenceModal}
                     hideConferenceModalFunc = {this.hideConferenceModal}
                     showConferenceModalFunc = {this.showConferenceModal}
+                    shareContent = {this.shareContent}
+                    fetchSharedItems = {this.fetchSharedItems}
                 />
 
                 <ImportPrivateKeyModal

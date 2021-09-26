@@ -1,5 +1,6 @@
 package com.agprojects.sylk;
 
+import android.content.Intent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import io.wazo.callkeep.RNCallKeepModule;
@@ -23,6 +24,12 @@ public class MainActivity extends ReactActivity {
   protected String getMainComponentName() {
     return "Sylk";
   }
+
+@Override
+public void onNewIntent(Intent intent) {
+  super.onNewIntent(intent);
+  setIntent(intent);
+}
 
   @Override
   protected void onCreate(Bundle savedInstanceState){

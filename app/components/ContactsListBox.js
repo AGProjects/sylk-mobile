@@ -48,6 +48,7 @@ class ContactsListBox extends Component {
             message: null,
             showShareMessageModal: false,
             inviteContacts: this.props.inviteContacts,
+            shareToContacts: this.props.shareToContacts,
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             filter: this.props.filter,
@@ -156,6 +157,7 @@ class ContactsListBox extends Component {
                        showMessageModal: nextProps.showMessageModal,
                        message: nextProps.message,
                        inviteContacts: nextProps.inviteContacts,
+                       shareToContacts: nextProps.shareToContacts,
                        selectedContacts: nextProps.selectedContacts,
                        pinned: nextProps.pinned,
                        isTyping: nextProps.isTyping,
@@ -650,7 +652,7 @@ class ContactsListBox extends Component {
         });
 
         //console.log('--- Render contacts with selected contact', this.state.selectedContact ? this.state.selectedContact.uri: null);
-        //console.log('--- Render contacts with filter', this.state.filter);
+        //console.log('--- Render contacts with filter', this.state.filter, 'share', this.state.shareToContacts);
 
         let chatInputClass;
 
@@ -660,9 +662,7 @@ class ContactsListBox extends Component {
             chatInputClass = this.noChatInputToolbar;
         }
 
-        if (this.state.inviteContacts) {
-            items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
-        } else if (!this.state.selectedContact && this.state.filter) {
+        if (!this.state.selectedContact && this.state.filter) {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, [this.state.filter]));
         } else {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
@@ -689,6 +689,17 @@ class ContactsListBox extends Component {
 
         const known = [];
         items = items.filter((elem) => {
+            if (this.state.shareToContacts && elem.tags.indexOf('test') > -1) {
+                return;
+            }
+
+            if (this.state.shareToContacts && elem.tags.indexOf('chat') === -1) {
+                return;
+            }
+
+            if (this.state.shareToContacts && elem.uri.indexOf('@') === -1) {
+                return;
+            }
             if (known.indexOf(elem.uri) <= -1) {
                 known.push(elem.uri);
                 return elem;
@@ -899,6 +910,7 @@ ContactsListBox.propTypes = {
     deleteMessages   : PropTypes.func,
     sendPublicKey   : PropTypes.func,
     inviteContacts  : PropTypes.bool,
+    shareToContacts   : PropTypes.bool,
     selectedContacts: PropTypes.array,
     toggleBlocked   : PropTypes.func,
     togglePinned    : PropTypes.func,
