@@ -4,7 +4,7 @@ Sylk Mobile
 Short description
 -----------------
 
-SIP compatible video conferencing client (WebRTC)
+Real time communications client based on open standards
 
 
 Description
@@ -15,6 +15,7 @@ applications using IETF SIP protocol and WebRTC specifications.  With it you
 can call to any other SIP address and you can receive calls from SIP
 applications and WebRTC browsers.
 
+Messages are encrypted using OpenPGP.
 
 Features
 --------
