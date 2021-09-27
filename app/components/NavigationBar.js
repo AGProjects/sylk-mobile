@@ -56,7 +56,8 @@ class NavigationBar extends Component {
             showPublicKey: false,
             myInvitedParties: this.props.myInvitedParties,
             messages: this.props.messages,
-            userClosed: false
+            userClosed: false,
+            pinned: this.props.pinned
         }
 
         this.menuRef = React.createRef();
@@ -85,9 +86,11 @@ class NavigationBar extends Component {
                        proximity: nextProps.proximity,
                        account: nextProps.account,
                        userClosed: true,
+                       pinned: nextProps.pinned,
                        menuVisible: nextProps.menuVisible,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
+                       showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
                        myInvitedParties: nextProps.myInvitedParties,
@@ -136,13 +139,13 @@ class NavigationBar extends Component {
                 break;
             case 'editContact':
                 if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
-                    this.setState({showEditConferenceModal: !this.state.showEditConferenceModal});
+                    this.setState({showEditConferenceModal: true});
                 } else {
-                    this.setState({showEditContactModal: !this.state.showEditContactModal});
+                    this.setState({showEditContactModal: true});
                 }
                 break;
             case 'deleteMessages':
-                this.setState({showDeleteHistoryModal: !this.state.showDeleteHistoryModal});
+                this.setState({showDeleteHistoryModal: true});
                 break;
             case 'toggleFavorite':
                 this.props.toggleFavorite(this.state.selectedContact.uri);
@@ -222,8 +225,8 @@ class NavigationBar extends Component {
         this.setState({showAddContactModal: !this.state.showAddContactModal});
     }
 
-    toggleDeleteHistoryModal() {
-        this.setState({showDeleteHistoryModal: !this.state.showDeleteHistoryModal});
+    closeDeleteHistoryModal() {
+        this.setState({showDeleteHistoryModal: false});
     }
 
     showEditContactModal() {
@@ -237,6 +240,11 @@ class NavigationBar extends Component {
                        userClosed: true});
     }
 
+    saveConference(room, participants, displayName=null) {
+        this.props.saveConference(room, participants, displayName);
+        this.setState({showEditConferenceModal: false});
+    }
+
     toggleEditContactModal() {
         if (this.state.showEditContactModal) {
             this.hideEditContactModal();
@@ -245,8 +253,8 @@ class NavigationBar extends Component {
         };
     }
 
-    toggleEditConferenceModal() {
-        this.setState({showDeleteHistoryModal: !this.state.showEditConferenceModal});
+    closeEditConferenceModal() {
+        this.setState({showEditConferenceModal: false});
     }
 
     showExportPrivateKeyModal() {
@@ -282,6 +290,7 @@ class NavigationBar extends Component {
         let subtitle = 'Signed in as ' +  this.state.accountId;
         let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
+        let isConference = false;
 
         let hasMessages = false;
         if (this.state.selectedContact) {
@@ -289,6 +298,7 @@ class NavigationBar extends Component {
                 hasMessages = true;
             }
             tags = this.state.selectedContact.tags;
+            isConference = this.state.selectedContact.conference;
         }
 
         let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : 'Block';
@@ -351,8 +361,9 @@ class NavigationBar extends Component {
                         }
                     >
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
-                        <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/>
-                        <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/>
+                        {!isConference ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {!isConference ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
 
                         { hasMessages ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
@@ -363,15 +374,15 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
 
-                        { hasMessages && tags.indexOf('test') === -1?
-                        <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title="Pinned messages"/>
+                        { hasMessages && tags.indexOf('test') === -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title={this.state.pinned ? "Show all messages" : "Show pinned messages"}/>
                         : null}
 
-                        { hasMessages && tags.indexOf('test') === -1?
+                        { hasMessages && tags.indexOf('test') === -1 && !isConference && false?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
 
-                        {this.props.publicKey ?
+                        {this.props.publicKey && false?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
                         {tags.indexOf('test') === -1 ?
@@ -397,7 +408,7 @@ class NavigationBar extends Component {
                         }
                     >
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account" title="Add contact..."/>
-                        <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Conference call..."/>
+                        <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/>
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                         <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
                         {!this.state.syncConversations ?
@@ -438,7 +449,7 @@ class NavigationBar extends Component {
 
                 <DeleteHistoryModal
                     show={this.state.showDeleteHistoryModal}
-                    close={this.toggleDeleteHistoryModal}
+                    close={this.closeDeleteHistoryModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={this.state.displayName}
                     hasMessages={hasMessages}
@@ -469,12 +480,13 @@ class NavigationBar extends Component {
 
                 <EditConferenceModal
                     show={this.state.showEditConferenceModal}
-                    close={this.toggleEditConferenceModal}
+                    close={this.closeEditConferenceModal}
                     room={this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0]: ''}
+                    displayName={this.state.displayName}
                     invitedParties={invitedParties}
                     selectedContact={this.state.selectedContact}
                     toggleFavorite={this.props.toggleFavorite}
-                    saveInvitedParties={this.props.saveInvitedParties}
+                    saveConference={this.saveConference}
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.state.accountId}
                     favoriteUris={this.props.favoriteUris}
@@ -520,10 +532,11 @@ NavigationBar.propTypes = {
     publicKey          : PropTypes.string,
     deleteMessages     : PropTypes.func,
     togglePinned       : PropTypes.func,
+    pinned             : PropTypes.bool,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
     myInvitedParties   : PropTypes.object,
-    saveInvitedParties : PropTypes.func,
+    saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,
     favoriteUris       : PropTypes.array,
     startCall          : PropTypes.func,

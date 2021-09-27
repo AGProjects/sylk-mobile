@@ -1,10 +1,8 @@
 .container {
-    padding: 10px;
-    margin: 00px;
+    padding-bottom: 30px;
 }
 
 .title {
-    padding: 5px;
     font-size: 24px;
     text-align: center;
 }
@@ -39,6 +37,7 @@
 }
 
 .buttonRow {
+    padding: 20px;
     flex-direction: row;
     justify-content: center;
 }

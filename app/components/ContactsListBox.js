@@ -52,6 +52,7 @@ class ContactsListBox extends Component {
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             filter: this.props.filter,
+            periodFilter: this.props.periodFilter,
             scrollToBottom: true,
             messageZoomFactor: this.props.messageZoomFactor,
             isTyping: false,
@@ -161,6 +162,7 @@ class ContactsListBox extends Component {
                        selectedContacts: nextProps.selectedContacts,
                        pinned: nextProps.pinned,
                        isTyping: nextProps.isTyping,
+                       periodFilter: nextProps.periodFilter,
                        targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri
                        });
 
@@ -478,25 +480,6 @@ class ContactsListBox extends Component {
             return false;
         }
 
-        if (tags.indexOf('today') > -1) {
-            var start = new Date();
-            start.setHours(0,0,0,0);
-            if(contact.timestamp > start) {
-                return true;
-            }
-        }
-
-        if (tags.indexOf('yesterday') > -1) {
-            var start = new Date();
-            var end = new Date();
-            end.setHours(0,0,0,0);
-            start.setDate(end.getDate() - 2);
-            start.setHours(0,0,0,0);
-            if(contact.timestamp > start && contact.timestamp < end) {
-                return true;
-            }
-        }
-
         if (tags.indexOf('conference') > -1 && contact.conference) {
             return true;
         }
@@ -652,7 +635,7 @@ class ContactsListBox extends Component {
         });
 
         //console.log('--- Render contacts with selected contact', this.state.selectedContact ? this.state.selectedContact.uri: null);
-        //console.log('--- Render contacts with filter', this.state.filter, 'share', this.state.shareToContacts);
+        //console.log('--- Render contacts with filter', this.state.filter, 's c', this.state.selectedContact, this.state.inviteContacts);
 
         let chatInputClass;
 
@@ -668,7 +651,7 @@ class ContactsListBox extends Component {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
             searchExtraItems = searchExtraItems.concat(this.state.contacts);
 
-            if (this.state.targetUri && this.state.targetUri.length > 2 && !this.state.selectedContact) {
+            if (this.state.targetUri && this.state.targetUri.length > 2 && !this.state.selectedContact && !this.state.inviteContacts) {
                 matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri));
             } else if (this.state.selectedContact && this.state.selectedContact.type === 'contact') {
                 matchedContacts.push(this.state.selectedContact);
@@ -694,6 +677,10 @@ class ContactsListBox extends Component {
             }
 
             if (this.state.shareToContacts && elem.tags.indexOf('chat') === -1) {
+                return;
+            }
+
+            if (this.state.accountId === elem.uri && elem.tags.length === 0) {
                 return;
             }
 
@@ -725,9 +712,28 @@ class ContactsListBox extends Component {
 
         let filteredItems = [];
         items.reverse();
+        var todayStart = new Date();
+        todayStart.setHours(0,0,0,0);
+
+        var yesterdayStart = new Date();
+        yesterdayStart.setDate(todayStart.getDate() - 2);
+        yesterdayStart.setHours(0,0,0,0);
 
         items.forEach((item) => {
             const fromDomain = '@' + item.uri.split('@')[1];
+
+            if (this.state.periodFilter === 'today') {
+                if(item.timestamp < todayStart) {
+                    return;
+                }
+            }
+
+            if (this.state.periodFilter === 'yesterday') {
+                if(item.timestamp < yesterdayStart || item.timestamp > todayStart) {
+                    return;
+                }
+            }
+
             if (this.state.inviteContacts && item.uri.indexOf('@videoconference.') > -1) {
                 return;
             }
@@ -812,7 +818,7 @@ class ContactsListBox extends Component {
              />
              }
 
-             {this.showChat ?
+             {this.showChat && ! this.state.inviteContacts?
              <View style={[chatContainer, borderClass]}>
                 <GiftedChat ref={this.chatListRef}
                   messages={messages}
@@ -890,12 +896,13 @@ ContactsListBox.propTypes = {
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
     setFavoriteUri  : PropTypes.func,
-    saveInvitedParties: PropTypes.func,
+    saveConference: PropTypes.func,
     myInvitedParties: PropTypes.object,
     setBlockedUri   : PropTypes.func,
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     filter          : PropTypes.string,
+    periodFilter    : PropTypes.string,
     defaultDomain   : PropTypes.string,
     saveContact     : PropTypes.func,
     myContacts      : PropTypes.object,

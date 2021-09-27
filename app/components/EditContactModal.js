@@ -98,7 +98,6 @@ class EditContactModal extends Component {
     }
 
     render() {
-
         if (this.props.publicKey) {
             let title = this.props.displayName || this.props.uri
             return (
@@ -144,11 +143,6 @@ class EditContactModal extends Component {
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>{this.props.uri}</Dialog.Title>
-                        {this.props.myself ?
-                         <Text style={styles.body}>
-                             My display name seen by others:
-                        </Text>
-                        : null}
                        <TextInput
                             mode="flat"
                             name="display_name"

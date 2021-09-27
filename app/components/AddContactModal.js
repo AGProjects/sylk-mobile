@@ -57,9 +57,6 @@ class AddContactModal extends Component {
                     <Surface style={styles.container}>
 
                     <Dialog.Title style={styles.title}>Add contact</Dialog.Title>
-                        <Text style={styles.body}>
-                             Enter contact details
-                        </Text>
                         <TextInput
                             mode="flat"
                             name="uri"
@@ -70,12 +67,10 @@ class AddContactModal extends Component {
                             autoCapitalize="none"
                         />
                         <Text style={styles.domain}>
-                             The domain is optional, it defaults to {this.props.defaultDomain}
+                             The domain is optional, it defaults to @{this.props.defaultDomain}
                         </Text>
 
-
-
-                       <TextInput
+                        <TextInput
                             mode="flat"
                             name="display_name"
                             label="Display name"
@@ -93,6 +88,15 @@ class AddContactModal extends Component {
                         />
 
                         <View style={styles.buttonRow}>
+                        {!this.state.uri ?
+                        <Button
+                            mode="flat"
+                            style={styles.button}
+                            icon="content-save"
+                            accessibilityLabel="Save"
+                            >Save
+                        </Button>
+                        :
                         <Button
                             mode="contained"
                             style={styles.button}
@@ -102,6 +106,8 @@ class AddContactModal extends Component {
                             accessibilityLabel="Save"
                             >Save
                         </Button>
+                        }
+
                         </View>
                     </Surface>
                 </DialogType>

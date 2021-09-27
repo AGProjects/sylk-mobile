@@ -9,7 +9,8 @@ class URIInput extends React.Component {
         autoBind(this);
         this.state = {
             selecting: false,
-            shareToContacts: this.props.shareToContacts
+            shareToContacts: this.props.shareToContacts,
+            inviteContacts: this.props.inviteContacts
         };
 
         this.uriInput = React.createRef();
@@ -43,7 +44,7 @@ class URIInput extends React.Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({shareToContacts: nextProps.shareToContacts});
+        this.setState({shareToContacts: nextProps.shareToContacts, inviteContacts: nextProps.inviteContacts});
     }
 
     componentDidUpdate(prevProps) {
@@ -100,7 +101,14 @@ class URIInput extends React.Component {
     }
 
     render() {
-        const placehoder = this.state.shareToContacts ? 'Select contacts to share....': 'Search contacts';
+        let placeholder = 'Search contacts';
+        if (this.state.shareToContacts) {
+            placeholder = 'Select contacts to share...';
+        }
+
+        if (this.state.inviteContacts) {
+            placeholder = 'Select contacts to invite...';
+        }
 
         return (
             <Searchbar
@@ -116,7 +124,7 @@ class URIInput extends React.Component {
                 autoCorrect={false}
                 required
                 autoFocus={this.props.autoFocus}
-                placeholder={placehoder}
+                placeholder={placeholder}
             />
         );
     }
@@ -127,7 +135,8 @@ URIInput.propTypes = {
     autoFocus: PropTypes.bool.isRequired,
     onChange: PropTypes.func.isRequired,
     onSelect: PropTypes.func.isRequired,
-    shareToContacts  : PropTypes.bool
+    shareToContacts  : PropTypes.bool,
+    inviteContacts  : PropTypes.bool
 };
 
 

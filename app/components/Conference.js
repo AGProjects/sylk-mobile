@@ -31,7 +31,6 @@ class Conference extends React.Component {
         this.state = {
               currentCall: this.props.currentCall,
               callState: this.props.currentCall ? this.props.currentCall.state : null,
-              targetUri: this.props.targetUri,
               callUUID: this.props.callUUID,
               localMedia: this.props.localMedia,
               connection: this.props.connection,
@@ -41,7 +40,8 @@ class Conference extends React.Component {
               reconnectingCall: this.props.reconnectingCall,
               myInvitedParties: this.props.myInvitedParties,
               isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1,
-              selectedContacts: this.props.selectedContacts
+              selectedContacts: this.props.selectedContacts,
+              room: this.props.targetUri
               }
 
         if (this.props.connection) {
@@ -128,7 +128,7 @@ class Conference extends React.Component {
         }
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
-                       isFavorite: nextProps.favoriteUris.indexOf(this.props.targetUri) > -1,
+                       isFavorite: nextProps.favoriteUris.indexOf(this.state.room) > -1,
                        selectedContacts: nextProps.selectedContacts
                        });
     }
@@ -172,7 +172,7 @@ class Conference extends React.Component {
     }
 
     async startCallWhenReady() {
-        utils.timestampedLog('Conference: start conference', this.state.callUUID, 'when ready to', this.props.targetUri);
+        utils.timestampedLog('Conference: start conference', this.state.callUUID, 'when ready to', this.state.room);
         this.waitCounter = 0;
 
         //utils.timestampedLog('Conference: waiting for connecting to the conference', this.waitInterval, 'seconds');
@@ -229,12 +229,13 @@ class Conference extends React.Component {
             initialParticipants: this.props.participantsToInvite
         };
 
-        utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.state.callUUID, 'to', this.props.targetUri.toLowerCase());
+        utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.state.callUUID, 'to', this.state.room.toLowerCase());
 
         if (this.props.participantsToInvite) {
             utils.timestampedLog('Initial participants', this.props.participantsToInvite);
         }
-        confCall = this.state.account.joinConference(this.props.targetUri.toLowerCase(), options);
+
+        let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
         if (confCall) {
             confCall.on('stateChanged', this.callStateChanged);
             this.setState({currentCall: confCall});
@@ -269,10 +270,9 @@ class Conference extends React.Component {
         }
 
         if (this.state.isFavorite) {
-            let room = this.state.targetUri.split('@')[0];
             let must_display = false;
-            if (this.props.myInvitedParties.hasOwnProperty(room)) {
-                let old_participants = this.state.myInvitedParties[room];
+            if (this.props.myInvitedParties.hasOwnProperty(this.state.room)) {
+                let old_participants = this.state.myInvitedParties[this.state.room];
                 this.participants.forEach((p) => {
                     if (old_participants.indexOf(p) === -1) {
                         console.log(p, 'is not in', old_participants);
@@ -297,21 +297,20 @@ class Conference extends React.Component {
 
     saveConference() {
         if (!this.state.isFavorite) {
-            this.props.toggleFavorite(this.props.targetUri);
+            this.props.toggleFavorite(this.state.room);
         }
 
-        let room = this.state.targetUri.split('@')[0];
-        if (this.props.myInvitedParties.hasOwnProperty(room)) {
-            let participants = this.state.myInvitedParties[room];
+        if (this.props.myInvitedParties.hasOwnProperty(this.state.room)) {
+            let participants = this.state.myInvitedParties[this.state.room];
             this.participants.forEach((p) => {
                 if (participants.indexOf(p) === -1) {
                     participants.push(p);
                 }
             });
 
-            this.props.saveInvitedParties(this.props.targetUri, participants);
+            this.props.saveConference(this.state.room, participants);
         } else {
-            this.props.saveInvitedParties(this.props.targetUri, this.participants);
+            this.props.saveConference(this.state.room, this.participants);
         }
 
         this.props.hangupCall(this.state.callUUID, 'user_hangup_conference_confirmed');
@@ -341,9 +340,8 @@ class Conference extends React.Component {
                 media = 'video';
             }
 
-            let room = this.state.targetUri.split('@')[0];
-            if (this.props.myMessages && this.props.myMessages.hasOwnProperty(room)) {
-                messages = this.props.myMessages[room];
+            if (this.props.myMessages && this.props.myMessages.hasOwnProperty(this.state.room)) {
+                messages = this.props.myMessages[this.state.room];
             }
 
             if (this.state.currentCall != null && (this.state.callState === 'established')) {
@@ -358,9 +356,9 @@ class Conference extends React.Component {
                         hangup = {this.hangup}
                         saveParticipant = {this.saveParticipant}
                         saveMessage = {this.saveMessage}
-                        saveInvitedParties = {this.props.saveInvitedParties}
+                        saveConference = {this.props.saveConference}
                         previousParticipants = {this.props.previousParticipants}
-                        remoteUri = {this.props.targetUri}
+                        remoteUri = {this.state.room}
                         shareScreen = {this.props.shareScreen}
                         generatedVideoTrack = {this.props.generatedVideoTrack}
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
@@ -380,14 +378,15 @@ class Conference extends React.Component {
                         inviteToConferenceFunc={this.props.inviteToConferenceFunc}
                         selectedContacts={this.props.selectedContacts}
                         callState={this.props.callState}
+                        finishInvite={this.props.finishInvite}
                    />
                 );
             } else {
                 box = (
                     <LocalMedia
                         call = {this.state.currentCall}
-                        remoteUri = {this.props.targetUri}
-                        remoteDisplayName = {this.props.targetUri}
+                        remoteUri = {this.state.room}
+                        remoteDisplayName = {this.state.room}
                         localMedia = {this.state.localMedia}
                         mediaPlaying = {this.mediaPlaying}
                         hangupCall = {this.hangup}
@@ -421,7 +420,7 @@ Conference.propTypes = {
     saveParticipant         : PropTypes.func,
     saveMessage             : PropTypes.func,
     myMessages              : PropTypes.object,
-    saveInvitedParties      : PropTypes.func,
+    saveConference          : PropTypes.func,
     previousParticipants    : PropTypes.array,
     currentCall             : PropTypes.object,
     localMedia              : PropTypes.object,
@@ -439,7 +438,7 @@ Conference.propTypes = {
     startedByPush           : PropTypes.bool,
     inFocus                 : PropTypes.bool,
     toggleFavorite          : PropTypes.func,
-    saveInvitedParties      : PropTypes.func,
+    saveConference          : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
     favoriteUris            : PropTypes.array,
     myContacts              : PropTypes.object,
@@ -447,7 +446,8 @@ Conference.propTypes = {
     goBackFunc              : PropTypes.func,
     inviteToConferenceFunc  : PropTypes.func,
     selectedContacts        : PropTypes.array,
-    callState               : PropTypes.object
+    callState               : PropTypes.object,
+    finishInvite            : PropTypes.func
 };
 
 

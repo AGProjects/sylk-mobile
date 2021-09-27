@@ -27,7 +27,8 @@ class ReadyBox extends Component {
             sticky: false,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
-            historyFilter: null,
+            historyCategoryFilter: null,
+            historyPeriodFilter: null,
             missedCalls: this.props.missedCalls,
             isLandscape: this.props.isLandscape,
             participants: null,
@@ -57,20 +58,25 @@ class ReadyBox extends Component {
                            chat: false});
         }
 
+        if (!this.state.inviteContacts && nextProps.inviteContacts) {
+            this.handleTargetChange('');
+            this.setState({chat: false});
+        }
+
         if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
         }
 
-        if (nextProps.missedCalls.length === 0 && this.state.historyFilter === 'missed') {
-            this.setState({'historyFilter': null});
+        if (nextProps.missedCalls.length === 0 && this.state.historyCategoryFilter === 'missed') {
+            this.setState({'historyCategoryFilter': null});
         }
 
-        if (nextProps.blockedUris.length === 0 && this.state.historyFilter === 'blocked') {
-            this.setState({'historyFilter': null});
+        if (nextProps.blockedUris.length === 0 && this.state.historyCategoryFilter === 'blocked') {
+            this.setState({'historyCategoryFilter': null});
         }
 
-        if (nextProps.favoriteUris.length === 0 && this.state.historyFilter === 'favorite') {
-            this.setState({'historyFilter': null});
+        if (nextProps.favoriteUris.length === 0 && this.state.historyCategoryFilter === 'favorite') {
+            this.setState({'historyCategoryFilter': null});
         }
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
@@ -110,7 +116,15 @@ class ReadyBox extends Component {
             return;
         }
 
-       this.setState({'historyFilter': filter});
+       if (!filter) {
+           this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
+       } else if (filter === 'today' || filter === 'yesterday') {
+           filter = this.state.historyPeriodFilter === filter ? null : filter;
+           this.setState({'historyPeriodFilter': filter});
+       } else {
+           this.setState({'historyCategoryFilter': filter});
+       }
+
        this.handleTargetChange('');
     }
 
@@ -281,6 +295,7 @@ class ReadyBox extends Component {
 
     handleAudioCall(event) {
         event.preventDefault();
+        Keyboard.dismiss();
         let uri = this.state.targetUri.trim().toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
@@ -302,6 +317,7 @@ class ReadyBox extends Component {
 
     handleVideoCall(event) {
         event.preventDefault();
+        Keyboard.dismiss();
         let uri = this.state.targetUri.toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
@@ -322,6 +338,7 @@ class ReadyBox extends Component {
     }
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
+        Keyboard.dismiss();
         this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants});
         this.props.hideConferenceModalFunc();
     }
@@ -467,7 +484,7 @@ class ReadyBox extends Component {
             }
         }
 
-        //console.log('Render share', this.state.shareToContacts, this.state.selectedContacts);
+        //console.log('Render ready with chat', this.state.chat);
         //this.props.fetchSharedItems();
 
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
@@ -500,15 +517,15 @@ class ReadyBox extends Component {
 
         let navigationMenuData = [
                                   {key: null, title: 'All', enabled: true, selected: false},
-                                  {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyFilter === 'history'},
-                                  {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyFilter === 'chat'},
-                                  {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyFilter === 'today'},
-                                  {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyFilter === 'yesterday'},
-                                  {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyFilter === 'missed'},
-                                  {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyFilter === 'favorite'},
-                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyFilter === 'blocked'},
-                                  {key: 'conference', title: 'Conference', enabled: Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'], selected: this.state.historyFilter === 'conference'},
-                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts, selected: this.state.historyFilter === 'test'},
+                                  {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
+                                  {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
+                                  {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
+                                  {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
+                                  {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
+                                  {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
+                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
+                                  {key: 'conference', title: 'Conference', enabled: Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'], selected: this.state.historyCategoryFilter === 'conference'},
+                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts, selected: this.state.historyCategoryFilter === 'test'},
                                   ];
 
         return (
@@ -522,6 +539,7 @@ class ReadyBox extends Component {
                                 onChange={this.handleTargetChange}
                                 onSelect={this.handleTargetSelect}
                                 shareToContacts={this.state.shareToContacts}
+                                inviteContacts={this.state.inviteContacts}
                                 autoFocus={false}
                             />
                         </View>
@@ -535,6 +553,8 @@ class ReadyBox extends Component {
                                 defaultValue={this.state.targetUri}
                                 onChange={this.handleTargetChange}
                                 onSelect={this.handleTargetSelect}
+                                shareToContacts={this.state.shareToContacts}
+                                inviteContacts={this.state.inviteContacts}
                                 autoFocus={false}
                             />
                         </View>
@@ -604,7 +624,7 @@ class ReadyBox extends Component {
                             setTargetUri={this.handleTargetChange}
                             selectedContact={this.state.selectedContact}
                             isTablet={this.props.isTablet}
-                            chat={this.state.chat}
+                            chat={this.state.chat && !this.state.inviteContacts}
                             isLandscape={this.state.isLandscape}
                             account={this.props.account}
                             password={this.props.password}
@@ -615,11 +635,12 @@ class ReadyBox extends Component {
                             saveHistory={this.props.saveHistory}
                             myDisplayName={this.state.myDisplayName}
                             myPhoneNumber={this.props.myPhoneNumber}
-                            saveInvitedParties={this.props.saveInvitedParties}
+                            saveConference={this.props.saveConference}
                             myInvitedParties = {this.state.myInvitedParties}
                             favoriteUris={this.props.favoriteUris}
                             blockedUris={this.props.blockedUris}
-                            filter={this.state.historyFilter}
+                            filter={this.state.historyCategoryFilter}
+                            periodFilter={this.state.historyPeriodFilter}
                             defaultDomain={this.props.defaultDomain}
                             saveContact={this.props.saveContact}
                             myContacts = {this.props.myContacts}

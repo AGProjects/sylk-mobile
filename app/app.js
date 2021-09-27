@@ -26,6 +26,7 @@ import OpenPGP from "react-native-fast-openpgp";
 import ShortcutBadge from 'react-native-shortcut-badge';
 import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
 //import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
+import {Keyboard} from 'react-native';
 
 registerGlobals();
 
@@ -279,7 +280,7 @@ class Sylk extends Component {
             selectedContacts: [],
             pinned: false,
             callContact: null,
-            messageLimit: 24,
+            messageLimit: 100,
             messageZoomFactor: 1,
             messageStart: 0,
             contactsLoaded: false,
@@ -880,35 +881,39 @@ class Sylk extends Component {
 
 
             setTimeout(() => {
-                let test_numbers = [
-                                    {uri: '4444@sylk.link', name: 'Test microphone'},
-                                    {uri: '3333@sylk.link', name: 'Test video'}
-                                    ];
-
-                test_numbers.forEach((item) => {
-                    if (Object.keys(myContacts).indexOf(item.uri) === -1) {
-                        myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init'});
-                        myContacts[item.uri].tags.push('test');
-                        this.saveSylkContact(item.uri, myContacts[item.uri], 'init uri');
-                    } else {
-                        if (myContacts[item.uri].tags.indexOf('test') === -1) {
-                            myContacts[item.uri].tags.push('test');
-                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init tags');
-                        }
-
-                        if (!myContacts[item.uri].name) {
-                            myContacts[item.uri].name = item.name;
-                            this.saveSylkContact(item.uri, myContacts[item.uri], 'init ma,e');
-                        }
-                    }
-                });
-
                 this.getMessages();
 
             }, 500);
             this.loadMyKeys();
         });
 
+    }
+
+    addTestContacts() {
+        let myContacts = this.state.myContacts;
+
+        let test_numbers = [
+                            {uri: '4444@sylk.link', name: 'Test microphone'},
+                            {uri: '3333@sylk.link', name: 'Test video'}
+                            ];
+
+        test_numbers.forEach((item) => {
+            if (Object.keys(myContacts).indexOf(item.uri) === -1) {
+                myContacts[item.uri] = this.newContact(item.uri, item.name, {src: 'init'});
+                myContacts[item.uri].tags.push('test');
+                this.saveSylkContact(item.uri, myContacts[item.uri], 'init uri');
+            } else {
+                if (myContacts[item.uri].tags.indexOf('test') === -1) {
+                    myContacts[item.uri].tags.push('test');
+                    this.saveSylkContact(item.uri, myContacts[item.uri], 'init tags');
+                }
+
+                if (!myContacts[item.uri].name) {
+                    myContacts[item.uri].name = item.name;
+                    this.saveSylkContact(item.uri, myContacts[item.uri], 'init ma,e');
+                }
+            }
+        });
     }
 
     loadPeople() {
@@ -2145,6 +2150,9 @@ class Sylk extends Component {
     }
 
     selectContact(contact) {
+        if (contact !== this.state.selectedContact) {
+            this.setState({pinned: false});
+        }
         this.setState({selectedContact: contact});
     }
 
@@ -2664,6 +2672,7 @@ class Sylk extends Component {
                 let CALLKEEP_REASON;
                 let missed = false;
                 let cancelled = false;
+                let server_failure = false;
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState === 'progress' && direction === 'outgoing') {
@@ -2718,6 +2727,7 @@ class Sylk extends Component {
                 } else if (reason.match(/5\d\d/)) {
                     reason = 'Server failure: ' + reason;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    server_failure = true;
                 } else if (reason.match(/904/)) {
                     // Sofia SIP: WAT
                     reason = 'Wrong account or password';
@@ -2725,6 +2735,7 @@ class Sylk extends Component {
                 } else {
                     reason = 'Connection failed';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    server_failure = true;
                 }
 
                 if (play_busy_tone) {
@@ -2755,7 +2766,7 @@ class Sylk extends Component {
                     this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
-                    if (missed || cancelled) {
+                    if (!server_failure) {
                         this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
                     }
                 }
@@ -2812,7 +2823,6 @@ class Sylk extends Component {
 
     goBackToCall() {
         let call = this.state.currentCall || this.state.incomingCall;
-        this.setState({inviteContacts: false, selectedContacts: []});
 
         if (call) {
             if (call.hasOwnProperty('_participants')) {
@@ -2823,6 +2833,10 @@ class Sylk extends Component {
         } else {
             console.log('No call to go back to');
         }
+    }
+
+    finishInviteToConference() {
+        this.setState({inviteContacts: false, selectedContacts: []});
     }
 
     goBackToHome() {
@@ -2839,8 +2853,10 @@ class Sylk extends Component {
 
     inviteContactsToConference() {
         console.log('Will invite contacts');
-        this.setState({inviteContacts: true, selectedContacts: []});
         this.goBackToHome();
+        setTimeout(() => {
+            this.setState({inviteContacts: true, selectedContacts: []});
+        }, 100);
     }
 
     handleEnrollment(account) {
@@ -2996,6 +3012,8 @@ class Sylk extends Component {
                     } else {
                         if (!this.state.contactsLoaded) {
                             console.log('Wait for PGP keys until contacts are loaded');
+                        } else {
+                            this.showImportPrivateKeyModal();
                         }
                     }
                 } else {
@@ -3127,6 +3145,7 @@ class Sylk extends Component {
     }
 
     showConferenceModal() {
+        Keyboard.dismiss();
         this.setState({showConferenceModal: true});
     }
 
@@ -3381,7 +3400,11 @@ class Sylk extends Component {
     }
 
     togglePinned() {
-        this.setState({pinned: !this.state.pinned});
+        console.log('togglePinned', this.state.selectedContact);
+        if (this.state.selectedContact) {
+            this.getMessages(this.state.selectedContact.uri, !this.state.pinned);
+            this.setState({pinned: !this.state.pinned});
+        }
     }
 
     toggleSpeakerPhone() {
@@ -3929,7 +3952,7 @@ class Sylk extends Component {
             contact = this.newContact(uri);
         }
 
-        console.log('saveSylkContact', uri, contact.name, 'by', origin);
+        console.log('saveSylkContact', uri, contact.name, 'by', origin, 'with tags', contact.tags);
 
         contact = this.sanitizeContact(uri, contact, 'saveSylkContact');
 
@@ -3957,13 +3980,22 @@ class Sylk extends Component {
                 myInvitedParties[room] = contact.participants;
             }
 
-            myContacts[uri] = contact;
+            if (uri !== this.state.accountId) {
+                myContacts[uri] = contact;
+                let favorite = myContacts[uri].tags.indexOf('favorite') > -1 ? true: false;
+                let blocked = myContacts[uri].tags.indexOf('blocked') > -1 ? true: false;
 
-            let favorite = myContacts[uri].tags.indexOf('favorite') > -1 ? true: false;
-            let blocked = myContacts[uri].tags.indexOf('blocked') > -1 ? true: false;
+                this.updateFavorite(uri, favorite);
+                this.updateBlocked(uri, blocked);
+            } else {
+                if (myContacts[uri].tags.indexOf('chat') > -1) {
+                    myContacts[uri] = contact;
+                }
 
-            this.updateFavorite(uri, favorite);
-            this.updateBlocked(uri, blocked);
+                if (myContacts[uri].tags.indexOf('history') > -1) {
+                    myContacts[uri] = contact;
+                }
+            }
 
             this.setState({myContacts: myContacts, myInvitedParties: myInvitedParties});
         }).catch((error) => {
@@ -3997,12 +4029,22 @@ class Sylk extends Component {
                 myInvitedParties[room] = contact.participants;
             }
 
-            myContacts[uri] = contact;
-            let favorite = myContacts[uri].tags.indexOf('favorite') > -1 ? true: false;
-            let blocked = myContacts[uri].tags.indexOf('blocked') > -1 ? true: false;
+            if (uri !== this.state.accountId) {
+                myContacts[uri] = contact;
+                let favorite = myContacts[uri].tags.indexOf('favorite') > -1 ? true: false;
+                let blocked = myContacts[uri].tags.indexOf('blocked') > -1 ? true: false;
 
-            this.updateFavorite(uri, favorite);
-            this.updateBlocked(uri, blocked);
+                this.updateFavorite(uri, favorite);
+                this.updateBlocked(uri, blocked);
+            } else {
+                if (myContacts[uri].tags.indexOf('chat') > -1) {
+                    myContacts[uri] = contact;
+                }
+
+                if (myContacts[uri].tags.indexOf('history') > -1) {
+                    myContacts[uri] = contact;
+                }
+            }
 
             this.setState({myContacts: myContacts, myInvitedParties: myInvitedParties});
         }).catch((error) => {
@@ -4296,7 +4338,17 @@ class Sylk extends Component {
         // Send outgoing messages
         if (this.state.account) {
             //console.log('Send', contentType, 'message', id, 'to', uri);
-            let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp});
+            let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp}, (error) => {
+                console.log('Message error', error);
+                if (error) {
+                    this.outgoingMessageStateChanged(id, 'failed');
+                    let status = error.toString();
+                    if (status.indexOf('DNS lookup error') > -1) {
+                        status = 'Domain not found';
+                    }
+                    this.renderSystemMessage(uri, status, 'incoming');
+                }
+            });
             //console.log(message);
             //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
         }
@@ -5146,7 +5198,7 @@ class Sylk extends Component {
         }
     }
 
-    async getMessages(uri) {
+    async getMessages(uri, pinned=false) {
         let msg;
         let query;
         let rows = 0;
@@ -5186,11 +5238,14 @@ class Sylk extends Component {
 
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
-        query = "SELECT count(*) as rows FROM messages where (from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)";
-        await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId]).then((results) => {
+        query = "SELECT count(*) as rows FROM messages where ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?))";
+        if (pinned) {
+            query = query + ' and pinned = 1';
+        }
+        await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId, pinned]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
-            //console.log(total, 'messages with', uri, 'from database');
+            console.log(total, 'messages with', uri, 'from database');
         }).catch((error) => {
             console.log('SQL error:', error);
         });
@@ -5199,7 +5254,12 @@ class Sylk extends Component {
 
         this.lookupPublicKey(myContacts[uri]);
 
-        query = "SELECT * FROM messages where (from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) order by id desc limit ?, ?";
+        query = "SELECT * FROM messages where ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
+        if (pinned) {
+            query = query + ' and pinned = 1';
+        }
+
+        query = query + ' order by id desc limit ?, ?';
 
         await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
             //console.log('SQL get messages OK', results.rows.length);
@@ -5269,6 +5329,11 @@ class Sylk extends Component {
                         content = content;
                     } else if (item.content_type.indexOf('image/') > -1) {
                         image = `data:${item.content_type};base64,${btoa(content)}`
+                    } else if (item.content_type === 'application/sylk-contact-update') {
+                        myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
+                        console.log('Remove update contact message', item.id);
+                        this.ExecuteQuery('delete from messages where id = ?', [item.id]);
+                        continue;
                     } else {
                         console.log('Unknown message', item.msg_id, 'type', item.content_type);
                         myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
@@ -5687,6 +5752,7 @@ class Sylk extends Component {
         }
 
         setTimeout(() => {
+            this.addTestContacts();
             this.refreshNavigationItems();
         }, 2000);
 
@@ -5871,7 +5937,7 @@ class Sylk extends Component {
                         myContacts[uri].lastMessage = null; // need to be loaded later after decryption
                         myContacts[uri].lastCallDuration = null;
                         myContacts[uri].direction = 'outgoing';
-                        if (myContacts[uri].tags.indexOf('chat') === -1) {
+                        if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
                             myContacts[uri].tags.push('chat');
                         }
                         lastMessages[uri] = message.id;
@@ -5896,7 +5962,7 @@ class Sylk extends Component {
                     myContacts[uri].lastMessage = null; // need to be loaded later after decryption
                     myContacts[uri].lastCallDuration = null;
                     myContacts[uri].direction = 'incoming';
-                    if (myContacts[uri].tags.indexOf('chat') === -1) {
+                    if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
                         myContacts[uri].tags.push('chat');
                     }
 
@@ -6651,7 +6717,7 @@ class Sylk extends Component {
 
         content = JSON.stringify(new_contact);
 
-        this.saveOutgoingRawMessage(id, this.state.accountId, this.state.accountId, content, contentType);
+        //this.saveOutgoingRawMessage(id, this.state.accountId, this.state.accountId, content, contentType);
 
         await OpenPGP.encrypt(content, this.state.keys.public).then((encryptedMessage) => {
             this._sendMessage(this.state.accountId, encryptedMessage, id, contentType, contact.timestamp);
@@ -6919,7 +6985,7 @@ class Sylk extends Component {
             }
         });
 
-        this.saveInvitedParties(room, uris);
+        this.saveConference(room, uris);
     }
 
     shareContent() {
@@ -6961,23 +7027,13 @@ class Sylk extends Component {
                        shareToContacts: false});
     }
 
-    saveInvitedParties(room, uris) {
+    saveConference(room, participants, displayName=null) {
         let uri = room;
-        room = room.split('@')[0];
-        //console.log('Save invited parties', uris, 'for room', room);
+        console.log('Save invited parties', participants, 'for room', room, 'with display name', displayName);
 
-        let myInvitedParties = this.state.myInvitedParties;
-
-        let new_uris = [];
-        uris.forEach((uri) => {
-            if (uri.indexOf('@') === -1) {
-                uri =  uri + '@' + this.state.defaultDomain;
-            }
-            if (uri !== this.state.account.id) {
-                new_uris.push(uri);
-                //console.log('Added', uri, 'to room', room);
-            }
-        });
+        if (room.indexOf('@') === -1) {
+            room =  room + '@videoconference.' + this.state.defaultDomain;
+        }
 
         let myContacts = this.state.myContacts;
 
@@ -6987,9 +7043,23 @@ class Sylk extends Component {
         }
 
         myContacts[uri].timestamp = new Date();
-        myContacts[uri].participants = new_uris;
+        if (displayName) {
+            myContacts[uri].name = displayName;
+            let new_participants = [];
+            participants.forEach((uri) => {
+                if (uri.indexOf('@') === -1) {
+                    uri =  uri + '@' + this.state.defaultDomain;
+                }
+                if (uri !== this.state.account.id) {
+                    new_participants.push(uri);
+                    //console.log('Added', uri, 'to room', room);
+                }
+            });
+            myContacts[uri].participants = new_participants;
+        }
+
         this.replicateContact(myContacts[uri]);
-        this.saveSylkContact(uri, myContacts[uri], 'saveInvitedParties');
+        this.saveSylkContact(uri, myContacts[uri], 'saveConference');
     }
 
     addHistoryEntry(uri, callUUID, direction='outgoing', participants=[]) {
@@ -7114,8 +7184,6 @@ class Sylk extends Component {
         let idx;
         history.forEach((item) => {
             uri = item.uri;
-
-            //console.log('save server history for', uri, item);
 
             if (this.state.blockedUris.indexOf(uri) > -1) {
                 return;
@@ -7269,8 +7337,9 @@ class Sylk extends Component {
                     toggleFavorite = {this.toggleFavorite}
                     toggleBlocked = {this.toggleBlocked}
                     togglePinned = {this.togglePinned}
+                    pinned = {this.state.pinned}
                     myInvitedParties={this.state.myInvitedParties}
-                    saveInvitedParties={this.saveInvitedParties}
+                    saveConference={this.saveConference}
                     defaultDomain = {this.state.defaultDomain}
                     favoriteUris = {this.state.favoriteUris}
                     startCall = {this.callKeepStartCall}
@@ -7308,7 +7377,7 @@ class Sylk extends Component {
                     saveHistory = {this.saveHistory}
                     myDisplayName = {this.state.displayName}
                     myPhoneNumber = {this.state.myPhoneNumber}
-                    saveInvitedParties = {this.saveInvitedParties}
+                    saveConference = {this.saveConference}
                     myInvitedParties = {this.state.myInvitedParties}
                     toggleFavorite = {this.toggleFavorite}
                     toggleBlocked = {this.toggleBlocked}
@@ -7491,7 +7560,7 @@ class Sylk extends Component {
                 saveParticipant = {this.saveParticipant}
                 saveMessage = {this.saveConferenceMessage}
                 myInvitedParties = {this.state.myInvitedParties}
-                saveInvitedParties = {this.appendInvitedParties}
+                saveConference = {this.appendInvitedParties}
                 previousParticipants = {previousParticipants}
                 participantsToInvite = {this.state.participantsToInvite}
                 hangupCall = {this.hangupCall}
@@ -7517,6 +7586,7 @@ class Sylk extends Component {
                 inviteToConferenceFunc={this.inviteContactsToConference}
                 selectedContacts={this.state.selectedContacts}
                 callState={callState}
+                finishInvite={this.finishInviteToConference}
             />
         )
     }

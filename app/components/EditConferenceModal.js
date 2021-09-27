@@ -26,6 +26,8 @@ class EditConferenceModal extends Component {
         this.state = {
             participants: this.sanitizedParticipants(participants),
             selectedContact: this.props.selectedContact,
+            show: this.props.show,
+            displayName: this.props.displayName,
             invitedParties: this.props.invitedParties
         }
     }
@@ -66,6 +68,8 @@ class EditConferenceModal extends Component {
         this.setState({
             participants: this.sanitizedParticipants(participants),
             selectedContact: nextProps.selectedContact,
+            show: nextProps.show,
+            displayName: nextProps.displayName,
             invitedParties: nextProps.invitedParties
         });
     }
@@ -82,32 +86,42 @@ class EditConferenceModal extends Component {
             });
         }
 
-        if (uris) {
-            this.props.saveInvitedParties(this.state.selectedContact.uri, uris);
-            this.setState({participants: null});
+        if (uris || this.state.displayName) {
+            let name = this.state.displayName || this.state.selectedContact.uri;
+            this.props.saveConference(this.state.selectedContact.uri, uris, name);
         }
         this.props.close();
     }
 
 
-    onInputChange(value) {
+    displayNameChange(value) {
+        this.setState({displayName: value});
+    }
+
+    participantsChange(value) {
         this.setState({participants: value});
     }
 
     render() {
         return (
             <Portal>
-                <DialogType visible={this.props.show} onDismiss={this.props.close}>
+                <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>{this.props.room}</Dialog.Title>
-                          <Dialog.Content>
-                            <Paragraph>People you wish to invite when you join the room:</Paragraph>
-                          </Dialog.Content>
+                       <Dialog.Title style={styles.title}>Conference room - {this.props.room}</Dialog.Title>
+                       <TextInput
+                            mode="flat"
+                            name="display_name"
+                            label="Display name"
+                            onChangeText={this.displayNameChange}
+                            defaultValue={this.state.displayName}
+                            required
+                            autoCapitalize="words"
+                        />
                         <TextInput
                             mode="flat"
                             name="participants"
-                            label="People"
-                            onChangeText={this.onInputChange}
+                            label="People you wish to invite when you join the room"
+                            onChangeText={this.participantsChange}
                             value={this.state.participants}
                             placeholder="Enter accounts separated by ,"
                             required
@@ -131,9 +145,10 @@ class EditConferenceModal extends Component {
 
 EditConferenceModal.propTypes = {
     room               : PropTypes.string,
+    displayName        : PropTypes.string,
     show               : PropTypes.bool.isRequired,
     close              : PropTypes.func.isRequired,
-    saveInvitedParties : PropTypes.func,
+    saveConference     : PropTypes.func,
     invitedParties     : PropTypes.array,
     selectedContact    : PropTypes.object,
     defaultDomain      : PropTypes.string,

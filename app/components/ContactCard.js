@@ -180,6 +180,7 @@ class ContactCard extends Component {
         let color = {};
 
         let title = name || username;
+
         let subtitle = uri;
         let description = 'No calls or messages';
 
@@ -266,29 +267,6 @@ class ContactCard extends Component {
             } else {
                 subtitle = 'With no participants';
             }
-
-            let dn;
-            if (participantsData.length > 4 || participantsData.length < 2) {
-                title = username.length > 10 ? 'Conference' : toTitleCase(username);
-            } else if (participantsData.length > 1 || participantsData.length <= 4 ) {
-                let j = 0;
-                if (username.length < 10) {
-                    title = toTitleCase(username);
-                } else {
-                    participantsData.forEach((participant) => {
-                        if (participant.name === participant.uri) {
-                            dn = toTitleCase(participant.uri.split('@')[0]);
-                        } else {
-                            dn = participant.name.split(' ')[0];
-                        }
-                        title = title + dn;
-                        if (j < participantsData.length - 1) {
-                            title = title + ' & ';
-                        }
-                        j = j + 1;
-                    });
-                }
-            }
         }
 
         if (!name) {
@@ -306,7 +284,7 @@ class ContactCard extends Component {
         }
 
         if (title.indexOf('@videoconference') > -1) {
-            title = username;
+            title = name || username;
         }
 
         if (duration && duration !== "00:00:00") {
@@ -320,9 +298,6 @@ class ContactCard extends Component {
         const container = this.state.isLandscape ? styles.containerLandscape : styles.containerPortrait;
         const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
 
-        if (showActions && participantsData.length > 0) {
-            cardHeight = cardHeight + 20 * participantsData.length + 10;
-        }
 
         let showSubtitle = (showActions || this.state.isTablet || !description);
         let label = this.state.contact.label ? (" (" +this.state.contact.label + ")" ) : '';
@@ -364,7 +339,7 @@ class ContactCard extends Component {
 
                             </Caption>
 
-                            {participantsData && participantsData.length && showActions ?
+                            {participantsData && participantsData.length && showActions && false?
 
                             <View style={styles.participants}>
                                 <SafeAreaView style={styles.participant}>

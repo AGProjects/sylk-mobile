@@ -1006,7 +1006,6 @@ class ConferenceBox extends Component {
     }
 
     inviteParticipants(uris) {
-        console.log('Invite participants:', uris);
         this.props.call.inviteParticipants(uris);
         uris.forEach((uri) => {
             uri = uri.replace(/ /g, '');
@@ -1016,8 +1015,9 @@ class ConferenceBox extends Component {
 
             this.postChatSystemMessage(uri + ' invited');
             this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
-            this.props.saveParticipant(this.props.call.id, this.props.remoteUri.split('@')[0], uri);
+            this.props.saveParticipant(this.props.call.id, this.props.remoteUri, uri);
             this.lookupContact(uri);
+            this.props.finishInvite();
         });
 
         this.forceUpdate()
@@ -1679,7 +1679,8 @@ ConferenceBox.propTypes = {
     goBackFunc          : PropTypes.func,
     inviteToConferenceFunc: PropTypes.func,
     selectedContacts    : PropTypes.array,
-    callState           : PropTypes.object
+    callState           : PropTypes.object,
+    finishInvite        : PropTypes.func
 };
 
 export default ConferenceBox;

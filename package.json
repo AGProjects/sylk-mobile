@@ -44,7 +44,6 @@
     "react-native-paper": "^3.4.0",
     "react-native-push-notification": "^8.1.0",
     "react-native-randombytes": "^3.6.1",
-    "react-native-receive-sharing-intent": "^2.0.0",
     "react-native-safe-area-context": "^3.3.2",
     "react-native-share": "^3.3.3",
     "react-native-shortcut-badge": "^0.1.0-beta.2",

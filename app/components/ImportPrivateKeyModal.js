@@ -26,7 +26,7 @@ class ImportPrivateKeyModal extends Component {
 
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({show: nextProps.show,
-                       password: nextProps.password,
+                       password: nextProps.password || this.state.password,
                        privateKey: nextProps.privateKey,
                        status: nextProps.status,
                        confirm: nextProps.confirm,
@@ -57,6 +57,7 @@ class ImportPrivateKeyModal extends Component {
     }
 
     get disableButton() {
+        console.log('disableButton', this.state.password);
         if (!this.state.password || this.state.password.length < 6) {
             return true;
         }
@@ -80,7 +81,7 @@ class ImportPrivateKeyModal extends Component {
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>{'Import private key'}</Dialog.Title>
+                            <Dialog.Title style={styles.title}>Import private key</Dialog.Title>
                              <Text style={styles.body}>
                                  {'Enter the pincode shown on the sending device to import your private key:'}
                             </Text>

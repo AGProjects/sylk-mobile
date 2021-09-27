@@ -187,7 +187,7 @@ class DeleteHistoryModal extends Component {
 
 
 DeleteHistoryModal.propTypes = {
-    show               : PropTypes.bool.isRequired,
+    show               : PropTypes.bool,
     close              : PropTypes.func.isRequired,
     uri                : PropTypes.string,
     displayName        : PropTypes.string,

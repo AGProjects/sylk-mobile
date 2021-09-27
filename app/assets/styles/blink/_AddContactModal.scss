@@ -31,10 +31,13 @@
 .button {
     margin: 10px;
     width: 120;
+    border: 0.5px;
+    border-radius: 2px;
 }
 
 .buttonRow {
     flex-direction: row;
     justify-content: center;
+    padding: 20px;
 }
 
