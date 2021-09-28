@@ -1,0 +1,3 @@
+ * Added chat to conferences
+ * Added auto-completion for invite to conference panel
+ 
