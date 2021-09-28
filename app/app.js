@@ -212,10 +212,12 @@ class Sylk extends Component {
         super();
         autoBind(this)
         this._loaded = false;
+        let isFocus = Platform.OS === 'ios';
+
         this._initialState = {
             appState: null,
             autoLogin: true,
-            inFocus: false,
+            inFocus: isFocus,
             accountId: '',
             password: '',
             displayName: '',
@@ -1333,8 +1335,11 @@ class Sylk extends Component {
                                 });
             }
             return;
+        } else {
+            if (route === '/ready' && this.state.selectedContact) {
+                this.getMessages(this.state.selectedContact.uri);
+            }
         }
-
 
         if (this.currentRoute !== route) {
             utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
@@ -1358,7 +1363,39 @@ class Sylk extends Component {
             }
 
             this.startedByPush = false;
-            this.setState({
+            if (this.state.currentCall && reason === 'outgoing_connection_failed' && this.state.currentCall.direction === 'outgoing') {
+                console.log('Connection failed this.state.currentCall', this.state.currentCall);
+                let target_uri = this.state.currentCall.remoteIdentity.uri.toLowerCase();
+                let options = {audio: true, video: true, participants: []}
+                let streams = this.state.currentCall.getLocalStreams();
+                if (streams.length > 0) {
+                    let tracks = streams[0].getVideoTracks();
+                    let mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
+                    if (mediaType === 'audio') {
+                        options.video = false;
+                    }
+                }
+
+                this.setState({reconnectingCall: true});
+                console.log('Reconnecting call to', target_uri, 'with options', options);
+
+                setTimeout(() => {
+                    if (target_uri.indexOf('@videoconference') > -1) {
+                        this.callKeepStartConference(target_uri, options);
+                    } else {
+                        this.callKeepStartCall(target_uri, options);
+                    }
+                }, 5000);
+
+                this.setState({
+                            outgoingCallUUID: null,
+                            currentCall: null,
+                            selectedContacts: [],
+                            reconnectingCall: true,
+                            muted: false
+                            });
+           } else {
+                this.setState({
                             outgoingCallUUID: null,
                             currentCall: null,
                             callContact: null,
@@ -1369,6 +1406,7 @@ class Sylk extends Component {
                             reconnectingCall: false,
                             muted: false
                             });
+            }
 
             if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
                 if (reason !== 'user_hangup_call') {
@@ -2851,8 +2889,8 @@ class Sylk extends Component {
         }
     }
 
-    inviteContactsToConference() {
-        console.log('Will invite contacts');
+    inviteToConference() {
+        console.log('Invite contacts to conference...');
         this.goBackToHome();
         setTimeout(() => {
             this.setState({inviteContacts: true, selectedContacts: []});
@@ -2902,7 +2940,9 @@ class Sylk extends Component {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password);
             } else if (this.state.connection.state !== 'ready') {
-                this._notificationCenter.postSystemNotification('Waiting for Internet connection');
+                if (this._notificationCenter) {
+                    this._notificationCenter.postSystemNotification('Waiting for Internet connection');
+                }
                 if (this.currentRoute === '/login' && this.state.accountVerified) {
                     this.changeRoute('/ready', 'start_up');
                 }
@@ -3180,6 +3220,7 @@ class Sylk extends Component {
 
         this.setState({outgoingCallUUID: callUUID,
                        reconnectingCall: false,
+                       callContact: this.state.selectedContact,
                        participantsToInvite: participantsToInvite
                        });
 
@@ -3229,7 +3270,7 @@ class Sylk extends Component {
             if (this.state.currentCall && this.state.currentCall.id === callUUID && this.state.currentCall.state === 'progress') {
                 this.hangupCall(callUUID, 'cancelled_call');
             }
-        }, 45000);
+        }, 60000);
     }
 
     startCall(targetUri, options) {
@@ -3316,11 +3357,6 @@ class Sylk extends Component {
             this.busyToneInterval = null;
         }
 
-        if (reason === 'outgoing_connection_failed') {
-             this.setState({reconnectingCall: true, outgoingCallUUID: uuid.v4()});
-             return;
-        }
-
         if (reason === 'user_cancel_call' ||
             reason === 'user_hangup_call' ||
             reason === 'answer_failed' ||
@@ -3329,8 +3365,10 @@ class Sylk extends Component {
             reason === 'stop_preview' ||
             reason === 'escalate_to_conference' ||
             reason === 'user_hangup_conference_confirmed' ||
-            reason === 'timeout'
+            reason === 'timeout' ||
+            reason === 'outgoing_connection_failed'
             ) {
+            this.setState({inviteContacts: false});
             this.changeRoute('/ready', reason);
         } else if (reason === 'user_hangup_conference') {
             utils.timestampedLog('Save conference maybe?');
@@ -3373,10 +3411,12 @@ class Sylk extends Component {
         this.setState({proximityEnabled: !this.state.proximityEnabled});
     }
 
-    toggleMute(callUUID, mute) {
-        utils.timestampedLog('Toggle mute for call', callUUID, ':', mute);
-        this.callKeeper.setMutedCall(callUUID, mute);
-        this.setState({muted: mute});
+    toggleMute(callUUID, muted) {
+        if (this.state.muted != muted) {
+            utils.timestampedLog('Toggle mute for call', callUUID, ':', muted);
+            this.callKeeper.setMutedCall(callUUID, muted);
+            this.setState({muted: muted});
+        }
     }
 
     async hideImportPrivateKeyModal() {
@@ -3438,46 +3478,16 @@ class Sylk extends Component {
 
     outgoingCall(call) {
         // called by sylkrtc.js when an outgoing call starts
-
-        const localStreams = call.getLocalStreams();
-        let mediaType = 'audio';
-        let hasVideo = false;
-
-        if (localStreams.length > 0) {
-            const localStream = call.getLocalStreams()[0];
-            mediaType = localStream.getVideoTracks().length > 0 ? 'video' : 'audio';
-            hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
-        }
-
-        this.callKeeper.startOutgoingCall(call.id, call.remoteIdentity.uri, hasVideo);
-
-        utils.timestampedLog('Outgoing', mediaType, 'call', call.id, 'started to', call.remoteIdentity.uri);
-        this.callKeeper.addWebsocketCall(call);
-
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
+        this.callKeeper.startOutgoingCall(call);
     }
 
     outgoingConference(call) {
         // called by sylrtc.js when an outgoing conference starts
-
-        const localStreams = call.getLocalStreams();
-        let mediaType = 'audio';
-        let hasVideo = false;
-
-        if (localStreams.length > 0) {
-            const localStream = call.getLocalStreams()[0];
-            mediaType = localStream.getVideoTracks().length > 0 ? 'video' : 'audio';
-            hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
-        }
-
-        this.callKeeper.startOutgoingCall(call.id, call.remoteIdentity.uri, hasVideo);
-
-        utils.timestampedLog('Outgoing', mediaType, 'conference', call.id, 'started to', call.remoteIdentity.uri);
-        this.callKeeper.addWebsocketCall(call);
-
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
+        this.callKeeper.startOutgoingCall(call);
     }
 
     _onLocalNotificationReceivedBackground(notification) {
@@ -3974,10 +3984,9 @@ class Sylk extends Component {
             this.sql_contacts_keys.push(uri);
             let myContacts = this.state.myContacts;
             let myInvitedParties = this.state.myInvitedParties;
-            let room = uri.split('@')[0];
 
-            if (room in myInvitedParties) {
-                myInvitedParties[room] = contact.participants;
+            if (uri in myInvitedParties) {
+                myInvitedParties[uri] = contact.participants;
             }
 
             if (uri !== this.state.accountId) {
@@ -4023,10 +4032,9 @@ class Sylk extends Component {
             console.log('SQL updated contact', contact.uri, 'by', origin);
             let myContacts = this.state.myContacts;
             let myInvitedParties = this.state.myInvitedParties;
-            let room = uri.split('@')[0];
 
-            if (room in myInvitedParties) {
-                myInvitedParties[room] = contact.participants;
+            if (uri in myInvitedParties) {
+                myInvitedParties[uri] = contact.participants;
             }
 
             if (uri !== this.state.accountId) {
@@ -4068,10 +4076,9 @@ class Sylk extends Component {
            await this.ExecuteQuery("DELETE from contacts where uri = ? and account = ?", [uri, this.state.accountId]).then((result) => {
                 console.log('SQL deleted contact', uri);
                 let myInvitedParties = this.state.myInvitedParties;
-                let room = uri.split('@')[0];
 
-                if (room in myInvitedParties) {
-                    delete myInvitedParties[room];
+                if (uri in myInvitedParties) {
+                    delete myInvitedParties[uri];
                     this.setState({myInvitedParties: myInvitedParties});
                 }
 
@@ -4339,8 +4346,8 @@ class Sylk extends Component {
         if (this.state.account) {
             //console.log('Send', contentType, 'message', id, 'to', uri);
             let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp}, (error) => {
-                console.log('Message error', error);
                 if (error) {
+                    console.log('Message', id, 'sending error:', error);
                     this.outgoingMessageStateChanged(id, 'failed');
                     let status = error.toString();
                     if (status.indexOf('DNS lookup error') > -1) {
@@ -5209,7 +5216,7 @@ class Sylk extends Component {
             await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId]).then((results) => {
                 rows = results.rows;
                 total = rows.item(0).rows;
-                console.log(total, 'total messages');
+                //console.log(total, 'total messages');
             }).catch((error) => {
                 console.log('SQL error:', error);
             });
@@ -5242,7 +5249,8 @@ class Sylk extends Component {
         if (pinned) {
             query = query + ' and pinned = 1';
         }
-        await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId, pinned]).then((results) => {
+
+        await this.ExecuteQuery(query, [this.state.accountId, messages_uri, messages_uri, this.state.accountId]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
             console.log(total, 'messages with', uri, 'from database');
@@ -6695,7 +6703,7 @@ class Sylk extends Component {
     }
 
     async replicateContact(contact) {
-        console.log('Replicate contact', contact);
+        //console.log('Replicate contact', contact);
 
         if (!this.state.keys) {
             console.log('Cannot replicate contact without aprivate key');
@@ -6966,7 +6974,6 @@ class Sylk extends Component {
     }
 
     appendInvitedParties(room, uris) {
-        room = room.split('@')[0];
         //console.log('Save invited parties', uris, 'for room', room);
         let myInvitedParties = this.state.myInvitedParties;
 
@@ -7029,7 +7036,7 @@ class Sylk extends Component {
 
     saveConference(room, participants, displayName=null) {
         let uri = room;
-        console.log('Save invited parties', participants, 'for room', room, 'with display name', displayName);
+        console.log('Save conference', room, 'with display name', displayName, 'and participants', participants);
 
         if (room.indexOf('@') === -1) {
             room =  room + '@videoconference.' + this.state.defaultDomain;
@@ -7065,20 +7072,29 @@ class Sylk extends Component {
     addHistoryEntry(uri, callUUID, direction='outgoing', participants=[]) {
         let myContacts = this.state.myContacts;
 
+        console.log('addHistoryEntry', uri);
+
+        if (uri.indexOf('@') === -1) {
+            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        }
+
         if (uri in myContacts) {
         } else {
             myContacts[uri] = this.newContact(uri);
         }
 
-         myContacts[uri].conference = true;
-         myContacts[uri].timestamp = new Date();
-         myContacts[uri].participants = participants;
-         myContacts[uri].lastCallId = callUUID;
-         myContacts[uri].direction = direction;
-         this.saveSylkContact(uri, myContacts[uri], 'addHistoryEntry');
+        myContacts[uri].conference = true;
+        myContacts[uri].timestamp = new Date();
+        myContacts[uri].lastCallId = callUUID;
+        myContacts[uri].direction = direction;
+        this.saveSylkContact(uri, myContacts[uri], 'addHistoryEntry');
     }
 
     updateHistoryEntry(uri, callUUID, duration) {
+        if (uri.indexOf('@') === -1) {
+            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        }
+
         console.log('updateHistoryEntry', uri, callUUID, duration);
         let myContacts = this.state.myContacts;
         if (uri in myContacts && myContacts[uri].lastCallId === callUUID) {
@@ -7102,6 +7118,8 @@ class Sylk extends Component {
         let loadingLabel = this.state.loading;
         if (this.state.syncConversations) {
             loadingLabel = 'Sync conversations';
+        } else if (this.state.reconnectingCall) {
+            loadingLabel = 'Reconnecting call...';
         } else if (this.mustLogout) {
             loadingLabel = 'Logging out...';
         }
@@ -7134,7 +7152,7 @@ class Sylk extends Component {
 
                             <LoadingScreen
                             text={loadingLabel}
-                            show={(this.state.loading !== null && !this.state.accountVerified) || this.state.syncConversations || this.state.generatingKey}
+                            show={(this.state.loading !== null && !this.state.accountVerified) || this.state.syncConversations || this.state.generatingKey || this.state.reconnectingCall}
                             orientation={this.state.orientation}
                             isTablet={this.state.isTablet}
                             />
@@ -7535,9 +7553,8 @@ class Sylk extends Component {
         */
 
         if (this.state.myInvitedParties) {
-            let room = this.state.targetUri.split('@')[0];
-            if (this.state.myInvitedParties.hasOwnProperty(room)) {
-                let uris = this.state.myInvitedParties[room];
+            if (this.state.myInvitedParties.hasOwnProperty(this.state.targetUri)) {
+                let uris = this.state.myInvitedParties[this.state.targetUri];
                 if (uris) {
                     uris.forEach((uri) => {
                         _previousParticipants.add(uri);
@@ -7554,6 +7571,7 @@ class Sylk extends Component {
                 localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
+                callContact = {this.state.callContact}
                 connection = {this.state.connection}
                 registrationState = {this.state.registrationState}
                 currentCall = {this.state.currentCall}
@@ -7583,7 +7601,7 @@ class Sylk extends Component {
                 myContacts = {this.state.myContacts}
                 lookupContacts={this.lookupContacts}
                 goBackFunc={this.goBackToHome}
-                inviteToConferenceFunc={this.inviteContactsToConference}
+                inviteToConferenceFunc={this.inviteToConference}
                 selectedContacts={this.state.selectedContacts}
                 callState={callState}
                 finishInvite={this.finishInviteToConference}

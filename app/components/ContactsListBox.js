@@ -676,6 +676,10 @@ class ContactsListBox extends Component {
                 return;
             }
 
+            if (this.state.inviteContacts && elem.tags.indexOf('conference') > -1 ) {
+                return;
+            }
+
             if (this.state.shareToContacts && elem.tags.indexOf('chat') === -1) {
                 return;
             }

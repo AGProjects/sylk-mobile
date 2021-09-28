@@ -361,11 +361,11 @@ class NavigationBar extends Component {
                         }
                     >
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
-                        {!isConference ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {!isConference ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {!isConference && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {!isConference && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {isConference && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
 
-                        { hasMessages ?
+                        { hasMessages  && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
@@ -374,7 +374,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
 
-                        { hasMessages && tags.indexOf('test') === -1 ?
+                        { (hasMessages || this.state.pinned) && tags.indexOf('test') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title={this.state.pinned ? "Show all messages" : "Show pinned messages"}/>
                         : null}
 
@@ -385,11 +385,11 @@ class NavigationBar extends Component {
                         {this.props.publicKey && false?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        {tags.indexOf('test') === -1 ?
+                        {tags.indexOf('test') === -1 && !this.state.inCall  ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
-                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 ?
+                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1  && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
@@ -408,16 +408,16 @@ class NavigationBar extends Component {
                         }
                     >
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account" title="Add contact..."/>
-                        <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/>
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
-                        <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />
-                        {!this.state.syncConversations ?
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
+                        {!this.state.syncConversations && !this.state.inCall  ?
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
                         : null}
 
-                        <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />
-                        <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} />
-                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/> :null}
                         <Divider/>
                         {extraMenu ?
                         <View>
@@ -427,9 +427,11 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                         </View>
                         : null}
-                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
+                        {!this.state.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
                         <Divider />
-                        <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" />
+                        {!this.state.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
                     </Menu>
                     }
 

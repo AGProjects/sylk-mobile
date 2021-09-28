@@ -181,8 +181,8 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.chat && this.state.selectedContact) {
-            return false;
+        if (this.state.selectedContact) {
+            return true;
         }
 
         return true;

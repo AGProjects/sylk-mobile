@@ -18,11 +18,13 @@ class ConferenceHeader extends React.Component {
 
         this.state = {
             call: this.props.call,
+            displayName: this.props.callContact ? this.props.callContact.name : this.props.remoteUri,
             callState: this.props.call ? this.props.call.state : null,
             participants: this.props.participants,
             startTime: this.props.callState ? this.props.callState.startTime : null,
             reconnectingCall: this.props.reconnectingCall,
             info: this.props.info,
+            remoteUri: this.props.remoteUri,
             menuVisible: true
         }
 
@@ -101,6 +103,8 @@ class ConferenceHeader extends React.Component {
         }
 
         this.setState({info: nextProps.info,
+                       remoteUri: nextProps.remoteUri,
+                       displayName: nextProps.callContact ? nextProps.callContact.name : nextProps.remoteUri,
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
                        participants: nextProps.participants});
     }
@@ -127,8 +131,17 @@ class ConferenceHeader extends React.Component {
         this.setState({callState: newState});
     }
 
+    goBack() {
+       console.log('Go back to home from conference');
+       this.props.goBackFunc();
+    }
+
     handleMenu(event) {
+        console.log('handle conference Menu', event);
         switch (event) {
+            case 'back':
+                this.goBack();
+                break;
             case 'invite':
                 this.props.inviteToConferenceFunc();
                 break;
@@ -153,7 +166,8 @@ class ConferenceHeader extends React.Component {
         }
 
         if (this.props.show) {
-            const room = this.props.remoteUri.split('@')[0];
+            const room = this.state.remoteUri.split('@')[0];
+            let displayName = this.state.displayName || 'Conference: ' + room;
             let callDetail;
 
             if (this.state.reconnectingCall) {
@@ -161,7 +175,12 @@ class ConferenceHeader extends React.Component {
             } else if (this.state.terminated) {
                 callDetail = 'Conference ended';
             } else if (this.duration) {
-                callDetail = (this.props.isTablet ? 'Duration: ' : '') + this.duration + ' - ' + this.state.participants + ' participant' + (this.state.participants > 1 ? 's' : '');
+                callDetail = (this.props.isTablet ? 'Duration: ' : '') + this.duration;
+                if (this.state.participants > 0) {
+                    callDetail = callDetail +  ' - ' + this.state.participants + ' participant' + (this.state.participants > 1 ? 's' : '');
+                } else {
+                    callDetail = callDetail + ' and nobody joined yet';
+                }
             }
 
             if (this.state.info) {
@@ -170,9 +189,9 @@ class ConferenceHeader extends React.Component {
 
             videoHeader = (
                 <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
-                    <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
+                    <Appbar.BackAction onPress={() => {this.goBack()}} />
                      <Appbar.Content
-                        title={`Conference: ${room}`}
+                        title={displayName}
                         subtitle={callDetail}
                     />
                     {this.props.audioOnly ? null : this.props.buttons.top.right}
@@ -184,11 +203,12 @@ class ConferenceHeader extends React.Component {
                         <Appbar.Action
                             ref={this.menuRef}
                             color="white"
-                            icon="menu"
+                            icon="account-plus"
                             onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
                         />
                     }
                 >
+                    <Menu.Item onPress={() => this.handleMenu('back')} title="Go back..."/>
                     <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite contacts"/>
                     <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share link..." />
                 </Menu>
@@ -223,6 +243,7 @@ ConferenceHeader.propTypes = {
     audioOnly: PropTypes.bool,
     terminated: PropTypes.bool,
     info: PropTypes.string,
+    callContact: PropTypes.object,
     goBackFunc: PropTypes.func,
     toggleInviteModal: PropTypes.func,
     inviteToConferenceFunc: PropTypes.func,

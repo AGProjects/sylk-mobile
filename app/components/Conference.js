@@ -41,7 +41,7 @@ class Conference extends React.Component {
               myInvitedParties: this.props.myInvitedParties,
               isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1,
               selectedContacts: this.props.selectedContacts,
-              room: this.props.targetUri
+              room: this.props.targetUri.toLowerCase()
               }
 
         if (this.props.connection) {
@@ -98,10 +98,12 @@ class Conference extends React.Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        //console.log('Conference got props');
-
         if (nextProps.account !== null && nextProps.account !== this.props.account) {
             this.setState({account: nextProps.account});
+        }
+
+        if (nextProps.currentCall) {
+            this.setState({room: nextProps.currentCall.remoteIdentity.uri.toLowerCase()});
         }
 
         this.setState({registrationState: nextProps.registrationState});
@@ -379,6 +381,7 @@ class Conference extends React.Component {
                         selectedContacts={this.props.selectedContacts}
                         callState={this.props.callState}
                         finishInvite={this.props.finishInvite}
+                        callContact={this.props.callContact}
                    />
                 );
             } else {
@@ -446,6 +449,7 @@ Conference.propTypes = {
     goBackFunc              : PropTypes.func,
     inviteToConferenceFunc  : PropTypes.func,
     selectedContacts        : PropTypes.array,
+    callContact             : PropTypes.object,
     callState               : PropTypes.object,
     finishInvite            : PropTypes.func
 };

@@ -34,7 +34,7 @@ const ConferenceDrawerSpeakerSelectionWrapper = props => {
                 mode="contained"
                 onPress={() => props.selectSpeaker(1)}
             >
-                {buttonText || 'Select Speaker 1'}
+                {buttonText || 'Select first speaker'}
             </Button>
             { twoButtons &&
                 <Button
@@ -43,7 +43,7 @@ const ConferenceDrawerSpeakerSelectionWrapper = props => {
                     mode="contained"
                     onPress={() => props.selectSpeaker(2)}
                 >
-                    {secondButtonText || 'Speaker 2'}
+                    {secondButtonText || 'Select second speaker'}
                 </Button>
             }
         </Fragment>

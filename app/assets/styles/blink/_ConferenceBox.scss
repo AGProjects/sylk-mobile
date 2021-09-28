@@ -13,21 +13,29 @@
 }
 
 .chatContainerLandscape {
-    flex: 1;
-    margin-top: 120px;
+    margin-top: 100px;
     margin-right: 10px;
     margin-left: 5px;
-    border: 0px;
+    width: 300px;
     border-color: grey;
     border-radius: 5px;
 }
 
 .audioContainerLandscape {
     align-content: flex-start;
-    margin-top: 120px;
+    margin-top: 110px;
     margin-left: 10px;
-    margin-right: 25px;
+    margin-right: 10px;
     width: 40%;
+}
+
+.chatContainerLandscapeAudio {
+    margin-top: 110px;
+    margin-right: 10px;
+    margin-left: 5px;
+    border-color: grey;
+    border-radius: 5px;
+    width: 57%;
 }
 
 .conferenceContainer {
@@ -46,17 +54,25 @@
     margin-left: 10px;
 }
 
+.chatContainerPortraitAudio {
+    margin-top: 10px;
+    margin-left: 10px;
+    border: 0px;
+    height: 30%;
+    border-color: grey;
+    border-radius: 5px;
+}
+
 .chatContainer {
-    flex: 1;
     margin-top: 10px;
     border: 0px;
     border-color: grey;
-    border-radius: 5px;
 }
 
 .videosContainer {
     flex: 1;
     flex-wrap: wrap;
+    border-radius: 5px;
 }
 
 .carouselContainer {
@@ -104,4 +120,8 @@
     align-items: flex-end;
     justify-content: space-between;
     flex-direction: row;
+}
+
+.portraitDrawer {
+    width: 300px;
 }

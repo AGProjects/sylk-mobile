@@ -54,7 +54,7 @@ class ConferenceParticipant extends React.Component {
     onMuteAudioClicked(event) {
         event.preventDefault();
         const streams = this.props.participant.streams;
-        if (streams[0].getAudioTracks().length > 0) {
+        if (streams.length > 0 && streams[0].getAudioTracks().length > 0) {
             const track = streams[0].getAudioTracks()[0];
             if(this.state.audioMuted) {
                 track.enabled = true;

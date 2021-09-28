@@ -143,7 +143,7 @@ class Call extends Component {
         this.samples = 30;
         this.sampleInterval = 3;
 
-        this.defaultWaitInterval = 60; // until we can connect or reconnect
+        this.defaultWaitInterval = 90; // until we can connect or reconnect
         this.waitCounter = 0;
         this.waitInterval = this.defaultWaitInterval;
 
@@ -188,6 +188,7 @@ class Call extends Component {
         }
 
         if (this.props.connection) {
+            //console.log('Added listener for connection', this.props.connection);
             this.props.connection.on('stateChanged', this.connectionStateChanged);
         }
 
@@ -206,6 +207,7 @@ class Call extends Component {
                       localMedia: this.props.localMedia,
                       connection: this.props.connection,
                       accountId: this.props.account ? this.props.account.id : null,
+                      account: this.props.account,
                       callState: callState,
                       direction: direction,
                       callUUID: callUUID,
@@ -275,15 +277,19 @@ class Call extends Component {
             return;
         }
 
+        if (nextProps.connection && nextProps.connection !== this.state.connection) {
+            nextProps.connection.on('stateChanged', this.connectionStateChanged);
+        }
+
         this.setState({connection: nextProps.connection,
+                       account: nextProps.account,
+                       call: nextProps.call,
                        accountId: nextProps.account ? nextProps.account.id : null});
 
         if (this.state.call === null && nextProps.call !== null) {
-            //utils.timestampedLog('Call: Sylkrtc call has been set');
             nextProps.call.on('stateChanged', this.callStateChanged);
 
             this.setState({
-                           call: nextProps.call,
                            remoteUri: nextProps.call.remoteIdentity.uri,
                            direction: nextProps.call.direction,
                            callUUID: nextProps.call.id,
@@ -766,7 +772,7 @@ class Call extends Component {
                     return;
                 }
 
-                if (this.waitCounter > 0) {
+                if (this.waitCounter > 0 && this.waitCounter % 10 === 0) {
                     console.log('Wait', this.waitCounter);
                 }
                 await this._sleep(1000);
@@ -787,8 +793,6 @@ class Call extends Component {
     }
 
     start() {
-        utils.timestampedLog('Call: starting call', this.state.callUUID);
-
         if (this.state.localMedia === null)  {
             console.log('Call: cannot create new call without local media');
             return;
@@ -797,9 +801,11 @@ class Call extends Component {
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.state.callUUID};
         options.localStream = this.state.localMedia;
 
-        let call = this.props.account.call(this.state.targetUri, options);
+        let call = this.state.account.call(this.state.targetUri, options);
+
         if (call) {
             call.on('stateChanged', this.callStateChanged);
+            this.setState({call: call});
         }
     }
 
@@ -808,11 +814,15 @@ class Call extends Component {
         this.waitInterval = this.defaultWaitInterval;
 
         if (this.state.call) {
+            //console.log('Remove listener for call', this.state.call.id);
             this.state.call.removeListener('stateChanged', this.callStateChanged);
+            this.setState({call: null});
         }
 
-        if (this.props.connection) {
-            this.props.connection.removeListener('stateChanged', this.connectionStateChanged);
+        if (this.state.connection) {
+            //console.log('Remove listener for connection', this.state.connection);
+            this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+            this.setState({connection: null});
         }
 
         if (this.waitCounter > 0) {
@@ -836,7 +846,7 @@ class Call extends Component {
                         hangupCall = {this.hangupCall}
                         call = {this.state.call}
                         accountId={this.state.accountId}
-                        connection = {this.props.connection}
+                        connection = {this.state.connection}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
@@ -879,7 +889,7 @@ class Call extends Component {
                             hangupCall = {this.hangupCall}
                             call = {this.state.call}
                             accountId={this.state.accountId}
-                            connection = {this.props.connection}
+                            connection = {this.state.connection}
                             localMedia = {this.state.localMedia}
                             shareScreen = {this.props.shareScreen}
                             escalateToConference = {this.props.escalateToConference}
@@ -924,7 +934,7 @@ class Call extends Component {
                                 hangupCall = {this.hangupCall}
                                 generatedVideoTrack = {this.props.generatedVideoTrack}
                                 accountId = {this.state.accountId}
-                                connection = {this.props.connection}
+                                connection = {this.state.connection}
                                 orientation = {this.props.orientation}
                                 isTablet = {this.props.isTablet}
                                 media = 'video'
@@ -945,7 +955,7 @@ class Call extends Component {
                     hangupCall = {this.hangupCall}
                     call = {this.state.call}
                     accountId = {this.state.accountId}
-                    connection = {this.props.connection}
+                    connection = {this.state.connection}
                     mediaPlaying = {this.mediaPlaying}
                     escalateToConference = {this.props.escalateToConference}
                     callKeepSendDtmf = {this.props.callKeepSendDtmf}

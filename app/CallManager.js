@@ -151,8 +151,25 @@ export default class CallManager extends events.EventEmitter {
        this.callKeep.backToForeground();
     }
 
-    startOutgoingCall(callUUID, targetUri, hasVideo) {
-        utils.timestampedLog('Callkeep: will start outgoing', callUUID);
+    startOutgoingCall(call) {
+        let callUUID = call.id;
+        let targetUri = call.remoteIdentity.uri;
+
+        if (!this.addWebsocketCall(call)) {
+            return;
+        }
+
+        const localStreams = call.getLocalStreams();
+        let mediaType = 'audio';
+        let hasVideo = false;
+
+        if (localStreams.length > 0) {
+            const localStream = call.getLocalStreams()[0];
+            mediaType = localStream.getVideoTracks().length > 0 ? 'video' : 'audio';
+            hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
+        }
+
+        utils.timestampedLog('Callkeep: will start call', callUUID, 'to', targetUri);
         this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
     }
 
@@ -479,15 +496,17 @@ export default class CallManager extends events.EventEmitter {
 
     addWebsocketCall(call) {
         if (this.unmounted()) {
-            return;
+            return false;
         }
 
         const connection = this.getConnection();
         if (this._calls.has(call.id)) {
-            return;
+            return false;
         }
+
         utils.timestampedLog('Callkeep: added websocket call', call.id, 'for web socket', connection);
         this._calls.set(call.id, call);
+        return true;
     }
 
     incomingCallFromPush(callUUID, from, displayName, mediaType, force=false, skipNativePanel=false) {
