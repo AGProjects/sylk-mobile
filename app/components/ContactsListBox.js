@@ -529,9 +529,7 @@ class ContactsListBox extends Component {
                 options.push('Pin');
             }
 
-            if (currentMessage.direction === 'outgoing') {
-                options.push('Info');
-            }
+            options.push('Info');
 
             options.push('Share');
             options.push('Cancel');

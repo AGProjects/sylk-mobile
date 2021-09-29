@@ -76,7 +76,7 @@ class DeleteHistoryModal extends Component {
                             </View>
 
                             <View style={styles.titleContainer}>
-                               <Dialog.Title style={styles.title}>Delete messages</Dialog.Title>
+                               <Dialog.Title style={styles.title}>{this.state.uri ? 'Delete messages' : 'Wiped device'} </Dialog.Title>
                            </View>
 
                         </View>
@@ -86,14 +86,14 @@ class DeleteHistoryModal extends Component {
                                  Confirm deletion of all messages with {this.state.uri}.
                              </Text>
                              <Text style={styles.body}>
-                                 The messages will not be removed from remote party.
+                                 Messages will not be removed from remote party.
                              </Text>
                         </View>
                              :
                              <Text style={styles.body}>
-                               Please confirm the deletion of all messages from this device.
+                               You can delete all messages from this device.
                                {"\n"}{"\n"}
-                               The messages can still be retrieved later from the server.
+                               Messages can still be retrieved from the server.
                              </Text>
                             }
 

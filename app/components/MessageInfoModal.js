@@ -30,7 +30,12 @@ class MessageInfoModal extends Component {
             return (null);
         }
 
-        let status = 'Message is on the way';
+        let status = this.state.message.direction === 'outgoing' ? 'Message is on the way' : 'Message was received';
+        let encryption = 'Message was not encrypted';
+
+        if (this.state.message.encrypted == 2) {
+            encryption = 'Message was encrypted';
+        }
 
         if (this.state.message.failed) {
             status = 'Message could not be delivered';
@@ -48,8 +53,9 @@ class MessageInfoModal extends Component {
                     <Surface style={styles.container}>
                      <DataTable>
                         <DataTable.Row>
-                          <DataTable.Cell>Status</DataTable.Cell>
+                          <DataTable.Cell>{encryption}</DataTable.Cell>
                         </DataTable.Row>
+
                         <DataTable.Row>
                           <DataTable.Cell>{status}</DataTable.Cell>
                         </DataTable.Row>

@@ -54,7 +54,6 @@ class NavigationBar extends Component {
             organization: organization,
             publicKey: this.props.publicKey,
             showPublicKey: false,
-            myInvitedParties: this.props.myInvitedParties,
             messages: this.props.messages,
             userClosed: false,
             pinned: this.props.pinned
@@ -93,7 +92,6 @@ class NavigationBar extends Component {
                        showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
-                       myInvitedParties: nextProps.myInvitedParties,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal
                        });
     }
@@ -305,14 +303,6 @@ class NavigationBar extends Component {
         let favoriteTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
         let favoriteIcon = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
 
-        let invitedParties = [];
-        if (this.state.selectedContact) {
-            let uri = this.state.selectedContact.uri.split('@')[0];
-            if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
-                invitedParties = this.state.myInvitedParties[uri];
-            }
-        }
-
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
 
@@ -407,17 +397,17 @@ class NavigationBar extends Component {
                             />
                         }
                     >
-                        <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account" title="Add contact..."/>
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
                         {!this.state.syncConversations && !this.state.inCall  ?
-                        <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My display name" />
+                        <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
+                        <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
 
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/> :null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
                         <Divider/>
                         {extraMenu ?
                         <View>
@@ -485,7 +475,7 @@ class NavigationBar extends Component {
                     close={this.closeEditConferenceModal}
                     room={this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0]: ''}
                     displayName={this.state.displayName}
-                    invitedParties={invitedParties}
+                    participants={this.state.selectedContact ? this.state.selectedContact.participants : []}
                     selectedContact={this.state.selectedContact}
                     toggleFavorite={this.props.toggleFavorite}
                     saveConference={this.saveConference}
@@ -537,7 +527,6 @@ NavigationBar.propTypes = {
     pinned             : PropTypes.bool,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
-    myInvitedParties   : PropTypes.object,
     saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,
     favoriteUris       : PropTypes.array,

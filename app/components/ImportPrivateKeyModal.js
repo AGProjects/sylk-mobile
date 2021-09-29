@@ -57,7 +57,6 @@ class ImportPrivateKeyModal extends Component {
     }
 
     get disableButton() {
-        console.log('disableButton', this.state.password);
         if (!this.state.password || this.state.password.length < 6) {
             return true;
         }

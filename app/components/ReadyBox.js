@@ -178,7 +178,7 @@ class ReadyBox extends Component {
         }
 
         if (!this.state.targetUri) {
-            return false;
+            return true;
         }
 
         if (this.state.selectedContact) {
