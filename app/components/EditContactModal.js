@@ -61,8 +61,9 @@ class EditContactModal extends Component {
         if (!this.state.email) {
             return true;
         }
-        let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
-        return email_reg.test(this.state.email);
+
+        let check = utils.isEmailAddress(this.state.email);
+        return check
     }
 
     deletePublicKey(event) {

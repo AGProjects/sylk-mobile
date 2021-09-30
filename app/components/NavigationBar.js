@@ -188,7 +188,7 @@ class NavigationBar extends Component {
             return;
         }
 
-        if (this.state.selectedContact) {
+        if (this.state.selectedContact && this.state.selectedContact.uri !== this.state.accountId) {
             this.props.saveContact(this.state.selectedContact.uri, displayName, organization);
         } else {
             this.setState({displayName: displayName});
@@ -463,7 +463,7 @@ class NavigationBar extends Component {
                     edit={this.state.email}
                     organization={this.state.organization}
                     email={this.state.email}
-                    myself={this.state.selectedContact ? false : true}
+                    myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
                     saveContact={this.saveContact}
                     deleteContact={this.props.deleteContact}
                     deletePublicKey={this.props.deletePublicKey}

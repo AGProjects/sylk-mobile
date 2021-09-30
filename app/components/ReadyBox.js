@@ -484,9 +484,6 @@ class ReadyBox extends Component {
             }
         }
 
-        //console.log('Render ready with chat', this.state.chat);
-        //this.props.fetchSharedItems();
-
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         if (this.props.isTablet) {
@@ -560,7 +557,7 @@ class ReadyBox extends Component {
                         </View>
                         : null}
 
-                            {( this.state.call && this.state.call.state == 'established') ?
+                            {this.state.call ?
                             <View style={buttonGroupClass}>
 
                                 <Button

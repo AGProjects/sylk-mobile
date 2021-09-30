@@ -323,29 +323,32 @@ class ContactsListBox extends Component {
     }
 
     searchedContact(uri, contact=null) {
-        let contacts = [];
-
         if (uri.indexOf(' ') > -1) {
-            return contacts;
+            return [];
         }
 
         const item = this.props.newContactFunc(uri.toLowerCase(), null, {src: 'search_contact'});
+        if (!item) {
+            return [];
+        }
+
         if (contact) {
             item.name = contact.name;
             item.photo = contact.photo;
         }
-        item.tags.push('synthetic');
-        contacts.push(item);
-        return contacts;
+        return [item];
     }
 
     getServerHistory() {
         if (!this.state.accountId) {
             return;
         }
+
         if (this.ended || !this.state.accountId || this.state.isRefreshing) {
             return;
         }
+
+        console.log('Get server history...');
 
         this.setState({isRefreshing: true});
 
@@ -538,7 +541,6 @@ class ContactsListBox extends Component {
 
             context.actionSheet().showActionSheetWithOptions({options, l}, (buttonIndex) => {
                 let action = options[buttonIndex];
-                console.log('Message action', action);
                 if (action === 'Copy') {
                     Clipboard.setString(currentMessage.text);
                 } else if (action === 'Delete') {

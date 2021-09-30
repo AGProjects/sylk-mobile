@@ -43,7 +43,9 @@ class AudioCallBox extends Component {
             packetLossQueue             : [],
             audioBandwidthQueue         : [],
             latencyQueue                : [],
-            declineReason               : this.props.declineReason
+            declineReason               : this.props.declineReason,
+            callContact                 : this.props.callContact,
+            selectedContact             : this.props.selectedContact
         };
 
         this.remoteAudio = React.createRef();
@@ -119,7 +121,9 @@ class AudioCallBox extends Component {
         this.setState({remoteUri: nextProps.remoteUri,
                        remoteDisplayName: nextProps.remoteDisplayName,
                        photo: nextProps.photo ? nextProps.photo : this.state.photo,
-                       declineReason: nextProps.declineReason
+                       declineReason: nextProps.declineReason,
+                       callContact: nextProps.callContact,
+                       selectedContact: nextProps.selectedContact
                        });
     }
 
@@ -216,6 +220,13 @@ class AudioCallBox extends Component {
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         const chatButtonClass = (Platform.OS === 'ios') ? styles.iosChatButton : styles.androidChatButton;
 
+        let disablePlus = false;
+        if (this.state.callContact) {
+            if (this.state.callContact.tags.indexOf('test') > -1 || this.state.callContact.tags.indexOf('conference') > -1) {
+                disablePlus = true;
+            }
+        }
+
         //console.log('Call to remoteIdentity', remoteIdentity);
 
         return (
@@ -260,18 +271,25 @@ class AudioCallBox extends Component {
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) ?
                     <View style={buttonContainerClass}>
+                    {!disablePlus ?
                     <IconButton
                         size={buttonSize}
                         style={chatButtonClass}
                         icon="chat"
                         onPress={this.props.goBackFunc}
+                        disabled={disablePlus}
                     />
+                    : null}
+
+                    {!disablePlus ?
                     <IconButton
                         size={buttonSize}
                         style={buttonClass}
                         icon="account-plus"
                         onPress={this.toggleEscalateConferenceModal}
+                        disabled={disablePlus}
                     />
+                    : null}
                     <IconButton
                         size={buttonSize}
                         style={buttonClass}
@@ -371,6 +389,7 @@ AudioCallBox.propTypes = {
     getMessages             : PropTypes.func,
     pinMessage              : PropTypes.func,
     unpinMessage            : PropTypes.func,
+    callContact             : PropTypes.object,
     selectedContact         : PropTypes.object
 };
 

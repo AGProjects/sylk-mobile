@@ -219,7 +219,8 @@ class Call extends Component {
                       latencyQueue: [],
                       declineReason: this.props.declineReason,
                       messages: this.props.messages,
-                      selectedContact: this.props.selectedContact
+                      selectedContact: this.props.selectedContact,
+                      callContact: this.props.callContact
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -284,6 +285,7 @@ class Call extends Component {
         this.setState({connection: nextProps.connection,
                        account: nextProps.account,
                        call: nextProps.call,
+                       callContact: nextProps.callContact,
                        accountId: nextProps.account ? nextProps.account.id : null});
 
         if (this.state.call === null && nextProps.call !== null) {
@@ -876,6 +878,7 @@ class Call extends Component {
                         pinMessage = {this.props.pinMessage}
                         unpinMessage = {this.props.unpinMessage}
                         selectedContact = {this.state.selectedContact}
+                        callContact = {this.state.callContact}
                     />
                 );
             } else {
@@ -916,7 +919,8 @@ class Call extends Component {
                             getMessages = {this.props.getMessages}
                             pinMessage = {this.props.pinMessage}
                             unpinMessage = {this.props.unpinMessage}
-                            selectedContact = {this.props.selectedContact}
+                            selectedContact = {this.state.selectedContact}
+                            callContact = {this.state.callContact}
                         />
                     );
                 } else {
@@ -971,6 +975,7 @@ class Call extends Component {
                     showLogs = {this.props.showLogs}
                     goBackFunc = {this.props.goBackFunc}
                     selectedContact = {this.state.selectedContact}
+                    callContact = {this.state.callContact}
                 />
             );
 
@@ -1015,7 +1020,8 @@ Call.propTypes = {
     getMessages             : PropTypes.func,
     pinMessage              : PropTypes.func,
     unpinMessage            : PropTypes.func,
-    selectedContact         : PropTypes.object
+    selectedContact         : PropTypes.object,
+    callContact             : PropTypes.object
 };
 
 

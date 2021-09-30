@@ -269,6 +269,20 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, function(m) { return map[m]; });
 }
 
+function isPhoneNumber(uri) {
+    let username = uri;
+    if (uri.indexOf('@') > -1) {
+        username = uri.split('@')[0].trim();
+    }
+    return username.match(/^(\+|0)(\d+)$/);
+}
+
+function isEmailAddress(uri) {
+    uri = uri.trim().toLowerCase();
+    let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
+    return email_reg.test(uri);
+}
+
 
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
@@ -284,3 +298,6 @@ exports.sylkToRenderMessage = sylkToRenderMessage;
 exports.isAnonymous = isAnonymous;
 exports.escapeHtml = escapeHtml;
 exports.html2text = html2text;
+exports.isEmailAddress = isEmailAddress;
+exports.isPhoneNumber = isPhoneNumber;
+
