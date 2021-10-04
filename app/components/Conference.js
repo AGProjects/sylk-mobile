@@ -41,7 +41,8 @@ class Conference extends React.Component {
               myInvitedParties: this.props.myInvitedParties,
               isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1,
               selectedContacts: this.props.selectedContacts,
-              room: this.props.targetUri.toLowerCase()
+              room: this.props.targetUri.toLowerCase(),
+              messages: this.props.messages
               }
 
         if (this.props.connection) {
@@ -131,7 +132,8 @@ class Conference extends React.Component {
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                        isFavorite: nextProps.favoriteUris.indexOf(this.state.room) > -1,
-                       selectedContacts: nextProps.selectedContacts
+                       selectedContacts: nextProps.selectedContacts,
+                       messages: nextProps.messages
                        });
     }
 
@@ -252,8 +254,8 @@ class Conference extends React.Component {
         this.props.saveParticipant(callUUID, room, uri);
     }
 
-    saveMessage(room, messages) {
-        this.props.saveMessage(room, messages);
+    saveMessage(room, message) {
+        this.props.saveMessage(room, message);
     }
 
     showSaveDialog() {
@@ -341,11 +343,6 @@ class Conference extends React.Component {
             if (this.props.proposedMedia && this.props.proposedMedia.video === true) {
                 media = 'video';
             }
-
-            if (this.props.myMessages && this.props.myMessages.hasOwnProperty(this.state.room)) {
-                messages = this.props.myMessages[this.state.room];
-            }
-
             if (this.state.currentCall != null && (this.state.callState === 'established')) {
                 box = (
                     <ConferenceBox
@@ -354,7 +351,8 @@ class Conference extends React.Component {
                         audioOnly = {this.props.proposedMedia ? !this.props.proposedMedia.video: false}
                         reconnectingCall={this.state.reconnectingCall}
                         connection = {this.state.connection}
-                        messages = {messages}
+                        messages = {this.state.messages}
+                        account = {this.props.account}
                         hangup = {this.hangup}
                         saveParticipant = {this.saveParticipant}
                         saveMessage = {this.saveMessage}
@@ -382,6 +380,8 @@ class Conference extends React.Component {
                         callState={this.props.callState}
                         finishInvite={this.props.finishInvite}
                         callContact={this.props.callContact}
+                        fileSharingUrl = {this.props.fileSharingUrl}
+
                    />
                 );
             } else {
@@ -422,7 +422,6 @@ Conference.propTypes = {
     hangupCall              : PropTypes.func,
     saveParticipant         : PropTypes.func,
     saveMessage             : PropTypes.func,
-    myMessages              : PropTypes.object,
     saveConference          : PropTypes.func,
     previousParticipants    : PropTypes.array,
     currentCall             : PropTypes.object,
@@ -451,7 +450,10 @@ Conference.propTypes = {
     selectedContacts        : PropTypes.array,
     callContact             : PropTypes.object,
     callState               : PropTypes.object,
-    finishInvite            : PropTypes.func
+    finishInvite            : PropTypes.func,
+    messages                : PropTypes.object,
+    getMessages             : PropTypes.func,
+    fileSharingUrl          : PropTypes.string
 };
 
 

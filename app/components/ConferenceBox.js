@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {useState, Component, Fragment} from 'react';
-import { View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Keyboard } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -31,6 +31,8 @@ import ConferenceAudioParticipantList from './ConferenceAudioParticipantList';
 import ConferenceAudioParticipant from './ConferenceAudioParticipant';
 import { GiftedChat } from 'react-native-gifted-chat'
 import xss from 'xss';
+import CustomChatActions from './ChatActions';
+
 
 import styles from '../assets/styles/blink/_ConferenceBox.scss';
 
@@ -73,32 +75,61 @@ class ConferenceBox extends Component {
 
         this.seenMessages = new Map();
 
-        let messages = [];
-        props.messages.reverse().forEach((m) => {
-            if (!this.seenMessages.has(m._id)) {
-                messages.push(m);
-                this.seenMessages.set(m.id, true);
-            }
-        });
+        let renderMessages = [];
 
-        messages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+        if (this.props.remoteUri in this.props.messages) {
+            renderMessages = this.props.messages[this.props.remoteUri];
+        }
 
         if (this.props.call) {
             let giftedChatMessage;
-            this.props.call.messages.reverse().forEach((sylkMessage) => {
-                giftedChatMessage = utils.sylkToRenderMessage(sylkMessage);
-                messages.push(giftedChatMessage);
+            let direction;
+            this.props.call.messages.forEach((sylkMessage) => {
+                if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
+                    return;
+                }
+
+                if (sylkMessage.type === 'status') {
+                    return;
+                }
+
+                if (!this.seenMessages.has(sylkMessage._id)) {
+                    this.seenMessages.set(sylkMessage._id, true);
+
+                    const existingMessages = renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
+                    if (existingMessages.length > 0) {
+                        return;
+                    }
+
+                    direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
+
+                    if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
+                        direction = 'outgoing';
+                    }
+
+                    giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
+
+                    renderMessages.push(giftedChatMessage);
+                    this.props.saveMessage(this.props.remoteUri, giftedChatMessage);
+                }
             });
         }
+
+        const videoEnabled = this.props.call && this.props.call.getLocalStreams()[0].getVideoTracks().length > 0;
 
         this.state = {
             callOverlayVisible: true,
             remoteUri: this.props.remoteUri,
             call: this.props.call,
+            accountId: this.props.call ? this.props.call.account.id : null,
+            renderMessages: GiftedChat.append(renderMessages, []),
             ended: false,
+            keyboardVisible: false,
+            videoEnabled: videoEnabled,
             audioMuted: this.props.muted,
             videoMuted: !this.props.inFocus,
             videoMutedbyUser: false,
+            messages: this.props.messages,
             participants: props.call.participants.slice(),
             showInviteModal: false,
             showDrawer: false,
@@ -114,8 +145,9 @@ class ConferenceBox extends Component {
             inFocus:  this.props.inFocus,
             reconnectingCall: this.props.reconnectingCall,
             terminated: this.props.terminated,
-            messages: messages,
-            chatView: false,
+            chatView: !videoEnabled,
+            audioView: !videoEnabled,
+            isLandscape: this.props.isLandscape,
             selectedContacts: this.props.selectedContacts
         };
 
@@ -134,7 +166,6 @@ class ConferenceBox extends Component {
 
         this.overlayTimer = null;
         this.logEvent = {};
-        this.haveVideo = false;
         this.uploads = [];
         this.selectSpeaker = 1;
         this.foundContacts = new Map();
@@ -169,6 +200,99 @@ class ConferenceBox extends Component {
              this.updateParticipantsStatus();
         }, this.sampleInterval * 1000);
 
+        setTimeout(() => {
+            this.listSharedFiles();
+        }, 1000);
+    }
+
+    messageExists(giftedChatMessage, sylkMessage) {
+       if (sylkMessage._id === giftedChatMessage._id) {
+           return true;
+       }
+
+       let gs_timestamp = giftedChatMessage.createdAt;
+       let sylk_timestamp = sylkMessage.timestamp;
+
+       gs_timestamp.setMilliseconds(0);
+       sylk_timestamp.setMilliseconds(0);
+
+       if (gs_timestamp.toString() === sylk_timestamp.toString() && giftedChatMessage.text === sylkMessage.content) {
+           return true;
+       }
+
+       return false;
+    }
+
+    //getDerivedStateFromProps(nextProps, state) {
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.hasOwnProperty('muted')) {
+            this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.call !== null && nextProps.call !== this.state.call) {
+            this.setState({call: nextProps.call});
+        }
+
+        if (nextProps.inFocus !== this.state.inFocus) {
+            if (nextProps.inFocus) {
+                if (!this.state.videoMutedbyUser) {
+                    this._resumeVideo();
+                }
+            } else {
+                this._muteVideo();
+            }
+            this.setState({inFocus: nextProps.inFocus});
+        }
+
+        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
+            this.setState({reconnectingCall: nextProps.reconnectingCall});
+        }
+
+        if (nextProps.remoteUri in nextProps.messages) {
+            let renderMessages = nextProps.messages[nextProps.remoteUri];
+            let direction;
+
+            if (nextProps.call) {
+                let giftedChatMessage;
+                nextProps.call.messages.forEach((sylkMessage) => {
+                    if (sylkMessage.type === 'status') {
+                        return;
+                    }
+
+                    if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
+                        return;
+                    }
+
+                    if (!this.seenMessages.has(sylkMessage._id)) {
+                        this.seenMessages.set(sylkMessage._id, true);
+
+                        const existingMessages = renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
+                        if (existingMessages.length > 0) {
+                            return;
+                        }
+
+                        direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
+
+                        if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
+                            direction = 'outgoing';
+                        }
+
+                        giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
+
+                        renderMessages.push(giftedChatMessage);
+                        this.props.saveMessage(this.props.remoteUri, giftedChatMessage);
+                    }
+                });
+            }
+            this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
+        }
+
+        this.setState({terminated: nextProps.terminated,
+                       remoteUri: nextProps.remoteUri,
+                       isLandscape: nextProps.isLandscape,
+                       messages: nextProps.messages,
+                       accountId: !this.state.accountId && nextProps.call ? this.props.call.account.id : this.state.accountId,
+                       selectedContacts: nextProps.selectedContacts});
     }
 
     getInfo() {
@@ -186,6 +310,28 @@ class ConferenceBox extends Component {
         }
 
         return info;
+    }
+
+    renderCustomActions = props =>
+    (
+      <CustomChatActions {...props} onSend={this.onSendFromUser} onSendWithFile={this.onSendWithFile}/>
+    )
+
+    onSendFromUser() {
+        console.log('On send from user...');
+    }
+
+    onSendWithFile(selectedFile) {
+
+        let fileData = {
+            name: selectedFile.name,
+            type: selectedFile.type,
+            size: selectedFile.size,
+            uri: selectedFile.uri
+        };
+
+        console.log('Sending file', fileData);
+        //this.props.sendMessage(uri, message);
     }
 
     updateParticipantsStatus() {
@@ -256,7 +402,9 @@ class ConferenceBox extends Component {
               text: text,
               system: true,
             };
-        this.setState({messages: GiftedChat.append(this.state.messages, [giftedChatMessage])});
+
+        this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
     }
 
     componentDidMount() {
@@ -265,6 +413,15 @@ class ConferenceBox extends Component {
             p.attach();
         }
 
+        this.keyboardDidShowListener = Keyboard.addListener(
+              'keyboardDidShow',
+              this._keyboardDidShow
+            );
+        this.keyboardDidHideListener = Keyboard.addListener(
+              'keyboardDidHide',
+              this._keyboardDidHide
+            );
+
         this.props.call.on('participantJoined', this.onParticipantJoined);
         this.props.call.on('participantLeft', this.onParticipantLeft);
         this.props.call.on('roomConfigured', this.onConfigureRoom);
@@ -272,9 +429,7 @@ class ConferenceBox extends Component {
         this.props.call.on('composingIndication', this.composingIndicationReceived);
         this.props.call.on('message', this.messageReceived);
 
-        if (this.state.participants.length > 1) {
-            this.armOverlayTimer();
-        }
+        this.armOverlayTimer();
 
         // attach to ourselves first if there are no other participants
         if (this.state.participants.length === 0) {
@@ -296,10 +451,6 @@ class ConferenceBox extends Component {
             // this.changeResolution();
         }
 
-        if (this.props.call.getLocalStreams()[0].getVideoTracks().length !== 0) {
-            this.haveVideo = true;
-        }
-
         if (this.state.videoMuted) {
             this._muteVideo();
         }
@@ -319,36 +470,16 @@ class ConferenceBox extends Component {
             this.props.notificationCenter().removeNotification(upload[1]);
             upload[0].abort();
         })
+        this.keyboardDidShowListener.remove();
+        this.keyboardDidHideListener.remove();
     }
 
-    //getDerivedStateFromProps(nextProps, state) {
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.hasOwnProperty('muted')) {
-            this.setState({audioMuted: nextProps.muted});
-        }
+    _keyboardDidShow() {
+       this.setState({keyboardVisible: true});
+    }
 
-        if (nextProps.call !== null && nextProps.call !== this.state.call) {
-            this.setState({call: nextProps.call});
-        }
-
-        if (nextProps.inFocus !== this.state.inFocus) {
-            if (nextProps.inFocus) {
-                if (!this.state.videoMutedbyUser) {
-                    this._resumeVideo();
-                }
-            } else {
-                this._muteVideo();
-            }
-            this.setState({inFocus: nextProps.inFocus});
-        }
-
-        if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
-            this.setState({reconnectingCall: nextProps.reconnectingCall});
-        }
-
-        this.setState({terminated: nextProps.terminated,
-                       remoteUri: nextProps.remoteUri,
-                       selectedContacts: nextProps.selectedContacts});
+    _keyboardDidHide() {
+        this.setState({keyboardVisible: false});
     }
 
     findObjectByKey(array, key, value) {
@@ -365,16 +496,27 @@ class ConferenceBox extends Component {
     }
 
     messageReceived(sylkMessage) {
-        if (sylkMessage.content.indexOf('has joined the room') > -1) {
+        //console.log('Conference got message', sylkMessage);
+
+        if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
             return;
         }
 
-        if (sylkMessage.content.indexOf('has left the room after') > -1) {
+        const existingMessages = this.state.renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
+        if (existingMessages.length > 0) {
             return;
+        }
+
+        if (sylkMessage.direction === 'incoming' && sylkMessage.sender.uri === this.state.accountId) {
+            sylkMessage.direction = 'outgoing';
         }
 
         const giftedChatMessage = utils.sylkToRenderMessage(sylkMessage);
-        this.setState({messages: GiftedChat.append(this.state.messages, [giftedChatMessage])});
+        if (sylkMessage.type === 'status') {
+            return;
+        }
+
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
         this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
     }
 
@@ -382,12 +524,14 @@ class ConferenceBox extends Component {
         if (!this.props.call) {
             return;
         }
+
+        console.log('onSendMessage', messages);
         messages.forEach((message) => {
             this.props.call.sendMessage(message.text, 'text/plain')
+            message.direction = 'outgoing';
             this.props.saveMessage(this.state.remoteUri, message);
-
         });
-        this.setState({messages: GiftedChat.append(this.state.messages, messages)});
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
     lookupContact(uri, displayName) {
@@ -627,7 +771,9 @@ class ConferenceBox extends Component {
         });
      };
 
+
      onParticipantJoined(p) {
+        console.log(p.identity.uri, 'joined the conference');
         if (p.identity._uri.search('guest.') === -1) {
             if (p.identity._uri !== this.props.call.localIdentity._uri) {
                 // used for history item
@@ -650,15 +796,11 @@ class ConferenceBox extends Component {
             participants: this.state.participants.concat([p])
         });
         // this.changeResolution();
-        if (this.state.participants.length > 1) {
-            this.armOverlayTimer();
-        } else {
-            this.setState({callOverlayVisible: true});
-        }
+        this.armOverlayTimer();
     }
 
     onParticipantLeft(p) {
-        //console.log(p.identity.uri, 'left the conference');
+        console.log(p.identity.uri, 'left the conference');
         const participants = this.state.participants.slice();
 
         this.audioBandwidth.delete(p.id);
@@ -684,11 +826,7 @@ class ConferenceBox extends Component {
         }
         p.detach(true);
         // this.changeResolution();
-        if (this.state.participants.length > 1) {
-            this.armOverlayTimer();
-        } else {
-            this.setState({callOverlayVisible: true});
-        }
+        this.armOverlayTimer();
 
         this.postChatSystemMessage(p.identity.uri + ' left');
     }
@@ -717,11 +855,60 @@ class ConferenceBox extends Component {
         let stateFiles = this.state.sharedFiles;
         stateFiles = stateFiles.concat(files);
         this.setState({sharedFiles: stateFiles});
-        files.forEach((file)=>{
+        this.listSharedFiles();
+    }
+
+    listSharedFiles() {
+        let sharedFiles = this.state.sharedFiles;
+        let url;
+        let i = 0;
+        let new_messages = [];
+        let image;
+        this.state.sharedFiles.forEach((file)=>{
             if (file.session !== this.props.call.id) {
-                this.props.notificationCenter().postFileShared(file, this.showFiles);
+                //console.log(file);
+                image = null;
+                if (!file.msg_id) {
+                    url = this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + file.session + '/' + file.filename;
+                    file.msg_id = file.session;
+                    sharedFiles[i] = file;
+
+                    const direction = file.uploader.uri === this.props.account.id ? 'outgoing' : 'incoming';
+                    const txt = url;
+
+                    if (file.filename.toLowerCase().endsWith('.png')) {
+                        image = url;
+                    } else if (file.filename.toLowerCase().endsWith('.jpg')) {
+                        image = url;
+                    } else if (file.filename.toLowerCase().endsWith('.gif')) {
+                        image = url;
+                    }
+
+                    const giftedChatMessage = {
+                          _id: file.msg_id,
+                          createdAt: new Date(),
+                          text: txt,
+                          url: url,
+                          image: url,
+                          received: direction === 'incoming',
+                          user: direction === 'incoming' ? {_id: file.uploader.uri, name: file.uploader.displayName} : {}
+                        };
+                    new_messages.push(giftedChatMessage);
+                    this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
+                }
+                //console.log('file', file.msg_id, url);
+                //this.props.notificationCenter().postFileShared(file, this.showFiles);
             }
-        })
+            i = i + 1;
+        });
+
+        this.setState({sharedFiles: sharedFiles});
+        if (new_messages.length > 0) {
+            console.log('new_messages', new_messages);
+            console.log('this.state.messages.length', this.state.messages.length);
+            this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, new_messages)});
+        }
+
     }
 
     onVideoSelected(item) {
@@ -880,19 +1067,6 @@ class ConferenceBox extends Component {
         }
     }
 
-    downloadFile(filename) {
-        // const a = document.createElement('a');
-        // a.href = `${config.fileSharingUrl}/${this.state.remoteUri}/${this.props.call.id}/${filename}`;
-        // a.target = '_blank';
-        // a.download = filename;
-        // const clickEvent = document.createEvent('MouseEvent');
-        // clickEvent.initMouseEvent('click', true, true, window, 0,
-        //     clickEvent.screenX, clickEvent.screenY, clickEvent.clientX, clickEvent.clientY,
-        //     clickEvent.ctrlKey, clickEvent.altKey, clickEvent.shiftKey, clickEvent.metaKey,
-        //     0, null);
-        // a.dispatchEvent(clickEvent);
-    }
-
     preventOverlay(event) {
         // Stop the overlay when we are the thumbnail bar
         event.stopPropagation();
@@ -901,17 +1075,33 @@ class ConferenceBox extends Component {
     muteAudio(event) {
         event.preventDefault();
         if (this.state.audioMuted) {
-            this.postChatSystemMessage('Audio un-muted');
+            //this.postChatSystemMessage('Audio un-muted');
             this.props.toggleMute(this.props.call.id, false);
         } else {
-            this.postChatSystemMessage('Audio muted');
+            //this.postChatSystemMessage('Audio muted');
             this.props.toggleMute(this.props.call.id, true);
         }
      }
 
     toggleChat(event) {
         event.preventDefault();
-        this.setState({chatView: !this.state.chatView});
+        if (this.state.videoEnabled) {
+            this.props.goBackFunc();
+        } else {
+            if (this.state.chatView && !this.state.audioView) {
+                this.setState({audioView: !this.state.audioView});
+            }
+
+            this.setState({chatView: !this.state.chatView});
+        }
+    }
+
+    toggleAudioParticipants(event) {
+        event.preventDefault();
+        if (this.state.audioView && !this.state.chatView) {
+            this.setState({chatView: !this.state.chatView});
+        }
+        this.setState({audioView: !this.state.audioView});
     }
 
     toggleCamera(event) {
@@ -970,11 +1160,14 @@ class ConferenceBox extends Component {
         if (this.props.audioOnly) {
             return;
         }
+        this.setState({callOverlayVisible: true});
 
-        clearTimeout(this.overlayTimer);
-        this.overlayTimer = setTimeout(() => {
-            this.setState({callOverlayVisible: false});
-        }, 4000);
+        if (this.state.participants.length > 0) {
+            clearTimeout(this.overlayTimer);
+            this.overlayTimer = setTimeout(() => {
+                this.setState({callOverlayVisible: false});
+            }, 5000);
+        }
     }
 
     showOverlay() {
@@ -1031,6 +1224,7 @@ class ConferenceBox extends Component {
             return (<View></View>);
         }
 
+        //console.log('---- Conference box', this.props.callContact);
 
         let watermark;
 
@@ -1052,59 +1246,8 @@ class ConferenceBox extends Component {
             'drawer-visible': this.state.showDrawer || this.state.showFiles
         });
 
-        const remoteUri = this.state.remoteUri.split('@')[0];
-        console.log('Render conference', remoteUri);
-
-        // const shareOverlay = (
-        //     <Portal>
-        //         <Modal>
-        //             <Surface>
-        //                 <Paragraph>
-        //                     Invite other online users of this service, share <strong><a href={this.conferenceUrl} target="_blank" rel="noopener noreferrer">this link</a></strong> with others or email, so they can easily join this conference.
-        //                 </Paragraph>
-        //                 <View className="text-center">
-        //                     <View className="btn-group">
-        //                         <IconButton
-        //                             size={25}
-        //                             onPress={this.toggleInviteModal}
-        //                             icon="account-plus"
-        //                         />
-        //                         <IconButton className="btn btn-primary" onPress={this.handleClipboardButton} icon="copy" />
-        //                         <IconButton className="btn btn-primary" onPress={this.handleEmailButton} alt="Send email" icon="email" />
-        //                     </View>
-        //                 </View>
-        //             </Surface>
-        //         </Modal>
-        //     </Portal>
-        // );
 
         const buttons = {};
-
-        // const commonButtonTopClasses = classNames({
-        //     'btn'           : true,
-        //     'btn-link'      : true
-        // });
-
-        // const fullScreenButtonIcons = classNames({
-        //     'fa'            : true,
-        //     'fa-2x'         : true,
-        //     'fa-expand'     : !this.isFullScreen(),
-        //     'fa-compress'   : this.isFullScreen()
-        // });
-
-        const topButtons = [];
-
-        // if (!this.state.showFiles) {
-        //     if (this.state.sharedFiles.length !== 0) {
-        //         topButtons.push(
-        //             <Badge badgeContent={this.state.sharedFiles.length} color="primary" classes={{badge: this.props.classes.badge}}>
-        //                 <button key="fbButton" type="button" title="Open Drawer" className={commonButtonTopClasses} onPress={this.toggleFiles}> <i className="fa fa-files-o fa-2x"></i> </button>
-        //             </Badge>
-        //         );
-        //     }
-        // }
-
-        buttons.top = {right: topButtons};
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
@@ -1126,16 +1269,66 @@ class ConferenceBox extends Component {
         let myself = {id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity};
         let unselectItem = {id: 'none', publisherId: null, identity: {uri: 'none', displayName: 'No speaker'}};
 
-        if (!this.state.showDrawer && speakerSelectionParticipants.length > 0) {
-            topButtons.push(<Appbar.Action key="sbButton" title="Open Drawer" onPress={this.toggleDrawer} icon="account-tie" />);
-        }
-
         speakerSelectionParticipants.push(myself);
         speakerSelectionParticipants.push(unselectItem);
 
+        //console.log('----speakerSelectionParticipants', speakerSelectionParticipants);
         const floatingButtons = [];
-        if (this.haveVideo) {
+        if (!this.state.showDrawer && speakerSelectionParticipants.length > 2 && this.state.videoEnabled) {
             floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
+                <IconButton
+                    size={25}
+                    style={buttonClass}
+                    title="Select speaker"
+                    onPress={this.toggleDrawer}
+                    icon="account-tie"
+                    key="select-speaker"
+                />
+                </TouchableHighlight>
+              </View>
+            );
+        }
+
+            if (!this.state.isTablet && !this.state.isLandscape) {
+            floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
+                <IconButton
+                    size={this.state.videoEnabled ? 25 : 25}
+                    style={buttonClass}
+                    title="Chat"
+                    onPress={this.toggleChat}
+                    icon="chat"
+                    key="toggleChat"
+                />
+                </TouchableHighlight>
+              </View>
+            );
+           }
+
+           if (!this.state.videoEnabled && !this.state.isLandscape) {
+               floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
+                <IconButton
+                    size={this.state.videoEnabled ? 25 : 25}
+                    style={buttonClass}
+                    title="Chat"
+                    onPress={this.toggleAudioParticipants}
+                    icon="account-multiple"
+                    key="toggleChat"
+                />
+                </TouchableHighlight>
+              </View>
+            );
+            }
+
+           if (this.state.videoEnabled) {
+            floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={25}
                     style={buttonClass}
@@ -1144,21 +1337,29 @@ class ConferenceBox extends Component {
                     icon={muteVideoButtonIcons}
                     key="muteButton"
                 />
+                </TouchableHighlight>
+              </View>
             );
         }
         floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
             <IconButton
-                size={25}
+                size={this.state.videoEnabled ? 25 : 25}
                 style={buttonClass}
                 title="Mute/unmute audio"
                 onPress={this.muteAudio}
                 icon={muteButtonIcons}
                 key="muteAudioButton"
             />
+                </TouchableHighlight>
+              </View>
         );
 
-        if (this.haveVideo) {
+        if (this.state.videoEnabled) {
             floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={25}
                     style={buttonClass}
@@ -1167,47 +1368,91 @@ class ConferenceBox extends Component {
                     icon='video-switch'
                     key="toggleVideo"
                 />
+                </TouchableHighlight>
+              </View>
             );
-            floatingButtons.push(
-                <IconButton
-                    size={25}
-                    style={buttonClass}
-                    title="Chat"
-                    onPress={this.toggleChat}
-                    icon='wechat'
-                    key="toggleChat"
-                />
-            );
+
         }
 
         if (!this.state.reconnectingCall) {
             floatingButtons.push(
+              <View style={styles.buttonContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
                 <IconButton
-                    size={25}
+                    size={this.state.videoEnabled ? 25 : 25}
                     style={buttonClass}
                     icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                     onPress={this.props.toggleSpeakerPhone}
                     key="speakerPhoneButton"
                 />
+                </TouchableHighlight>
+              </View>
             )
-            // floatingButtons.push(
-            //     <View key="shareFiles">
-            //         <IconButton size={25} style={buttonClass} title="Share files" component="span" disableRipple={true} icon="upload"/>
-            //     </View>
-            // );
         }
 
         floatingButtons.push(
+          <View style={styles.buttonContainer}>
+              <TouchableHighlight style={styles.roundshape}>
             <IconButton
-                size={25}
+                size={this.state.videoEnabled ? 25 : 25}
+                style={buttonClass}
+                title="Share"
+                onPress={this.props.inviteToConferenceFunc}
+                icon="account-plus"
+                key="invite"
+            />
+            </TouchableHighlight>
+          </View>
+        );
+
+        floatingButtons.push(
+          <View style={styles.buttonContainer}>
+              <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                style={buttonClass}
+                title="Share"
+                onPress={this.toggleInviteModal}
+                icon="share"
+                key="share"
+            />
+            </TouchableHighlight>
+          </View>
+        );
+
+        if (this.props.isLandscape) {
+            buttons.additional = floatingButtons;
+        } else {
+            buttons.additional = [];
+        }
+
+        buttons.additional.push(
+          <View style={styles.buttonContainer}>
+          <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                disabled={true}
+                title="space"
+                key="spacer"
+            />
+            </TouchableHighlight>
+          </View>
+        );
+
+        buttons.additional.push(
+          <View style={styles.buttonContainer}>
+          <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
                 style={[buttonClass, styles.hangupButton]}
                 title="Leave conference"
                 onPress={this.hangup}
                 icon="phone-hangup"
                 key="hangupButton"
             />
+            </TouchableHighlight>
+          </View>
         );
-        buttons.bottom = floatingButtons;
 
         const audioParticipants = [];
         let _contact;
@@ -1252,7 +1497,7 @@ class ConferenceBox extends Component {
                         status = this.packetLoss.get(p.id) + '% loss';
                     }
                 } else if (this.latency.has(p.id) && this.latency.get(p.id) > 150) {
-                    status = this.latency.get(p.id) + ' ms delay';
+                    status = this.latency.get(p.id) + ' ms';
                 }
 
                 audioParticipants.push(
@@ -1298,22 +1543,31 @@ class ConferenceBox extends Component {
                 );
             });
 
-            const conferenceContainer = this.props.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
-            const audioContainer = this.props.isLandscape ? styles.audioContainerLandscape : styles.audioContainer;
-            let chatContainer = this.props.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
+            const conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
+            const audioContainer = this.state.isLandscape ? styles.audioContainerLandscape : styles.audioContainerPortrait;
+            let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
             if (this.props.audioOnly) {
-                chatContainer = this.props.isLandscape ? styles.chatContainerLandscapeAudio : styles.chatContainerPortraitAudio;
+                chatContainer = this.state.isLandscape ? styles.chatContainerLandscapeAudio : styles.chatContainerPortraitAudio;
             }
+
+         let renderMessages = this.state.renderMessages;
+         renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
 
             return (
                 <View style={styles.container} >
                     <View style={conferenceContainer}>
+                        {!this.state.keyboardVisible && !this.props.isLandscape ?
+                        <View style={styles.buttonsContainer}>
+                            {floatingButtons}
+                        </View>
+                        : null}
                         <ConferenceHeader
                             show={true}
                             call={this.state.call}
                             callContact={this.props.callContact}
                             isTablet={this.props.isTablet}
-                            remoteUri={remoteUri}
+                            isLandscape={this.state.isLandscape}
+                            remoteUri={this.state.remoteUri}
                             participants={this.state.participants.length}
                             reconnectingCall={this.state.reconnectingCall}
                             buttons={buttons}
@@ -1326,24 +1580,28 @@ class ConferenceBox extends Component {
                             callState={this.props.callState}
                         />
 
+                        {!this.state.keyboardVisible && (this.state.audioView || this.state.isLandscape) ?
                         <View style={audioContainer}>
                             <ConferenceAudioParticipantList >
                                 {audioParticipants}
                             </ConferenceAudioParticipantList>
                         </View>
+                        : null}
 
-                        <View style={chatContainer}>
-                            <GiftedChat
-                              messages={this.state.messages}
-                              onSend={this.onSendMessage}
-                              alwaysShowSend={true}
-                              scrollToBottom
-                              inverted={true}
-                              timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
-                              infiniteScroll
-                            />
-                        </View>
-
+                            {this.state.chatView || this.state.isLandscape ?
+                            <View style={chatContainer}>
+                                <GiftedChat
+                                  messages={renderMessages}
+                                  renderActions={this.renderCustomActions}
+                                  onSend={this.onSendMessage}
+                                  alwaysShowSend={true}
+                                  scrollToBottom
+                                  inverted={true}
+                                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                                  infiniteScroll
+                                />
+                            </View>
+                            : null}
                     </View>
 
                     <InviteParticipantsModal
@@ -1363,11 +1621,11 @@ class ConferenceBox extends Component {
                 <ConferenceDrawer
                     show={this.state.showDrawer && !this.state.reconnectingCall}
                     close={this.toggleDrawer}
-                    isLandscape={this.props.isLandscape}
+                    isLandscape={this.state.isLandscape}
                     title="Conference room configuration"
                     >
-                    <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 160}, styles.landscapeDrawer] : styles.portraitDrawer}>
-                        <View style={{flex: this.props.isLandscape ? 1 : 2}}>
+                    <View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 160}, styles.landscapeDrawer] : styles.portraitDrawer}>
+                        <View style={{flex: this.state.isLandscape ? 1 : 2}}>
                             <ConferenceDrawerSpeakerSelectionWrapper
                                 selectSpeaker={this.startSpeakerSelection}
                                 activeSpeakers={this.state.activeSpeakers}
@@ -1381,7 +1639,7 @@ class ConferenceBox extends Component {
                 <ConferenceDrawer
                     show={this.state.showSpeakerSelection}
                     close={this.toggleSpeakerSelection}
-                    isLandscape={this.props.isLandscape}
+                    isLandscape={this.state.isLandscape}
                     showBackdrop={false}
                     title={`Select speaker ${this.selectSpeaker}`}
                     >
@@ -1448,7 +1706,7 @@ class ConferenceBox extends Component {
                         }
 
                     } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
-                        status = this.latency.get(p.id) + ' ms delay';
+                        status = this.latency.get(p.id) + ' ms';
                     }
 
                     if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
@@ -1543,7 +1801,7 @@ class ConferenceBox extends Component {
                             participant = {p}
                             large = {this.state.participants.length <= 1}
                             pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
-                            isLandscape={this.props.isLandscape}
+                            isLandscape={this.state.isLandscape}
                             isTablet={this.props.isTablet}
                             useTwoRows={this.state.participants.length > 2}
                             status={status}
@@ -1572,30 +1830,25 @@ class ConferenceBox extends Component {
             }
         }
 
-        // let filesDrawerContent = (
-        //     <ConferenceDrawerFiles
-        //         sharedFiles={this.state.sharedFiles}
-        //         downloadFile={this.downloadFile}
-        //     />
-        // );
-
-        console.log('We have', videos.length, 'video blocks');
-
         const currentParticipants = this.state.participants.map((p) => {return p.identity.uri})
         const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
 
-        const conferenceContainer = this.props.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
-        const audioContainer = this.props.isLandscape ? styles.audioContainerLandscape : styles.audioContainer;
-        const chatContainer = this.props.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
+        const conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
+        const chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
+
+        if (!this.state.isLandscape && this.state.callOverlayVisible) {
+            buttons.bottom = floatingButtons;
+        }
 
         return (
             <View style={styles.container}>
-                <View style={conferenceContainer}>
+                    <View style={conferenceContainer}>
+                    {this.state.callOverlayVisible ?
                     <ConferenceHeader
-                        show={this.state.callOverlayVisible}
-                        remoteUri={remoteUri}
+                        remoteUri={this.state.remoteUri}
                         callContact={this.props.callContact}
                         isTablet={this.props.isTablet}
+                        isLandscape={this.state.isLandscape}
                         call={this.state.call}
                         participants={this.state.participants.length}
                         reconnectingCall={this.state.reconnectingCall}
@@ -1608,6 +1861,8 @@ class ConferenceBox extends Component {
                         inviteToConferenceFunc={this.props.inviteToConferenceFunc}
                         callState={this.props.callState}
                     />
+                    : null}
+
                     {this.state.chatView || false?
                      <View style={chatContainer}>
                         <GiftedChat
@@ -1623,7 +1878,7 @@ class ConferenceBox extends Component {
                     : null}
 
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
-                        <View style={[styles.videosContainer, this.props.isLandscape ? styles.landscapeVideosContainer: null]}>
+                        <View style={[styles.videosContainer, this.state.isLandscape ? styles.landscapeVideosContainer: null]}>
                             {videos}
                         </View>
                     </TouchableWithoutFeedback>
@@ -1633,8 +1888,6 @@ class ConferenceBox extends Component {
                             {participants}
                         </ConferenceCarousel>
                     </View>
-
-
                 </View>
 
                 <InviteParticipantsModal
@@ -1652,11 +1905,11 @@ class ConferenceBox extends Component {
                 <ConferenceDrawer
                     show={this.state.showDrawer && !this.state.reconnectingCall}
                     close={this.toggleDrawer}
-                    isLandscape={this.props.isLandscape}
+                    isLandscape={this.state.isLandscape}
                     title="Conference room configuration"
                 >
-                    <View style={this.props.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
-                        <View style={{flex: this.props.isLandscape ? 1 : 2}}>
+                    <View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
+                        <View style={{flex: this.state.isLandscape ? 1 : 2}}>
                             <ConferenceDrawerSpeakerSelectionWrapper
                                 selectSpeaker={this.startSpeakerSelection}
                                 activeSpeakers={this.state.activeSpeakers}
@@ -1670,7 +1923,7 @@ class ConferenceBox extends Component {
                 <ConferenceDrawer
                     show={this.state.showSpeakerSelection}
                     close={this.toggleSpeakerSelection}
-                    isLandscape={this.props.isLandscape}
+                    isLandscape={this.state.isLandscape}
                     showBackdrop={false}
                     title={`Select speaker ${this.selectSpeaker}`}
                 >
@@ -1717,7 +1970,10 @@ ConferenceBox.propTypes = {
     selectedContacts    : PropTypes.array,
     callState           : PropTypes.object,
     callContact         : PropTypes.object,
-    finishInvite        : PropTypes.func
+    finishInvite        : PropTypes.func,
+    account             : PropTypes.object,
+    messages            : PropTypes.object,
+    fileSharingUrl      : PropTypes.string
 };
 
 export default ConferenceBox;

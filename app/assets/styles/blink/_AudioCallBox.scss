@@ -28,8 +28,9 @@
     flex-direction: row;
     margin: 0 auto;
     margin-top:auto;
-    bottom: 20;
     margin-bottom: 50px;
+    padding-left: 20px;
+    padding-right: 20px;
 }
 
 .tabletPortraitButtonContainer {
@@ -63,35 +64,46 @@
     margin-top: 30px;
 }
 
+.buttonContainer {
+    justifyContent: center;
+    alignItems: center;
+    flex: 1;
+    border: 0px;
+}
+
+.roundshape {
+    height: 48; //any of height
+    width: 48; //any of width
+    justifyContent: center;
+    borderRadius: 24px;
+}
+
+.whiteButton {
+    background-color: white;
+}
+
+.disabledWhiteButton {
+    background-color: rgba(#395936, .9);
+}
+
+.greenButton {
+    background-color: rgba(#6DAA63, .9);
+}
+
+.disabledGreenButton {
+    background-color: rgba(#395936, .9);
+}
+
+.hangupButton {
+    background-color: rgba(#a94442, .8);
+}
+
+
 .button {
     background-color: white;
     margin: 10px;
     padding-top: 5px;
     padding-left: 0px;
-}
-
-.iosButton {
-    background-color: rgba(#F9F9F9, .7);
-    margin: 10px;
-    padding-top: 5px;
-}
-
-.androidButton {
-    background-color: rgba(#F9F9F9, .7);
-    margin: 10px;
-    padding-top: 1px;
-}
-
-.iosChatButton {
-    background-color: rgba(#6DAA63, .9);
-    margin: 10px;
-    padding-top: 5px;
-}
-
-.androidChatButton {
-    background-color: rgba(#6DAA63, .9);
-    margin: 10px;
-    padding-top: 1px;
 }
 
 .hangupButton {

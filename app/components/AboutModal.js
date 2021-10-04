@@ -19,12 +19,13 @@ const AboutModal = (props) => {
                     <Dialog.Title style={styles.title}>About Sylk</Dialog.Title>
                     <Text style={styles.body}>Sylk is part of Sylk Suite, a set of real-time
                     communications applications using IETF SIP protocol and WebRTC specifications</Text>
-                    <Text style={styles.version}> Installed version {props.currentVersion}</Text>
+                    <Text style={styles.version}>Version {props.currentVersion}</Text>
                     { props.appStoreVersion && props.appStoreVersion.version > props.currentVersion ?
                         <Text style={styles.version}> There is a newer version in the App Store {props.appStoreVersion.version}</Text>
                     : null
                     }
                     <Text onPress={() => handleLink()} style={styles.link}>Copyright &copy; AG Projects</Text>
+                    <Text style={styles.love}>For family, friends and customers, with love.</Text>
                 </Surface>
             </DialogType>
         </Portal>

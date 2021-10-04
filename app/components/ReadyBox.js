@@ -2,11 +2,12 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform} from 'react-native';
-import { IconButton, Title, Button } from 'react-native-paper';
+import { FlatList, View, Platform, TouchableHighlight} from 'react-native';
+import { IconButton, Title, Button, Colors  } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';
+
 import FooterBox from './FooterBox';
 import URIInput from './URIInput';
 import config from '../config';
@@ -43,7 +44,8 @@ class ReadyBox extends Component {
             pinned: this.props.pinned,
             messageZoomFactor: this.props.messageZoomFactor,
             isTyping: this.props.isTyping,
-            navigationItems: this.props.navigationItems
+            navigationItems: this.props.navigationItems,
+            fontScale: this.props.fontScale
         };
         this.ended = false;
     }
@@ -96,6 +98,7 @@ class ReadyBox extends Component {
                         favoriteUris: nextProps.favoriteUris,
                         blockedUris: nextProps.blockedUris,
                         missedCalls: nextProps.missedCalls,
+                        fontScale: nextProps.fontScale,
                         isLandscape: nextProps.isLandscape});
     }
 
@@ -149,27 +152,23 @@ class ReadyBox extends Component {
     }
 
     get showSearchBar() {
-        if (this.props.isTablet || this.props.isLandscape) {
-            return true;
-        }
-
-        if (this.state.call) {
+        if (this.state.selectedContact && !this.props.isTablet) {
             return false;
         }
 
-        return (this.state.selectedContact ===  null);
+        if (this.props.isTablet || (!this.props.isLandscape && this.state.selectedContact)) {
+            return true;
+        }
+
+        if (this.state.call && !this.state.inviteContacts) {
+            return false;
+        }
+
+        return true;
     }
 
     get showButtonsBar() {
         if (this.props.isTablet) {
-            return true;
-        }
-
-        if (this.state.shareToContacts) {
-            return true;
-        }
-
-        if (this.props.isLandscape) {
             return true;
         }
 
@@ -182,6 +181,9 @@ class ReadyBox extends Component {
         }
 
         if (this.state.selectedContact) {
+            if (this.props.isLandscape && !this.props.isTablet) {
+                return false;
+            }
             return true;
         }
 
@@ -287,7 +289,6 @@ class ReadyBox extends Component {
             this.props.selectContact(contact);
             this.setState({targetUri: uri, chat: true});
             Keyboard.dismiss();
-            //this.handleTargetChange(targetUri, contact);
         }
 
         this.setState({chat: !this.state.chat});
@@ -345,6 +346,10 @@ class ReadyBox extends Component {
 
     get chatButtonDisabled() {
         let uri = this.state.targetUri.trim();
+
+        if (this.state.selectedContact) {
+            return true;
+        }
 
         if (this.state.shareToContacts) {
             return true;
@@ -484,7 +489,27 @@ class ReadyBox extends Component {
             }
         }
 
-        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        /*
+        console.log('Render -----');
+
+        if (this.state.selectedContact) {
+            console.log('Render selectedContact', this.state.selectedContact.name);
+        }
+
+        if (this.state.callContact) {
+            console.log('Render callContact', this.state.callContact.uri);
+        }
+
+        if (this.state.targetUri) {
+            console.log('Render targetUri', this.state.targetUri);
+        }
+
+        console.log('Render chat', this.state.chat);
+        */
+
+        let buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+
+        let disabledButtonClass = styles.disabledButton;
 
         if (this.props.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;
@@ -507,9 +532,10 @@ class ReadyBox extends Component {
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
         const buttonGroupClass = this.props.orientation === 'landscape' ? styles.landscapeButtonGroup : styles.buttonGroup;
         const borderClass = this.state.chat ? null : styles.historyBorder;
-        let callType = 'Back to call';
+        let backButtonTitle = 'Back to call';
+
         if (this.state.call && this.state.call.hasOwnProperty('_participants')) {
-            callType = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
+            backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
         }
 
         let navigationMenuData = [
@@ -559,64 +585,84 @@ class ReadyBox extends Component {
 
                             {this.state.call ?
                             <View style={buttonGroupClass}>
-
                                 <Button
                                     mode="contained"
                                     style={styles.backButton}
                                     onPress={this.props.goBackFunc}
-                                    accessibilityLabel={callType}
-                                    >{callType}
+                                    accessibilityLabel={backButtonTitle}
+                                    >{backButtonTitle}
                                 </Button>
                             </View>
                                 :
                             <View style={buttonGroupClass}>
-                                <IconButton
-                                    style={buttonClass}
-                                    size={32}
-                                    disabled={this.chatButtonDisabled}
-                                    onPress={this.handleChat}
-                                    icon="chat"
-                                />
-                                <IconButton
-                                    style={buttonClass}
-                                    size={32}
-                                    disabled={this.callButtonDisabled}
-                                    onPress={this.handleAudioCall}
-                                    icon="phone"
-                                />
-                                <IconButton
-                                    style={buttonClass}
-                                    size={32}
-                                    disabled={this.videoButtonDisabled}
-                                    onPress={this.handleVideoCall}
-                                    icon="video"
-                                />
-                                <IconButton
-                                    style={styles.conferenceButton}
-                                    disabled={this.conferenceButtonDisabled}
-                                    size={32}
-                                    onPress={this.showConferenceModal}
-                                    icon="account-group"
-                                />
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                        style={this.chatButtonDisabled ? styles.disabledGreenButton : styles.greenButton}
+                                        size={32}
+                                        disabled={this.chatButtonDisabled}
+                                        onPress={this.handleChat}
+                                        icon="chat"
+                                    />
+                                    </TouchableHighlight>
+                                  </View>
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.callButtonDisabled ? styles.disabledGreenButton : styles.greenButton}
+                                            size={32}
+                                            disabled={this.callButtonDisabled}
+                                            onPress={this.handleAudioCall}
+                                            icon="phone"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.videoButtonDisabled ? styles.disabledGreenButton : styles.greenButton}
+                                            size={32}
+                                            disabled={this.videoButtonDisabled}
+                                            onPress={this.handleVideoCall}
+                                            icon="video"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.conferenceButtonDisabled ? styles.disabledBlueButton : styles.blueButton}
+                                            disabled={this.conferenceButtonDisabled}
+                                            size={32}
+                                            onPress={this.showConferenceModal}
+                                            icon="account-group"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
 
-                                <IconButton
-                                    style={styles.conferenceButton}
-                                    disabled={!this.state.shareToContacts}
-                                    size={32}
-                                    onPress={this.shareContent}
-                                    icon="share"
-                                />
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={!this.state.shareToContacts ? styles.disabledBlueButton : styles.blueButton}
+                                            disabled={!this.state.shareToContacts}
+                                            size={32}
+                                            onPress={this.shareContent}
+                                            icon="share"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
                             </View>
-                                }
+                            }
 
                         </View>
-                                : null}
+                        : null}
 
                     </View>
                     <View style={[historyContainer, borderClass]}>
                         <ContactsListBox
                             contacts={this.state.contacts}
                             targetUri={this.state.targetUri}
+                            fontScale = {this.state.fontScale}
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             selectedContact={this.state.selectedContact}
@@ -663,6 +709,7 @@ class ReadyBox extends Component {
                             newContactFunc = {this.props.newContactFunc}
                             messageZoomFactor = {this.state.messageZoomFactor}
                             isTyping = {this.state.isTyping}
+                            call = {this.state.call}
                         />
                     </View>
 
@@ -753,8 +800,8 @@ ReadyBox.propTypes = {
     showConferenceModalFunc: PropTypes.func,
     hideConferenceModalFunc: PropTypes.func,
     shareContent:  PropTypes.func,
-    fetchSharedItems: PropTypes.func
-
+    fetchSharedItems: PropTypes.func,
+    fontScale: PropTypes.integer
 };
 
 

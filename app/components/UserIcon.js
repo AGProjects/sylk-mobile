@@ -18,12 +18,14 @@ const UserIcon = (props) => {
         initials = name.split(' ', 2).map(x => x[0]).join('');
     }
 
-    //console.log('Avatar', props.identity);
-
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
     let avatarSize = props.large ? 130: 60;
     if (props.carousel === true) {
         avatarSize = 70;
+    }
+
+    if (props.small) {
+        avatarSize = 40;
     }
 
     if (photo) {

@@ -63,8 +63,10 @@
 
 .portraitTabletUriButtonGroup {
     flex-direction: column;
-    width: 100%;
-    margin-left: 0%;
+    margin-left: 20%;
+    margin-right: 20%;
+    margin-top: 10px;
+    margin-bottom: 10px;
     justify-content: space-between;
 }
 
@@ -83,9 +85,25 @@
 .landscapeUriInputBox {
     align: left;
     flex: 1;
+    padding: 0px;
+    margin-top: 3px;
+    margin-right: 5px;
+}
+
+.landscapeTabletUriInputBox {
+    align: left;
     padding-top: 10px;
-    margin-left: 2px;
-    margin-right: 8px;
+    padding-bottom: 10px;
+    width: 66%;
+    margin-left: 1px;
+}
+
+.landscapeButtonGroup {
+    flex: 1;
+    flex-direction: row;
+    justify-content: center;
+    padding-top: 3px;
+    padding-bottom: 5px;
 }
 
 .portraitTabletUriInputBox {
@@ -94,55 +112,50 @@
     width: 100%;
 }
 
-.landscapeTabletUriInputBox {
-    align: left;
-    padding-top: 10px;
-    width: 66%;
-    margin-left: 3px;
-}
-
-.buttonGroup {
-    flex-direction: row;
-    padding-top: 5px;
-    justify-content: center;
-}
-
-.landscapeButtonGroup {
-    flex: 1;
-    flex-direction: row;
-    justify-content: flex-end;
-}
-
 .uriInputBox {
     align: left;
     padding-top: 10px;
     width: 100%;
 }
 
-.button {
-    background-color: rgba(#6DAA63, .9);
-    margin: 10px;
-    padding-top: 2px;
-    padding-left: 1px;
+.buttonGroup {
+    flex-direction: row;
+    justify-content: center;
+    padding-left: 20px;
+    padding-right: 20px;
+    padding-top: 10px;
+    padding-bottom: 10px;
 }
 
-.iosButton {
-    background-color: rgba(#6DAA63, .9);
-    margin: 10px;
-    padding-top: 4px;
-    padding-left: 1px;
+
+.buttonContainer {
+    justifyContent: center;
+    alignItems: center;
+    flex: 1;
+    border: 0px;
 }
 
-.androidButton {
-    background-color: rgba(#6DAA63, .9);
-    margin: 10px;
-    padding-top: 1px;
-    padding-left: 1px;
+.roundshape {
+    height: 48; //any of height
+    width: 48; //any of width
+    justifyContent: center;
+    borderRadius: 24px;
 }
 
-.conferenceButton {
+.greenButton {
+    background-color: rgba(#6DAA63, .9);
+}
+
+.disabledGreenButton {
+    background-color: rgba(#395936, .9);
+}
+
+.blueButton {
     background-color: rgba(#4572a6, 1);
-    margin: 10px;
+}
+
+.disabledBlueButton {
+    background-color: rgba(#2E4C6F, 1);
 }
 
 .footer {
@@ -156,8 +169,7 @@
     alignItems: center;
     background-color: red;
     color: white;
-    margin: 10px;
-    border-radius: 10px;
+    border-radius: 5px;
     border: 1px;
 }
 

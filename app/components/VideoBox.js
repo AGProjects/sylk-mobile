@@ -289,29 +289,6 @@ class VideoBox extends Component {
                     icon="phone-hangup"
                 />
             </View>);
-            if (this.props.intercomDtmfTone) {
-                content = (<View style={buttonContainerClass}>
-                    <IconButton
-                        size={50}
-                        style={buttonClass}
-                        icon={this.state.doorOpened ? "door-open": "door" }
-                        onPress={this.openDoor}
-                        disabled={!(this.state.call && this.state.call.state === 'accepted')}
-                    />
-                    <IconButton
-                        size={buttonSize}
-                        style={[buttonClass]}
-                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                        onPress={this.props.toggleSpeakerPhone}
-                    />
-                    <IconButton
-                        size={50}
-                        style={[styles.button, styles.hangupButton]}
-                        onPress={this.hangupCall}
-                        icon="phone-hangup"
-                    />
-                </View>);
-            }
             buttons = (<View style={styles.buttonContainer}>{content}</View>);
         }
 

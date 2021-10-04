@@ -31,10 +31,10 @@ class MessageInfoModal extends Component {
         }
 
         let status = this.state.message.direction === 'outgoing' ? 'Message is on the way' : 'Message was received';
-        let encryption = 'Message was not encrypted';
+        let encryption = 'Not encrypted';
 
         if (this.state.message.encrypted == 2) {
-            encryption = 'Message was encrypted';
+            encryption = 'Encrypted';
         }
 
         if (this.state.message.failed) {
@@ -47,17 +47,32 @@ class MessageInfoModal extends Component {
             status = 'Message is not yet sent';
         }
 
+        console.log('this.state.message', this.state.message);
+        let title = this.state.message ? this.state.message.user._id : null;
+
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
+                    {title ?
+                    <Dialog.Title style={styles.title}>{title}</Dialog.Title>
+                    : null}
                      <DataTable>
                         <DataTable.Row>
+                          <DataTable.Cell>Message</DataTable.Cell>
+                          <DataTable.Cell>{this.state.message._id}</DataTable.Cell>
+                        </DataTable.Row>
+                        <DataTable.Row>
+                          <DataTable.Cell>Date</DataTable.Cell>
+                          <DataTable.Cell>{this.state.message.createdAt.toString()}</DataTable.Cell>
+                        </DataTable.Row>
+                        <DataTable.Row>
+                          <DataTable.Cell>Encryption:</DataTable.Cell>
                           <DataTable.Cell>{encryption}</DataTable.Cell>
                         </DataTable.Row>
-
                         <DataTable.Row>
-                          <DataTable.Cell>{status}</DataTable.Cell>
+                          <DataTable.Cell>Direction</DataTable.Cell>
+                          <DataTable.Cell>{this.state.message.direction}</DataTable.Cell>
                         </DataTable.Row>
 
                       </DataTable>

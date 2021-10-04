@@ -185,7 +185,7 @@ class ConferenceModal extends Component {
         let participants = this.state.participants;
         let idx = participants.indexOf(uri);
         if (idx > -1) {
-            console.log('Remove', uri, 'from', participants);
+            //console.log('Remove', uri, 'from', participants);
             participants.splice(idx, 1);
             this.setState({participants: participants});
         }
@@ -233,6 +233,7 @@ class ConferenceModal extends Component {
                     <Surface >
                         <Dialog.Title style={styles.title}>Join conference</Dialog.Title>
                         <View style={styles.roomContainer}>
+                        {!this.state.selectedContact ?
                         <TextInput
                             style={styles.room}
                             mode="flat"
@@ -244,6 +245,12 @@ class ConferenceModal extends Component {
                             required
                             defaultValue={this.state.targetUri}
                         />
+                        :
+                        <Text style={styles.title}>
+                             {this.state.targetUri}
+                        </Text>
+                        }
+
 
                         </View>
 
@@ -277,14 +284,16 @@ class ConferenceModal extends Component {
 
 
                         <View style={styles.buttonRow}>
-                        <Button color={!this.state.targetUri ? "lightgray": null}
+                        <Button
                             mode="contained"
+                            disabled={!this.state.targetUri}
                             style={styles.button}
                             onPress={this.joinAudio}
                             icon="speaker"
                         >Audio</Button>
-                        <Button color={!this.state.targetUri ? "lightgray": null}
+                        <Button
                             mode="contained"
+                            disabled={!this.state.targetUri}
                             style={styles.button}
                             onPress={this.joinVideo}
                             icon="video"

@@ -2,6 +2,41 @@
     flex: 1;
 }
 
+.roundshape {
+    height: 48; //any of height
+    width: 48; //any of width
+    justifyContent: center;
+    borderRadius: 24px;
+}
+
+.whiteButton {
+    background-color: white;
+}
+
+.disabledWhiteButton {
+    background-color: rgba(#395936, .9);
+}
+
+.greenButton {
+    background-color: rgba(#6DAA63, .9);
+}
+
+.disabledGreenButton {
+    background-color: rgba(#395936, .9);
+}
+
+.hangupButton {
+    background-color: rgba(#a94442, .8);
+}
+
+.buttonsContainer {
+    flex-direction: row;
+    justify-content: center;
+    margin-top: 60px;
+    height: 55;
+    border: 0px;
+}
+
 .conferenceContainerLandscape {
     flex-direction: row;
     align-content: flex-end;
@@ -23,24 +58,37 @@
 
 .audioContainerLandscape {
     align-content: flex-start;
-    margin-top: 110px;
-    margin-left: 10px;
-    margin-right: 10px;
+    margin-top: 55px;
+    margin-left: 0px;
+    margin-right: 5px;
     width: 40%;
+    border: 0px;
 }
 
 .chatContainerLandscapeAudio {
-    margin-top: 110px;
-    margin-right: 10px;
+    margin-top: 60px;
+    margin-right: 0px;
     margin-left: 5px;
     border-color: grey;
     border-radius: 5px;
-    width: 57%;
+    width: 59%;
+    border: 0px;
+}
+
+.audioContainerPortrait {
+    flex: 3;
+    border: 0.5px;
+}
+
+.chatContainerPortraitAudio {
+    flex: 6;
+    border: 0px;
+    border-radius: 5px;
 }
 
 .conferenceContainer {
     flex-direction: column;
-    align-content: flex-end;
+    align-content: flex-start;
     position: absolute;
     bottom: 0;
     left: 0;
@@ -48,25 +96,8 @@
     top: 0;
 }
 
-.audioContainer {
-    flex: 1;
-    margin-top: 120px;
-    margin-left: 10px;
-}
-
-.chatContainerPortraitAudio {
-    margin-top: 10px;
-    margin-left: 10px;
-    border: 0px;
-    height: 30%;
-    border-color: grey;
-    border-radius: 5px;
-}
-
 .chatContainer {
-    margin-top: 10px;
-    border: 0px;
-    border-color: grey;
+    margin-top: 110px;
 }
 
 .videosContainer {
@@ -109,11 +140,6 @@
 .wholePageVideo {
     width: 100%;
     height: 100%;
-}
-
-.buttonContainer {
-    flex-direction: row;
-    margin: 0 auto;
 }
 
 .landscapeDrawer {

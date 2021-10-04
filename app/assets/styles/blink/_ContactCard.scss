@@ -28,7 +28,6 @@
 }
 
 .rowContent {
-    margin-top: 5px;
     flex: 1;
     flex-direction: row;
     justify-content: space-between;
@@ -41,23 +40,25 @@
 
 .title {
     font-size: 18px;
-    margin: 0px;
+    margin-bottom: 0px;
+    flex: 1;
 }
 
 .subtitle {
-    font-size:16px;
-    margin-top: -2px;
+    font-size:14px;
+    margin-top: 0px;
+    margin-bottom: -6px;
     flex: 1;
-    margin-right: 40px;
 }
 
 .description {
     font-size:12px;
-    margin-bottom: 5px;
+    margin-bottom: 0px;
+    flex: 1;
 }
 
 .avatarContent {
-    margin-top: 7px;
+    margin-top: 5px;
 }
 
 .gravatar {
@@ -73,8 +74,9 @@
 }
 
 .rightContent {
-    margin-top: 15px;
-    margin-right: 20px;
+    margin-top: 10px;
+    margin-left: 60px;
+    margin-right: 10px;
     align-items: flex-end;
     border: 0px;
 }
@@ -88,6 +90,10 @@
     bottom: 10;
     right: 0;
     size: 30;
+}
+
+.selectedContact {
+    margin-top: 5px;
 }
 
 .participants {

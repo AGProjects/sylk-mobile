@@ -27,7 +27,8 @@ class EnrollmentModal extends Component {
             email: '',
             enrolling: false,
             error: '',
-            errorVisible: false
+            errorVisible: false,
+            status: ''
         };
         this.state = Object.assign({}, this.initialState);
     }
@@ -39,6 +40,7 @@ class EnrollmentModal extends Component {
         this.setState({
             [name]: value
         });
+
     }
 
     get validInput() {
@@ -139,6 +141,19 @@ class EnrollmentModal extends Component {
         let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
         let validEmail = email_reg.test(this.state.email);
         let validUsername = this.state.username.length > 3;
+
+        let status = '';
+        if (!this.state.displayName) {
+            status = 'Enter display name';
+        } else if (!validEmail) {
+            status = 'Enter email address';
+        } else if (!this.state.username) {
+            status = 'Enter username';
+        } else if (!this.state.password) {
+            status = 'Enter password';
+        } else if (this.state.password && this.state.password !== this.state.password2) {
+            status = 'Password not confirmed';
+        }
 
         return (
             <Portal>
@@ -256,12 +271,10 @@ class EnrollmentModal extends Component {
                         >{buttonText}
                         </Button>
                         :
-                        <Button
-                            style={styles.button}
-                        >{buttonText}
-                        </Button>
 
+                       <Text style={styles.status}>{status}</Text>
                         }
+
 
                         <Snackbar style={styles.snackbar}
                             visible={this.state.errorVisible}

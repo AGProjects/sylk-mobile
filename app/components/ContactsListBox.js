@@ -27,6 +27,15 @@ class ContactsListBox extends Component {
 
         this.chatListRef = React.createRef();
 
+        let renderMessages = [];
+        if (this.props.selectedContact) {
+            let uri = this.props.selectedContact.uri;
+            if (uri in this.props.messages) {
+                renderMessages = this.props.messages[uri];
+                renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+            }
+        }
+
         this.state = {
             accountId: this.props.account ? this.props.account.id : null,
             password: this.props.password,
@@ -41,7 +50,7 @@ class ContactsListBox extends Component {
             selectedContact: this.props.selectedContact,
             myContacts: this.props.myContacts,
             messages: this.props.messages,
-            renderMessages: [],
+            renderMessages: GiftedChat.append(renderMessages, []),
             chat: this.props.chat,
             pinned: false,
             showMessageModal: false,
@@ -56,7 +65,9 @@ class ContactsListBox extends Component {
             scrollToBottom: true,
             messageZoomFactor: this.props.messageZoomFactor,
             isTyping: false,
-            isLoadingEarlier: false
+            isLoadingEarlier: false,
+            fontScale: this.props.fontScale,
+            call: this.props.call
         }
 
         this.ended = false;
@@ -72,7 +83,6 @@ class ContactsListBox extends Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-
         if (this.ended) {
             return;
         }
@@ -110,7 +120,9 @@ class ContactsListBox extends Component {
             this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact) {
                this.setState({scrollToBottom: true});
-               this.getMessages(nextProps.selectedContact);
+               if (Object.keys(this.state.messages).indexOf(nextProps.selectedContact.uri) === -1) {
+                   this.props.getMessages(nextProps.selectedContact.uri);
+               }
             }
         };
 
@@ -118,45 +130,42 @@ class ContactsListBox extends Component {
             this.setState({myContacts: nextProps.myContacts});
         };
 
-        if (this.state.messages) {
+        if (nextProps.selectedContact) {
             let renderMessages = [];
-            if (this.state.selectedContact) {
-                let uri = this.state.selectedContact.uri;
+            let uri = nextProps.selectedContact.uri;
 
-                if (nextProps.messages && nextProps.messages.hasOwnProperty(uri)) {
-                    renderMessages = nextProps.messages[uri];
-                    if (this.state.renderMessages.length !== renderMessages.length) {
-                        this.setState({isLoadingEarlier: false});
-                        this.props.confirmRead(uri);
-                        if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
-                            let last_message_ts = this.state.renderMessages[0].createdAt;
-                            if (renderMessages[0].createdAt > last_message_ts) {
-                                this.setState({scrollToBottom: true});
-                            }
+            if (uri in nextProps.messages) {
+                renderMessages = nextProps.messages[uri];
+                if (this.state.renderMessages.length !== renderMessages.length) {
+                    this.setState({isLoadingEarlier: false});
+                    this.props.confirmRead(uri);
+                    if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
+                        let last_message_ts = this.state.renderMessages[0].createdAt;
+                        if (renderMessages[0].createdAt > last_message_ts) {
+                            this.setState({scrollToBottom: true});
                         }
                     }
                 }
-
-                if (renderMessages !== this.state.renderMessages) {
-                    renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
-                    this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
-                    if (!this.state.scrollToBottom && renderMessages.length > 0) {
-                        //console.log('Scroll to first message');
-                        //this.scrollToMessage(0);
-                    }
-                }
-
             }
-        } else {
-            this.setState({renderMessages: []});
+
+            if (renderMessages !== this.state.renderMessages) {
+                renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+                this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
+                if (!this.state.scrollToBottom && renderMessages.length > 0) {
+                    //console.log('Scroll to first message');
+                    //this.scrollToMessage(0);
+                }
+            }
         }
 
         this.setState({isLandscape: nextProps.isLandscape,
                        chat: nextProps.chat,
+                       fontScale: nextProps.fontScale,
                        filter: nextProps.filter,
+                       call: nextProps.call,
                        password: nextProps.password,
                        showMessageModal: nextProps.showMessageModal,
-                       message: nextProps.message,
+                       messages: nextProps.messages,
                        inviteContacts: nextProps.inviteContacts,
                        shareToContacts: nextProps.shareToContacts,
                        selectedContacts: nextProps.selectedContacts,
@@ -180,13 +189,6 @@ class ContactsListBox extends Component {
 
     onSendFromUser() {
         console.log('On send from user...');
-    }
-
-    getMessages(contact) {
-        if (!contact) {
-            return;
-        }
-        this.props.getMessages(contact.uri);
     }
 
     setTargetUri(uri, contact) {
@@ -229,6 +231,7 @@ class ContactsListBox extends Component {
             contact={item}
             setTargetUri={this.setTargetUri}
             chat={this.state.chat}
+            fontScale={this.state.fontScale}
             orientation={this.props.orientation}
             isTablet={this.props.isTablet}
             isLandscape={this.state.isLandscape}
@@ -634,13 +637,21 @@ class ContactsListBox extends Component {
             contacts.push(this.state.myContacts[uri]);
         });
 
-        //console.log('--- Render contacts with selected contact', this.state.selectedContact ? this.state.selectedContact.uri: null);
+        //console.log('--- Render contacts with call', this.state.call);
         //console.log('--- Render contacts with filter', this.state.filter, 's c', this.state.selectedContact, this.state.inviteContacts);
 
         let chatInputClass;
 
-        if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
-            chatInputClass = this.noChatInputToolbar;
+        if (this.state.selectedContact) {
+           if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+               if (this.state.call) {
+                   if (this.state.call.remoteIdentity.uri !== this.state.selectedContact.uri) {
+                       chatInputClass = this.noChatInputToolbar;
+                   }
+               } else {
+                   chatInputClass = this.noChatInputToolbar;
+               }
+           }
         } else if (!this.state.chat) {
             chatInputClass = this.noChatInputToolbar;
         }
@@ -681,6 +692,10 @@ class ContactsListBox extends Component {
             }
 
             if (this.state.shareToContacts && elem.tags.indexOf('chat') === -1) {
+                return;
+            }
+
+            if (this.state.shareToContacts && elem.uri === this.state.accountId) {
                 return;
             }
 
@@ -822,7 +837,7 @@ class ContactsListBox extends Component {
              />
              }
 
-             {this.showChat && ! this.state.inviteContacts?
+             {this.showChat && !this.state.inviteContacts?
              <View style={[chatContainer, borderClass]}>
                 <GiftedChat ref={this.chatListRef}
                   messages={messages}
@@ -928,7 +943,9 @@ ContactsListBox.propTypes = {
     loadEarlierMessages: PropTypes.func,
     newContactFunc  : PropTypes.func,
     messageZoomFactor: PropTypes.string,
-    isTyping:      PropTypes.bool
+    isTyping        : PropTypes.bool,
+    fontScale       : PropTypes.integer,
+    call            : PropTypes.object
 };
 
 

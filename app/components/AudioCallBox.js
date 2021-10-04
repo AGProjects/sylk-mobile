@@ -1,5 +1,5 @@
 import React, { Component } from 'react';
-import { View, Platform, TouchableWithoutFeedback } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback, TouchableHighlight } from 'react-native';
 import { IconButton, Dialog, Text, ActivityIndicator, Colors } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
@@ -217,8 +217,6 @@ class AudioCallBox extends Component {
         }
 
         const buttonSize = this.props.isTablet ? 40 : 34;
-        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
-        const chatButtonClass = (Platform.OS === 'ios') ? styles.iosChatButton : styles.androidChatButton;
 
         let disablePlus = false;
         if (this.state.callContact) {
@@ -226,8 +224,6 @@ class AudioCallBox extends Component {
                 disablePlus = true;
             }
         }
-
-        //console.log('Call to remoteIdentity', remoteIdentity);
 
         return (
             <View style={styles.container}>
@@ -244,6 +240,7 @@ class AudioCallBox extends Component {
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
                 />
+
                 <View style={userIconContainerClass}>
                     <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
                 </View>
@@ -272,67 +269,99 @@ class AudioCallBox extends Component {
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) ?
                     <View style={buttonContainerClass}>
                     {!disablePlus ?
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
                     <IconButton
                         size={buttonSize}
-                        style={chatButtonClass}
+                        style={disablePlus ? styles.disabledGreenButton: styles.greenButton}
                         icon="chat"
                         onPress={this.props.goBackFunc}
                         disabled={disablePlus}
                     />
+                        </TouchableHighlight>
+                      </View>
                     : null}
 
                     {!disablePlus ?
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
                     <IconButton
                         size={buttonSize}
-                        style={buttonClass}
+                        style={styles.whiteButton}
                         icon="account-plus"
                         onPress={this.toggleEscalateConferenceModal}
                         disabled={disablePlus}
                     />
+                        </TouchableHighlight>
+                      </View>
                     : null}
-                    <IconButton
-                        size={buttonSize}
-                        style={buttonClass}
-                        icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
-                        onPress={this.muteAudio}
-                    />
-                    <IconButton
-                        size={buttonSize}
-                        style={buttonClass}
-                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                        onPress={this.props.toggleSpeakerPhone}
-                    />
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={styles.whiteButton}
+                                icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
+                                onPress={this.muteAudio}
+                            />
+                        </TouchableHighlight>
+                      </View>
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={styles.whiteButton}
+                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                                onPress={this.props.toggleSpeakerPhone}
+                            />
+                        </TouchableHighlight>
+                      </View>
                     {isPhoneNumber ?
-                    <IconButton
-                        size={buttonSize}
-                        style={buttonClass}
-                        icon="dialpad"
-                        onPress={this.showDtmfModal}
-                        disabled={!(this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
-                    />
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={buttonClass}
+                                icon="dialpad"
+                                onPress={this.showDtmfModal}
+                                disabled={!(this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
+                            />
+                            </TouchableHighlight>
+                          </View>
                     : null
                     }
-                    <IconButton
-                        size={buttonSize}
-                        style={[buttonClass, styles.hangupButton]}
-                        icon="phone-hangup"
-                        onPress={this.hangupCall}
-                    />
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                        <IconButton
+                            size={buttonSize}
+                            style={styles.hangupButton}
+                            icon="phone-hangup"
+                            onPress={this.hangupCall}
+                        />
+                        </TouchableHighlight>
+                      </View>
                     </View>
                     :
                     <View style={buttonContainerClass}>
-                    <IconButton
-                        size={buttonSize}
-                        style={buttonClass}
-                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                        onPress={this.props.toggleSpeakerPhone}
-                    />
-                    <IconButton
-                        size={buttonSize}
-                        style={[buttonClass, styles.hangupButton]}
-                        icon="phone-hangup"
-                        onPress={this.cancelCall}
-                    />
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={styles.whiteButton}
+                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                                onPress={this.props.toggleSpeakerPhone}
+                            />
+                        </TouchableHighlight>
+                      </View>
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={styles.hangupButton}
+                                icon="phone-hangup"
+                                onPress={this.cancelCall}
+                            />
+                        </TouchableHighlight>
+                      </View>
                     </View>
                 }
 

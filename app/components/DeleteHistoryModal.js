@@ -76,7 +76,7 @@ class DeleteHistoryModal extends Component {
                             </View>
 
                             <View style={styles.titleContainer}>
-                               <Dialog.Title style={styles.title}>{this.state.uri ? 'Delete messages' : 'Wiped device'} </Dialog.Title>
+                               <Dialog.Title style={styles.title}>{this.state.uri ? 'Delete messages' : 'Wipe device'} </Dialog.Title>
                            </View>
 
                         </View>

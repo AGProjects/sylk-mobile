@@ -132,7 +132,6 @@ class ConferenceHeader extends React.Component {
     }
 
     goBack() {
-       console.log('Go back to home from conference');
        this.props.goBackFunc();
     }
 
@@ -156,6 +155,8 @@ class ConferenceHeader extends React.Component {
 
     render() {
 
+        //console.log('render conf header lanscape =', this.props.isLandscape);
+
         let videoHeader;
         let callButtons;
 
@@ -165,78 +166,69 @@ class ConferenceHeader extends React.Component {
             this.timer = null;
         }
 
-        if (this.props.show) {
-            const room = this.state.remoteUri.split('@')[0];
-            let displayName = this.state.displayName || 'Conference: ' + room;
-            let callDetail;
+        const room = this.state.remoteUri.split('@')[0];
+        let displayName = (this.state.displayName && this.state.displayName !== this.state.remoteUri) ? this.state.displayName : room;
+        let callDetail;
 
-            if (this.state.reconnectingCall) {
-                callDetail = 'Reconnecting call...';
-            } else if (this.state.terminated) {
-                callDetail = 'Conference ended';
-            } else if (this.duration) {
-                callDetail = (this.props.isTablet ? 'Duration: ' : '') + this.duration;
-                if (this.state.participants > 0) {
-                    callDetail = callDetail +  ' - ' + this.state.participants + ' participant' + (this.state.participants > 1 ? 's' : '');
-                } else {
-                    callDetail = callDetail + ' and nobody joined yet';
-                }
+        if (this.state.reconnectingCall) {
+            callDetail = 'Reconnecting call...';
+        } else if (this.state.terminated) {
+            callDetail = 'Conference ended';
+        } else if (this.duration) {
+            callDetail = (this.props.isTablet ? 'Duration: ' : '') + this.duration;
+            if (this.state.participants > 0) {
+                callDetail = callDetail +  ' - ' + this.state.participants + ' participant' + (this.state.participants > 1 ? 's' : '');
+            } else {
+                callDetail = callDetail + ' and nobody joined yet';
             }
+        }
 
-            if (this.state.info) {
-                callDetail = callDetail + ' - ' + this.state.info;
-            }
-
-            videoHeader = (
-                <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
-                    <Appbar.BackAction onPress={() => {this.goBack()}} />
-                     <Appbar.Content
-                        title={displayName}
-                        subtitle={callDetail}
-                    />
-                    {this.props.audioOnly ? null : this.props.buttons.top.right}
-
-                <Menu
-                    visible={this.state.menuVisible}
-                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
-                    anchor={
-                        <Appbar.Action
-                            ref={this.menuRef}
-                            color="white"
-                            icon="account-plus"
-                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
-                        />
-                    }
-                >
-                    <Menu.Item onPress={() => this.handleMenu('back')} title="Go back..."/>
-                    <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite contacts"/>
-                    <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share link..." />
-                </Menu>
-                </Appbar.Header>
-
-            );
-
-            callButtons = (
-                <View style={styles.buttonContainer}>
-                    {this.props.buttons.bottom}
-                </View>
-            );
+        if (this.state.info) {
+            callDetail = callDetail + ' - ' + this.state.info;
         }
 
         return (
-            <View style={styles.container}>
-                {videoHeader}
-                {callButtons}
-            </View>
+        <View style={styles.container}>
+            <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
+                <Appbar.BackAction onPress={() => {this.goBack()}} />
+                 <Appbar.Content
+                    title={displayName}
+                    subtitle={callDetail}
+                />
+                {this.props.buttons.additional}
+
+            </Appbar.Header>
+            {this.props.buttons.bottom}
+        </View>
         );
     }
 }
+/*
+
+            <Menu
+                visible={this.state.menuVisible}
+                onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                anchor={
+                    <Appbar.Action
+                        ref={this.menuRef}
+                        color="white"
+                        icon="account-plus"
+                        onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    />
+                }
+            >
+                <Menu.Item onPress={() => this.handleMenu('back')} title="Go back..."/>
+                <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite contacts"/>
+                <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share link..." />
+            </Menu>
+*/
 
 ConferenceHeader.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string.isRequired,
     call: PropTypes.object,
     isTablet: PropTypes.bool,
+    isLandscape: PropTypes.bool,
     participants: PropTypes.number,
     buttons: PropTypes.object.isRequired,
     reconnectingCall: PropTypes.bool,

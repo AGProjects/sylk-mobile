@@ -71,7 +71,7 @@ class ConferenceAudioParticipant extends Component {
                 titleStyle={styles.displayName}
                 description={identity.uri}
                 descriptionStyle={styles.uri}
-                left={props => <View style={styles.userIconContainer}><UserIcon identity={identity} /></View>}
+                left={props => <View style={styles.userIconContainer}><UserIcon small={true} identity={identity} /></View>}
                 right={props => <View>
                                 <Text style={rightStyle}>{tag}</Text>
                                 <RTCView streamURL={this.state.stream ? this.state.stream.toURL() : null}/>

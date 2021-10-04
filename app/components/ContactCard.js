@@ -66,7 +66,8 @@ class ContactCard extends Component {
             messages: this.props.messages,
             unread: this.props.unread,
             chat: this.props.chat,
-            pinned: this.props.pinned
+            pinned: this.props.pinned,
+            fontScale: this.props.fontScale
         }
 
         this.menuRef = React.createRef();
@@ -85,7 +86,8 @@ class ContactCard extends Component {
             chat: nextProps.chat,
             pinned: nextProps.pinned,
             messages: nextProps.messages,
-            unread: nextProps.unread
+            unread: nextProps.unread,
+            fontScale: nextProps.fontScale
         });
     }
 
@@ -150,12 +152,13 @@ class ContactCard extends Component {
             name = name + ' - ' + this.state.contact.organization;
         }
 
-        //console.log('Render Contact', this.state.contact);
+        //console.log('Render Contact', this.state.contact.uri, this.state.fontScale);
 
         let showBlockButton = !this.state.contact.conference && !this.state.chat;
         let showBlockDomainButton = false;
         let blockTextbutton = 'Block';
         let blockDomainTextbutton = 'Block domain';
+        let contact_ts = '';
 
         let participantsData = [];
 
@@ -184,8 +187,16 @@ class ContactCard extends Component {
         let subtitle = uri;
         let description = 'No calls or messages';
 
+        var todayStart = new Date();
+        todayStart.setHours(0,0,0,0);
+
         if (this.state.contact.timestamp) {
             description = moment(this.state.contact.timestamp).format('MMM D HH:mm');
+            if (this.state.contact.timestamp > todayStart) {
+                contact_ts = moment(this.state.contact.timestamp).format('HH:mm');
+            } else {
+                contact_ts = moment(this.state.contact.timestamp).format('DD-MM');
+            }
         }
 
         if (name === uri) {
@@ -230,7 +241,7 @@ class ContactCard extends Component {
             cardContainerClass = (this.state.orientation === 'landscape') ? styles.cardLandscapeContainer : styles.cardPortraitContainer;
         }
 
-        let cardHeight = 85;
+        let cardHeight = this.state.fontScale <= 1 ? 75 : 70;
 
         let duration;
 
@@ -298,7 +309,6 @@ class ContactCard extends Component {
         const container = this.state.isLandscape ? styles.containerLandscape : styles.containerPortrait;
         const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
 
-
         let showSubtitle = (showActions || this.state.isTablet || !description);
         let label = this.state.contact.label ? (" (" +this.state.contact.label + ")" ) : '';
         if (this.state.contact.lastMessage) {
@@ -330,14 +340,14 @@ class ContactCard extends Component {
                         <View style={styles.mainContent}>
                             <Title noWrap style={styles.title}>{title}</Title>
                             <Subheading style={styles.subtitle}>{subtitle}</Subheading>
-
+                            {this.state.fontScale <= 1 ?
                             <Caption style={styles.description}>
                                 {this.state.contact.direction ?
                                 <Icon name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
                                 : null}
                                 {description}
-
                             </Caption>
+                            : null}
 
                             {participantsData && participantsData.length && showActions && false?
 
@@ -356,12 +366,13 @@ class ContactCard extends Component {
                         </View>
                     </Card.Content>
                     <View style={styles.rightContent}>
+                        <Text>{contact_ts}</Text>
                         { this.state.contact.selected ?
-                        <Icon name='check-circle' size={30} />
+                        <Icon style={styles.selectedContact} name='check-circle' size={25} />
                         : null
                         }
                         {unread ?
-                        <Badge value={unread} status="error"  textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
+                        <Badge value={unread} status="error" textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
                         : null
                         }
                     </View>
@@ -398,7 +409,8 @@ ContactCard.propTypes = {
     pinned         : PropTypes.bool,
     unread         : PropTypes.array,
     toggleBlocked  : PropTypes.func,
-    sendPublicKey  : PropTypes.func
+    sendPublicKey  : PropTypes.func,
+    fontScale      : PropTypes.integer
 };
 
 
