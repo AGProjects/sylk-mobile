@@ -40,6 +40,7 @@ class AudioCallBox extends Component {
             call                        : this.props.call,
             reconnectingCall            : this.props.reconnectingCall,
             info                        : this.props.info,
+            selectedContacts            : this.props.selectedContacts,
             packetLossQueue             : [],
             audioBandwidthQueue         : [],
             latencyQueue                : [],
@@ -69,6 +70,10 @@ class AudioCallBox extends Component {
                     this.state.call.on('stateChanged', this.callStateChanged);
                     break;
             }
+        }
+
+        if (this.state.selectedContacts.length > 0) {
+            this.toggleEscalateConferenceModal();
         }
     }
 
@@ -123,6 +128,7 @@ class AudioCallBox extends Component {
                        photo: nextProps.photo ? nextProps.photo : this.state.photo,
                        declineReason: nextProps.declineReason,
                        callContact: nextProps.callContact,
+                       selectedContacts: nextProps.selectedContacts,
                        selectedContact: nextProps.selectedContact
                        });
     }
@@ -174,6 +180,9 @@ class AudioCallBox extends Component {
     }
 
     toggleEscalateConferenceModal() {
+        if (this.state.showEscalateConferenceModal) {
+            this.props.finishInvite();
+        }
         this.setState({
             showEscalateConferenceModal: !this.state.showEscalateConferenceModal
         });
@@ -220,7 +229,10 @@ class AudioCallBox extends Component {
 
         let disablePlus = false;
         if (this.state.callContact) {
-            if (this.state.callContact.tags.indexOf('test') > -1 || this.state.callContact.tags.indexOf('conference') > -1) {
+            if (this.state.callContact.tags.indexOf('test') > -1) {
+                disablePlus = true;
+            }
+            if (this.state.callContact.tags.indexOf('conference') > -1) {
                 disablePlus = true;
             }
         }
@@ -289,7 +301,7 @@ class AudioCallBox extends Component {
                         size={buttonSize}
                         style={styles.whiteButton}
                         icon="account-plus"
-                        onPress={this.toggleEscalateConferenceModal}
+                        onPress={this.props.inviteToConferenceFunc}
                         disabled={disablePlus}
                     />
                         </TouchableHighlight>
@@ -374,6 +386,7 @@ class AudioCallBox extends Component {
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
                     call={this.state.call}
+                    selectedContacts={this.state.selectedContacts}
                     close={this.toggleEscalateConferenceModal}
                     escalateToConference={this.escalateToConference}
                 />
@@ -419,7 +432,11 @@ AudioCallBox.propTypes = {
     pinMessage              : PropTypes.func,
     unpinMessage            : PropTypes.func,
     callContact             : PropTypes.object,
-    selectedContact         : PropTypes.object
+    selectedContact         : PropTypes.object,
+    selectedContacts        : PropTypes.array,
+    inviteToConferenceFunc  : PropTypes.func,
+    finishInvite            : PropTypes.func
+
 };
 
 export default AudioCallBox;

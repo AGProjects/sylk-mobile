@@ -1499,7 +1499,8 @@ class Sylk extends Component {
                     const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
                     const options = {audio: this.outgoingMedia ? this.outgoingMedia.audio: true,
                                      video: this.outgoingMedia ? this.outgoingMedia.video: true,
-                                     participants: this.participantsToInvite}
+                                     participants: this.participantsToInvite,
+                                     skipHistory: true}
 
                     this.callKeepStartConference(uri.toLowerCase(), options);
                 } else {
@@ -2990,6 +2991,7 @@ class Sylk extends Component {
             } else {
                 this.changeRoute('/call', 'back to call');
             }
+            //this.getMessages(call.remoteIdentity.uri);
         } else {
             console.log('No call to go back to');
         }
@@ -3338,7 +3340,9 @@ class Sylk extends Component {
         let callUUID = options.callUUID || uuid.v4();
 
         let participants = options.participants || null;
-        this.addHistoryEntry(targetUri, callUUID);
+        if (!options.skipHistory) {
+            this.addHistoryEntry(targetUri, callUUID);
+        }
 
         let participantsToInvite = [];
 
@@ -3744,6 +3748,7 @@ class Sylk extends Component {
         let outgoingMedia = {audio: true, video: true};
         let mediaType = 'video';
         let call;
+        this.setState({selectedContacts: []});
 
         if (this.state.currentCall) {
             call = this.state.currentCall;
@@ -7486,14 +7491,16 @@ class Sylk extends Component {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
         }
 
-        //console.log('updateHistoryEntry', uri, callUUID, duration);
         let myContacts = this.state.myContacts;
         if (uri in myContacts && myContacts[uri].lastCallId === callUUID) {
+            console.log('updateHistoryEntry', uri, callUUID, duration);
             myContacts[uri].timestamp = new Date();
             myContacts[uri].lastCallDuration = duration;
             myContacts[uri].lastCallId = callUUID;
             this.replicateContact(myContacts[uri])
             this.saveSylkContact(uri, myContacts[uri], 'updateHistoryEntry');
+        } else {
+            console.log('History entry does not exists for', callUUID);
         }
     }
 
@@ -7917,7 +7924,10 @@ class Sylk extends Component {
                 pinMessage = {this.pinMessage}
                 unpinMessage = {this.unpinMessage}
                 confirmRead = {this.confirmRead}
+                inviteToConferenceFunc={this.inviteToConference}
+                finishInvite={this.finishInviteToConference}
                 selectedContact={this.state.selectedContact}
+                selectedContacts={this.state.selectedContacts}
             />
         )
     }

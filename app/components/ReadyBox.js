@@ -534,8 +534,17 @@ class ReadyBox extends Component {
         const borderClass = this.state.chat ? null : styles.historyBorder;
         let backButtonTitle = 'Back to call';
 
-        if (this.state.call && this.state.call.hasOwnProperty('_participants')) {
-            backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
+        if (this.state.call) {
+            if (this.state.call.hasOwnProperty('_participants')) {
+                backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
+            } else {
+                backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to call';
+            }
+        }
+
+        let conferenceEnabled = Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
+        if (this.state.inviteContacts) {
+            conferenceEnabled = false;
         }
 
         let navigationMenuData = [

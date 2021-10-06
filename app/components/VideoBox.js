@@ -393,7 +393,9 @@ VideoBox.propTypes = {
     getMessages             : PropTypes.func,
     pinMessage              : PropTypes.func,
     unpinMessage            : PropTypes.func,
-    selectedContact         : PropTypes.object
+    selectedContact         : PropTypes.object,
+    inviteToConferenceFunc  : PropTypes.func,
+    finishInvite            : PropTypes.func
 };
 
 export default VideoBox;

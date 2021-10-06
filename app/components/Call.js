@@ -220,7 +220,8 @@ class Call extends Component {
                       declineReason: this.props.declineReason,
                       messages: this.props.messages,
                       selectedContact: this.props.selectedContact,
-                      callContact: this.props.callContact
+                      callContact: this.props.callContact,
+                      selectedContacts: this.props.selectedContacts
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -336,7 +337,7 @@ class Call extends Component {
             //this.mediaPlaying(nextProps.localMedia);
         }
 
-        this.setState({messages: nextProps.messages});
+        this.setState({messages: nextProps.messages, selectedContacts: nextProps.selectedContacts});
     }
 
     getConnectionStats() {
@@ -878,7 +879,10 @@ class Call extends Component {
                         pinMessage = {this.props.pinMessage}
                         unpinMessage = {this.props.unpinMessage}
                         selectedContact = {this.state.selectedContact}
+                        selectedContacts = {this.state.selectedContacts}
                         callContact = {this.state.callContact}
+                        inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
+                        finishInvite = {this.props.finishInvite}
                     />
                 );
             } else {
@@ -921,6 +925,8 @@ class Call extends Component {
                             unpinMessage = {this.props.unpinMessage}
                             selectedContact = {this.state.selectedContact}
                             callContact = {this.state.callContact}
+                            inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
+                            finishInvite = {this.props.finishInvite}
                         />
                     );
                 } else {
@@ -976,6 +982,8 @@ class Call extends Component {
                     goBackFunc = {this.props.goBackFunc}
                     selectedContact = {this.state.selectedContact}
                     callContact = {this.state.callContact}
+                    inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
+                    finishInvite = {this.props.finishInvite}
                 />
             );
 
@@ -1021,7 +1029,10 @@ Call.propTypes = {
     pinMessage              : PropTypes.func,
     unpinMessage            : PropTypes.func,
     selectedContact         : PropTypes.object,
-    callContact             : PropTypes.object
+    callContact             : PropTypes.object,
+    selectedContacts        : PropTypes.array,
+    inviteToConferenceFunc  : PropTypes.func,
+    finishInvite            : PropTypes.func
 };
 
 
