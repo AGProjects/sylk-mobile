@@ -73,8 +73,7 @@ class InviteParticipantsModal extends Component {
     }
 
     handleEmailButton(event) {
-        const emailMessage = 'You can join the conference using a Web browser at ' + this.state.roomUrl +
-                              ' or by using Sylk client app from https://sylkserver.com';
+        const emailMessage = 'You can join my conference at ' + this.state.roomUrl;
         const subject = 'Join conference, maybe?';
 
         openComposer({
@@ -86,8 +85,7 @@ class InviteParticipantsModal extends Component {
 
     handleShareButton(event) {
         const subject = 'Join conference, maybe?';
-        const message = 'You can join the conference using a Web browser at ' + this.state.roomUrl +
-                        ' or by using Sylk client app from https://sylkserver.com';
+        const message = 'You can join my conference at ' + this.state.roomUrl;
 
         let options= {
             subject: subject,
