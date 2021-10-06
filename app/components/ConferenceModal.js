@@ -39,18 +39,18 @@ class ConferenceModal extends Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        let uri = '';
-        if (nextProps.targetUri) {
-            uri = nextProps.targetUri.split('@')[0];
-        }
+        let uri = nextProps.targetUri.split('@')[0];
 
-        this.setState({targetUri: uri,
+        this.setState({targetUri: uri || this.state.targetUri,
                       myInvitedParties: nextProps.myInvitedParties,
                       selectedContact: nextProps.selectedContact,
-                      participants: nextProps.participants
+                      participants: nextProps.participants || []
                       });
 
-        this.handleConferenceTargetChange(uri);
+        if (nextProps.targetUri) {
+            this.handleConferenceTargetChange(uri);
+        }
+
     }
 
     handleConferenceTargetChange(value) {
@@ -251,7 +251,6 @@ class ConferenceModal extends Component {
                         </Text>
                         }
 
-
                         </View>
 
                         <View style={styles.roomDescriptionContainer}>
@@ -281,7 +280,6 @@ class ConferenceModal extends Component {
                              Others can be invited once the conference starts
                         </Text>
                         </View>
-
 
                         <View style={styles.buttonRow}>
                         <Button

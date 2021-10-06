@@ -293,7 +293,7 @@ class Conference extends React.Component {
                 return false;
             }
         } else {
-            console.log('Show save dialog because room', this.state.targetUri, 'is not in favorites');
+            console.log('Show save dialog because room', this.state.room, 'is not in favorites');
             return true;
         }
         return true;
@@ -380,6 +380,7 @@ class Conference extends React.Component {
                         callState={this.props.callState}
                         finishInvite={this.props.finishInvite}
                         callContact={this.props.callContact}
+                        getMessages={this.props.getMessages}
                         fileSharingUrl = {this.props.fileSharingUrl}
 
                    />

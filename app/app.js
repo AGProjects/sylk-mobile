@@ -418,7 +418,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 6,
+        this.sqlTableVersions = {'messages': 7,
                                  'contacts': 7,
                                  'keys': 2}
 
@@ -427,7 +427,8 @@ class Sylk extends Component {
                                                 3: [{query: 'alter table messages add column unix_timestamp INTEGER default 0', params: []}],
                                                 4: [{query: 'alter table messages add column account TEXT', params: []}],
                                                 5: [{query: 'update messages set account = from_uri where direction = ?' , params: ['outgoing']}, {query: 'update messages set account = to_uri where direction = ?', params: ['incoming']}],
-                                                6: [{query: 'alter table messages add column sender TEXT' , params: []}]
+                                                6: [{query: 'alter table messages add column sender TEXT' , params: []}],
+                                                7: [{query: 'alter table messages add column image TEXT' , params: []}, {query: 'alter table messages add column local_url TEXT' , params: []}]
                                                 },
                                    'contacts': {2: [{query: 'alter table contacts add column participants TEXT', params: []}],
                                                 3: [{query: 'alter table contacts add column direction TEXT', params: []},
@@ -1097,6 +1098,8 @@ class Sylk extends Component {
                                     'pending' INTEGER, \
                                     'system' INTEGER, \
                                     'url' TEXT, \
+                                    'local_url' TEXT, \
+                                    'image' TEXT, \
                                     'encrypted' INTEGER default 0, \
                                     'direction' TEXT, \
                                     PRIMARY KEY (account, msg_id)) \
@@ -1376,7 +1379,7 @@ class Sylk extends Component {
      }
 
     changeRoute(route, reason) {
-        utils.timestampedLog('Change route', route, 'with reason:', reason);
+        utils.timestampedLog('Change route', this.currentRoute, '->', route, 'with reason:', reason);
         let messages = this.state.messages;
 
         if (this.currentRoute === route) {
@@ -1406,13 +1409,8 @@ class Sylk extends Component {
             return;
         } else {
             if (route === '/ready' && this.state.selectedContact && Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) === -1) {
-                console.log('get messages in changeRoute');
                 this.getMessages(this.state.selectedContact.uri);
             }
-        }
-
-        if (this.currentRoute !== route) {
-            utils.timestampedLog('Change route:', this.currentRoute, '->', route, reason);
         }
 
         if (route === '/conference') {
@@ -4099,7 +4097,6 @@ class Sylk extends Component {
 
     async saveOutgoingRawMessage(id, from_uri, to_uri, content, contentType) {
         let timestamp = new Date();
-        timestamp.setMilliseconds(0);
         let params;
         let unix_timestamp = Math.floor(timestamp / 1000);
         params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, contentType, from_uri, to_uri, "outgoing", "1"];
@@ -4595,7 +4592,6 @@ class Sylk extends Component {
         this.saveOutgoingChatUri(uri, message.text);
         //console.log('saveOutgoingMessage', message.text);
         let ts =  message.createdAt;
-        ts.setMilliseconds(0);
 
         let unix_timestamp = Math.floor(ts / 1000);
         let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, "text/plain", this.state.accountId, uri, "outgoing", "1", encrypted];
@@ -4609,30 +4605,80 @@ class Sylk extends Component {
     }
 
     async saveConferenceMessage(room, message) {
-        //console.log('Save conference message', message);
+        console.log('Save conference message', message._id);
 
         let ts = message.createdAt;
-        ts.setMilliseconds(0);
 
         let unix_timestamp = Math.floor(ts / 1000);
-        let url = message.url;
         let contentType = "text/plain";
+        if (!message.direction) {
+            message.direction = message.received ? 'incoming' : 'outgoing';
+        }
         let from_uri = message.direction === 'incoming' || message.received ? room : this.state.accountId;
         let to_uri = message.direction === 'incoming' || message.received ? this.state.accountId : room;
         let system = message.system ? '1' : null;
-
         let sender = !system ? message.user._id : null;
 
-        //console.log('Save conference message', message.direction, 'from', from_uri, 'to =', to_uri, 'sender', sender, 'system', system);
-
-        let params = [this.state.accountId, system, sender, url, message._id, JSON.stringify(ts), unix_timestamp, message.text, contentType, from_uri, to_uri, message.direction, (message.pending ? 1: 0), message.sent ? 1: 0, message.received ? 1: 0];
-        await this.ExecuteQuery("INSERT INTO messages (account, system, sender, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            console.log('SQL insert message OK');
+        let params = [this.state.accountId, system, message.image, sender, message.local_url, message.url, message._id, JSON.stringify(ts), unix_timestamp, message.text, contentType, from_uri, to_uri, message.direction, 0, message.sent ? 1: 0, message.received ? 1: 0];
+        await this.ExecuteQuery("INSERT INTO messages (account, system, image, sender, local_url, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+            console.log('SQL insert conference message', message._id);
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('SQL error:', error);
             }
         });
+    }
+
+    sql2GiftedChat(item, content) {
+        let image;
+        let timestamp = new Date(item.unix_timestamp * 1000);
+
+        if (item.url || item.image) {
+//            console.log('sql2GiftedChat', item.image, item.url);
+        }
+
+        let failed = (item.pending === 0 && item.received === 0 && item.sent === 1) ? true: false;
+        let msg;
+        let text = '';
+
+        let from_uri = item.sender ? item.sender : item.from_uri;
+
+        if (!item.image && item.url) {
+            if (item.url.toLowerCase().endsWith('.png')) {
+                item.image = item.url;
+            } else if (item.url.toLowerCase().endsWith('.jpg')) {
+                item.image = item.url;
+            } else if (item.url.toLowerCase().endsWith('.gif')) {
+                item.image = item.url;
+            } else if (item.url.toLowerCase().indexOf('image') > -1) {
+                item.image = item.url;
+            }
+        } else {
+            text = content;
+        }
+
+        msg = {
+            _id: item.msg_id,
+            image: item.image,
+            url: item.url,
+            local_url: item.local_url,
+            text: text || '',
+            encrypted: item.encrypted,
+            createdAt: timestamp,
+            sent: ((item.sent === 1 || item.received === 1) && !failed) ? true : false,
+            direction: item.direction,
+            received: item.received === 1 ? true : false,
+            pending: (item.pending === 1 && item.sent !== 1) ? true : false,
+            system: item.system === 1 ? true : false,
+            failed: failed,
+            pinned: (item.pinned === 1) ? true: false,
+            user: item.direction == 'incoming' ? {_id: from_uri, name: from_uri} : {}
+            }
+
+        //console.log('sql2GiftedChat', item.msg_id, item.direction, 'from', from_uri, 'to', item.to_uri, text, 'system', item.system);
+        //console.log('sql2GiftedChat', msg);
+
+        return msg;
     }
 
     async outgoingMessageStateChanged(id, state) {
@@ -4747,14 +4793,37 @@ class Sylk extends Component {
         utils.timestampedLog('Message', id, 'is deleted');
         let query;
         // TODO send request to server
-        query = "DELETE from messages where msg_id = '" + id + "'";
         //console.log(query);
         if (local) {
             this.addJournal(id, 'removeMessage', {uri: uri});
+            this.removeFileFromMessage(id);
         }
+        query = "DELETE from messages where msg_id = '" + id + "'";
         await this.ExecuteQuery(query).then((results) => {
             this.deleteRenderMessage(id, uri);
+
             // console.log('SQL update OK');
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    removeFileFromMessage(id) {
+        let query = "SELECT * from messages where msg_id = '" + id + "';";
+        //console.log(query);
+        this.ExecuteQuery(query,[]).then((results) => {
+            let rows = results.rows;
+            if (rows.length === 1) {
+                var item = rows.item(0);
+                if (item.image) {
+                    RNFS.unlink(item.image).then((success) => {
+                        console.log('Removed image', item.image);
+                    }).catch((err) => {
+                        console.log('Error deleting image file', item.image, err.message);
+                    });
+                }
+            }
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -4867,7 +4936,16 @@ class Sylk extends Component {
                 if (this.mustLogout) {
                    return;
                 }
+
                 var item = rows.item(i);
+                if (item.to_uri.indexOf('@conference.')) {
+                    continue;
+                }
+
+                if (item.to_uri.indexOf('@videoconference')) {
+                    continue;
+                }
+
                 content = item.content;
                 let timestamp = new Date(item.unix_timestamp * 1000);
                 this.sendPendingMessage(item.to_uri, content, item.msg_id, item.content_type, timestamp);
@@ -5118,6 +5196,14 @@ class Sylk extends Component {
             return;
         }
 
+        if (uri.indexOf('@conference.') > -1) {
+            return;
+        }
+
+        if (uri.indexOf('@videoconference.') > -1) {
+            return;
+        }
+
         if (uri in this.state.decryptingMessages) {
             return;
         }
@@ -5252,51 +5338,6 @@ class Sylk extends Component {
         setTimeout(() => {
             this.getMessages(this.state.selectedContact.uri);
         }, 10);
-    }
-
-    sql2GiftedChat(item, content) {
-        let image;
-        let timestamp = new Date(item.unix_timestamp * 1000);
-
-        let failed = (item.pending === 0 && item.received === 0 && item.sent === 1) ? true: false;
-        let msg;
-        let text;
-
-        let from_uri = item.sender ? item.sender : item.from_uri;
-
-        if (item.url) {
-            if (item.url.toLowerCase().endsWith('.png')) {
-                image = item.url;
-            } else if (item.url.toLowerCase().endsWith('.jpg')) {
-                image = item.url;
-            } else if (item.url.toLowerCase().endsWith('.gif')) {
-                image = item.url;
-            }
-        } else {
-            text = content;
-        }
-
-        msg = {
-            _id: item.msg_id,
-            image: image,
-            url: item.url,
-            text: text,
-            encrypted: item.encrypted,
-            createdAt: timestamp,
-            sent: ((item.sent === 1 || item.received === 1) && !failed) ? true : false,
-            direction: item.direction,
-            received: item.received === 1 ? true : false,
-            pending: (item.pending === 1 && item.sent !== 1) ? true : false,
-            system: item.system === 1 ? true : false,
-            failed: failed,
-            pinned: (item.pinned === 1) ? true: false,
-            user: item.direction == 'incoming' ? {_id: from_uri, name: from_uri} : {}
-            }
-
-        //console.log('sql2GiftedChat', item.msg_id, item.direction, 'from', from_uri, 'to', item.to_uri, text, 'system', item.system);
-        //console.log('sql2GiftedChat', msg);
-
-        return msg;
     }
 
     async decryptMessage(message, updateContact=false) {
@@ -5460,7 +5501,7 @@ class Sylk extends Component {
         await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
-            //console.log(total, 'messages with', uri, 'from database');
+            console.log('Got', total, 'messages with', uri, 'from database');
         }).catch((error) => {
             console.log('SQL error:', error);
         });
@@ -5491,7 +5532,7 @@ class Sylk extends Component {
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
-                if (!item.content || !item.msg_id) {
+                if (false) {
                     //console.log('Remove broken message', item);
                     this.ExecuteQuery('delete from messages where msg_id = ?', [item.msg_id]);
                     myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
@@ -5500,7 +5541,7 @@ class Sylk extends Component {
 
                 content = item.content;
                 if (!content) {
-                    content = 'Broken message';
+                    content = '';
                 }
 
                 last_direction = item.direction;
@@ -5564,7 +5605,7 @@ class Sylk extends Component {
             last_messages.reverse();
             if (last_messages.length > 0) {
                 last_messages.forEach((last_item) => {
-                    if (!last_item.image && !last_item.system) {
+                    if (!last_item.image && !last_item.system && last_item.text) {
                         last_message = last_item.text.substring(0, 100);
                         last_message_id = last_item.id;
                     } else {
@@ -5616,11 +5657,24 @@ class Sylk extends Component {
         }
 
         if (uri) {
+            let dir = RNFS.DocumentDirectoryPath + '/conference/' + uri + '/files';
+            RNFS.unlink(dir).then((success) => {
+                console.log('Removed folder', dir);
+            }).catch((err) => {
+                console.log('Error deleting folder', dir, err.message);
+            });
+
             query = "DELETE FROM messages where (from_uri = ? and to_uri = ? and direction = 'incoming') or (from_uri = ? and to_uri = ? and direction = 'outgoing')";
             params = [uri, this.state.accountId, this.state.accountId, uri];
         } else {
             wipe = true;
             console.log('--- Wiping device --- ');
+            let dir = RNFS.DocumentDirectoryPath + '/conference/';
+            RNFS.unlink(dir).then((success) => {
+                console.log('Removed folder', dir);
+            }).catch((err) => {
+                console.log('Error deleting folder', dir, err.message);
+            });
             query = "DELETE FROM messages where (to_uri = ? and direction = 'incoming') or (from_uri = ? and direction = 'outgoing')";
             params = [this.state.accountId, this.state.accountId];
             uri = this.state.accountId;
@@ -5628,6 +5682,7 @@ class Sylk extends Component {
             this.setState({messages: {}, myContacts: {}});
             this.saveLastSyncId(null);
         }
+
 
         await this.ExecuteQuery(query, params).then((result) => {
             console.log('SQL deleted', result.rowsAffected, 'messages');
@@ -5641,7 +5696,9 @@ class Sylk extends Component {
                     this.logout();
                 }, 3000);
             } else {
-                this.removeContact(orig_uri);
+                if (result.rowsAffected === 0) {
+                    this.removeContact(orig_uri);
+                }
             }
 
         }).catch((error) => {
@@ -6013,7 +6070,7 @@ class Sylk extends Component {
         let renderMessages = this.state.messages;
         if (messages.length > 0) {
             console.log('Sync', messages.length, 'events from server');
-            this._notificationCenter.postSystemNotification('Syncing messages with the server');
+            //this._notificationCenter.postSystemNotification('Syncing messages with the server');
             this.add_sync_pending_item('sync_in_progress');
         } else {
             this.setState({firstSyncDone: true});
@@ -6389,6 +6446,14 @@ class Sylk extends Component {
             return;
         }
 
+        if (message.sender.uri.indexOf('@conference')) {
+            return;
+        }
+
+        if (message.sender.uri.indexOf('@videoconference')) {
+            return;
+        }
+
         if (message.contentType === 'text/pgp-public-key-imported') {
             this.hideExportPrivateKeyModal();
             this.hideImportPrivateKeyModal();
@@ -6591,7 +6656,6 @@ class Sylk extends Component {
         }
 
         let ts = message.timestamp;
-        ts.setMilliseconds(0);
 
         let unix_timestamp = Math.floor(ts / 1000);
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.sender.uri, message.receiver, "outgoing", pending, sent, received];
@@ -6653,7 +6717,6 @@ class Sylk extends Component {
 
     async saveSystemMessage(uri, content, direction, missed=false) {
         let timestamp = new Date();
-        timestamp.setMilliseconds(0);
         let unix_timestamp = Math.floor(timestamp / 1000);
         let id = uuid.v4();
         let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, 1, direction];

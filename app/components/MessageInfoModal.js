@@ -47,7 +47,6 @@ class MessageInfoModal extends Component {
             status = 'Message is not yet sent';
         }
 
-        console.log('this.state.message', this.state.message);
         let title = this.state.message ? this.state.message.user._id : null;
 
         return (

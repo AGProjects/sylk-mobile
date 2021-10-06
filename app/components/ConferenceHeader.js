@@ -177,7 +177,8 @@ class ConferenceHeader extends React.Component {
         } else if (this.duration) {
             callDetail = (this.props.isTablet ? 'Duration: ' : '') + this.duration;
             if (this.state.participants > 0) {
-                callDetail = callDetail +  ' - ' + this.state.participants + ' participant' + (this.state.participants > 1 ? 's' : '');
+                var participants = this.state.participants + 1;
+                callDetail = callDetail +  ' - ' + participants + ' participant' + (participants > 1 ? 's' : '');
             } else {
                 callDetail = callDetail + ' and nobody joined yet';
             }

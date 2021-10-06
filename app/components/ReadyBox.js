@@ -547,8 +547,8 @@ class ReadyBox extends Component {
                                   {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
                                   {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
                                   {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
-                                  {key: 'conference', title: 'Conference', enabled: Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'], selected: this.state.historyCategoryFilter === 'conference'},
-                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts, selected: this.state.historyCategoryFilter === 'test'},
+                                  {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
+                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
                                   ];
 
         return (

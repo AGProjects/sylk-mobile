@@ -17,15 +17,7 @@ class EscalateConferenceModal extends React.Component {
 
         this.state = {
             call: this.props.call,
-            users: (this.props.call && this.props.call.remoteIdentity) ? this.props.call.remoteIdentity.uri: null
-        }
-    }
-
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.call !== null && nextProps.call !== this.state.call) {
-           this.setState({call: nextProps.call,
-                          users: (nextProps.call && nextProps.call.remoteIdentity) ? nextProps.call.remoteIdentity.uri: null
-                          });
+            users: props.selectedContacts.toString()
         }
     }
 
@@ -35,9 +27,6 @@ class EscalateConferenceModal extends React.Component {
         if (this.state.users) {
             for (let item of this.state.users.split(',')) {
                 item = item.trim();
-                if (item.indexOf('@') === -1) {
-                    item = `${item}@${this.props.defaultDomain}`;
-                }
                 uris.push(item);
             };
         }
@@ -89,8 +78,8 @@ EscalateConferenceModal.propTypes = {
     show: PropTypes.bool.isRequired,
     close: PropTypes.func.isRequired,
     call: PropTypes.object,
-    escalateToConference: PropTypes.func,
-    defaultDomain: PropTypes.string
+    selectedContacts: PropTypes.array,
+    escalateToConference: PropTypes.func
 };
 
 export default EscalateConferenceModal;
