@@ -34,19 +34,20 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 ## Features
 
 * 1-to-1 audio and video calls
-* Text messaging
-* Multiparty video conferencing
+* Encrypted end-to-end messaging
+* Synchronization of multiple devices 
+* Multiparty conferencing
 * Call history entries management
 * Native address book lookup
-* Wake up from sleep
 * Native OS telephony integration
-* Deep links OS integration
+* Support for multiple devices in parallel
 * Support for multiple cameras
 * Support for landscape and portrait modes
-* Support for tablet and phone sizes
-* Supports CallKeep for iOS >=13
-* Supports Telecom connection service for Android
+* Support for tablets and phones
 * Interoperable with SIP clients
+* Receive calls from the web
+
+Messages are encrypted end-to-end using OpenPGP.
 
 
 ## Credits
