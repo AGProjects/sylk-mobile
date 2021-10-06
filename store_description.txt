@@ -25,9 +25,9 @@ Sylk Mobile is part of Sylk Suite, a set of real-time communications application
 Features
 
 * 1-to-1 audio and video calls
-* Text messaging
+* Encrypted end-to-end messaging
 * Synchronization of multiple devices 
-* Multiparty video conferencing
+* Multiparty conferencing
 * Call history entries management
 * Native address book lookup
 * Native OS telephony integration
