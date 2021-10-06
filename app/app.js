@@ -28,6 +28,7 @@ import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
 //import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
 import {Keyboard} from 'react-native';
 import DeviceInfo from 'react-native-device-info';
+import RNBackgroundDownloader from 'react-native-background-downloader';
 
 registerGlobals();
 
@@ -392,10 +393,6 @@ class Sylk extends Component {
             }
         });
 
-        DeviceInfo.getFontScale().then((fontScale) => {
-            this.setState({fontScale: fontScale});
-        });
-
         storage.get('lastSyncedMessageId').then((lastSyncedMessageId) => {
             if (lastSyncedMessageId) {
                 this.lastSyncedMessageId = lastSyncedMessageId;
@@ -649,6 +646,22 @@ class Sylk extends Component {
         });
 
         this.setState({contactsLoaded: true});
+        this.getDownloadTasks();
+    }
+
+    async getDownloadTasks() {
+        let lostTasks = await RNBackgroundDownloader.checkForExistingDownloads();
+        //console.log('Download lost tasks', lostTasks);
+        for (let task of lostTasks) {
+            console.log(`Download task ${task.id} was found:`, task.url);
+            task.progress((percent) => {
+                console.log(task.url, `Downloaded: ${percent * 100}%`);
+            }).done(() => {
+                this.updateFileDownload(id, task.url, task.destination);
+            }).error((error) => {
+                console.log(task.url, 'download error:', error);
+            });
+        }
     }
 
     async generateKeys() {
@@ -827,7 +840,7 @@ class Sylk extends Component {
                         this.saveSylkContact(item.uri, myContacts[item.uri], 'update contact at init because of ' + updated);
                     }
 
-                    console.log('Load contact', item.uri, '-', item.name);
+                    //console.log('Load contact', item.uri, '-', item.name);
                 }
 
                 storage.get('cachedHistory').then((history) => {
@@ -927,9 +940,9 @@ class Sylk extends Component {
 
 
             setTimeout(() => {
-                this.getMessages();
-
+                //this.getMessages();
             }, 500);
+
             this.loadMyKeys();
         });
 
@@ -1506,7 +1519,7 @@ class Sylk extends Component {
                 } else {
                     if (this.state.account && this._loaded) {
                         setTimeout(() => {
-                            this.updateServerHistory()
+                            this.updateServerHistory('/ready')
                         }, 1500);
                     }
                 }
@@ -1514,12 +1527,12 @@ class Sylk extends Component {
 
             if (reason === 'registered') {
                 setTimeout(() => {
-                    this.updateServerHistory()
+                    this.updateServerHistory(reason)
                 }, 1500);
             }
 
             if (reason === 'no_more_calls') {
-                this.updateServerHistory()
+                this.updateServerHistory(reason)
             }
 
             if (reason === 'start_up') {
@@ -1581,6 +1594,10 @@ class Sylk extends Component {
     async componentDidMount() {
         utils.timestampedLog('App did mount');
         //this.requestStoragePermission();
+
+        DeviceInfo.getFontScale().then((fontScale) => {
+            this.setState({fontScale: fontScale});
+        });
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
         // Start a timer that runs once after X milliseconds
@@ -4057,11 +4074,12 @@ class Sylk extends Component {
             }
         }
 
-        this.updateServerHistory()
+        this.updateServerHistory('missedCall')
     }
 
-    updateServerHistory() {
-        this.contactsCount();
+    updateServerHistory(from) {
+        console.log('updateServerHistory by', from);
+        //this.contactsCount();
 
         if (!this.state.contactsLoaded) {
             return;
@@ -4070,10 +4088,6 @@ class Sylk extends Component {
         if (!this.state.firstSyncDone) {
             return;
         }
-
-        DeviceInfo.getFontScale().then((fontScale) => {
-            this.setState({fontScale: fontScale});
-        });
 
         if (this.currentRoute === '/ready') {
             this.setState({refreshHistory: !this.state.refreshHistory});
@@ -4714,6 +4728,17 @@ class Sylk extends Component {
         }
     }
 
+    async updateFileDownload(id, url, filePath) {
+        let query = "UPDATE messages set local_url = ? where msg_id = ?";
+        //console.log(query);
+        await this.ExecuteQuery(query[filePath, id]).then((results) => {
+            console.log('URL', url, 'was downloaded to', filePath);
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
     async messageStateChanged(id, state, data) {
         // valid API states: pending -> accepted -> delivered -> displayed,
         // error, failed or forbidden
@@ -4812,6 +4837,29 @@ class Sylk extends Component {
             // console.log('SQL update OK');
         }).catch((error) => {
             console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async refetchMessages(days=1) {
+        console.log('refetchMessages');
+        let timestamp = new Date();
+        let params;
+        let unix_timestamp = Math.floor(timestamp / 1000);
+        unix_timestamp = unix_timestamp - days * 24 * 3600;
+        params = [this.state.accountId, unix_timestamp];
+        await this.ExecuteQuery("select * from messages where account = ? and unix_timestamp < ? limit 1", params).then((results) => {
+            let rows = results.rows;
+            if (rows.length === 1) {
+                var item = rows.item(0);
+                this.setState({saveLastSyncId: item.msg_id});
+                setTimeout(() => {
+                        if (this.state.account) {
+                            this.state.account.syncConversations();
+                        }
+                }, 10);
+            }
+        }).catch((error) => {
             console.log('SQL error:', error);
         });
     }
@@ -6080,7 +6128,7 @@ class Sylk extends Component {
             setTimeout(() => {
                 this.addTestContacts();
                 this.refreshNavigationItems();
-                this.updateServerHistory()
+                //this.updateServerHistory('syncConversations')
             }, 500);
         }
 
@@ -7779,6 +7827,7 @@ class Sylk extends Component {
                     showExportPrivateKeyModal = {this.state.showExportPrivateKeyModal}
                     showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
                     hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
+                    refetchMessages = {this.refetchMessages}
                 />
 
                 <ReadyBox

@@ -944,7 +944,7 @@ ContactsListBox.propTypes = {
     newContactFunc  : PropTypes.func,
     messageZoomFactor: PropTypes.string,
     isTyping        : PropTypes.bool,
-    fontScale       : PropTypes.integer,
+    fontScale       : PropTypes.number,
     call            : PropTypes.object
 };
 

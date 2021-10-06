@@ -410,7 +410,7 @@ ContactCard.propTypes = {
     unread         : PropTypes.array,
     toggleBlocked  : PropTypes.func,
     sendPublicKey  : PropTypes.func,
-    fontScale      : PropTypes.integer
+    fontScale      : PropTypes.number
 };
 
 

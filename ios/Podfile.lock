@@ -263,6 +263,8 @@ PODS:
     - React-cxxreact (= 0.61.5)
     - React-jsi (= 0.61.5)
   - React-jsinspector (0.61.5)
+  - react-native-background-downloader (2.3.4):
+    - React
   - react-native-background-timer (2.1.1):
     - React
   - react-native-contacts (5.2.3):
@@ -328,8 +330,8 @@ PODS:
     - React
   - RNCPushNotificationIOS (1.2.0):
     - React
-  - RNDeviceInfo (5.5.4):
-    - React
+  - RNDeviceInfo (8.4.0):
+    - React-Core
   - RNDtmf (1.0.0):
     - React
   - RNFBApp (6.3.4):
@@ -339,7 +341,7 @@ PODS:
     - Firebase/Messaging (~> 6.13.0)
     - React
     - RNFBApp
-  - RNFS (2.16.6):
+  - RNFS (2.18.0):
     - React
   - RNShare (3.3.3):
     - React
@@ -371,6 +373,7 @@ DEPENDENCIES:
   - React-jsi (from `../node_modules/react-native/ReactCommon/jsi`)
   - React-jsiexecutor (from `../node_modules/react-native/ReactCommon/jsiexecutor`)
   - React-jsinspector (from `../node_modules/react-native/ReactCommon/jsinspector`)
+  - react-native-background-downloader (from `../node_modules/react-native-background-downloader`)
   - react-native-background-timer (from `../node_modules/react-native-background-timer`)
   - react-native-contacts (from `../node_modules/react-native-contacts`)
   - react-native-document-picker (from `../node_modules/react-native-document-picker`)
@@ -459,6 +462,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/jsiexecutor"
   React-jsinspector:
     :path: "../node_modules/react-native/ReactCommon/jsinspector"
+  react-native-background-downloader:
+    :path: "../node_modules/react-native-background-downloader"
   react-native-background-timer:
     :path: "../node_modules/react-native-background-timer"
   react-native-contacts:
@@ -564,6 +569,7 @@ SPEC CHECKSUMS:
   React-jsi: cb2cd74d7ccf4cffb071a46833613edc79cdf8f7
   React-jsiexecutor: d5525f9ed5f782fdbacb64b9b01a43a9323d2386
   React-jsinspector: fa0ecc501688c3c4c34f28834a76302233e29dc0
+  react-native-background-downloader: 4a034cf39a3b00fac57364984e360a4f180a5efb
   react-native-background-timer: 1b6e6b4e10f1b74c367a1fdc3c72b67c619b222b
   react-native-contacts: e342f93e42bbaac13729e551ffa35ad4a5b90a45
   react-native-document-picker: a7950caaee8587002c9acbc7fe497a342094d93a
@@ -589,11 +595,11 @@ SPEC CHECKSUMS:
   RNCallKeep: eac6e6b4892f1b1c2890a1ce6d5f5451d7543c57
   RNCAsyncStorage: 5d83b49070d41fd72906a116c5e7bdac4ea3a814
   RNCPushNotificationIOS: 4d9ffd08f00ef6c1029ebbf4d72fc711eca3ff01
-  RNDeviceInfo: 6a3d16fce033f6979c4a6a41e62244d183e8c765
+  RNDeviceInfo: 8a06046616c6b5c03787b04f265fa3b52b37c80b
   RNDtmf: 3d027df415fd00b707061864e2ce270f04d22f3d
   RNFBApp: 7d4006751de8bb5cafa2e8d2e7d94ee250df81db
   RNFBMessaging: 51cc7f6beaf4c4feac6f18ea941bba5854e3d9c6
-  RNFS: 2bd9eb49dc82fa9676382f0585b992c424cd59df
+  RNFS: 3ab21fa6c56d65566d1fb26c2228e2b6132e5e32
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
   RNSoundPlayer: aa3c998a1f9beaa0f9fdd4485846a74a53df7d07
   RNSVG: ce9d996113475209013317e48b05c21ee988d42e

@@ -547,6 +547,8 @@ class ReadyBox extends Component {
             conferenceEnabled = false;
         }
 
+        //console.log('fontScale', this.state.fontScale);
+
         let navigationMenuData = [
                                   {key: null, title: 'All', enabled: true, selected: false},
                                   {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
@@ -809,7 +811,7 @@ ReadyBox.propTypes = {
     hideConferenceModalFunc: PropTypes.func,
     shareContent:  PropTypes.func,
     fetchSharedItems: PropTypes.func,
-    fontScale: PropTypes.integer
+    fontScale: PropTypes.number
 };
 
 

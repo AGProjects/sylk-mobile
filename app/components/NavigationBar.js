@@ -120,6 +120,9 @@ class NavigationBar extends Component {
             case 'logs':
                 this.props.showLogs();
                 break;
+            case 'refetchMessages':
+                this.props.refetchMessages();
+                break;
             case 'preview':
                 this.props.preview();
                 break;
@@ -408,6 +411,7 @@ class NavigationBar extends Component {
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
+                        {!this.state.inCall && __DEV__ ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="delete" title="Refetch messages (DEV)"/> :null}
                         <Divider/>
                         {extraMenu ?
                         <View>
@@ -545,6 +549,7 @@ NavigationBar.propTypes = {
     showConferenceModalFunc : PropTypes.func,
     appStoreVersion : PropTypes.object,
     checkVersionFunc: PropTypes.func,
+    refetchMessages: PropTypes.func,
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,
     hideExportPrivateKeyModalFunc: PropTypes.func
