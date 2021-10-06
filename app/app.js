@@ -1762,6 +1762,8 @@ class Sylk extends Component {
 
     sendLocalAndroidNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
+        return;
+        console.log('sendLocalAndroidNotification');
 
         PushNotification.localNotification({
           /* Android Only Properties */
@@ -6042,17 +6044,12 @@ class Sylk extends Component {
             let diff = (Date.now() - this.syncStartTimestamp)/ 1000;
             this.syncStartTimestamp = null;
             console.log('Sync ended after', diff, 'seconds');
-            if (diff > 3) {
-                this._notificationCenter.postSystemNotification('Messages in sync with server');
-            }
-
         }
 
         setTimeout(() => {
             this.addTestContacts();
             this.refreshNavigationItems();
         }, 2000);
-
     }
 
     async syncConversations(messages) {
@@ -6377,7 +6374,9 @@ class Sylk extends Component {
     handleIncomingMessage(message, decryptedBody=null) {
         let content = decryptedBody || message.content;
 
-        //this.sendLocalAndroidNotification(message.sender.uri, content);
+        if (!this.state.selectedContact || this.state.selectedContact.uri != message.sender.uri) {
+            this.sendLocalAndroidNotification(message.sender.uri, content);
+        }
 
         this.saveIncomingMessage(message, decryptedBody);
 

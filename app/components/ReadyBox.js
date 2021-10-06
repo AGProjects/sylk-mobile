@@ -55,7 +55,7 @@ class ReadyBox extends Component {
             return;
         }
 
-        if (this.state.selectedContact && nextProps.selectedContact === null) {
+        if (this.state.selectedContact && !nextProps.selectedContact) {
             this.setState({targetUri: '',
                            chat: false});
         }
@@ -559,7 +559,6 @@ class ReadyBox extends Component {
                                   {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
                                   {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
                                   ];
-
         return (
             <Fragment>
                 <View style={styles.container}>

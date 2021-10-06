@@ -309,7 +309,7 @@ export default class CallManager extends events.EventEmitter {
         } else {
             if (this._incoming_conferences.has(callUUID)) {
                 const conference = this._incoming_conferences.get(callUUID);
-                this.logMissedCall(conference.room, callUUID, direction='received', participants=[conference.from]);
+                this.logMissedCall(conference.room, callUUID, 'received', [conference.from]);
                 this._incoming_conferences.delete(callUUID);
             } else {
                 this.sylkHangupCall(callUUID, 'callkeep_hangup_call');

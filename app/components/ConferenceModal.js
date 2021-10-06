@@ -41,7 +41,7 @@ class ConferenceModal extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         let uri = nextProps.targetUri.split('@')[0];
 
-        this.setState({targetUri: uri || this.state.targetUri,
+        this.setState({targetUri: uri,
                       myInvitedParties: nextProps.myInvitedParties,
                       selectedContact: nextProps.selectedContact,
                       participants: nextProps.participants || []
