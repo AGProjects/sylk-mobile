@@ -4662,7 +4662,7 @@ class Sylk extends Component {
 
     async saveConferenceMessage(room, message) {
         console.log('Save conference message', message._id);
-
+        let messages = this.state.messages;
         let ts = message.createdAt;
 
         let unix_timestamp = Math.floor(ts / 1000);
