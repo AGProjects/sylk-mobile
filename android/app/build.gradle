@@ -198,6 +198,13 @@ dependencies {
     implementation 'com.google.firebase:firebase-core:16.0.0'
     implementation "com.google.firebase:firebase-messaging:17.3.0"
 
+    implementation('com.google.firebase:firebase-analytics') {
+        exclude module: "play-services-ads-identifier"
+        exclude module: "play-services-measurement"
+        exclude module: "play-services-measurement-impl"
+        exclude module: "play-services-measurement-sdk"
+    }
+
     implementation "com.facebook.react:react-native:+"  // From node_modules
     implementation "androidx.multidex:multidex:2.0.1"
 
