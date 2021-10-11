@@ -47,12 +47,11 @@ class ShareMessageModal extends Component {
     }
 
     handleShareButton(event) {
-        const subject = 'Share Sylk message';
-        const message = this.state.message.text;
-
         let options= {
-            subject: subject,
-            message: message
+            title: 'Share via',
+            subject: 'Share Sylk message',
+            message: this.state.message.text,
+            url: this.state.message.local_url ? 'file://' + this.state.message.local_url : this.state.message.url
         }
 
         Share.open(options)

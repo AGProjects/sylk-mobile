@@ -53,15 +53,6 @@
     color: white;
 }
 
-.chatContainerLandscape {
-    margin-top: 100px;
-    margin-right: 10px;
-    margin-left: 5px;
-    width: 300px;
-    border-color: grey;
-    border-radius: 5px;
-}
-
 .audioContainerLandscape {
     align-content: flex-start;
     margin-top: 55px;
@@ -81,6 +72,11 @@
     border: 0px;
 }
 
+.chatContainerLandscape {
+    margin-top: 65px;
+    width: 400px;
+}
+
 .audioContainerPortrait {
     flex: 3;
     border: 0.5px;
@@ -88,6 +84,12 @@
 
 .chatContainerPortraitAudio {
     flex: 6;
+    border: 0px;
+    border-radius: 5px;
+}
+
+.chatContainerPortrait {
+    flex: 5;
     border: 0px;
     border-radius: 5px;
 }
@@ -100,10 +102,6 @@
     left: 0;
     right: 0;
     top: 0;
-}
-
-.chatContainer {
-    margin-top: 110px;
 }
 
 .videosContainer {

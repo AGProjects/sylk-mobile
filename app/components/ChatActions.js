@@ -1,8 +1,10 @@
 import PropTypes from 'prop-types'
 import React from 'react'
+import Switch from 'react-native'
+import { Bubble, MessageText, InputToolbar } from 'react-native-gifted-chat'
+import DocumentPicker from 'react-native-document-picker';
 //import * as ImagePicker from 'expo-image-picker';
 
-import DocumentPicker from 'react-native-document-picker';
 
 import {
   StyleSheet,
@@ -11,33 +13,6 @@ import {
   View,
   ViewPropTypes,
 } from 'react-native'
-
-
-export async function pickImageAsync(onSend) {
-    return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      allowsEditing: true,
-      aspect: [4, 3],
-    })
-
-    if (!result.cancelled) {
-      onSend([{ image: result.uri }])
-      return result.uri
-    }
-}
-
-export async function takePictureAsync(onSend) {
-    return;
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [4, 3],
-    })
-
-    if (!result.cancelled) {
-      onSend([{ image: result.uri }])
-      return result.uri
-    }
-}
 
 export default class CustomActions extends React.Component {
   onActionsPress = () => {
@@ -48,7 +23,7 @@ export default class CustomActions extends React.Component {
     ]
 
     options = [
-      'Curious, huh?',
+      'Upload file...',
       'Cancel',
     ]
     const cancelButtonIndex = options.length - 1
@@ -77,16 +52,18 @@ export default class CustomActions extends React.Component {
        console.log(results);
        let res = results[0];
        let type = res.name.slice(res.name.lastIndexOf('.') + 1);
-       if (
-             res.type == 'application/pdf' ||
-             res.type == 'image/jpeg' ||
-             res.type == 'image/png' ||
-             res.type == 'image/jpg'
-       ) {
-             this.props.onSendWithFile(res);
-       } else {
-             alert(`${type} is not allowed. Only images types are supported.`);
-       }
+           this.props.onSendWithFile(res);
+           /*
+           if (
+                 res.type == 'application/pdf' ||
+                 res.type == 'image/jpeg' ||
+                 res.type == 'image/png' ||
+                 res.type == 'image/jpg'
+           ) {
+           } else {
+                 alert(`${type} is not allowed. Only images types are supported.`);
+           }
+           */
      } catch (err) {
        //Handling any exception (If any)
        if (DocumentPicker.isCancel(err)) {

@@ -270,6 +270,7 @@ class Sylk extends Component {
 
         this.syncRequested = false;
         this.mustSendPublicKey = false;
+        this.conferenceEndedTimer = null;
 
         this.syncTimer = null;
         this.lastSyncedMessageId = null;
@@ -415,7 +416,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 7,
+        this.sqlTableVersions = {'messages': 8,
                                  'contacts': 7,
                                  'keys': 2}
 
@@ -425,7 +426,8 @@ class Sylk extends Component {
                                                 4: [{query: 'alter table messages add column account TEXT', params: []}],
                                                 5: [{query: 'update messages set account = from_uri where direction = ?' , params: ['outgoing']}, {query: 'update messages set account = to_uri where direction = ?', params: ['incoming']}],
                                                 6: [{query: 'alter table messages add column sender TEXT' , params: []}],
-                                                7: [{query: 'alter table messages add column image TEXT' , params: []}, {query: 'alter table messages add column local_url TEXT' , params: []}]
+                                                7: [{query: 'alter table messages add column image TEXT' , params: []}, {query: 'alter table messages add column local_url TEXT' , params: []}],
+                                                8: [{query: 'alter table messages add column metadata TEXT' , params: []}]
                                                 },
                                    'contacts': {2: [{query: 'alter table contacts add column participants TEXT', params: []}],
                                                 3: [{query: 'alter table contacts add column direction TEXT', params: []},
@@ -1099,6 +1101,7 @@ class Sylk extends Component {
                                     'sender' TEXT, \
                                     'content' BLOB, \
                                     'content_type' TEXT, \
+                                    'metadata' TEXT, \
                                     'from_uri' TEXT, \
                                     'to_uri' TEXT, \
                                     'sent' INTEGER, \
@@ -3533,16 +3536,29 @@ class Sylk extends Component {
             ) {
             this.setState({inviteContacts: false});
             this.changeRoute('/ready', reason);
+            if (reason === 'user_hangup_conference_confirmed') {
+                if (this.conferenceEndedTimer) {
+                    console.log('Clear timer conferenceEndedTimer');
+                    clearTimeout(this.conferenceEndedTimer);
+                    this.conferenceEndedTimer = null;
+                } else {
+                    console.log('Clear timer conferenceEndedTimer is not needed');
+                }
+            }
         } else if (reason === 'user_hangup_conference') {
-            utils.timestampedLog('Save conference maybe?');
-            setTimeout(() => {
-                 this.changeRoute('/ready', 'conference_really_ended');
-            }, 15000);
+            if (!this.conferenceEndedTimer ) {
+                utils.timestampedLog('Save conference maybe?');
+                this.conferenceEndedTimer = setTimeout(() => {
+                    this.changeRoute('/ready', 'conference_really_ended');
+                }, 15000);
+            }
         } else if (reason === 'user_cancelled_conference') {
-            utils.timestampedLog('Save conference maybe?');
-            setTimeout(() => {
-                 this.changeRoute('/ready', 'conference_really_ended');
-            }, 15000);
+            if (!this.conferenceEndedTimer ) {
+                utils.timestampedLog('Save conference maybe?');
+                this.conferenceEndedTimer = setTimeout(() => {
+                     this.changeRoute('/ready', 'conference_really_ended');
+                }, 15000);
+            }
         } else {
             utils.timestampedLog('Will go to ready in 6 seconds (hangup)');
             setTimeout(() => {
@@ -3761,6 +3777,7 @@ class Sylk extends Component {
         utils.timestampedLog('New outgoing conference to room', targetUri);
         this.setState({targetUri: targetUri});
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
+        this.getMessages(targetUri);
     }
 
     escalateToConference(participants) {
@@ -3905,11 +3922,13 @@ class Sylk extends Component {
 
     autoRejectIncomingCall(callUUID, from, to) {
         //utils.timestampedLog('Check auto reject call from', from);
-        if (this.state.blockedUris && this.state.blockedUris.indexOf(from) > -1) {
-            utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
-            this.callKeeper.rejectCall(callUUID);
-            this._notificationCenter.postSystemNotification('Call rejected', {body: `from ${from}`});
-            return true;
+        if (this.state.blockedUris) {
+            if (this.state.blockedUris.indexOf(from) > -1 || (this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1 && (from === 'anonymous@anonymous.invalid' || from.indexOf('@guest.') > -1))) {
+                utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
+                this.callKeeper.rejectCall(callUUID);
+                this._notificationCenter.postSystemNotification('Call rejected', {body: `from ${from}`});
+                return true;
+            }
         }
 
         const fromDomain = '@' + from.split('@')[1]
@@ -4142,6 +4161,8 @@ class Sylk extends Component {
     }
 
     async saveSylkContact(uri, contact, origin=null) {
+        console.log('Save Sylk Contact', uri, 'with name', contact.name, 'by', origin);
+
         if (!contact) {
             contact = this.newContact(uri);
         } else {
@@ -4151,8 +4172,6 @@ class Sylk extends Component {
         if (!contact) {
             return;
         }
-
-        console.log('Save Sylk Contact', uri, 'with name', contact.name, 'by', origin);
 
         if (this.sql_contacts_keys.indexOf(uri) > -1) {
             this.updateSylkContact(uri, contact, origin);
@@ -4517,6 +4536,22 @@ class Sylk extends Component {
         this.saveSylkContact(uri, myContacts[uri], 'savePublicKeySync');
     }
 
+    sendConferenceMessage(message) {
+        if (!this.state.currentCall) {
+            return;
+        }
+
+        if (!this.isConference(this.state.currentCall)) {
+            return;
+        }
+
+        this.state.currentCall.sendMessage(message.text, 'text/plain');
+        message.direction = 'outgoing';
+        message.sent = true;
+        message.received = true;
+        this.saveConferenceMessage(this.state.currentCall.remoteIdentity.uri, message);
+    }
+
     _sendMessage(uri, text, id, contentType, timestamp) {
         // Send outgoing messages
         if (this.state.account) {
@@ -4635,14 +4670,55 @@ class Sylk extends Component {
         if (!message.direction) {
             message.direction = message.received ? 'incoming' : 'outgoing';
         }
+
         let from_uri = message.direction === 'incoming' || message.received ? room : this.state.accountId;
         let to_uri = message.direction === 'incoming' || message.received ? this.state.accountId : room;
         let system = message.system ? '1' : null;
         let sender = !system ? message.user._id : null;
 
-        let params = [this.state.accountId, system, message.image, sender, message.local_url, message.url, message._id, JSON.stringify(ts), unix_timestamp, message.text, contentType, from_uri, to_uri, message.direction, 0, message.sent ? 1: 0, message.received ? 1: 0];
-        await this.ExecuteQuery("INSERT INTO messages (account, system, image, sender, local_url, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        var content = message.text;
+        var params = [this.state.accountId, system, JSON.stringify(message.metadata), message.image, sender, message.local_url, message.url, message._id, JSON.stringify(ts), unix_timestamp, content, contentType, from_uri, to_uri, message.direction, 0, message.sent ? 1: 0, message.received ? 1: 0];
+        await this.ExecuteQuery("INSERT INTO messages (account, system, metadata, image, sender, local_url, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL insert conference message', message._id);
+            if (room in messages) {
+            } else {
+                messages[room] = [message];
+            }
+            messages[room].push(message);
+            this.setState({messages: messages});
+        }).catch((error) => {
+            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+                console.log('SQL error:', error);
+            }
+        });
+    }
+
+    async updateConferenceMessage(room, message, update=false) {
+        console.log('Update conference message', message);
+        let messages = this.state.messages;
+        let sent = message.sent ? 1 : 0;
+        let received = message.received ? 1 : 0;
+
+        var params = [JSON.stringify(message.metadata),  message.image, message.local_url, message.text, 0, sent, received, message._id];
+        await this.ExecuteQuery("update messages set metadata = ?, image = ?, local_url = ?, content = ?, pending = ?, sent = ?, received = ? where msg_id = ?", params).then((result) => {
+            console.log('SQL update conference message', message._id);
+            let renderMessages = messages[room];
+            let newRenderMessages = [];
+            renderMessages.forEach((msg) => {
+                 if (msg._id === message._id) {
+                     msg.local_url = message.local_url;
+                     msg.image = message.image;
+                     msg.txt = message.text;
+                     msg.metadata = message.metadata;
+                     msg.pending = message.pending;
+                     msg.failed = message.failed;
+                     msg.sent = message.sent;
+                     msg.received = message.received;
+                 }
+                 newRenderMessages.push(msg);
+            });
+            messages[room] = newRenderMessages;
+            this.setState({messages: messages});
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('SQL error:', error);
@@ -4654,51 +4730,60 @@ class Sylk extends Component {
         let image;
         let timestamp = new Date(item.unix_timestamp * 1000);
 
-        if (item.url || item.image) {
-//            console.log('sql2GiftedChat', item.image, item.url);
-        }
+        //if (item.url || item.image) {
+        //console.log('sql2GiftedChat', item.msg_id, item.local_url, item.image);
+        //}
 
-        let failed = (item.pending === 0 && item.received === 0 && item.sent === 1) ? true: false;
+        let failed = (item.pending === 0 && item.sent === 0 && item.direction === 'outgoing') ? true: false;
+        let received = item.received === 1 ? true : false;
+        let sent = item.sent === 1 ? true : false;
+        let pending = item.pending === 1 ? true : false;
+
         let msg;
-        let text = '';
-
         let from_uri = item.sender ? item.sender : item.from_uri;
 
-        if (!item.image && item.url) {
-            if (item.url.toLowerCase().endsWith('.png')) {
-                item.image = item.url;
-            } else if (item.url.toLowerCase().endsWith('.jpg')) {
-                item.image = item.url;
-            } else if (item.url.toLowerCase().endsWith('.gif')) {
-                item.image = item.url;
-            } else if (item.url.toLowerCase().indexOf('image') > -1) {
-                item.image = item.url;
-            }
-        } else {
-            text = content;
+        if (!item.image && item.local_url && utils.isImage(item.local_url)) {
+            item.image = item.local_url;
+        }
+
+        if (!item.video && item.local_url && utils.isVideo(item.local_url)) {
+            //item.video = item.local_url;
+        }
+
+        if (!item.audio && item.local_url && utils.isAudio(item.local_url)) {
+            //item.audio = item.local_url;
+        }
+
+        let metadata = {};
+
+        if (item.metadata) {
+            let metadata_obj = JSON.parse(item.metadata);
+            Object.assign(metadata, metadata_obj);
         }
 
         msg = {
             _id: item.msg_id,
+            key: item.msg_id,
             image: item.image,
+            video: item.video,
+            audio: item.audio,
             url: item.url,
+            metadata: metadata,
             local_url: item.local_url,
-            text: text || '',
+            text: content || item.content || 'Empty message',
             encrypted: item.encrypted,
             createdAt: timestamp,
-            sent: ((item.sent === 1 || item.received === 1) && !failed) ? true : false,
+            sent: sent,
             direction: item.direction,
-            received: item.received === 1 ? true : false,
-            pending: (item.pending === 1 && item.sent !== 1) ? true : false,
+            received: received,
+            pending: pending,
             system: item.system === 1 ? true : false,
             failed: failed,
             pinned: (item.pinned === 1) ? true: false,
             user: item.direction == 'incoming' ? {_id: from_uri, name: from_uri} : {}
             }
 
-        //console.log('sql2GiftedChat', item.msg_id, item.direction, 'from', from_uri, 'to', item.to_uri, text, 'system', item.system);
-        //console.log('sql2GiftedChat', msg);
-
+        //console.log(msg);
         return msg;
     }
 
@@ -4828,17 +4913,8 @@ class Sylk extends Component {
         //console.log(query);
         if (local) {
             this.addJournal(id, 'removeMessage', {uri: uri});
-            this.removeFileFromMessage(id);
         }
-        query = "DELETE from messages where msg_id = '" + id + "'";
-        await this.ExecuteQuery(query).then((results) => {
-            this.deleteRenderMessage(id, uri);
-
-            // console.log('SQL update OK');
-        }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
-        });
+        this.removeFileFromMessage(id, uri);
     }
 
     async refetchMessages(days=1) {
@@ -4864,21 +4940,33 @@ class Sylk extends Component {
         });
     }
 
-    removeFileFromMessage(id) {
+    removeFileFromMessage(id, uri) {
         let query = "SELECT * from messages where msg_id = '" + id + "';";
-        //console.log(query);
+        console.log(query);
         this.ExecuteQuery(query,[]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
-                if (item.image) {
-                    RNFS.unlink(item.image).then((success) => {
-                        console.log('Removed image', item.image);
+                if (item.local_url) {
+                    RNFS.unlink(item.local_url).then((success) => {
+                        console.log('Removed file', item.local_url);
                     }).catch((err) => {
-                        console.log('Error deleting image file', item.image, err.message);
+                        console.log('Error deleting file', item.local_url, err.message);
                     });
+                } else if (item.url) {
+                    console.log('No local file available for', item.url);
                 }
+
+                query = "DELETE from messages where msg_id = '" + id + "'";
+                this.ExecuteQuery(query).then((results) => {
+                    this.deleteRenderMessage(id, uri);
+                    console.log('SQL deleted', results.rowsAffected, 'messages');
+                }).catch((error) => {
+                    console.log('SQL query:', query);
+                    console.log('SQL error:', error);
+                });
             }
+
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -5484,6 +5572,15 @@ class Sylk extends Component {
     }
 
     lookupPublicKey(contact) {
+
+        if (contact.uri.indexOf('@guest') > -1) {
+            return;
+        }
+
+        if (contact.uri.indexOf('anonymous') > -1) {
+            return;
+        }
+
         if (!contact.publicKey && !contact.conference && this.state.connection) {
             this.state.connection.lookupPublicKey(contact.uri);
         }
@@ -5561,7 +5658,7 @@ class Sylk extends Component {
             console.log('SQL error:', error);
         });
 
-        myContacts[orig_uri].totalMessages = total;
+        myContacts[uri].totalMessages = total;
 
         query = "SELECT * FROM messages where ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
         if (pinned) {
@@ -5571,7 +5668,7 @@ class Sylk extends Component {
         query = query + ' order by unix_timestamp desc limit ?, ?';
 
         await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
-            //console.log('SQL get messages OK', results.rows.length);
+            console.log('SQL get messages, rows =', results.rows.length);
 
             let rows = results.rows;
             messages[orig_uri] = [];
@@ -5595,8 +5692,8 @@ class Sylk extends Component {
                 }
 
                 content = item.content;
-                if (!content) {
-                    content = '';
+                if (!content && !item.image) {
+                    content = 'Empty message...';
                 }
 
                 last_direction = item.direction;
@@ -5696,6 +5793,7 @@ class Sylk extends Component {
     async deleteMessages(uri, local=true) {
         console.log('Delete messages for', uri);
         let myContacts = this.state.myContacts;
+        let messages = this.state.messages;
         let query;
         let params;
         let wipe = false;
@@ -5719,7 +5817,7 @@ class Sylk extends Component {
                 console.log('Error deleting folder', dir, err.message);
             });
 
-            query = "DELETE FROM messages where (from_uri = ? and to_uri = ? and direction = 'incoming') or (from_uri = ? and to_uri = ? and direction = 'outgoing')";
+            query = "DELETE FROM messages where ((from_uri = ? and to_uri = ? and direction = 'incoming') or (from_uri = ? and to_uri = ? and direction = 'outgoing'))";
             params = [uri, this.state.accountId, this.state.accountId, uri];
         } else {
             wipe = true;
@@ -5738,7 +5836,6 @@ class Sylk extends Component {
             this.saveLastSyncId(null);
         }
 
-
         await this.ExecuteQuery(query, params).then((result) => {
             console.log('SQL deleted', result.rowsAffected, 'messages');
             if (result.rowsAffected) {
@@ -5753,9 +5850,20 @@ class Sylk extends Component {
             } else {
                 if (result.rowsAffected === 0) {
                     this.removeContact(orig_uri);
+                } else {
+                    if (orig_uri in messages) {
+                        delete messages[orig_uri];
+                        this.setState({messages: messages});
+                    }
+
+                    if (orig_uri in myContacts) {
+                        myContacts[orig_uri].totalMessages = 0;
+                        myContacts[orig_uri].lastMessage = null;
+                        myContacts[orig_uri].lastMessageId = null;
+                        this.setState({myContacts: myContacts});
+                    }
                 }
             }
-
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -6428,14 +6536,17 @@ class Sylk extends Component {
 
         this.saveIncomingMessage(message, decryptedBody);
 
-        let renderMessages = this.state.messages;
-        if (Object.keys(renderMessages).indexOf(message.sender.uri) === -1) {
-            renderMessages[message.sender.uri] = [];
-        }
-
-        renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message, decryptedBody, 'incoming'));
-
         if (this.state.selectedContact) {
+            let renderMessages = this.state.messages;
+            if (message.sender.uri === this.state.selectedContact.uri) {
+                if (message.sender.uri in renderMessages) {
+                } else {
+                    renderMessages[message.sender.uri] = [];
+                }
+            }
+
+            renderMessages[message.sender.uri].push(utils.sylkToRenderMessage(message, decryptedBody, 'incoming'));
+
             let selectedContact = this.state.selectedContact;
             selectedContact.lastMessage = content.substring(0, 100);
             selectedContact.timestamp = message.timestamp;
@@ -7262,7 +7373,7 @@ class Sylk extends Component {
 
         uri = uri.trim().toLowerCase();
 
-        if (!utils.isPhoneNumber(uri) && !utils.isEmailAddress(uri)) {
+        if (!utils.isPhoneNumber(uri) && !utils.isEmailAddress(uri) && uri.split('@')[0] !== '*') {
             console.log('sanitizeContact failed for uri:', uri);
             return null;
         }
@@ -7369,6 +7480,10 @@ class Sylk extends Component {
     toggleBlocked(uri) {
         let blockedUris = this.state.blockedUris;
         let myContacts = this.state.myContacts;
+
+        if (uri.indexOf('@guest.') > -1) {
+            uri = 'anonymous@anonymous.invalid';
+        }
 
         if (uri in myContacts) {
         } else {
@@ -7515,7 +7630,7 @@ class Sylk extends Component {
     addHistoryEntry(uri, callUUID, direction='outgoing', participants=[]) {
         let myContacts = this.state.myContacts;
 
-        console.log('addHistoryEntry', uri);
+        //console.log('addHistoryEntry', uri);
 
         if (uri.indexOf('@') === -1) {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
@@ -7648,6 +7763,10 @@ class Sylk extends Component {
         let contact;
         history.forEach((item) => {
             uri = item.uri;
+
+            if (uri.indexOf('@guest.') > -1 && !item.name) {
+                uri = 'guest@' + uri.split('@')[1];
+            }
 
             if (this.state.blockedUris.indexOf(uri) > -1) {
                 return;
@@ -7828,6 +7947,7 @@ class Sylk extends Component {
                     showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
                     hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
                     refetchMessages = {this.refetchMessages}
+                    blockedUris = {this.state.blockedUris}
                 />
 
                 <ReadyBox
@@ -8033,7 +8153,8 @@ class Sylk extends Component {
                 registrationState = {this.state.registrationState}
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
-                saveMessage = {this.saveConferenceMessage}
+                saveConferenceMessage = {this.saveConferenceMessage}
+                updateConferenceMessage = {this.updateConferenceMessage}
                 myInvitedParties = {this.state.myInvitedParties}
                 saveConference = {this.appendInvitedParties}
                 previousParticipants = {previousParticipants}
@@ -8065,6 +8186,7 @@ class Sylk extends Component {
                 messages = {this.state.messages}
                 getMessages = {this.getMessages}
                 finishInvite={this.finishInviteToConference}
+                sendConferenceMessage={this.sendConferenceMessage}
             />
         )
     }

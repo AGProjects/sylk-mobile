@@ -298,6 +298,16 @@ class ContactCard extends Component {
             title = name || username;
         }
 
+        if (uri === 'anonymous@anonymous.invalid') {
+            title = 'Anonymous caller';
+        } else {
+
+            let isAnonymous = uri.indexOf('@guest.') > -1;
+            if (isAnonymous) {
+                title = title + ' (Web call)';
+            }
+        }
+
         if (duration && duration !== "00:00:00") {
             let media = 'Audio call';
             if (this.state.contact.lastCallMedia.indexOf('video') > -1) {

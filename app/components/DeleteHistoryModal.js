@@ -85,9 +85,6 @@ class DeleteHistoryModal extends Component {
                              <Text style={styles.body}>
                                  Confirm deletion of all messages with {this.state.uri}.
                              </Text>
-                             <Text style={styles.body}>
-                                 Messages will not be removed from remote party.
-                             </Text>
                         </View>
                              :
                              <Text style={styles.body}>

@@ -1,3 +1,25 @@
+iOS 2.3.6 & Android 1.98 Wed Oct  6 17:16:36 -03 2021 
+
+  * Escalate to conference fixes
+  * Conference improvements
+  * Render images in the conference
+  * Fixed for Android 8 rendering of buttons
+  * Add test contacts at 1st run
+  * Improve enrollment process
+  * Improve accesability when bigger fonts are used
+  * Audio calls fixes
+  * Update export private key
+  * Fixes for PSTN calls
+  * Fixes for contacts sync
+  * Fixes for replicating contacts
+  * Account management fixes
+  * Improved ringtones
+  * Call reconnect fixes
+  * Fixes for import keys
+  * Improve private key import/export panels
+  * Clear notifications when app is in focus
+
+
 iOS 2.2.4 & Android 1.8.3 Wed Sep 22 17:23:43 -03 2021
 
   * Phone calls history fixes

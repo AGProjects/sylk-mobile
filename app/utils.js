@@ -144,7 +144,6 @@ function normalizeUri(uri, defaultDomain) {
 
 function copyToClipboard(text) {
     Clipboard.setString(text);
-
     return true;
 }
 
@@ -283,6 +282,63 @@ function isEmailAddress(uri) {
     return email_reg.test(uri);
 }
 
+function isImage(filename) {
+    if (!filename) {
+        return false;
+    }
+
+    if (filename.toLowerCase().endsWith('.png')) {
+        return true
+    } else if (filename.toLowerCase().endsWith('.jpg')) {
+        return true
+    } else if (filename.toLowerCase().endsWith('.jpeg')) {
+        return true
+    } else if (filename.toLowerCase().endsWith('.gif')) {
+        return true
+    } else if (filename.toLowerCase().endsWith('.tiff')) {
+        return true
+    } else if (filename.toLowerCase().endsWith('.tif')) {
+        return true
+    }
+
+    return false;
+}
+
+function isVideo(filename) {
+    if (!filename) {
+        return false;
+    }
+
+    if (filename.toLowerCase().endsWith('.mpeg')) {
+        return true;
+    } else if (filename.toLowerCase().endsWith('.mp4')) {
+        return true;
+    }
+
+    return false;
+}
+
+function isAudio(filename) {
+    if (!filename) {
+        return false;
+    }
+
+    if (filename.toLowerCase().endsWith('.mp3')) {
+        return true;
+    } else if (filename.toLowerCase().endsWith('.ogg')) {
+        return true;
+    }
+    return false;
+}
+
+function titleCase(str) {
+    return str.replace(
+        /\w\S*/g,
+        function(txt) {
+            return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+        }
+    );
+}
 
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
@@ -300,4 +356,7 @@ exports.escapeHtml = escapeHtml;
 exports.html2text = html2text;
 exports.isEmailAddress = isEmailAddress;
 exports.isPhoneNumber = isPhoneNumber;
-
+exports.isImage = isImage;
+exports.isAudio = isAudio;
+exports.isVideo = isVideo;
+exports.titleCase = titleCase;

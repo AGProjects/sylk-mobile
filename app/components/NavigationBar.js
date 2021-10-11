@@ -56,7 +56,8 @@ class NavigationBar extends Component {
             showPublicKey: false,
             messages: this.props.messages,
             userClosed: false,
-            pinned: this.props.pinned
+            pinned: this.props.pinned,
+            blockedUris: this.props.blockedUris
         }
 
         this.menuRef = React.createRef();
@@ -92,7 +93,8 @@ class NavigationBar extends Component {
                        showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
-                       showCallMeMaybeModal: nextProps.showCallMeMaybeModal
+                       showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
+                       blockedUris: nextProps.blockedUris
                        });
     }
 
@@ -302,7 +304,6 @@ class NavigationBar extends Component {
             isConference = this.state.selectedContact.conference;
         }
 
-        let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : 'Block';
         let favoriteTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
         let favoriteIcon = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
 
@@ -319,6 +320,14 @@ class NavigationBar extends Component {
         }
 
         let updateTitle = (this.state.appStoreVersion && this.state.appStoreVersion.version > VersionNumber.appVersion) ? 'Update Sylk...' : 'Check for updates...';
+
+        let isAnonymous = this.state.selectedContact && (this.state.selectedContact.uri.indexOf('@guest.') > -1 || this.state.selectedContact.uri.indexOf('anonymous@') > -1);
+        let canCall = !isConference && !this.state.inCall && !isAnonymous;
+
+        let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
+        if (isAnonymous && this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
+            blockedTitle = 'Allow anonymous callers';
+        }
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -354,9 +363,9 @@ class NavigationBar extends Component {
                         }
                     >
                         <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
-                        {!isConference && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {!isConference && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {isConference && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {canCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {canCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {canCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
 
                         { hasMessages  && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
@@ -378,7 +387,7 @@ class NavigationBar extends Component {
                         {this.props.publicKey && false?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        {tags.indexOf('test') === -1 && !this.state.inCall  ?
+                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous  ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
@@ -552,7 +561,8 @@ NavigationBar.propTypes = {
     refetchMessages: PropTypes.func,
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,
-    hideExportPrivateKeyModalFunc: PropTypes.func
+    hideExportPrivateKeyModalFunc: PropTypes.func,
+    blockedUris: PropTypes.array
 };
 
 export default NavigationBar;

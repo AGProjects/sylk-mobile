@@ -17,7 +17,7 @@ class EscalateConferenceModal extends React.Component {
 
         this.state = {
             call: this.props.call,
-            users: props.selectedContacts.toString()
+            users: props.selectedContacts ? props.selectedContacts.toString() : ''
         }
     }
 

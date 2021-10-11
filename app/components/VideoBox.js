@@ -351,6 +351,7 @@ class VideoBox extends Component {
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
                     call={this.state.call}
+                    selectedContacts={this.state.selectedContacts}
                     close={this.toggleEscalateConferenceModal}
                     escalateToConference={this.escalateToConference}
                 />

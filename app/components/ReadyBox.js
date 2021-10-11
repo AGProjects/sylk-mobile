@@ -168,6 +168,10 @@ class ReadyBox extends Component {
     }
 
     get showButtonsBar() {
+        if (this.state.historyCategoryFilter === 'blocked') {
+            return false;
+        }
+
         if (this.props.isTablet) {
             return true;
         }
@@ -546,8 +550,6 @@ class ReadyBox extends Component {
         if (this.state.inviteContacts) {
             conferenceEnabled = false;
         }
-
-        //console.log('fontScale', this.state.fontScale);
 
         let navigationMenuData = [
                                   {key: null, title: 'All', enabled: true, selected: false},

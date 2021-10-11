@@ -254,10 +254,6 @@ class Conference extends React.Component {
         this.props.saveParticipant(callUUID, room, uri);
     }
 
-    saveMessage(room, message) {
-        this.props.saveMessage(room, message);
-    }
-
     showSaveDialog() {
         if (!this.userHangup) {
             return false;
@@ -355,7 +351,8 @@ class Conference extends React.Component {
                         account = {this.props.account}
                         hangup = {this.hangup}
                         saveParticipant = {this.saveParticipant}
-                        saveMessage = {this.saveMessage}
+                        saveConferenceMessage = {this.props.saveConferenceMessage}
+                        updateConferenceMessage = {this.props.updateConferenceMessage}
                         saveConference = {this.props.saveConference}
                         previousParticipants = {this.props.previousParticipants}
                         remoteUri = {this.state.room}
@@ -382,7 +379,7 @@ class Conference extends React.Component {
                         callContact={this.props.callContact}
                         getMessages={this.props.getMessages}
                         fileSharingUrl = {this.props.fileSharingUrl}
-
+                        sendConferenceMessage = {this.props.sendConferenceMessage}
                    />
                 );
             } else {
@@ -422,7 +419,8 @@ Conference.propTypes = {
     registrationState       : PropTypes.string,
     hangupCall              : PropTypes.func,
     saveParticipant         : PropTypes.func,
-    saveMessage             : PropTypes.func,
+    updateConferenceMessage : PropTypes.func,
+    saveConferenceMessage   : PropTypes.func,
     saveConference          : PropTypes.func,
     previousParticipants    : PropTypes.array,
     currentCall             : PropTypes.object,
@@ -454,7 +452,8 @@ Conference.propTypes = {
     finishInvite            : PropTypes.func,
     messages                : PropTypes.object,
     getMessages             : PropTypes.func,
-    fileSharingUrl          : PropTypes.string
+    fileSharingUrl          : PropTypes.string,
+    sendConferenceMessage   : PropTypes.func
 };
 
 

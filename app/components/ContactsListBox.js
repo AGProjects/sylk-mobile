@@ -2,20 +2,23 @@ import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 
 import PropTypes from 'prop-types';
-import { Clipboard, SafeAreaView, View, FlatList, Text } from 'react-native';
+import { Clipboard, SafeAreaView, View, FlatList, Text, Linking, PermissionsAndroid, Switch} from 'react-native';
 
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
-import { GiftedChat, IMessage, Bubble } from 'react-native-gifted-chat'
+import { GiftedChat, IMessage, Bubble, MessageText } from 'react-native-gifted-chat'
 import MessageInfoModal from './MessageInfoModal';
 import ShareMessageModal from './ShareMessageModal';
 import CustomChatActions from './ChatActions';
-
+import FileViewer from 'react-native-file-viewer';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
+//import Video from 'react-native-video';
+const RNFS = require('react-native-fs');
+import CameraRoll from "@react-native-community/cameraroll";
 
 import styles from '../assets/styles/blink/_ContactsListBox.scss';
 
@@ -32,7 +35,27 @@ class ContactsListBox extends Component {
             let uri = this.props.selectedContact.uri;
             if (uri in this.props.messages) {
                 renderMessages = this.props.messages[uri];
-                renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+                //renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+                renderMessages = renderMessages.sort(function(a, b) {
+                  if (a.createdAt < b.createdAt) {
+                    return 1; //nameA comes first
+                  }
+
+                  if (a.createdAt > b.createdAt) {
+                      return -1; // nameB comes first
+                  }
+
+                  if (a.createdAt === b.createdAt) {
+                      if (a.msg_id < b.msg_id) {
+                        return 1; //nameA comes first
+                      }
+                      if (a.msg_id > b.msg_id) {
+                          return -1; // nameB comes first
+                      }
+                  }
+
+                  return 0;  // names must be equal
+                });
             }
         }
 
@@ -149,7 +172,28 @@ class ContactsListBox extends Component {
             }
 
             if (renderMessages !== this.state.renderMessages) {
-                renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+                //renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+                renderMessages = renderMessages.sort(function(a, b) {
+                  if (a.createdAt < b.createdAt) {
+                    return 1; //nameA comes first
+                  }
+
+                  if (a.createdAt > b.createdAt) {
+                      return -1; // nameB comes first
+                  }
+
+                  if (a.createdAt === b.createdAt) {
+                      if (a.msg_id < b.msg_id) {
+                        return 1; //nameA comes first
+                      }
+                      if (a.msg_id > b.msg_id) {
+                          return -1; // nameB comes first
+                      }
+                  }
+
+                  return 0;  // names must be equal
+                });
+
                 this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
                 if (!this.state.scrollToBottom && renderMessages.length > 0) {
                     //console.log('Scroll to first message');
@@ -536,8 +580,13 @@ class ContactsListBox extends Component {
             }
 
             options.push('Info');
-
             options.push('Share');
+            if (currentMessage.local_url) {
+                if (utils.isImage(currentMessage.local_url)) {
+                    options.push('Save');
+                }
+                options.push('Open');
+            }
             options.push('Cancel');
 
             let l = options.length - 1;
@@ -558,9 +607,42 @@ class ContactsListBox extends Component {
                     this.setState({message: currentMessage, showShareMessageModal: true});
                 } else if (action === 'Resend') {
                     this.props.reSendMessage(currentMessage, this.state.targetUri);
+                } else if (action === 'Save') {
+                    this.savePicture(currentMessage.local_url);
+                } else if (action === 'Open') {
+                    FileViewer.open(currentMessage.local_url, { showOpenWithDialog: true })
+                    .then(() => {
+                        // success
+                    })
+                    .catch(error => {
+                        // error
+                    });
                 }
             });
         }
+    };
+
+    async hasAndroidPermission() {
+      const permission = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
+
+      const hasPermission = await PermissionsAndroid.check(permission);
+      if (hasPermission) {
+            return true;
+      }
+
+      const status = await PermissionsAndroid.request(permission);
+      return status === 'granted';
+    }
+
+    async savePicture(file) {
+        if (Platform.OS === "android" && !(await this.hasAndroidPermission())) {
+           return;
+        }
+
+        file = 'file://' + file;
+
+        console.log('Save to camera roll', file);
+        CameraRoll.save(file);
     };
 
     shouldUpdateMessage(props, nextProps) {
@@ -570,6 +652,67 @@ class ContactsListBox extends Component {
     toggleShareMessageModal() {
         this.setState({showShareMessageModal: !this.state.showShareMessageModal});
     }
+
+    renderMessageVideo(props){
+        const { currentMessage } = props;
+
+        console.log('----------- Render video', currentMessage.video);
+
+        return (null);
+
+        return (
+        <View style={{ padding: 20 }}>
+           <Video source={{uri: currentMessage.video}}   // Can be a URL or a local file.
+               ref={(ref) => {
+                 this.player = ref
+               }}                                      // Store reference
+               onBuffer={this.onBuffer}                // Callback when remote video is buffering
+               onError={this.videoError}               // Callback when video cannot be loaded
+               style={styles.backgroundVideo} />
+        </View>
+        );
+    };
+
+    videoError() {
+        console.log('Video streaming error');
+    }
+
+    onBuffer() {
+        console.log('Video buffer error');
+    }
+
+    renderMessageText(props) {
+        const {currentMessage} = props;
+        const { text: currText } = currentMessage;
+
+        let status = '';
+        let label = 'Uploading...';
+
+        if (!currentMessage.metadata) {
+            return (
+                 <MessageText {...props}
+                      currentMessage={{
+                        ...currentMessage
+                      }}/>
+            );
+        }
+
+        if (currentMessage.direction === 'incoming') {
+            label = 'Downloading...';
+            status = currentMessage.url;
+        } else {
+            status = currentMessage.url;
+        }
+
+        return (
+             <MessageText {...props}
+                  currentMessage={{
+                    ...currentMessage,
+                    text: currText.replace(label, status).trim(),
+                  }}/>
+        );
+    };
+
 
     renderMessageBubble (props) {
         let rightColor = '#0084ff';
@@ -609,8 +752,18 @@ class ContactsListBox extends Component {
     }
 
     get showChat() {
-       if (this.props.selectedContact && this.props.selectedContact.tags && this.props.selectedContact.tags.indexOf('blocked') > -1) {
-           return false;
+       if (this.state.selectedContact) {
+           if (this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) {
+               return false;
+           }
+
+           if (this.state.selectedContact.uri.indexOf('@guest.') > -1) {
+               return false;
+           }
+
+           if (this.state.selectedContact.uri.indexOf('anonymous@') > -1) {
+               return false;
+           }
        }
 
        let username = this.state.targetUri ? this.state.targetUri.split('@')[0] : null;
@@ -637,20 +790,14 @@ class ContactsListBox extends Component {
             contacts.push(this.state.myContacts[uri]);
         });
 
-        //console.log('--- Render contacts with call', this.state.call);
+        //console.log('--- Render contacts with message uris', Object.keys(this.state.messages));
         //console.log('--- Render contacts with filter', this.state.filter, 's c', this.state.selectedContact, this.state.inviteContacts);
 
         let chatInputClass;
 
         if (this.state.selectedContact) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
-               if (this.state.call) {
-                   if (this.state.call.remoteIdentity.uri !== this.state.selectedContact.uri) {
-                       chatInputClass = this.noChatInputToolbar;
-                   }
-               } else {
-                   chatInputClass = this.noChatInputToolbar;
-               }
+               chatInputClass = this.noChatInputToolbar;
            }
         } else if (!this.state.chat) {
             chatInputClass = this.noChatInputToolbar;
@@ -747,6 +894,10 @@ class ContactsListBox extends Component {
                 }
             }
 
+            if (item.uri === 'anonymous@anonymous.invalid' && this.state.filter !== 'blocked') {
+                return;
+            }
+
             if (this.state.periodFilter === 'yesterday') {
                 if(item.timestamp < yesterdayStart || item.timestamp > todayStart) {
                     return;
@@ -797,6 +948,14 @@ class ContactsListBox extends Component {
             }
         }
 
+        messages.forEach((m) => {
+            if (m.url || m.local_url || m.image) {
+                //console.log('----');
+                //console.log('Render message local_url', m.local_url);
+            }
+            //console.log(m);
+        });
+
         let pinned_messages = []
         if (this.state.pinned) {
             messages.forEach((m) => {
@@ -845,10 +1004,11 @@ class ContactsListBox extends Component {
                   alwaysShowSend={true}
                   onLongPress={this.onLongMessagePress}
                   onPress={this.onLongMessagePress}
-                  renderActions={this.renderCustomActions}
                   renderInputToolbar={chatInputClass}
                   renderBubble={this.renderMessageBubble}
+                  renderMessageVideo={this.renderMessageVideo}
                   shouldUpdateMessage={this.shouldUpdateMessage}
+                  renderMessageText={this.renderMessageText}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
                   maxInputLength={16000}
@@ -866,7 +1026,9 @@ class ContactsListBox extends Component {
                   messages={messages}
                   renderInputToolbar={() => { return null }}
                   renderBubble={this.renderBubble}
+                  renderMessageVideo={this.renderMessageVideo}
                   onSend={this.onSendMessage}
+                  renderActions={this.renderCustomActions}
                   onLongPress={this.onLongMessagePress}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   onPress={this.onLongMessagePress}

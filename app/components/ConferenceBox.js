@@ -1,7 +1,7 @@
 'use strict';
 
-import React, {useState, Component, Fragment} from 'react';
-import { View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Keyboard } from 'react-native';
+import React, {useState, Component, Fragment, useEffect} from 'react';
+import { Clipboard, View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Keyboard, Switch  } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -35,7 +35,8 @@ import CustomChatActions from './ChatActions';
 import * as RNFS from 'react-native-fs';
 import styles from '../assets/styles/blink/_ConferenceBox.scss';
 import RNBackgroundDownloader from 'react-native-background-downloader';
-
+import md5 from "react-native-md5";
+import FileViewer from 'react-native-file-viewer';
 
 const DEBUG = debug('blinkrtc:ConferenceBox');
 debug.enable('*');
@@ -57,7 +58,6 @@ class ConferenceBox extends Component {
 
         this.downloadRequests = {};
 
-
         this.audioBytesReceived = new Map();
         this.audioBandwidth = new Map();
 
@@ -77,7 +77,7 @@ class ConferenceBox extends Component {
 
         this.sampleInterval = 5;
 
-        this.seenMessages = new Map();
+        this.typingTimer = null;
 
         let renderMessages = [];
 
@@ -97,25 +97,21 @@ class ConferenceBox extends Component {
                     return;
                 }
 
-                if (!this.seenMessages.has(sylkMessage._id)) {
-                    this.seenMessages.set(sylkMessage._id, true);
-
-                    const existingMessages = renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
-                    if (existingMessages.length > 0) {
-                        return;
-                    }
-
-                    direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
-
-                    if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
-                        direction = 'outgoing';
-                    }
-
-                    giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
-
-                    renderMessages.push(giftedChatMessage);
-                    this.props.saveMessage(this.props.remoteUri, giftedChatMessage);
+                const existingMessages = renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
+                if (existingMessages.length > 0) {
+                    return;
                 }
+
+                direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
+
+                if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
+                    direction = 'outgoing';
+                }
+
+                giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
+
+                renderMessages.push(giftedChatMessage);
+                this.saveConferenceMessage(this.props.remoteUri, giftedChatMessage);
             });
         }
 
@@ -126,8 +122,9 @@ class ConferenceBox extends Component {
             remoteUri: this.props.remoteUri,
             call: this.props.call,
             accountId: this.props.call ? this.props.call.account.id : null,
-            renderMessages: GiftedChat.append(renderMessages, []),
+            renderMessages: renderMessages,
             ended: false,
+            isTyping: false,
             keyboardVisible: false,
             videoEnabled: videoEnabled,
             audioMuted: this.props.muted,
@@ -152,7 +149,8 @@ class ConferenceBox extends Component {
             chatView: !videoEnabled,
             audioView: !videoEnabled,
             isLandscape: this.props.isLandscape,
-            selectedContacts: this.props.selectedContacts
+            selectedContacts: this.props.selectedContacts,
+            activeDownloads: {}
         };
 
         const friendlyName = this.state.remoteUri.split('@')[0];
@@ -252,12 +250,22 @@ class ConferenceBox extends Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
+        let renderMessages = [];
         if (nextProps.remoteUri in nextProps.messages) {
-            let renderMessages = nextProps.messages[nextProps.remoteUri];
-            let direction;
+            nextProps.messages[nextProps.remoteUri].forEach((message) => {
+                const existingMessages = this.state.renderMessages.filter(msg => msg._id === message._id);
+                if (existingMessages.length > 0) {
+                    return;
+                }
+                renderMessages.push(message);
+            });
 
             if (nextProps.call) {
+                this.setState({sharedFiles: nextProps.call.sharedFiles.slice()});
+
                 let giftedChatMessage;
+                let existingMessages;
+
                 nextProps.call.messages.forEach((sylkMessage) => {
                     if (sylkMessage.type === 'status') {
                         return;
@@ -267,34 +275,35 @@ class ConferenceBox extends Component {
                         return;
                     }
 
-                    if (!this.seenMessages.has(sylkMessage._id)) {
-                        this.seenMessages.set(sylkMessage._id, true);
-
-                        const existingMessages = renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
-                        if (existingMessages.length > 0) {
-                            return;
-                        }
-
-                        direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
-
-                        if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
-                            direction = 'outgoing';
-                        }
-
-                        giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
-
-                        renderMessages.push(giftedChatMessage);
-                        this.props.saveMessage(this.props.remoteUri, giftedChatMessage);
+                    existingMessages = renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
+                    if (existingMessages.length > 0) {
+                        return;
                     }
+
+                    existingMessages = this.state.renderMessages.filter(msg => this.messageExists(msg, sylkMessage));
+                    if (existingMessages.length > 0) {
+                        return;
+                    }
+
+                    direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
+
+                    if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
+                        direction = 'outgoing';
+                    }
+
+                    giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
+                    renderMessages.push(giftedChatMessage);
+                    this.saveConferenceMessage(this.props.remoteUri, giftedChatMessage);
                 });
             }
-            this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
         }
 
         this.setState({terminated: nextProps.terminated,
                        remoteUri: nextProps.remoteUri,
+                       renderMessages: GiftedChat.append(this.state.renderMessages, renderMessages),
                        isLandscape: nextProps.isLandscape,
                        messages: nextProps.messages,
+                       activeDownloads: nextProps.activeDownloads,
                        accountId: !this.state.accountId && nextProps.call ? this.props.call.account.id : this.state.accountId,
                        selectedContacts: nextProps.selectedContacts});
     }
@@ -316,10 +325,13 @@ class ConferenceBox extends Component {
         return info;
     }
 
-    renderCustomActions = props =>
-    (
-      <CustomChatActions {...props} onSend={this.onSendFromUser} onSendWithFile={this.uploadFile}/>
-    )
+    saveConferenceMessage(uri, message) {
+        this.props.saveConferenceMessage(uri, message);
+    }
+
+    updateConferenceMessage(uri, message) {
+        this.props.updateConferenceMessage(uri, message);
+    }
 
     onSendFromUser() {
         console.log('On send from user...');
@@ -336,7 +348,7 @@ class ConferenceBox extends Component {
     };
 
     transferComplete(evt) {
-      console.log("The transfer is complete.", evt);
+        console.log("Upload has finished", evt);
     }
 
     transferFailed(evt) {
@@ -355,64 +367,103 @@ class ConferenceBox extends Component {
         return path;
     }
 
-    addUploadFileMessage(file) {
-        let id = this.state.remoteUri + '_' + file.name;
-        let image;
-        if (file.name.toLowerCase().endsWith('.png')) {
-            image = file.uri;
-        } else if (file.name.toLowerCase().endsWith('.jpg')) {
-            image = file.uri;
-        } else if (file.name.toLowerCase().endsWith('.jpeg')) {
-            image = file.uri;
-        } else if (file.name.toLowerCase().endsWith('.gif')) {
-            image = file.uri;
+    tsize(fsize) {
+        let size = fsize + + " B";
+        if (fsize > 1024 * 1024) {
+            size = Math.ceil(fsize/1024/1024) + " MB";
+        } else if (fsize < 1024 * 1024) {
+            size = Math.ceil(fsize/1024) + " KB";
         }
-
-        if (image) {
-            var localPath = this.filePath(file.name);
-            RNFS.copyFile(file.uri, localPath).then((success) => {
-                console.log('Cache file to app', localPath);
-                image = 'file://' + localPath;
-            }).catch((err) => {
-                console.log('Error writing to file', localPath, err.message);
-            });
-        }
-
-        const giftedChatMessage = {
-            _id: id,
-            createdAt: new Date(),
-            text: 'Uploading...',
-            url: file.url,
-            local_url: file.uri,
-            received: false,
-            sent: false,
-            progress: 0,
-            direction: 'outgoing',
-            pending: true,
-            image: image,
-            user: {}
-        };
-
-        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
-        return id;
+        return size;
     }
 
+    toggleDownload(metadata) {
+        //console.log('toggleDownload', metadata);
+        let renderMessages = this.state.renderMessages;
+        let newRenderMessages = [];
+        renderMessages.forEach((msg) => {
+             if (msg._id === metadata.msg_id) {
+                 console.log('Found message', msg.metadata);
+                 if (msg.metadata.progress === null) {
+                     msg.metadata.progress = 0;
+                     this.downloadFile(metadata);
+                 } else {
+                     this.stopDownloadFile(metadata);
+                     msg.metadata.progress = null;
+                 }
+                 this.updateConferenceMessage(this.props.remoteUri, msg);
+             }
+        });
+    }
+
+    renderCustomActions = props =>
+    (
+      <CustomChatActions {...props} onSend={this.onSendFromUser} onSendWithFile={this.uploadFile}/>
+    )
+
     renderMessageText(props) {
-      const {
-        currentMessage,
-      } = props;
-      const { text: currText } = currentMessage;
-      let status = !currentMessage.received ? currentMessage.progress + '%' : 'Uploaded successfully';
-      return (
-        <View>
+        const {currentMessage} = props;
+        const { text: currText } = currentMessage;
+
+        let status = '';
+        let label = 'Uploading...';
+
+        if (!currentMessage.metadata) {
+            return (
+                 <MessageText {...props}
+                      currentMessage={{
+                        ...currentMessage
+                      }}/>
+            );
+        }
+
+        let showSwitch = currentMessage.download || (currentMessage.url && (!currentMessage.metadata.progress || !currentMessage.metadata.progress !== 100) && !currentMessage.local_url && !utils.isImage(currentMessage.metadata.name)) ;
+        let switchOn = (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) ? true : false;
+
+        if (currentMessage.direction === 'incoming') {
+            label = 'Downloading...';
+            if (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) {
+                status = currentMessage.label + ' - ' + currentMessage.metadata.progress + '%';
+            } else {
+                if (!utils.isImage(currentMessage.metadata.name)) {
+                    status = 'Swipe to download \n' + currentMessage.label;
+                } else {
+                    status = currentMessage.label;
+                }
+            }
+        } else {
+            if (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) {
+                status = currentMessage.label + ' - ' + currentMessage.metadata.progress + '%';
+            } else {
+                status = currentMessage.label;
+            }
+        }
+
+        if (currentMessage.url && !currentMessage.local_url) {
+            if (currentMessage.url.indexOf('pdf') > -1) {
+                //console.log('--- Render message', currentMessage.metadata.name, currentMessage.metadata.progress);
+            }
+        }
+
+        if (!utils.isImage(currentMessage.metadata.name)) {
+            //console.log('Show switch', currentMessage._id, currentMessage.metadata.name, switchOn);
+        }
+        //console.log('text =', currentMessage.text, 'label =', label, 'status =', status);
+
+        return (
+            <View>
+                {showSwitch ?
+                <Switch value={switchOn} onValueChange={(value) => this.toggleDownload(currentMessage.metadata)}/>
+                : null}
+
              <MessageText {...props}
                   currentMessage={{
                     ...currentMessage,
-                    text: currText.replace('Uploading...', status).trim(),
+                    text: currText.replace(label, status).trim(),
                   }}/>
+             </View>
 
-        </View>
-      );
+        );
     };
 
     renderMessageBubble (props) {
@@ -429,38 +480,18 @@ class ConferenceBox extends Component {
         }
 
         return (
-          <Bubble
-            {...props}
-            wrapperStyle={{
-              right: {
-                backgroundColor: rightColor
-              },
-              left: {
-                backgroundColor: leftColor
-              }
-            }}
-          />
+              <Bubble
+                {...props}
+                wrapperStyle={{
+                  right: {
+                    backgroundColor: rightColor
+                  },
+                  left: {
+                    backgroundColor: leftColor
+                  }
+                }}
+              />
         )
-    }
-
-    updateFileUploadMessage(id, progress) {
-        let renderMessages = this.state.renderMessages;
-        let newRenderMessages = [];
-        renderMessages.forEach((msg) => {
-             if (msg._id === id) {
-                 msg.progress = progress;
-                 if (progress === 100 && !msg.sent) {
-                     msg.sent = true;
-                     msg.received = true;
-                     msg.text = 'Uploaded successfully';
-                     msg.progress = null;
-                     this.props.saveMessage(this.state.remoteUri, msg);
-                 }
-             }
-             newRenderMessages.push(msg);
-        });
-
-        this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
     }
 
     failedFileUploadMessage(id) {
@@ -469,164 +500,342 @@ class ConferenceBox extends Component {
         renderMessages.forEach((msg) => {
              if (msg._id === id) {
                  msg.sent = true;
-                 msg.received = true;
-                 msg.text = 'Upload failed';
-                 msg.progress = null;
+                 msg.received = false;
+                 msg.failed = true;
+                 msg.metadata.progress = null;
+                 msg.metadata.started = false;
              }
              newRenderMessages.push(msg);
-             this.props.saveMessage(this.state.remoteUri, msg);
+             this.updateConferenceMessage(this.state.remoteUri, msg);
         });
-
-        this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
     }
 
     async uploadFile(file) {
-        let fileData = {
+        console.log('Uploading file', file);
+
+        let metadata = {
             name: file.name,
             type: file.type,
             size: file.size,
             uri: file.uri
         };
 
-        let url = this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + this.props.call.id + '/' + file.name;
+        metadata.url = this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + this.props.call.id + '/' + file.name;;
+        metadata.msg_id = md5.hex_md5(this.state.remoteUri + '_' + file.name);
+        metadata.local_url = this.filePath(metadata.name);
+        metadata.progress = 0;
 
-        console.log('Uploading', file.type, 'file', file.uri, 'to', url);
-
-        if (file.size > 1024 * 1024 * 40) {
-            this.postChatSystemMessage(file.name + 'is too big', false);
+        if (metadata.size > 1024 * 1024 * 40) {
+            this.postChatSystemMessage(metadata.name + 'is too big', false);
             return;
         }
 
-        RNFS.readFile(file.uri, 'base64').then(res => {
-            let idx = this.addUploadFileMessage(file);
+        RNFS.readFile(metadata.uri, 'base64').then(res => {
+            let image;
+            let isImage = utils.isImage(metadata.name);
+            let label = metadata.name.toLowerCase();
+
+            if (isImage) {
+                image = metadata.uri;
+                RNFS.copyFile(metadata.uri, metadata.local_url).then((success) => {
+                    console.log('Copy file to', metadata.local_url);
+                    image = 'file://' + metadata.local_url;
+                }).catch((err) => {
+                    console.log('Error writing to file', metadata.local_url, err.message);
+                });
+                label = this.tsize(metadata.size);
+            } else {
+                label = label + " (" + this.tsize(metadata.size) + ")";
+            }
+
+            const giftedChatMessage = {
+                _id: metadata.msg_id,
+                key: metadata.msg_id,
+                createdAt: new Date(),
+                text: 'Uploading...',
+                metadata: metadata,
+                received: false,
+                sent: false,
+                pending: true,
+                label: label,
+                direction: 'outgoing',
+                image: image,
+                user: {}
+            };
+
+            //console.log('metadata', metadata);
+
+            this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
+            this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
+
             var oReq = new XMLHttpRequest();
             oReq.addEventListener("load", this.transferComplete);
             oReq.addEventListener("error", this.transferFailed);
             oReq.addEventListener("abort", this.transferCanceled);
-            oReq.open('POST', url);
+            oReq.open('POST', metadata.url);
             const formData = new FormData();
             formData.append(res);
+
             oReq.send(formData);
-            file.url = url;
             if (oReq.upload) {
                 oReq.upload.onprogress = ({ total, loaded }) => {
-                    const uploadProgress = Math.ceil(loaded / total * 100);
-                    this.updateFileUploadMessage(idx, uploadProgress);
+                    const progress = Math.ceil(loaded / total * 100);
+                    this.updateFileMessage(metadata.msg_id, progress);
                 };
             }
         })
         .catch(err => {
             console.log(err.message, err.code);
-
         });
     }
 
-    listSharedFiles() {
-        let sharedFiles = this.state.sharedFiles;
+    updateFileMessage(id, progress, failed=false) {
+        //console.log('Update file progress', id, progress);
+        let renderMessages = this.state.renderMessages;
+        let newRenderMessages = [];
+        renderMessages.forEach((msg) => {
+             if (msg._id === id) {
+                //console.log('Update file', id, msg.metadata.name, progress, failed);
+                 if (failed) {
+                     msg.failed = true;
+                     msg.sent = msg.direction === 'outgoing' ? true : false;
+                     msg.pending = false;
+                     msg.metadata.progress = null;
+                     console.log('Message failed');
+                     this.updateConferenceMessage(this.state.remoteUri, msg);
+                     return;
+                 }
+
+                 msg.metadata.progress = progress;
+
+                 if (progress === 100 && (!msg.sent || !msg.received)) {
+                     msg.local_url = msg.metadata.local_url;
+                     msg.url = msg.metadata.url;
+                     msg.metadata.progress = null;
+                     msg.failed = false;
+                     msg.pending = false;
+                     msg.sent = msg.direction === 'outgoing' ? true : false;
+                     msg.received = true;
+
+                     if (msg.image || utils.isImage(msg.metadata.name)) {
+                         msg.text = 'Image of ' + this.tsize(msg.metadata.size);
+                         msg.image = 'file://' + msg.metadata.local_url;
+                     } else {
+                         msg.text = msg.metadata.name + " (" + this.tsize(msg.metadata.size) + ")";
+                     }
+
+                     console.log(msg.metadata.name, msg.direction === 'outgoing' ? 'Upload completed' : 'Download completed');
+                     this.updateConferenceMessage(this.state.remoteUri, msg);
+                 }
+             }
+             newRenderMessages.push(msg);
+        });
+
+        //this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
+    }
+
+    async listSharedFiles() {
         let url;
         let i = 0;
         let image;
+
+        console.log('--- List shared files');
+
         this.state.sharedFiles.forEach((file)=>{
-            if (file.session !== this.props.call.id) {
-                //console.log(file);
-                image = null;
-                url = this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + file.session + '/' + file.filename;
-                sharedFiles[i] = file;
-                file.msg_id = this.state.remoteUri + '_' + file.filename;
-                const existingMessages = this.state.renderMessages.filter(msg => msg._id === file.msg_id);
-                if (existingMessages.length > 0) {
-                    console.log('File exists', file.msg_id );
-                    return;
-                }
+            if (file.session === this.props.call.id) {
+                // skip my own files
+                return;
+            }
 
-                const direction = file.uploader.uri === this.props.account.id ? 'outgoing' : 'incoming';
+            let metadata = {};
 
-                if (file.filename.toLowerCase().endsWith('.png')) {
-                    image = url;
-                } else if (file.filename.toLowerCase().endsWith('.jpg')) {
-                    image = url;
-                } else if (file.filename.toLowerCase().endsWith('.jpeg')) {
-                    image = url;
-                } else if (file.filename.toLowerCase().endsWith('.gif')) {
-                    image = url;
-                }
+            metadata.size = file.filesize;
+            metadata.name = file.filename;
+            metadata.uploader = file.uploader;
+            metadata.session = file.session;
+            console.log('--- Shared file:', metadata.uploader.uri, metadata.name);
 
-                let text = image ? 'Image' : file.filename.toLowerCase();
-                let size = file.filesize + + " B";
-                if (file.filesize > 1024 * 1024) {
-                    size = Math.ceil(file.filesize/1024/1024) + " MB";
-                } else if (file.filesize < 1024 * 1024) {
-                    size = Math.ceil(file.filesize/1024) + " KB";
-                }
-                text = text + " (" + size + ")";
+            image = null;
+            url = this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + metadata.session + '/' + metadata.name;
+            metadata.url = url;
+            metadata.msg_id = md5.hex_md5(this.state.remoteUri + '_' + metadata.name);
 
-                //let localFilePath = RNBackgroundDownloader.directories.documents + "/" + file.filename.toLowerCase();
-                var localFilePath = this.filePath(file.filename);
+            let label = metadata.name.toLowerCase();
+            label = label + " (" + this.tsize(metadata.size) + ")";
 
-                var fileExists = false;
+            const existingMessages = this.state.renderMessages.filter(msg => msg._id === metadata.msg_id);
+            if (existingMessages.length > 0) {
+                //console.log('Message already exists', metadata.msg_id );
+                return;
+            }
 
-                RNFS.exists(localFilePath).then(res => {
-                    if (res) {
-                        console.log(file.filename, 'already exists');
-                        if (image) {
-                            image = 'file://'+localFilePath;
-                        }
-                        const giftedChatMessage = {
-                              _id: file.msg_id,
-                              createdAt: new Date(),
-                              text: text,
-                              url: url,
-                              image: image,
-                              received: true,
-                              sent: direction === 'incoming' ? false : true,
-                              user: direction === 'incoming' ? {_id: file.uploader.uri, name: file.uploader.displayName} : {}
-                            };
-                        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
-                        this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
+            const direction = metadata.uploader.uri === this.props.account.id ? 'outgoing' : 'incoming';
 
-                    } else {
-                        this.downloadRequests[file.msg_id] = RNBackgroundDownloader.download({
-                            id: file.msg_id,
-                            url: url,
-                            destination: localFilePath
-                        }).begin((expectedBytes) => {
-                            console.log(localFilePath, `Going to download ${expectedBytes} bytes!`);
-                        }).progress((percent) => {
-                            console.log(localFilePath, `Downloaded: ${percent * 100}%`);
-                        }).done(() => {
-                            console.log(localFilePath, 'download done');
-                            if (image) {
-                                image = 'file://' + localFilePath;
-                            }
-                            const giftedChatMessage = {
-                                  _id: file.msg_id,
-                                  createdAt: new Date(),
-                                  text: text,
-                                  url: url,
-                                  image: image,
-                                  received: true,
-                                  sent: direction === 'incoming' ? false : true,
-                                  user: direction === 'incoming' ? {_id: file.uploader.uri, name: file.uploader.displayName} : {}
-                                };
-                            //console.log(giftedChatMessage);
+            let text = metadata.name.toLowerCase();
+            let isImage = utils.isImage(metadata.name);
 
-                            this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
-                            this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
+            if (isImage) {
+                text = 'Image of ';
+            }
 
-                        }).error((error) => {
-                            console.log(localFilePath, 'download error:', error);
-                        });
+            text = text + " (" + this.tsize(metadata.size); + ")";
+            metadata.local_url = this.filePath(metadata.name);
 
+            RNFS.exists(metadata.local_url).then(res => {
+                if (res) {
+                    //console.log('File', file.name, 'already exists');
+                    if (isImage) {
+                        image = 'file://' + metadata.local_url;
                     }
 
-                });
+                    const giftedChatMessage = {
+                          _id: metadata.msg_id,
+                          key: metadata.msg_id,
+                          createdAt: new Date(),
+                          text: text,
+                          url: url,
+                          local_url: metadata.local_url,
+                          metadata: metadata,
+                          image: image,
+                          received: false,
+                          failed: false,
+                          sent: false,
+                          user: direction === 'incoming' ? {_id: metadata.uploader.uri, name: metadata.uploader.displayName} : {}
+                        };
 
-            }
+                    this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
+                    this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
+
+                } else {
+                    metadata.progress = isImage ? 0 : null;
+
+                    const giftedChatMessage = {
+                          _id: metadata.msg_id,
+                          key: metadata.msg_id,
+                          createdAt: new Date(),
+                          text: direction === 'incoming' ? 'Downloading...' : 'Uploading...',
+                          url: url,
+                          metadata: metadata,
+                          label: label,
+                          failed: false,
+                          received: false,
+                          sent: false,
+                          direction: direction,
+                          user: direction === 'incoming' ? {_id: metadata.uploader.uri, name: metadata.uploader.displayName} : {}
+                        };
+
+                    this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
+                    this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
+
+                    if (isImage) {
+                        this.downloadFile(metadata);
+                    }
+                }
+            });
+
             i = i + 1;
         });
-
-        this.setState({sharedFiles: sharedFiles});
     }
+
+    async stopDownloadFile(metadata) {
+        let renderMessages = this.state.renderMessages;
+        renderMessages.forEach((msg) => {
+             if (msg._id === metadata.msg_id) {
+                 msg.metadata.progress = null;
+                 this.updateConferenceMessage(this.state.remoteUri, msg);
+             }
+        });
+
+        if (metadata.msg_id in this.downloadRequests) {
+            console.log('Stop download', metadata.url);
+            let task = this.downloadRequests[metadata.msg_id];
+            task.stop();
+            delete this.downloadRequests[metadata.msg_id];
+        }
+    }
+
+    async downloadFile(metadata) {
+        console.log('Start download:', metadata.url);
+        let lostTasks = await RNBackgroundDownloader.checkForExistingDownloads();
+
+        /*
+        TODO: server needs support for this resume
+
+        if (metadata.msg_id in this.downloadRequests) {
+            let task = this.downloadRequests[metadata.msg_id];
+            console.log('Resume download', metadata.url);
+            task.resume();
+            return;
+        }
+        */
+
+        const existingTask = lostTasks.filter(task => task.id === metadata.msg_id);
+
+        if (existingTask.length === 1) {
+            var task = existingTask[0];
+            console.log('Found existing download task', task);
+            task.progress((percent) => {
+                const progress = Math.ceil(percent * 100);
+                this.updateFileMessage(metadata.msg_id, progress);
+            }).begin((expectedBytes) => {
+                this.updateFileMessage(metadata.msg_id, 0);
+            }).done(() => {
+                this.updateFileMessage(metadata.msg_id, 100);
+            }).error((error) => {
+                this.updateFileMessage(metadata.msg_id, 0, error);
+                console.log(task.url, 'download error:', error);
+            });
+        } else {
+            this.updateFileMessage(metadata.msg_id, 0);
+
+            this.downloadRequests[metadata.msg_id] = RNBackgroundDownloader.download({
+                id: metadata.msg_id,
+                url: metadata.url,
+                destination: metadata.local_url
+            }).begin((expectedBytes) => {
+                this.updateFileMessage(metadata.msg_id, 0);
+                console.log(metadata.name, 'will download', expectedBytes, 'bytes');
+            }).progress((percent) => {
+                const progress = Math.ceil(percent * 100);
+                this.updateFileMessage(metadata.msg_id, progress);
+            }).done(() => {
+                this.updateFileMessage(metadata.msg_id, 100);
+                delete this.downloadRequests[metadata.msg_id];
+            }).error((error) => {
+                console.log(metadata.name, 'download error:', error);
+                this.updateFileMessage(metadata.msg_id, 0, error);
+            });
+        }
+    }
+
+    onLongMessagePress(context, currentMessage) {
+        if (currentMessage && currentMessage.text) {
+            let options = []
+            options.push('Copy');
+            if (currentMessage.local_url) {
+                options.push('Open');
+            }
+            options.push('Cancel');
+
+            console.log('currentMessage', currentMessage);
+            let l = options.length - 1;
+
+            context.actionSheet().showActionSheetWithOptions({options, l}, (buttonIndex) => {
+                let action = options[buttonIndex];
+                if (action === 'Copy') {
+                    Clipboard.setString(currentMessage.text);
+                } else if (action === 'Open') {
+                    FileViewer.open(currentMessage.local_url, { showOpenWithDialog: true })
+                    .then(() => {
+                        // success
+                    })
+                    .catch(error => {
+                        // error
+                    });
+                }
+            });
+        }
+    };
 
     updateParticipantsStatus() {
         let participants_uris = [];
@@ -688,8 +897,11 @@ class ConferenceBox extends Component {
         secs = secs < 10 ? '0' + secs : secs;
         text = text + ' at ' + hours + ":" + mins + ':' + secs + ' ' + ampm;
 
+        var id = uuid.v4();
+
         const giftedChatMessage = {
               _id: uuid.v4(),
+              key: id,
               createdAt: now,
               text: text,
               system: true,
@@ -697,7 +909,7 @@ class ConferenceBox extends Component {
 
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
         if (save) {
-            this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
+            this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
         }
     }
 
@@ -786,7 +998,16 @@ class ConferenceBox extends Component {
     }
 
     composingIndicationReceived(data) {
-        utils.timestampedLog('isComposing received');
+        if (this.typingTimer) {
+            clearTimeout(this.typingTimer);
+        }
+
+        this.setState({isTyping: true});
+
+        this.typingTimer = setTimeout(() => {
+            this.setState({isTyping: false});
+            this.typingTimer = null;
+        }, 5000);
     }
 
     messageReceived(sylkMessage) {
@@ -811,19 +1032,15 @@ class ConferenceBox extends Component {
         }
 
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
-        this.props.saveMessage(this.state.remoteUri, giftedChatMessage);
+        this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
     }
 
     onSendMessage(messages) {
         if (!this.props.call) {
             return;
         }
-
-        console.log('onSendMessage', messages);
         messages.forEach((message) => {
-            this.props.call.sendMessage(message.text, 'text/plain')
-            message.direction = 'outgoing';
-            this.props.saveMessage(this.state.remoteUri, message);
+            this.props.sendConferenceMessage(message);
         });
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
@@ -1065,7 +1282,6 @@ class ConferenceBox extends Component {
         });
      };
 
-
      onParticipantJoined(p) {
         console.log(p.identity.uri, 'joined the conference');
         if (p.identity._uri.search('guest.') === -1) {
@@ -1074,9 +1290,9 @@ class ConferenceBox extends Component {
                 this.props.saveParticipant(this.props.call.id, this.state.remoteUri, p.identity._uri);
             }
             const dn = p.identity._uri + ' joined';
-            this.postChatSystemMessage(dn);
+            this.postChatSystemMessage(dn, false);
         } else {
-            this.postChatSystemMessage('An anonymous guest joined');
+            this.postChatSystemMessage('An anonymous guest joined', false);
         }
 
         this.lookupContact(p.identity._uri, p.identity._displayName);
@@ -1122,7 +1338,7 @@ class ConferenceBox extends Component {
         // this.changeResolution();
         this.armOverlayTimer();
 
-        this.postChatSystemMessage(p.identity.uri + ' left');
+        this.postChatSystemMessage(p.identity.uri + ' left', false);
     }
 
     onParticipantStateChanged(oldState, newState) {
@@ -1280,15 +1496,12 @@ class ConferenceBox extends Component {
 
     toggleChat(event) {
         event.preventDefault();
-        if (this.state.videoEnabled) {
-            this.props.goBackFunc();
-        } else {
+        if (!this.state.videoEnabled) {
             if (this.state.chatView && !this.state.audioView) {
                 this.setState({audioView: !this.state.audioView});
             }
-
-            this.setState({chatView: !this.state.chatView});
         }
+        this.setState({chatView: !this.state.chatView});
     }
 
     toggleAudioParticipants(event) {
@@ -1422,6 +1635,29 @@ class ConferenceBox extends Component {
         //console.log('---- Conference box', this.state.renderMessages.length);
 
         let watermark;
+        let renderMessages = this.state.renderMessages;
+        //renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
+
+        renderMessages = renderMessages.sort(function(a, b) {
+          if (a.createdAt < b.createdAt) {
+            return 1; //nameA comes first
+          }
+
+          if (a.createdAt > b.createdAt) {
+              return -1; // nameB comes first
+          }
+
+          if (a.createdAt === b.createdAt) {
+              if (a.msg_id < b.msg_id) {
+                return 1; //nameA comes first
+              }
+              if (a.msg_id > b.msg_id) {
+                  return -1; // nameB comes first
+              }
+          }
+
+          return 0;  // names must be equal
+        });
 
         const largeVideoClasses = classNames({
             'animated'      : true,
@@ -1441,12 +1677,16 @@ class ConferenceBox extends Component {
             'drawer-visible': this.state.showDrawer || this.state.showFiles
         });
 
-
         const buttons = {};
 
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        const conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
+        let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainerPortrait;
+        if (this.props.audioOnly) {
+            chatContainer = this.state.isLandscape ? styles.chatContainerLandscapeAudio : styles.chatContainerPortraitAudio;
+        }
 
         // populate speaker selection list only with participants that have video
         let speakerSelectionParticipants = [];
@@ -1486,7 +1726,7 @@ class ConferenceBox extends Component {
             );
         }
 
-            if (!this.state.isTablet && !this.state.isLandscape) {
+        if (!this.state.isTablet && !this.state.isLandscape) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1501,9 +1741,9 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
-           }
+       }
 
-           if (!this.state.videoEnabled && !this.state.isLandscape) {
+       if (!this.state.videoEnabled && !this.state.isLandscape) {
                floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1513,14 +1753,14 @@ class ConferenceBox extends Component {
                     title="Chat"
                     onPress={this.toggleAudioParticipants}
                     icon="account-multiple"
-                    key="toggleChat"
+                    key="toggleAudio"
                 />
                 </TouchableHighlight>
               </View>
             );
-            }
+        }
 
-           if (this.state.videoEnabled) {
+       if (this.state.videoEnabled) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1536,6 +1776,7 @@ class ConferenceBox extends Component {
               </View>
             );
         }
+
         floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1566,7 +1807,6 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
-
         }
 
         if (!this.state.reconnectingCall) {
@@ -1684,7 +1924,7 @@ class ConferenceBox extends Component {
 
                 let status;
                 if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-                    status = 'Muted';
+                    status = '';
                 } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
                     if (this.packetLoss.get(p.id) === 100) {
                         status = 'No media';
@@ -1738,16 +1978,23 @@ class ConferenceBox extends Component {
                 );
             });
 
-            const conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
             const audioContainer = this.state.isLandscape ? styles.audioContainerLandscape : styles.audioContainerPortrait;
-            let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
-            if (this.props.audioOnly) {
-                chatContainer = this.state.isLandscape ? styles.chatContainerLandscapeAudio : styles.chatContainerPortraitAudio;
+
+/*
+            //console.log('-----------------------------------');
+            //console.log(Object.keys(this.switchRefs));
+
+            let i = 0;
+        renderMessages.forEach((m) => {
+            i = i + 1;
+            if (m.metadata && m.metadata.name) {
+                console.log('----', i, m._id, m.metadata.name, m.local_url);
             }
-
-         let renderMessages = this.state.renderMessages;
-         renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
-
+//                console.log('Render message local_url', m.local_url);
+                //console.log('Render message image', m.image);
+//                console.log('Render message text', m.text);
+        });
+*/
             return (
                 <View style={styles.container} >
                     <View style={conferenceContainer}>
@@ -1783,22 +2030,24 @@ class ConferenceBox extends Component {
                         </View>
                         : null}
 
-                            {this.state.chatView || this.state.isLandscape ?
-                            <View style={chatContainer}>
-                                <GiftedChat
-                                  messages={renderMessages}
-                                  renderActions={this.renderCustomActions}
-                                  onSend={this.onSendMessage}
-                                  renderBubble={this.renderMessageBubble}
-                                  renderMessageText={this.renderMessageText}
-                                  alwaysShowSend={true}
-                                  scrollToBottom
-                                  inverted={true}
-                                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
-                                  infiniteScroll
-                                />
-                            </View>
-                            : null}
+                        {this.state.chatView || this.state.isLandscape ?
+                        <View style={chatContainer}>
+                            <GiftedChat
+                              messages={renderMessages}
+                              isTyping={this.state.isTyping}
+                              renderActions={this.renderCustomActions}
+                              onLongPress={this.onLongMessagePress}
+                              onSend={this.onSendMessage}
+                              renderBubble={this.renderMessageBubble}
+                              renderMessageText={this.renderMessageText}
+                              alwaysShowSend={true}
+                              scrollToBottom
+                              inverted={true}
+                              timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                              infiniteScroll
+                            />
+                        </View>
+                        : null}
                     </View>
 
                     <InviteParticipantsModal
@@ -1815,41 +2064,41 @@ class ConferenceBox extends Component {
                         lookupContacts = {this.props.lookupContacts}
                     />
 
-                <ConferenceDrawer
-                    show={this.state.showDrawer && !this.state.reconnectingCall}
-                    close={this.toggleDrawer}
-                    isLandscape={this.state.isLandscape}
-                    title="Conference room configuration"
-                    >
-                    <View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 160}, styles.landscapeDrawer] : styles.portraitDrawer}>
-                        <View style={{flex: this.state.isLandscape ? 1 : 2}}>
-                            <ConferenceDrawerSpeakerSelectionWrapper
-                                selectSpeaker={this.startSpeakerSelection}
-                                activeSpeakers={this.state.activeSpeakers}
-                            />
-                            <ConferenceDrawerParticipantList style={styles.container}>
-                                {drawerParticipants}
-                            </ConferenceDrawerParticipantList>
+                    <ConferenceDrawer
+                        show={this.state.showDrawer && !this.state.reconnectingCall}
+                        close={this.toggleDrawer}
+                        isLandscape={this.state.isLandscape}
+                        title="Conference configuration"
+                        >
+                        <View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 160}, styles.landscapeDrawer] : styles.portraitDrawer}>
+                            <View style={{flex: this.state.isLandscape ? 1 : 2}}>
+                                <ConferenceDrawerSpeakerSelectionWrapper
+                                    selectSpeaker={this.startSpeakerSelection}
+                                    activeSpeakers={this.state.activeSpeakers}
+                                />
+                                <ConferenceDrawerParticipantList style={styles.container}>
+                                    {drawerParticipants}
+                                </ConferenceDrawerParticipantList>
+                            </View>
                         </View>
-                    </View>
-                </ConferenceDrawer>
-                <ConferenceDrawer
-                    show={this.state.showSpeakerSelection}
-                    close={this.toggleSpeakerSelection}
-                    isLandscape={this.state.isLandscape}
-                    showBackdrop={false}
-                    title={`Select speaker ${this.selectSpeaker}`}
-                    >
-                    <ConferenceDrawerSpeakerSelection
-                        participants={speakerSelectionParticipants}
-                        selected={this.handleActiveSpeakerSelected}
-                        activeSpeakers={this.state.activeSpeakers}
-                        selectSpeaker={this.selectSpeaker}
-                        key = {this.state.activeSpeakers}
-                    />
-                </ConferenceDrawer>
+                    </ConferenceDrawer>
 
-                </View>
+                    <ConferenceDrawer
+                        show={this.state.showSpeakerSelection}
+                        close={this.toggleSpeakerSelection}
+                        isLandscape={this.state.isLandscape}
+                        showBackdrop={false}
+                        title={`Select speaker ${this.selectSpeaker}`}
+                        >
+                        <ConferenceDrawerSpeakerSelection
+                            participants={speakerSelectionParticipants}
+                            selected={this.handleActiveSpeakerSelected}
+                            activeSpeakers={this.state.activeSpeakers}
+                            selectSpeaker={this.selectSpeaker}
+                            key = {this.state.activeSpeakers}
+                        />
+                    </ConferenceDrawer>
+             </View>
             );
         }
 
@@ -2030,16 +2279,13 @@ class ConferenceBox extends Component {
         const currentParticipants = this.state.participants.map((p) => {return p.identity.uri})
         const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
 
-        const conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
-        const chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
-
         if (!this.state.isLandscape && this.state.callOverlayVisible) {
             buttons.bottom = floatingButtons;
         }
 
         return (
             <View style={styles.container}>
-                    <View style={conferenceContainer}>
+                <View style={conferenceContainer}>
                     {this.state.callOverlayVisible ?
                     <ConferenceHeader
                         remoteUri={this.state.remoteUri}
@@ -2060,20 +2306,6 @@ class ConferenceBox extends Component {
                     />
                     : null}
 
-                    {this.state.chatView || false?
-                     <View style={chatContainer}>
-                        <GiftedChat
-                          messages={this.state.messages}
-                          onSend={this.onSendMessage}
-                          alwaysShowSend={true}
-                          scrollToBottom
-                          inverted={true}
-                          timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
-                          infiniteScroll
-                        />
-                      </View>
-                    : null}
-
                     <TouchableWithoutFeedback onPress={this.showOverlay}>
                         <View style={[styles.videosContainer, this.state.isLandscape ? styles.landscapeVideosContainer: null]}>
                             {videos}
@@ -2085,6 +2317,26 @@ class ConferenceBox extends Component {
                             {participants}
                         </ConferenceCarousel>
                     </View>
+
+                    {this.state.chatView ?
+                    <View style={chatContainer}>
+                        <GiftedChat
+                          messages={renderMessages}
+                          isTyping={this.state.isTyping}
+                          renderActions={this.renderCustomActions}
+                          onLongPress={this.onLongMessagePress}
+                          onSend={this.onSendMessage}
+                          renderBubble={this.renderMessageBubble}
+                          renderMessageText={this.renderMessageText}
+                          alwaysShowSend={true}
+                          scrollToBottom
+                          inverted={true}
+                          timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                          infiniteScroll
+                        />
+                    </View>
+                    : null}
+
                 </View>
 
                 <InviteParticipantsModal
@@ -2099,6 +2351,7 @@ class ConferenceBox extends Component {
                     notificationCenter = {this.props.notificationCenter}
                     lookupContacts = {this.props.lookupContacts}
                 />
+
                 <ConferenceDrawer
                     show={this.state.showDrawer && !this.state.reconnectingCall}
                     close={this.toggleDrawer}
@@ -2117,6 +2370,7 @@ class ConferenceBox extends Component {
                         </View>
                     </View>
                 </ConferenceDrawer>
+
                 <ConferenceDrawer
                     show={this.state.showSpeakerSelection}
                     close={this.toggleSpeakerSelection}
@@ -2143,7 +2397,8 @@ ConferenceBox.propTypes = {
     connection          : PropTypes.object,
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
-    saveMessage         : PropTypes.func,
+    saveConferenceMessage: PropTypes.func,
+    updateConferenceMessage : PropTypes.func,
     messages            : PropTypes.array,
     previousParticipants: PropTypes.array,
     remoteUri           : PropTypes.string,
@@ -2171,7 +2426,8 @@ ConferenceBox.propTypes = {
     account             : PropTypes.object,
     messages            : PropTypes.object,
     getMessages         : PropTypes.func,
-    fileSharingUrl      : PropTypes.string
+    fileSharingUrl      : PropTypes.string,
+    sendConferenceMessage: PropTypes.func
 };
 
 export default ConferenceBox;

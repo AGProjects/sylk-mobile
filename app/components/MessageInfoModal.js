@@ -4,6 +4,7 @@ import autoBind from 'auto-bind';
 import { View } from 'react-native';
 import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, DataTable } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import utils from '../utils';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -48,6 +49,13 @@ class MessageInfoModal extends Component {
         }
 
         let title = this.state.message ? this.state.message.user._id : null;
+        let filename;
+        let what = 'message';
+        if (this.state.message.local_url) {
+            let path = this.state.message.local_url.split('/');
+            filename = path[path.length-1];
+            what = 'file';
+        }
 
         return (
             <Portal>
@@ -58,21 +66,21 @@ class MessageInfoModal extends Component {
                     : null}
                      <DataTable>
                         <DataTable.Row>
-                          <DataTable.Cell>Message</DataTable.Cell>
-                          <DataTable.Cell>{this.state.message._id}</DataTable.Cell>
-                        </DataTable.Row>
-                        <DataTable.Row>
-                          <DataTable.Cell>Date</DataTable.Cell>
                           <DataTable.Cell>{this.state.message.createdAt.toString()}</DataTable.Cell>
                         </DataTable.Row>
+                        {!this.state.message.local_url ?
                         <DataTable.Row>
-                          <DataTable.Cell>Encryption:</DataTable.Cell>
                           <DataTable.Cell>{encryption}</DataTable.Cell>
                         </DataTable.Row>
+                        : null}
                         <DataTable.Row>
-                          <DataTable.Cell>Direction</DataTable.Cell>
-                          <DataTable.Cell>{this.state.message.direction}</DataTable.Cell>
+                          <DataTable.Cell>{utils.titleCase(this.state.message.direction)} {what}</DataTable.Cell>
                         </DataTable.Row>
+                        { this.state.message.local_url ?
+                        <DataTable.Row>
+                          <DataTable.Cell>{filename}</DataTable.Cell>
+                        </DataTable.Row>
+                        : null}
 
                       </DataTable>
                     </Surface>
