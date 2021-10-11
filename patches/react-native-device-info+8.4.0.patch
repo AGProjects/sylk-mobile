@@ -1,0 +1,34 @@
+diff --git a/node_modules/react-native-device-info/src/index.ts b/node_modules/react-native-device-info/src/index.ts
+index 9093b50..a755b35 100644
+--- a/node_modules/react-native-device-info/src/index.ts
++++ b/node_modules/react-native-device-info/src/index.ts
+@@ -9,7 +9,7 @@ import {
+   getSupportedPlatformInfoSync,
+ } from './internal/supported-platform-info';
+ import { DeviceInfoModule } from './internal/privateTypes';
+-import type {
++import {
+   AsyncHookResult,
+   DeviceType,
+   LocationProviderInfo,
+@@ -789,7 +789,7 @@ export function useManufacturer(): AsyncHookResult<string> {
+   return useOnMount(getManufacturer, 'unknown');
+ }
+ 
+-export type { AsyncHookResult, DeviceType, LocationProviderInfo, PowerState };
++export { AsyncHookResult, DeviceType, LocationProviderInfo, PowerState };
+ 
+ const deviceInfoModule: DeviceInfoModule = {
+   getAndroidId,
+diff --git a/node_modules/react-native-device-info/src/internal/asyncHookWrappers.ts b/node_modules/react-native-device-info/src/internal/asyncHookWrappers.ts
+index 2f39850..8f5ca77 100644
+--- a/node_modules/react-native-device-info/src/internal/asyncHookWrappers.ts
++++ b/node_modules/react-native-device-info/src/internal/asyncHookWrappers.ts
+@@ -1,6 +1,6 @@
+ import { useState, useEffect } from 'react';
+ import { NativeEventEmitter, NativeModules } from 'react-native';
+-import type { AsyncHookResult } from './types';
++import { AsyncHookResult } from './types';
+ 
+ /**
+  * simple hook wrapper for async functions for 'on-mount / componentDidMount' that only need to fired once
