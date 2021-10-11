@@ -50,7 +50,7 @@ class ShareMessageModal extends Component {
         let options= {
             title: 'Share via',
             subject: 'Share Sylk message',
-            message: this.state.message.text,
+            message: this.state.message.local_url ? null : this.state.message.text,
             url: this.state.message.local_url ? 'file://' + this.state.message.local_url : this.state.message.url
         }
 

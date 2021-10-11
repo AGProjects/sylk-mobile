@@ -1,6 +1,6 @@
 'use strict';
 
-import React, {useState, Component, Fragment, useEffect} from 'react';
+import React, {useState, Component, Fragment} from 'react';
 import { Clipboard, View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Keyboard, Switch  } from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
@@ -445,16 +445,19 @@ class ConferenceBox extends Component {
             }
         }
 
-        if (!utils.isImage(currentMessage.metadata.name)) {
-            //console.log('Show switch', currentMessage._id, currentMessage.metadata.name, switchOn);
+        if (!utils.isImage(currentMessage.metadata.name) && !currentMessage.local_url) {
+            console.log('Show switch', currentMessage._id, currentMessage.metadata.name, switchOn);
         }
         //console.log('text =', currentMessage.text, 'label =', label, 'status =', status);
 
         return (
             <View>
                 {showSwitch ?
-                <Switch value={switchOn} onValueChange={(value) => this.toggleDownload(currentMessage.metadata)}/>
-                : null}
+                <View style={styles.switch}>
+                    <Switch value={switchOn} onValueChange={(value) => this.toggleDownload(currentMessage.metadata)}/>
+                </View>
+                : null
+                }
 
              <MessageText {...props}
                   currentMessage={{
@@ -2022,7 +2025,7 @@ class ConferenceBox extends Component {
                             callState={this.props.callState}
                         />
 
-                        {!this.state.keyboardVisible && (this.state.audioView || this.state.isLandscape) ?
+                        {this.state.isLandscape || (!this.state.keyboardVisible && this.state.audioView) ?
                         <View style={audioContainer}>
                             <ConferenceAudioParticipantList >
                                 {audioParticipants}

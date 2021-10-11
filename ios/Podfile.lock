@@ -267,6 +267,8 @@ PODS:
     - React
   - react-native-background-timer (2.1.1):
     - React
+  - react-native-cameraroll (4.0.4):
+    - React-Core
   - react-native-contacts (5.2.3):
     - React
   - react-native-document-picker (6.0.4):
@@ -341,7 +343,11 @@ PODS:
     - Firebase/Messaging (~> 6.13.0)
     - React
     - RNFBApp
+  - RNFileViewer (2.1.4):
+    - React-Core
   - RNFS (2.18.0):
+    - React
+  - RNSha1 (1.2.3):
     - React
   - RNShare (3.3.3):
     - React
@@ -375,6 +381,7 @@ DEPENDENCIES:
   - React-jsinspector (from `../node_modules/react-native/ReactCommon/jsinspector`)
   - react-native-background-downloader (from `../node_modules/react-native-background-downloader`)
   - react-native-background-timer (from `../node_modules/react-native-background-timer`)
+  - "react-native-cameraroll (from `../node_modules/@react-native-community/cameraroll`)"
   - react-native-contacts (from `../node_modules/react-native-contacts`)
   - react-native-document-picker (from `../node_modules/react-native-document-picker`)
   - react-native-fast-openpgp (from `../node_modules/react-native-fast-openpgp`)
@@ -404,7 +411,9 @@ DEPENDENCIES:
   - RNDtmf (from `../node_modules/react-native-dtmf/ios`)
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
+  - RNFileViewer (from `../node_modules/react-native-file-viewer`)
   - RNFS (from `../node_modules/react-native-fs`)
+  - RNSha1 (from `../node_modules/react-native-sha1`)
   - RNShare (from `../node_modules/react-native-share`)
   - RNSoundPlayer (from `../node_modules/react-native-sound-player`)
   - RNSVG (from `../node_modules/react-native-svg`)
@@ -466,6 +475,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-background-downloader"
   react-native-background-timer:
     :path: "../node_modules/react-native-background-timer"
+  react-native-cameraroll:
+    :path: "../node_modules/@react-native-community/cameraroll"
   react-native-contacts:
     :path: "../node_modules/react-native-contacts"
   react-native-document-picker:
@@ -522,8 +533,12 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@react-native-firebase/app"
   RNFBMessaging:
     :path: "../node_modules/@react-native-firebase/messaging"
+  RNFileViewer:
+    :path: "../node_modules/react-native-file-viewer"
   RNFS:
     :path: "../node_modules/react-native-fs"
+  RNSha1:
+    :path: "../node_modules/react-native-sha1"
   RNShare:
     :path: "../node_modules/react-native-share"
   RNSoundPlayer:
@@ -571,6 +586,7 @@ SPEC CHECKSUMS:
   React-jsinspector: fa0ecc501688c3c4c34f28834a76302233e29dc0
   react-native-background-downloader: 4a034cf39a3b00fac57364984e360a4f180a5efb
   react-native-background-timer: 1b6e6b4e10f1b74c367a1fdc3c72b67c619b222b
+  react-native-cameraroll: 88f4e62d9ecd0e1f253abe4f685474f2ea14bfa2
   react-native-contacts: e342f93e42bbaac13729e551ffa35ad4a5b90a45
   react-native-document-picker: a7950caaee8587002c9acbc7fe497a342094d93a
   react-native-fast-openpgp: f79c11db92a059ab2a93142a2d8d4d0f1888ff5a
@@ -599,7 +615,9 @@ SPEC CHECKSUMS:
   RNDtmf: 3d027df415fd00b707061864e2ce270f04d22f3d
   RNFBApp: 7d4006751de8bb5cafa2e8d2e7d94ee250df81db
   RNFBMessaging: 51cc7f6beaf4c4feac6f18ea941bba5854e3d9c6
+  RNFileViewer: 83cc066ad795b1f986791d03b56fe0ee14b6a69f
   RNFS: 3ab21fa6c56d65566d1fb26c2228e2b6132e5e32
+  RNSha1: 6de589cd0b0397d0f6248a2e5ee9e5f0d7da38dc
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
   RNSoundPlayer: aa3c998a1f9beaa0f9fdd4485846a74a53df7d07
   RNSVG: ce9d996113475209013317e48b05c21ee988d42e
@@ -607,6 +625,6 @@ SPEC CHECKSUMS:
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36
   Yoga: f2a7cd4280bfe2cca5a7aed98ba0eb3d1310f18b
 
-PODFILE CHECKSUM: 13ff2bb3ff5d30ff378ef0a1082ad655ce2fc37d
+PODFILE CHECKSUM: 3e4de7f816dfa55ab91ba78bd5284a450daaaa82
 
 COCOAPODS: 1.10.1
