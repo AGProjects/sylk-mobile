@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "151376522833",
+    "firebase_url": "https://sylk-8f7a1.firebaseio.com",
+    "project_id": "sylk-8f7a1",
+    "storage_bucket": "sylk-8f7a1.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:151376522833:android:d5a01d35cd81420c4bd270",
+        "android_client_info": {
+          "package_name": "com.agprojects.sylk"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "151376522833-sj7t4a3nrolmtp3j9nn4mdkfrbskqb6j.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC0m72DF-xZbtDaQcelM8ZyMZgvcVu0FeM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "151376522833-sj7t4a3nrolmtp3j9nn4mdkfrbskqb6j.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
