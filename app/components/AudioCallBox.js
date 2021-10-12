@@ -229,9 +229,14 @@ class AudioCallBox extends Component {
 
         let disablePlus = false;
         if (this.state.callContact) {
+            if (isPhoneNumber) {
+                disablePlus = true;
+            }
+
             if (this.state.callContact.tags.indexOf('test') > -1) {
                 disablePlus = true;
             }
+
             if (this.state.callContact.tags.indexOf('conference') > -1) {
                 disablePlus = true;
             }
@@ -278,7 +283,7 @@ class AudioCallBox extends Component {
                     media = 'audio'
                 />
 
-                {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) ?
+                {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                     <View style={buttonContainerClass}>
                     {!disablePlus ?
                       <View style={styles.buttonContainer}>
@@ -307,6 +312,7 @@ class AudioCallBox extends Component {
                         </TouchableHighlight>
                       </View>
                     : null}
+
                       <View style={styles.buttonContainer}>
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
@@ -327,15 +333,16 @@ class AudioCallBox extends Component {
                             />
                         </TouchableHighlight>
                       </View>
+
                     {isPhoneNumber ?
                       <View style={styles.buttonContainer}>
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
                                 size={buttonSize}
-                                style={buttonClass}
+                                style={styles.whiteButton}
                                 icon="dialpad"
                                 onPress={this.showDtmfModal}
-                                disabled={!(this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
+                                disabled={!(this.state.call && (this.state.call.state === 'early-media' || this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
                             />
                             </TouchableHighlight>
                           </View>

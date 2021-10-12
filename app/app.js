@@ -2776,6 +2776,11 @@ class Sylk extends Component {
 
                 break;
 
+            case 'early-media':
+                this.callKeeper.setCurrentCallActive(callUUID);
+                this.backToForeground();
+                this.stopRingback();
+                break;
             case 'established':
                 callsState = this.state.callsState;
                 callsState[callUUID] = {startTime: new Date()};
@@ -4942,7 +4947,6 @@ class Sylk extends Component {
 
     removeFileFromMessage(id, uri) {
         let query = "SELECT * from messages where msg_id = '" + id + "';";
-        console.log(query);
         this.ExecuteQuery(query,[]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
@@ -5658,7 +5662,9 @@ class Sylk extends Component {
             console.log('SQL error:', error);
         });
 
-        myContacts[uri].totalMessages = total;
+        if (uri in myContacts) {
+            myContacts[uri].totalMessages = total;
+        }
 
         query = "SELECT * FROM messages where ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
         if (pinned) {
