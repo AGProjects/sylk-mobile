@@ -443,46 +443,39 @@ class ContactsListBox extends Component {
                         return null;
                     }
 
+                    elem.uri = elem.remoteParty.toLowerCase();
+
+                    let uri_els = elem.uri.split('@');
+                    let username = uri_els[0];
+                    let domain;
+                    if (uri_els.length > 1) {
+                        domain = uri_els[1];
+                    }
+
+                    if (elem.uri.indexOf('@guest.') > -1) {
+                        if (!elem.displayName) {
+                            elem.uri = 'guest@' + elem.uri.split('@')[1];
+                        } else {
+                            elem.uri = elem.displayName.toLowerCase().replace(/\s|\-|\(|\)/g, '') + '@' + elem.uri.split('@')[1];
+                        }
+                    }
+
+                    if (utils.isPhoneNumber(elem.uri)) {
+                        username = username.replace(/\s|\-|\(|\)/g, '');
+                        username = username.replace(/^00/, "+");
+                        elem.uri = username;
+                    }
+
                     if (known.indexOf(elem.uri) > -1) {
                         return null;
                     }
 
                     known.push(elem.uri);
 
-                    elem.uri = elem.remoteParty.toLowerCase();
-
-                    let username = elem.uri.split('@')[0];
-                    let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-                    let contact_obj;
-
                     if (elem.displayName) {
                         elem.name = elem.displayName;
                     } else {
                         elem.name = elem.uri;
-                    }
-
-                    if (this.state.contacts) {
-                        if (isPhoneNumber) {
-                            contact_obj = this.findObjectByKey(this.state.contacts, 'uri', username);
-                        } else {
-                            contact_obj = this.findObjectByKey(this.state.contacts, 'uri', elem.uri);
-                        }
-
-                        if (contact_obj) {
-                            elem.name = contact_obj.name;
-                            elem.photo = contact_obj.photo;
-                            elem.label = contact_obj.label;
-                            if (isPhoneNumber) {
-                                elem.uri = username;
-                            }
-                            // TODO update icon here
-                        } else {
-                            elem.photo = null;
-                        }
-                    }
-
-                    if (elem.uri.indexOf('@guest.') > -1) {
-                        elem.uri = elem.name.toLowerCase().replace(/ /g, '') + '@' + elem.uri.split('@')[1];
                     }
 
                     if (elem.remoteParty.indexOf('@videoconference.') > -1) {
@@ -509,6 +502,7 @@ class ContactsListBox extends Component {
                     if (elem.direction === 'incoming' && elem.duration === 0) {
                         elem.tags.push('missed');
                     }
+
                     return elem;
                 });
 

@@ -285,13 +285,15 @@ class ContactCard extends Component {
         }
 
         if (duration === 'missed') {
-            subtitle = 'Last call missed';
+            subtitle = 'Last call missed from ', + uri;
         } else if (duration === 'cancelled') {
-            subtitle = 'Last call cancelled';
+            subtitle = 'Last call cancelled to ' + uri;
         } else {
-            if (duration) {
-                subtitle = 'Last call ' + duration ;
-            }
+            subtitle = uri;
+        }
+
+        if (subtitle !== uri) {
+            subtitle = subtitle + ' ' + uri;
         }
 
         if (title.indexOf('@videoconference') > -1) {
@@ -320,7 +322,7 @@ class ContactCard extends Component {
         const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
 
         let showSubtitle = (showActions || this.state.isTablet || !description);
-        let label = this.state.contact.label ? (" (" +this.state.contact.label + ")" ) : '';
+        let label = this.state.contact.label ? (" (" + this.state.contact.label + ")" ) : '';
         if (this.state.contact.lastMessage) {
             subtitle = this.state.contact.lastMessage.split("\n")[0];
             //description = description + ': ' + this.state.contact.lastMessage;

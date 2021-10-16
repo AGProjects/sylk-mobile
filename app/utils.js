@@ -273,7 +273,7 @@ function isPhoneNumber(uri) {
     if (uri.indexOf('@') > -1) {
         username = uri.split('@')[0].trim();
     }
-    return username.match(/^(\+|0)(\d+)$/);
+    return username.match(/^(\+|0)([\d|\-\(\)]+)$/);
 }
 
 function isEmailAddress(uri) {
