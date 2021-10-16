@@ -1627,6 +1627,7 @@ class Sylk extends Component {
             utils.timestampedLog(err);
         }
 
+/*
         if (Platform.OS === 'android') {
             RNDrawOverlay.askForDispalayOverOtherAppsPermission()
                  .then(res => {
@@ -1638,7 +1639,7 @@ class Sylk extends Component {
                      // permission was declined
                  })
         }
-
+*/
         // prime the ref
         //logger.debug('NotificationCenter ref: %o', this._notificationCenter);
 
