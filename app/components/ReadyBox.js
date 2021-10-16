@@ -160,7 +160,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.call && !this.state.inviteContacts) {
+        if (this.state.call && this.state.call.state !== 'incoming' && !this.state.inviteContacts) {
             return false;
         }
 
@@ -538,7 +538,9 @@ class ReadyBox extends Component {
         const borderClass = this.state.chat ? null : styles.historyBorder;
         let backButtonTitle = 'Back to call';
 
-        if (this.state.call) {
+        const showBackToCallButton = this.state.call && this.state.call.state !== 'incoming' ? true : false ;
+
+        if (showBackToCallButton) {
             if (this.state.call.hasOwnProperty('_participants')) {
                 backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
             } else {
@@ -595,7 +597,7 @@ class ReadyBox extends Component {
                         </View>
                         : null}
 
-                            {this.state.call ?
+                            {showBackToCallButton ?
                             <View style={buttonGroupClass}>
                                 <Button
                                     mode="contained"
