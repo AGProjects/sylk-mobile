@@ -120,7 +120,7 @@ function html2text(content) {
     content = xss(content, {
               whiteList: [], // empty, means filter out all tags
               stripIgnoreTag: true, // filter out all HTML not in the whitelist
-              stripIgnoreTagBody: ["script"] // the script tag is a special case, we need
+              stripIgnoreTagBody: ["script", "style"] // the script tag is a special case, we need
               // to filter out its content
             });
     return escapeHtml(content);
