@@ -6621,7 +6621,7 @@ class Sylk extends Component {
     }
 
     async outgoingMessage(message) {
-        console.log('Outgoing message', message.id, 'to', message.receiver);
+        console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
         this.saveLastSyncId(message.id);
 
         if (message.content.indexOf('?OTRv3') > -1) {
@@ -6632,11 +6632,11 @@ class Sylk extends Component {
             return;
         }
 
-        if (message.sender.uri.indexOf('@conference')) {
+        if (message.sender.uri.indexOf('@conference') > -1) {
             return;
         }
 
-        if (message.sender.uri.indexOf('@videoconference')) {
+        if (message.sender.uri.indexOf('@videoconference') > -1) {
             return;
         }
 
