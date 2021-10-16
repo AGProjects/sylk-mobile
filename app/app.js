@@ -1580,12 +1580,14 @@ class Sylk extends Component {
     backPressed() {
         console.log('Back button pressed in route', this.currentRoute);
 
-
         if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
+            this.goBackToHome();
+            /*
             let call = this.state.currentCall || this.state.incomingCall;
             if (call && call.id) {
                 this.hangupCall(call.id, 'user_hangup_call');
             }
+            */
         } else if (this.currentRoute === '/ready') {
             if (this.state.selectedContact) {
                 this.goBackToHome();
