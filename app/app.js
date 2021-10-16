@@ -255,6 +255,7 @@ class Sylk extends Component {
             generatingKey: false,
             appStoreVersion: null,
             firstSyncDone: false,
+            keysNotFound: false,
             showExportPrivateKeyModal: false,
             serverQueriedForPublicKey: false,
             navigationItems: {today: false,
@@ -614,7 +615,9 @@ class Sylk extends Component {
                 var item = rows.item(0);
                 keys.public = item.public_key;
                 if (this.serverPublicKey === item.public_key) {
-                    this.setState({showImportPrivateKeyModal: false});
+                    this.setState({showImportPrivateKeyModal: false, keysNotFound: false});
+                } else {
+                    this.setState({keysNotFound: true});
                 }
                 keys.private = item.private_key;
                 console.log('Loaded PGP private key for account', this.state.accountId);
