@@ -2823,7 +2823,10 @@ class Sylk extends Component {
                 callsState[callUUID] = {startTime: new Date()};
                 this.setState({callsState: callsState});
 
-                //this.callKeeper.setCurrentCallActive(callUUID);
+                if (direction === 'incoming') {
+                    this.callKeeper.setCurrentCallActive(callUUID);
+                }
+
                 this.backToForeground();
                 this.resetGoToReadyTimer();
 
