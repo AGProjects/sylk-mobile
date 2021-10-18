@@ -36,6 +36,7 @@ const options = {
         alertDescription: 'Please allow Sylk inside All calling accounts',
         cancelButton: 'Deny',
         okButton: 'Allow',
+        selfManaged: true,
         imageName: 'phone_account_icon',
         additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, PermissionsAndroid.PERMISSIONS.READ_CONTACTS],
         foregroundService: {
@@ -47,7 +48,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc) {
+    constructor(RNCallKeep, showInternetAlertPanelFunc, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -74,6 +75,7 @@ export default class CallManager extends events.EventEmitter {
         this.timeoutCall = timeoutFunc;
         this.logMissedCall = missedCallFunc;
         this.getConnection = getConnectionFunct;
+        this.showInternetAlertPanel = showInternetAlertPanelFunc;
         this.changeRoute = changeRouteFunc;
         this.respawnConnection = respawnConnection;
 
@@ -93,6 +95,7 @@ export default class CallManager extends events.EventEmitter {
         this._boundRnProviderReset = this._rnProviderReset.bind(this);
         this.boundRnStartAction = this._startedCall.bind(this);
         this.boundRnDisplayIncomingCall = this._displayIncomingCall.bind(this);
+        this.boundRnShowIncomingCallUi = this._showIncomingCallUi.bind(this);
 
         this._RNCallKeep.addEventListener('answerCall', this._boundRnAccept);
         this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
@@ -103,8 +106,12 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
         this._RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
         this._RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+        this._RNCallKeep.addEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
 
         this._RNCallKeep.setup(options);
+        this.selfManaged = options.android.selfManaged && Platform.OS === 'android';
+
+        this._RNCallKeep.canMakeMultipleCalls(false);
 
         this._RNCallKeep.addEventListener('checkReachability', () => {
             this._RNCallKeep.setReachable();
@@ -170,7 +177,7 @@ export default class CallManager extends events.EventEmitter {
         }
 
         utils.timestampedLog('Callkeep: will start call', callUUID, 'to', targetUri);
-        this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
+        //this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
     }
 
     updateDisplay(callUUID, displayName, uri) {
@@ -298,7 +305,7 @@ export default class CallManager extends events.EventEmitter {
 
         if (!call && !this._incoming_conferences.has(callUUID)) {
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
-            this.webSocketActions.set(callUUID, 'reject');
+            this.webSocketActions.set(callUUID, {action: 'reject'});
             return;
         }
 
@@ -317,10 +324,12 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
-    acceptCall(callUUID) {
+    acceptCall(callUUID, options={}) {
         if (this.unmounted()) {
             return;
         }
+
+        console.log('CallKeep acceptCall', callUUID, options);
         const connection = this.getConnection();
 
         if (this._acceptedCalls.has(callUUID)) {
@@ -357,15 +366,15 @@ export default class CallManager extends events.EventEmitter {
 
         } else if (this._calls.has(callUUID)) {
             this.backToForeground();
-            this.sylkAcceptCall(callUUID);
+            this.sylkAcceptCall(callUUID, options);
 
         } else {
             this.backToForeground();
             utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
             this.respawnConnection();
-            this.webSocketActions.set(callUUID, 'accept');
-            utils.timestampedLog('Callkeep: check over 12 seconds if call', callUUID, 'arrived over web socket');
+            this.webSocketActions.set(callUUID, {action: 'accept', options: options});
+            utils.timestampedLog('Callkeep: check over 30 seconds if call', callUUID, 'arrived over web socket');
 
             setTimeout(() => {
                 const connection = this.getConnection();
@@ -379,7 +388,7 @@ export default class CallManager extends events.EventEmitter {
                 } else {
                     utils.timestampedLog('Callkeep: call', callUUID, 'did arrive on web socket', connection);
                 }
-            }, 12000);
+            }, 30000);
         }
     }
 
@@ -423,7 +432,7 @@ export default class CallManager extends events.EventEmitter {
             // We rejected the call before it arrived on web socket
             // from iOS push notifications
             utils.timestampedLog('Callkeep: add call', callUUID, 'reject to the waitings list');
-            this.webSocketActions.set(callUUID, 'reject');
+            this.webSocketActions.set(callUUID, {action: 'reject'});
             utils.timestampedLog('Callkeep: check over 20 seconds if call', callUUID, 'arrived on web socket');
 
             setTimeout(() => {
@@ -579,12 +588,12 @@ export default class CallManager extends events.EventEmitter {
         utils.timestampedLog('Callkeep: incoming call', call.id, 'on web socket', connection);
 
         // if the call came via push and was already accepted or rejected
-        if (this.webSocketActions.get(call.id)) {
-            let action = this.webSocketActions.get(call.id);
-            utils.timestampedLog('Callkeep: execute action decided earlier', action);
+        if (this.webSocketActions.has(call.id)) {
+            let actionObject = this.webSocketActions.get(call.id);
+            utils.timestampedLog('Callkeep: execute action decided earlier', actionObject.action);
 
-            if (action === 'accept') {
-                this.sylkAcceptCall(call.id);
+            if (actionObject.action === 'accept') {
+                this.sylkAcceptCall(call.id, actionObject.options);
             } else {
                 this.sylkRejectCall(call.id);
             }
@@ -684,6 +693,14 @@ export default class CallManager extends events.EventEmitter {
         utils.timestampedLog('Callkeep: Incoming alert panel displayed');
     }
 
+    _showIncomingCallUi(data) {
+        if (this._calls.has(data.callUUID)) {
+            console.log('Callkeep: show incoming call UI', data.callUUID);
+            let call = this._calls.get(data.callUUID);
+            this.showInternetAlertPanel(call);
+        }
+    }
+
     _emitSessionsChange(countChanged) {
         this.emit('sessionschange', countChanged);
     }
@@ -698,5 +715,6 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.removeEventListener('didResetProvider', this._boundRnProviderReset);
         this._RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
         this._RNCallKeep.removeEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+        this._RNCallKeep.removeEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
     }
 }

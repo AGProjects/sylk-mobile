@@ -1,7 +1,6 @@
 .container {
     justifyContent: center;
     alignItems: center;
-    background-color: rgba(#ccc, 1);
     height: 100%;
 }
 
@@ -13,14 +12,18 @@
 
 .button {
     background-color: rgba(#6DAA63, .9);
-    margin: 30px;
-    padding: 10px;
+    margin: 15px;
 }
 
 .rejectButton {
     background-color: rgba(#a94442, .9);
-    margin: 30px;
+    margin: 15px;
+}
 
+.dismissButton {
+    background-color: white;
+    margin: 15px;
+    border: 1px;
 }
 
 .userIcon {
@@ -28,11 +31,28 @@
     padding-bottom: 40px;
 }
 
-.remoteCaller {
+.logo {
+    margin-top: 10px;
+    height: 30px;
+    width: 30px;
+}
+
+.remoteDisplayName {
     padding-top: 20px;
     font-size: 34px;
     margin: 0px;
 }
 
+.remoteUri {
+    padding-top: 5px;
+    font-size: 18px;
+    margin: 0px;
+}
+
+.notice {
+    font-size: 14px;
+}
+
 .remoteMedia {
+    padding-top: 20px;
 }

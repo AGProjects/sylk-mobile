@@ -538,7 +538,7 @@ class ReadyBox extends Component {
         const borderClass = this.state.chat ? null : styles.historyBorder;
         let backButtonTitle = 'Back to call';
 
-        const showBackToCallButton = this.state.call && this.state.call.state !== 'incoming' ? true : false ;
+        const showBackToCallButton = this.state.call && this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated' ? true : false ;
 
         if (showBackToCallButton) {
             if (this.state.call.hasOwnProperty('_participants')) {

@@ -1,5 +1,9 @@
 https://github.com/APSL/react-native-version-number/issues/26
 
+Patch push
+node_modules/react-native-push-notification/android/src/main/java/com/dieam/reactnativepushnotification/modules/RNPushNotificationHelper.java
+
+
 React native navigation back arrow missing on iOS 14
 ----------------------------------------------------
 

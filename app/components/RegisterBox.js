@@ -17,6 +17,7 @@ const RegisterBox = (props) => {
 
     return (
         <View style={containerClass}>
+            {props.showLogo ?
             <View>
                 <Logo
                     orientation={props.orientation}
@@ -24,6 +25,8 @@ const RegisterBox = (props) => {
                 />
 
             </View>
+            : null}
+
             <View>
                 <RegisterForm
                     registrationInProgress={props.registrationInProgress}
@@ -32,6 +35,7 @@ const RegisterBox = (props) => {
                     autoLogin={props.autoLogin}
                     orientation={props.orientation}
                     isTablet={props.isTablet}
+                    connected={props.connected}
                     phoneNumber={props.phoneNumber}
                 />
 
@@ -46,8 +50,10 @@ RegisterBox.propTypes = {
     handleEnrollment       : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool,
     autoLogin              : PropTypes.bool,
+    showLogo               : PropTypes.bool,
     orientation            : PropTypes.string,
     isTablet               : PropTypes.bool,
+    connected              : PropTypes.bool,
     phoneNumber            : PropTypes.string
 };
 

@@ -166,7 +166,7 @@ class NavigationBar extends Component {
                 if (this.state.publicKey) {
                     this.showExportPrivateKeyModal();
                 } else {
-                    this.props.showImportModal();
+                    this.props.showImportModal(true);
                 }
                 break;
             case 'showPublicKey':

@@ -44,6 +44,7 @@ class RegisterForm extends Component {
         this.state = {
             accountId: '',
             password: '',
+            connected: props.connected,
             registering: false,
             remember: false,
             showEnrollmentModal: false
@@ -103,9 +104,10 @@ class RegisterForm extends Component {
     validInput() {
         const domain = this.state.accountId.indexOf('@') !== -1 ? this.state.accountId.substring(this.state.accountId.indexOf('@') + 1): '';
         const validDomain = domain === '' || (!ipaddr.IPv4.isValidFourPartDecimal(domain) && !ipaddr.IPv6.isValid(domain) && domain.length > 3 && domain.indexOf('.') !== - 1 && (domain.length - 2 - domain.indexOf('.')) > 0);
-        const validInput =  isASCII(this.state.accountId) && validDomain && this.state.password !== '' && isASCII(this.state.password);
+        const validInput = this.state.accountId.length > 0 && isASCII(this.state.accountId) && validDomain && this.state.password !== '' && isASCII(this.state.password);
         return validInput;
     }
+
 
     render() {
         let containerClass;
@@ -156,7 +158,7 @@ class RegisterForm extends Component {
                         <Button
                             style={styles.button}
                             icon="login"
-                            disabled={this.props.registrationInProgress || !this.validInput()}
+                            disabled={this.props.registrationInProgress || !this.validInput() || !this.state.connected}
                             onPress={this.handleSubmit}
                             mode="contained"
                             loading={this.state.registering}
@@ -171,7 +173,7 @@ class RegisterForm extends Component {
                             style={styles.button}
                             mode="contained"
                             onPress={this.createAccount}
-                            disabled={this.props.registrationInProgress}
+                            disabled={this.props.registrationInProgress || !this.state.connected}
                             accessibilityLabel="Sign Up"
                         >
                             Sign Up
@@ -197,6 +199,7 @@ RegisterForm.propTypes = {
     handleRegistration     : PropTypes.func.isRequired,
     handleEnrollment       : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool.isRequired,
+    connected              : PropTypes.bool,
     autoLogin              : PropTypes.bool,
     orientation            : PropTypes.string,
     isTablet               : PropTypes.bool,

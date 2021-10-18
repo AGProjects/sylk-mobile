@@ -18,7 +18,7 @@ export default async (remoteMessage) => {
         if (event === 'incoming_conference_request') {
             url = 'sylk://conference/incoming/' + callUUID + '/' + from + '/' + to + '/' + displayName + '/' + mediaType;
         } else if (event === 'incoming_session') {
-            url = 'sylk://call/incoming/' + callUUID + '/' + from + '/' + to + '/' + displayName;
+            url = 'sylk://call/incoming/' + callUUID + '/' + from + '/' + to + '/' + displayName + '/' + mediaType;
         } else if (event === 'cancel') {
             url = 'sylk://call/cancel/' + callUUID;
         }
@@ -28,6 +28,5 @@ export default async (remoteMessage) => {
             SylkNative.launchMainActivity(encodeURI(url));
         }
     }
-
     return Promise.resolve();
 }

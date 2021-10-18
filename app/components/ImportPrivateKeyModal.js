@@ -19,6 +19,7 @@ class ImportPrivateKeyModal extends Component {
             privateKey: this.props.privateKey,
             status: this.props.status,
             confirm: false,
+            keyStatus: this.props.keyStatus,
             success: this.props.success,
             keyDifferentOnServer: this.props.keyDifferentOnServer
         }
@@ -31,6 +32,7 @@ class ImportPrivateKeyModal extends Component {
                        status: nextProps.status,
                        confirm: nextProps.confirm,
                        success: nextProps.success,
+                       keyStatus: nextProps.keyStatus,
                        keyDifferentOnServer: nextProps.keyDifferentOnServer
                        });
 
@@ -171,6 +173,7 @@ ImportPrivateKeyModal.propTypes = {
     generateKeysFunc   : PropTypes.func.isRequired,
     status             : PropTypes.string,
     keyDifferentOnServer : PropTypes.bool,
+    keyStatus          : PropTypes.object,
     success            : PropTypes.bool
 };
 

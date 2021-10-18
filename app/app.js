@@ -85,6 +85,8 @@ const KeyOptions = {
 }
 
 
+const incomingCallLabel = 'Incoming call...';
+
 const theme = {
     ...DefaultTheme,
     dark: true,
@@ -163,6 +165,7 @@ class Sylk extends Component {
         autoBind(this)
         this._loaded = false;
         let isFocus = Platform.OS === 'ios';
+        this.startTimestamp = new Date();
 
         this._initialState = {
             appState: null,
@@ -175,6 +178,7 @@ class Sylk extends Component {
             email: '',
             organization: '',
             account: null,
+            keyStatus: {},
             lastSyncId: null,
             accountVerified: false,
             registrationState: null,
@@ -182,7 +186,6 @@ class Sylk extends Component {
             incomingCall: null,
             currentCall: null,
             connection: null,
-            showIncomingModal: false,
             showScreenSharingModal: false,
             status: null,
             targetUri: '',
@@ -195,10 +198,12 @@ class Sylk extends Component {
             devices: {},
             speakerPhoneEnabled: null,
             orientation : 'portrait',
+            keyboardVisible: false,
             Height_Layout : '',
             Width_Layout : '',
             outgoingCallUUID: null,
             incomingCallUUID: null,
+            incomingContact: null,
             hardware: '',
             phoneNumber: '',
             isTablet: isTablet(),
@@ -256,8 +261,8 @@ class Sylk extends Component {
             appStoreVersion: null,
             firstSyncDone: false,
             keysNotFound: false,
+            showLogo: true,
             showExportPrivateKeyModal: false,
-            serverQueriedForPublicKey: false,
             navigationItems: {today: false,
                               yesterday: false,
                               conference: false}
@@ -293,9 +298,12 @@ class Sylk extends Component {
         this._onFinishedLoadingFileSubscription = null
         this._onFinishedLoadingURLSubscription = null
 
+        this.cancelRingtoneTimer = null;
+
         this.sync_pending_items = [];
         this.signup = {};
         this.last_signup = null;
+        this.keyboardDidShowListener = null;
 
         this.state = Object.assign({}, this._initialState);
 
@@ -314,10 +322,10 @@ class Sylk extends Component {
         this.goToReadyTimer = null;
         this.msg_sound_played_ts = null;
         this.initialChatContact = null;
-        this.serverPublicKey = null;
 
         storage.initialize();
         this.callKeeper = new CallManager(RNCallKeep,
+                                                this.showAlertPanel,
                                                 this.acceptCall,
                                                 this.rejectCall,
                                                 this.hangupCall,
@@ -536,7 +544,7 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
 
         if (this.state.account) {
-            this.state.account.syncConversations();
+            this.requestSyncConversations();
             var uri = uuid.v4() + '@' + this.state.defaultDomain;
             console.log('Send 1st public to', uri);
             this.sendPublicKey(uri);
@@ -609,16 +617,21 @@ class Sylk extends Component {
         let keys = {};
         let lastSyncId;
 
+        let keyStatus = this.state.keyStatus;
+
         this.ExecuteQuery("SELECT * FROM keys where account = ?",[this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
+                //console.log('SQL has keys');
                 keys.public = item.public_key;
-                if (this.serverPublicKey === item.public_key) {
-                    this.setState({showImportPrivateKeyModal: false, keysNotFound: false});
+                if (item.public_key && keyStatus['serverPublicKey'] === item.public_key) {
+                    keyStatus['existsLocal'] = true;
+                    this.setState({showImportPrivateKeyModal: false});
                 } else {
-                    this.setState({keysNotFound: true});
+                    keyStatus['existsLocal'] = false;
                 }
+
                 keys.private = item.private_key;
                 console.log('Loaded PGP private key for account', this.state.accountId);
                 if (!item.last_sync_id && this.lastSyncedMessageId) {
@@ -635,23 +648,23 @@ class Sylk extends Component {
                     lastSyncId = item.last_sync_id;
                 }
 
-                if (this.state.registrationState ==='registered' && !this.syncRequested) {
-                    this.syncRequested = true;
-                    console.log('Request sync messages from server', lastSyncId);
-                    this.state.account.syncConversations(lastSyncId);
+                if (this.state.registrationState === 'registered') {
+                    this.requestSyncConversations(lastSyncId);
                 }
 
             } else {
+                //console.log('SQL has no keys');
+                keyStatus['existsLocal'] = false;
                 if (this.state.account) {
                     this.generateKeysIfNecessary(this.state.account);
                 } else {
                     console.log('Wait for account become active...');
                 }
             }
-        });
 
-        this.setState({contactsLoaded: true});
-        this.getDownloadTasks();
+            this.setState({contactsLoaded: true, keyStatus: keyStatus});
+            this.getDownloadTasks();
+        });
     }
 
     async getDownloadTasks() {
@@ -1449,7 +1462,6 @@ class Sylk extends Component {
                 return;
             }
 
-            this.startedByPush = false;
             if (this.state.currentCall && reason === 'outgoing_connection_failed' && this.state.currentCall.direction === 'outgoing') {
                 let target_uri = this.state.currentCall.remoteIdentity.uri.toLowerCase();
                 let options = {audio: true, video: true, participants: []}
@@ -1538,7 +1550,9 @@ class Sylk extends Component {
             }
 
             if (reason === 'no_more_calls') {
-                this.updateServerHistory(reason)
+                this.updateServerHistory(reason);
+                this.updateLoading(null, 'incoming_call');
+                this.setState({incomingCallUUID: null});
             }
 
             if (reason === 'start_up') {
@@ -1583,6 +1597,11 @@ class Sylk extends Component {
     backPressed() {
         console.log('Back button pressed in route', this.currentRoute);
 
+        if (this.state.incomingCallUUID) {
+            this.hideInternalAlertPanel('backPressed');
+            return;
+        }
+
         if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
             this.goBackToHome();
             /*
@@ -1610,6 +1629,15 @@ class Sylk extends Component {
             this.setState({fontScale: fontScale});
         });
 
+        this.keyboardDidShowListener = Keyboard.addListener(
+              'keyboardDidShow',
+              this._keyboardDidShow
+            );
+        this.keyboardDidHideListener = Keyboard.addListener(
+              'keyboardDidHide',
+              this._keyboardDidHide
+            );
+
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
         // Start a timer that runs once after X milliseconds
         BackgroundTimer.runBackgroundTimer(() => {
@@ -1620,19 +1648,19 @@ class Sylk extends Component {
 
         try {
             await RNCallKeep.supportConnectionService ();
-            //utils.timestampedLog('Connection service is enabled');
+            utils.timestampedLog('Connection service is enabled');
         } catch(err) {
             utils.timestampedLog(err);
         }
 
         try {
             await RNCallKeep.hasPhoneAccount();
-            //utils.timestampedLog('Phone account is enabled');
+            utils.timestampedLog('Phone account is enabled');
+
         } catch(err) {
             utils.timestampedLog(err);
         }
 
-/*
         if (Platform.OS === 'android') {
             RNDrawOverlay.askForDispalayOverOtherAppsPermission()
                  .then(res => {
@@ -1644,7 +1672,7 @@ class Sylk extends Component {
                      // permission was declined
                  })
         }
-*/
+
         // prime the ref
         //logger.debug('NotificationCenter ref: %o', this._notificationCenter);
 
@@ -1663,6 +1691,14 @@ class Sylk extends Component {
         this._loaded = true;
 
         this.checkVersion();
+    }
+
+    _keyboardDidShow() {
+       this.setState({keyboardVisible: true});
+    }
+
+    _keyboardDidHide() {
+        this.setState({keyboardVisible: false});
     }
 
     checkVersion() {
@@ -1698,10 +1734,10 @@ class Sylk extends Component {
         })
     }
 
-    registerAndroidNotifications(parent) {
+    handleFirebasePushInForeground(parent) {
 
         // Must be outside of any component LifeCycle (such as `componentDidMount`).
-        //console.log('registerAndroidNotifications');
+        //console.log('handleFirebasePushInForeground');
         PushNotification.configure({
           // (optional) Called when Token is generated (iOS and Android)
           onRegister: function (token) {
@@ -1710,10 +1746,12 @@ class Sylk extends Component {
 
           // (required) Called when a remote is received or opened, or local notification is opened
           onNotification: function (notification) {
-
-            parent.handleAndroidNotification(notification);
-
             // process the notification
+            if (notification.userInteraction) {
+                parent.handleFirebasePushInteraction(notification);
+            } else {
+                parent.handleFirebasePush(notification);
+            }
 
             // (required) Called when a remote is received or opened, or local notification is opened
             notification.finish(PushNotificationIOS.FetchResult.NoData);
@@ -1758,30 +1796,28 @@ class Sylk extends Component {
         (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
       );
 
-        //console.log('Available Sylk channels:');
+        PushNotification.deleteChannel("sylk-alert-panel");
+
+        PushNotification.createChannel(
+        {
+          channelId: "sylk-alert-panel", // (required)
+          channelName: "Sylk Incoming Calls", // (required)
+          channelDescription: "Display alert panel for incoming calls", // (optional) default: undefined.
+          importance: Importance.MAX, // (optional) default: Importance.HIGH. Int value of the Android notification importance
+          vibrate: true, // (optional) default: true. Creates the default vibration pattern if true.
+          playSound: true,
+          isRingtone: true //          soundName: "incallmanager_ringtone.mp3"
+        },
+        (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
+        );
+
+        /*
+        console.log('Available Sylk channels:');
 
         PushNotification.getChannels(function (channel_ids) {
-          //console.log(channel_ids); // ['channel_id_1']
+        console.log(channel_ids); // ['channel_id_1']
         });
-    }
-
-    handleAndroidNotification(notification) {
-        // when user touches the system notification and app launches...
-        console.log("Handle Android push notification:", notification);
-        let uri = notification.data.from_uri;
-
-        if (!uri) {
-            return;
-        }
-
-        if (uri in this.state.myContacts) {
-            if (!this.state.selectedContact) {
-                this.selectContact(this.state.myContacts[uri]);
-            }
-            this.initialChatContact = null;
-        } else {
-            this.initialChatContact = uri;
-        }
+        */
     }
 
     handleiOSNotification(notification) {
@@ -1789,10 +1825,10 @@ class Sylk extends Component {
         console.log("Handle iOS push notification:", notification);
     }
 
-    sendLocalAndroidNotification(uri, content) {
+    postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
         return;
-        console.log('sendLocalAndroidNotification');
+        console.log('postAndroidMessageNotification');
 
         PushNotification.localNotification({
           /* Android Only Properties */
@@ -1851,6 +1887,10 @@ class Sylk extends Component {
                 logger.error({ err }, 'Error getting external URL');
             });
 
+            firebase.messaging().setBackgroundMessageHandler(async message => {
+                this.handleFirebasePush(message);
+            });
+
             firebase.messaging().getToken()
             .then(fcmToken => {
                 if (fcmToken) {
@@ -1892,7 +1932,7 @@ class Sylk extends Component {
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
             VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
         } else if (Platform.OS === 'android') {
-            this.registerAndroidNotifications(this);
+            this.handleFirebasePushInForeground(this);
 
             AppState.addEventListener('focus', this._handleAndroidFocus);
             AppState.addEventListener('blur', this._handleAndroidBlur);
@@ -1912,39 +1952,88 @@ class Sylk extends Component {
                 .onMessage((message: RemoteMessage) => {
                     // this will just wake up the app to receive
                     // the web-socket invite handled by this.incomingCall()
-                    let event = message.data.event;
-                    const callUUID = message.data['session-id'];
-                    const from = message.data['from_uri'];
-                    const to = message.data['to_uri'];
-                    const displayName = message.data['from_display_name'];
-                    const outgoingMedia = {audio: true, video: message.data['media-type'] === 'video'};
-                    const mediaType = message.data['media-type'] || 'audio';
-
-                    if (this.unmounted) {
-                        return;
-                    }
-
-                    if (event === 'incoming_conference_request') {
-                        utils.timestampedLog('Push notification: incoming conference', callUUID);
-                        if (!from || !to) {
-                            return;
-                        }
-                        this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
-                    } else if (event === 'incoming_session') {
-                        utils.timestampedLog('Push notification: incoming call', callUUID);
-                        if (!from) {
-                            return;
-                        }
-                        this.incomingCallFromPush(callUUID, from, displayName, mediaType);
-                    } else if (event === 'cancel') {
-                        this.cancelIncomingCall(callUUID);
-                    } else if (event === 'message') {
-                        if (!from) {
-                            return;
-                        }
-                        console.log('Push notification: new messages on Sylk server from', from);
-                    }
+                    this.handleFirebasePush(message);
                 });
+        }
+    }
+
+    handleFirebasePushInteraction(notification) {
+        let data = notification.data;
+        let event = data.event;
+        console.log("handleFirebasePushInteraction", event);
+
+        const callUUID = data['session-id'];
+        const media = {audio: true, video: data['media-type'] === 'video'};
+
+        if (event === 'incoming_conference_request') {
+            if (notification.action === 'Accept') {
+                this.callKeepAcceptCall(callUUID);
+            } else if (notification.action === 'Reject') {
+                this.callKeepRejectCall(callUUID);
+            } else if (notification.action === 'Dismiss') {
+                this.dismissCall(callUUID);
+            }
+        } else if (event === 'incoming_session') {
+            if (notification.action === 'Accept') {
+                this.callKeepAcceptCall(callUUID, media);
+            } else if (notification.action === 'Video') {
+                this.callKeepAcceptCall(callUUID, media);
+            } else if (notification.action === 'Audio') {
+                media.video = false;
+                this.callKeepAcceptCall(callUUID, media);
+            } else if (notification.action === 'Reject') {
+                this.callKeepRejectCall(callUUID);
+            } else if (notification.action === 'Dismiss') {
+                this.dismissCall(callUUID);
+            }
+        }
+    }
+
+    handleFirebasePush(notification) {
+        let event = notification.data.event;
+        console.log("handleFirebasePush", event);
+        const callUUID = notification.data['session-id'];
+        const from = notification.data['from_uri'];
+        const to = notification.data['to_uri'];
+        const displayName = notification.data['from_display_name'];
+        const outgoingMedia = {audio: true, video: notification.data['media-type'] === 'video'};
+        const mediaType = notification.data['media-type'] || 'audio';
+
+        if (this.unmounted) {
+            //return;
+        }
+
+        if (event === 'incoming_conference_request') {
+            utils.timestampedLog('Push notification: incoming conference', callUUID);
+            if (!from || !to) {
+                return;
+            }
+            this.postAndroidIncomingCallNotification(notification.data);
+            this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
+        } else if (event === 'incoming_session') {
+            utils.timestampedLog('Push notification: incoming call', callUUID);
+            if (!from) {
+                return;
+            }
+            this.postAndroidIncomingCallNotification(notification.data);
+            this.incomingCallFromPush(callUUID, from, displayName, mediaType);
+        } else if (event === 'cancel') {
+            this.cancelIncomingCall(callUUID);
+        } else if (event === 'message') {
+            if (!from) {
+                return;
+            }
+
+            if (from in this.state.myContacts) {
+                if (!this.state.selectedContact) {
+                    this.selectContact(this.state.myContacts[from]);
+                }
+                this.initialChatContact = null;
+            } else {
+                this.initialChatContact = from;
+            }
+
+            console.log('Push notification: new messages on Sylk server from', from);
         }
     }
 
@@ -2036,6 +2125,8 @@ class Sylk extends Component {
             return;
         }
 
+        this.hideInternalAlertPanel('cancel');
+
         if (this.callKeeper._acceptedCalls.has(callUUID)) {
             return;
         }
@@ -2047,10 +2138,12 @@ class Sylk extends Component {
             if (!this.callKeeper._cancelledCalls.has(callUUID)) {
                 utils.timestampedLog('Cancel incoming call that did not arrive on web socket', callUUID);
                 this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
-                this.startedByPush = false;
                 if (this.startedByPush) {
+                    this.resetStartedByPush('cancelIncomingCall')
                     this.changeRoute('/ready', 'incoming_call_cancelled');
                 }
+
+                this.updateLoading(null, 'incoming_call');
             }
             return;
         }
@@ -2109,7 +2202,7 @@ class Sylk extends Component {
             } else if (Platform.OS === 'android') {
                 token = this.pushtoken;
             }
-            utils.timestampedLog('Push token for app', bundleId, 'sent:', token);
+            utils.timestampedLog('Push token for app', bundleId, 'sent');
             account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
             this.tokenSent = true;
         }
@@ -2332,6 +2425,11 @@ class Sylk extends Component {
         this.setState({selectedContact: contact});
     }
 
+    logTimeline(step) {
+        let diff = Math.floor((new Date() - this.startTimestamp) / 1000);
+        console.log('Timeline:', step, diff);
+    }
+
     connectionStateChanged(oldState, newState) {
         if (this.unmounted) {
             return;
@@ -2342,6 +2440,8 @@ class Sylk extends Component {
         if (oldState) {
             utils.timestampedLog('Web socket', connection, 'state changed:', oldState, '->' , newState);
         }
+
+        this.logTimeline('connection ' + newState);
 
         switch (newState) {
             case 'closed':
@@ -2356,6 +2456,7 @@ class Sylk extends Component {
                 break;
             case 'ready':
                 this._notificationCenter.removeNotification();
+                this.updateLoading(null, 'ready');
                 if (this.state.autoLogin) {
                     this.processRegistration(this.state.accountId, this.state.password);
                     this.callKeeper.setAvailable(true);
@@ -2380,14 +2481,14 @@ class Sylk extends Component {
                     generatedVideoTrack: false,
                     });
 
-                if (this.currentRoute === '/login') {
+                if (this.currentRoute === '/login' && this.state.registrationKeepalive) {
                     this.changeRoute('/ready', 'websocket disconnected');
                 }
 
                 break;
             default:
-                if (this.state.registrationKeepalive !== true) {
-                    this.setState({loading: 'Connecting...'});
+                if (this.state.registrationKeepalive) {
+                    this.updateLoading('Connecting...', 'connection');
                 }
                 break;
         }
@@ -2402,13 +2503,14 @@ class Sylk extends Component {
 
         utils.timestampedLog('Registration error: ' + reason, 'on web socket', connection);
         this.setState({
-            loading     : null,
             registrationState: 'failed',
             status      : {
                 msg   : 'Sign In failed: ' + reason,
                 level : 'danger'
             }
         });
+
+        this.updateLoading(null, 'show_register_failure');
 
         if (this.startedByPush) {
             // TODO: hangup incoming call
@@ -2447,7 +2549,7 @@ class Sylk extends Component {
 
             this.showRegisterFailure(reason);
 
-            if (this.state.registrationKeepalive === true) {
+            if (this.state.registrationKeepalive) {
                 if (this.state.connection !== null && this.state.connection.state === 'ready') {
                     utils.timestampedLog('Retry to register...');
                     this.state.account.register();
@@ -2504,19 +2606,16 @@ class Sylk extends Component {
                 verified: true
             });
 
-            this.setState({loading: null,
-                           accountVerified: true,
+            this.setState({accountVerified: true,
                            enrollment: false,
                            autoLogin: true,
                            registrationKeepalive: true,
                            registrationState: 'registered'
                            });
 
-            if (this.state.keys && !this.syncRequested) {
-                this.syncRequested = true;
-                console.log('Request sync messages from server', this.state.lastSyncId);
-                this.state.account.syncConversations(this.state.lastSyncId);
-            }
+            this.updateLoading(null, 'registered');
+
+            this.requestSyncConversations(this.state.lastSyncId);
 
             this.replayJournal();
 
@@ -2535,12 +2634,168 @@ class Sylk extends Component {
         }
     }
 
-    showInternalAlertPanel() {
-        this.setState({showIncomingModal: true});
-        //Vibration.vibrate(VIBRATION_PATTERN, true);
-        setTimeout(() => {
-             Vibration.cancel();
-        }, 30000);
+    showAlertPanel(data) {
+        console.log('Show alert panel');
+
+        if (this.callKeeper._cancelledCalls.has(data.callUUID)) {
+            console.log('Show internal alert panel cancelled');
+            return;
+        }
+
+        if (this.callKeeper._terminatedCalls.has(data.callUUID)) {
+            console.log('Show internal alert panel cancelled');
+            return;
+        }
+
+        if (this.callKeeper._acceptedCalls.has(data.callUUID)) {
+            console.log('Show internal alert panel cancelled');
+            return;
+        }
+
+        if (this.callKeeper._rejectedCalls.has(data.callUUID)) {
+            console.log('Show internal alert panel cancelled');
+            return;
+        }
+
+        let contact;
+        let media = {audio: true, video: false};
+        let callId;
+        let from;
+        let displayName;
+
+        if ('from_display_name' in data && 'from_uri' in data) {
+            // Firebase notification
+            from = data.from_uri;
+            displayName = data.from_display_name;
+            callId = data['session-id'];
+            if (data['media-type'] === 'video') {
+                media.video = true;
+            }
+        } else if (data.hasOwnProperty('_remoteIdentity')) {
+            // Sylk call object
+            from = data.remoteIdentity.uri;
+            displayName = data.remoteIdentity.displayName;
+            callId = data.id;
+            if (data.mediaTypes && data.mediaTypes.video) {
+                media.video = true;
+            }
+        } else {
+            console.log('Missing contact data for Alert panel');
+            return;
+        }
+
+        if (from in this.state.myContacts) {
+            contact = this.state.myContacts[from];
+        } else {
+            let contacts = this.lookupContacts(from);
+            if (contacts.length > 0) {
+                contact = this.newContact(from, contacts[0].name);
+            }
+        }
+
+        if (!contact) {
+            contact = this.newContact(from, displayName);
+        }
+
+        if (!callId) {
+            console.log('Missing callId for Alert panel');
+            return;
+        }
+
+        this.setState({incomingCallUUID: callId,
+                       incomingContact: contact,
+                       incomingMedia: media
+                       });
+    }
+
+    postAndroidIncomingCallNotification(data) {
+        console.log('postAndroidIncomingCallNotification', data);
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
+        if (this.callKeeper.selfManaged) {
+            this.showAlertPanel(data);
+            return;
+        }
+
+        let media = {audio: true, video: data['media-type'] === 'video'};
+        let from = data.from_display_name || data.from_uri;
+        if (data.from_display_name && data.from_display_name != data.from_uri) {
+            from = data.from_display_name + ' (' + data.from_uri + ')';
+        }
+
+        console.log('Show Android incoming call notification', from, media);
+
+        let actions = ['Audio'];
+        if (media.video) {
+            actions.push('Video');
+        }
+        actions.push('Reject');
+        actions.push('Dismiss');
+
+        PushNotification.localNotification({
+          /* Android Only Properties */
+          channelId: "sylk-alert-panel", // (required) channelId, if the channel doesn't exist, notification will not trigger.
+          vibrate: true, // (optional) default: true
+          priority: "max", // (optional) set notification priority, default: high
+          ongoing: true,
+          loopSound: true,
+          fullScreen: true,
+          ignoreInForeground: false, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
+          invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
+          actions: actions,
+
+          /* iOS and Android properties */
+          title: 'Incoming call', // (optional)
+          message: 'From ' + from, // (required)
+          //picture: "https://www.example.tld/picture.jpg", // (optional) Display an picture with the notification, alias of `bigPictureUrl` for Android. default: undefined
+          userInfo: data, // (optional) default: {} (using null throws a JSON value '<null>' error)
+          playSound: true, // (optional) default: true
+          number: 10, // (optional) Valid 32 bit integer specified as string. default: none (Cannot be zero)
+        });
+    }
+
+    playIncomingRingtone(callUUID, force=false) {
+        if (!this.callKeeper.selfManaged) {
+            console.log('playIncomingRingtone skip because we are not self managed....');
+            return;
+        }
+
+        if (this.callKeeper._cancelledCalls.has(callUUID)) {
+            console.log('playIncomingRingtone cancelled for', callUUID);
+            return;
+        }
+
+        if (this.cancelRingtoneTimer) {
+            clearTimeout(this.cancelRingtoneTimer);
+            this.cancelRingtoneTimer = null;
+        } else {
+            console.log('Play local ringtone and vibrate');
+            Vibration.vibrate(VIBRATION_PATTERN, true);
+            InCallManager.startRingtone('_DEFAULT_');
+        }
+
+        this.cancelRingtoneTimer = setTimeout(() => {
+            console.log('Cancel ringtones by timer')
+            this.stopRingtones();
+        }, 60000);
+    }
+
+    stopRingtones() {
+        if (this.cancelRingtoneTimer) {
+            clearTimeout(this.cancelRingtoneTimer);
+            this.cancelRingtoneTimer = null;
+        }
+        InCallManager.stopRingtone();
+        Vibration.cancel();
+    }
+
+    hideInternalAlertPanel(by=null) {
+        //console.log('hideInternalAlertPanel by', by);
+        this.stopRingtones();
+        this.setState({incomingContact: null,
+                       incomingMedia: null});
     }
 
     vibrate() {
@@ -2550,10 +2805,6 @@ class Sylk extends Component {
         }, 1000);
     }
 
-    hideInternalAlertPanel() {
-        Vibration.cancel();
-        this.setState({showIncomingModal: false});
-    }
 
     heartbeat() {
         if (this.unmounted) {
@@ -2649,6 +2900,8 @@ class Sylk extends Component {
         const connection = this.getConnection();
         utils.timestampedLog('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState, 'on web socket', connection);
 
+        this.logTimeline('call ' + newState);
+
         /*
         if (newState === 'established' || newState === 'accepted') {
             // restore the correct UI state if it has transitioned illegally to /ready state
@@ -2678,12 +2931,12 @@ class Sylk extends Component {
                 if (this.state.incomingCall.id === call.id) {
                     if (oldState === 'incoming') {
                         //utils.timestampedLog('Call state changed:', 'incoming call must be cancelled');
-                        this.hideInternalAlertPanel();
+                        this.hideInternalAlertPanel(newState);
                     }
 
                     if (oldState === 'established' || oldState === 'accepted') {
                         //utils.timestampedLog('Call state changed:', 'incoming call ended');
-                        this.hideInternalAlertPanel();
+                        this.hideInternalAlertPanel(newState);
                     }
                     // new call must be cancelled
                     newincomingCall = null;
@@ -2727,20 +2980,23 @@ class Sylk extends Component {
 
             if (this.state.incomingCall.id === call.id) {
                 if (newState === 'terminated') {
-                    this.startedByPush = false;
+                    if (this.startedByPush) {
+                        this.resetStartedByPush('terminated')
+                        this.requestSyncConversations(this.state.lastSyncId);
+                    }
+
                     //utils.timestampedLog("Incoming call was cancelled");
-                    this.setState({showIncomingModal: false});
-                    this.hideInternalAlertPanel();
+                    this.hideInternalAlertPanel(newState);
                     newincomingCall = null;
                     newCurrentCall = null;
                     readyDelay = 10;
                 } else if (newState === 'accepted') {
                     //utils.timestampedLog("Incoming call was accepted");
-                    this.hideInternalAlertPanel();
+                    this.hideInternalAlertPanel(newState);
                     this.backToForeground();
                 } else if (newState === 'established') {
                     //utils.timestampedLog("Incoming call media started");
-                    this.hideInternalAlertPanel();
+                    this.hideInternalAlertPanel(newState);
                 }
             }
 
@@ -2830,6 +3086,12 @@ class Sylk extends Component {
                     this.callKeeper.setCurrentCallActive(callUUID);
                 }
 
+                if (callUUID === this.state.incomingCallUUID) {
+                    this.updateLoading(null, 'incoming_call');
+                }
+
+                this.setState({incomingCallUUID: null});
+
                 this.backToForeground();
                 this.resetGoToReadyTimer();
 
@@ -2845,7 +3107,12 @@ class Sylk extends Component {
                     startTime = callsState[callUUID].startTime;
                     delete callsState[callUUID];
                     this.setState({callsState: callsState});
-               }
+                }
+
+                if (callUUID === this.state.incomingCallUUID) {
+                    this.setState({incomingCallUUID: null, incomingContact: null});
+                    this.updateLoading(null, 'incoming_call');
+                }
 
                 this._terminatedCalls.set(callUUID, true);
                 utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
@@ -3079,7 +3346,7 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password) {
-        //console.log('handleRegistration', accountId);
+        //console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
             return;
@@ -3088,8 +3355,11 @@ class Sylk extends Component {
         this.setState({
             accountId : accountId,
             password  : password,
-            loading   : 'Connecting...'
         });
+
+        if (!this.startedByPush) {
+            this.updateLoading('Connecting...', 'handleRegistration');
+        }
 
         if (this.state.accountVerified) {
             this.loadSylkContacts();
@@ -3193,48 +3463,77 @@ class Sylk extends Component {
     }
 
     generateKeysIfNecessary(account) {
-        console.log('Check if PGP key exists on server....')
+        let keyStatus = this.state.keyStatus;
+        console.log('PGP key generation...');
 
-        if (this.serverQueriedForPublicKey) {
-            if (this.state.contactsLoaded) {
-                if (!this.serverPublicKey) {
-                    console.log('We have no PGP keys here or on server');
-                    this.generateKeys();
-                } else if (!this.state.keys || !this.state.keys.private){
-                    console.log('Public PGP key exists on server but we have none');
-                    this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true});
+        if ('existsOnServer' in keyStatus) {
+            //console.log('PGP key server was already queried');
+            // server was queried
+
+            if (keyStatus['existsOnServer']) {
+                if (keyStatus['existsLocal']) {
+                    // key exists in both places
+                    if (this.state.keys && keyStatus['serverPublicKey'] !== this.state.keys.public) {
+                        console.log('PGP key is different than the one on server');
+                        this.setState({keyDifferentOnServer: true});
+                        setTimeout(() => {
+                            this.showImportPrivateKeyModal();
+                        }, 10);
+                    } else {
+                        console.log('PGP key is the same as the one on server');
+                    }
+                } else {
+                    console.log('PGP key does not exist');
+                    this.setState({keyDifferentOnServer: true})
+                    setTimeout(() => {
+                        this.showImportPrivateKeyModal();
+                    }, 10);
                 }
             } else {
-                console.log('Wait for PGP keys until contacts are loaded');
+                if (!keyStatus['existsLocal']) {
+                    console.log('We have no PGP key here or on server');
+                    this.generateKeys();
+                } else {
+                    console.log('PGP key exists local but not on server');
+                }
             }
         } else {
+            //console.log('PGP key server was not yet queried');
             account.checkIfKeyExists((key) => {
-                this.serverPublicKey = key;
-                this.serverQueriedForPublicKey = true;
+                keyStatus['serverPublicKey'] = key;
+                //console.log('PGP key server query done');
 
                 if (key) {
+                    keyStatus['existsOnServer'] = true;
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== key) {
-                            console.log('Public PGP key exists on server but is different than ours');
+                            console.log('PGP key on server is different than ours');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            console.log('Public PGP key exists on server and we have it');
+                            console.log('PGP key exists on server and we have it');
+                            keyStatus['existsLocal'] = true;
                         }
                     } else {
                         if (!this.state.contactsLoaded) {
-                            console.log('Wait for PGP keys until contacts are loaded');
+                            console.log('Wait for PGP key until contacts are loaded');
                         } else {
-                            this.showImportPrivateKeyModal();
+                            this.setState({keyDifferentOnServer: true})
+                            console.log('We have no local PGP key');
+                            setTimeout(() => {
+                                this.showImportPrivateKeyModal();
+                            }, 10);
                         }
                     }
                 } else {
-                    console.log('Public PGP key does not exist on server');
+                    keyStatus['existsOnServer'] = false;
+                    console.log('PGP key does not exist on server');
                     if (this.state.contactsLoaded) {
                         this.generateKeys();
                     } else {
-                        console.log('Wait for PGP keys until contacts are loaded');
+                        console.log('Wait for PGP key until contacts are loaded');
                     }
                 }
+                this.setState({keyStatus: keyStatus});
             });
         }
     }
@@ -3342,10 +3641,7 @@ class Sylk extends Component {
                 utils.timestampedLog('Access to local media failed:', error);
                 clearTimeout(this.loadScreenTimer);
                 this._notificationCenter.postSystemNotification("Can't access camera or microphone");
-                this.setState({
-                    loading: null
-                });
-
+                this.updateLoading(null, 'get_media');
                 this.changeRoute('/ready', 'local media failure');
             });
         });
@@ -3475,24 +3771,31 @@ class Sylk extends Component {
         }
     }
 
-    callKeepAcceptCall(callUUID) {
+    callKeepAcceptCall(callUUID, options={}) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
-        utils.timestampedLog('CallKeep will answer call', callUUID);
-        this.callKeeper.acceptCall(callUUID);
-        this.hideInternalAlertPanel();
+        this.logTimeline('accept call');
+        this.callKeeper.acceptCall(callUUID, options);
+        this.hideInternalAlertPanel('accept');
+        this.updateLoading(incomingCallLabel, 'incoming_call');
     }
 
     callKeepRejectCall(callUUID) {
         // called from user interaction with Old alert panel
         utils.timestampedLog('CallKeep will reject call', callUUID);
         this.callKeeper.rejectCall(callUUID);
-        this.hideInternalAlertPanel();
+        this.hideInternalAlertPanel('reject');
     }
 
-    acceptCall(callUUID) {
-        utils.timestampedLog('User accepted call', callUUID);
-        this.hideInternalAlertPanel();
+    dismissCall(callUUID) {
+        // called from user interaction with Old alert panel
+        this.hideInternalAlertPanel('dismiss');
+    }
+
+    acceptCall(callUUID, options={}) {
+        console.log('User accepted call', callUUID, options);
+        this.hideInternalAlertPanel('accept');
+        this.vibrate();
 
         this.resetGoToReadyTimer();
 
@@ -3503,14 +3806,14 @@ class Sylk extends Component {
         } else {
             utils.timestampedLog('Will get local media now');
             let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
-            this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
+            this.getLocalMedia(Object.assign({audio: true, video: hasVideo && options.video}), '/call');
         }
     }
 
     rejectCall(callUUID) {
         // called by Call Keep when user rejects call
         utils.timestampedLog('User rejected call', callUUID);
-        this.hideInternalAlertPanel();
+        this.hideInternalAlertPanel('reject');
 
         if (!this.state.currentCall) {
             this.changeRoute('/ready', 'rejected');
@@ -3533,6 +3836,7 @@ class Sylk extends Component {
             let direction = call.direction;
             utils.timestampedLog('Sylkrtc terminate call', callUUID, 'in', call.state, 'state');
             call.terminate();
+            this.vibrate();
         }
 
         if (this.busyToneInterval) {
@@ -3626,8 +3930,26 @@ class Sylk extends Component {
         }
     }
 
-    async showImportPrivateKeyModal() {
-        this.setState({showImportPrivateKeyModal: true});
+    async showImportPrivateKeyModal(force=false) {
+        let keyStatus = this.state.keyStatus;
+        if (force) {
+            console.log('Force show PGP key import');
+            this.setState({showImportPrivateKeyModal: true});
+        } else {
+            if ('existsOnServer' in keyStatus) {
+                if ('existsLocal' in keyStatus) {
+                    if (!keyStatus['existsLocal']) {
+                        this.setState({showImportPrivateKeyModal: true});
+                    } else {
+                        console.log('PGP key exists locally');
+                    }
+                } else {
+                    console.log('PGP key was not checked locally');
+                }
+            } else {
+                console.log('PGP key was not checked on server');
+            }
+        }
     }
 
     async hideExportPrivateKeyModal() {
@@ -3663,12 +3985,20 @@ class Sylk extends Component {
         utils.timestampedLog('Speakerphone On');
         this.setState({speakerPhoneEnabled: true});
         InCallManager.setForceSpeakerphoneOn(true);
+        let call = this.state.currentCall || this.state.incomingCall;
+        if (call) {
+            RNCallKeep.toggleAudioRouteSpeaker(call.id, true);
+        }
     }
 
     speakerphoneOff() {
         utils.timestampedLog('Speakerphone Off');
         this.setState({speakerPhoneEnabled: false});
         InCallManager.setForceSpeakerphoneOn(false);
+        let call = this.state.currentCall || this.state.incomingCall;
+        if (call) {
+            RNCallKeep.toggleAudioRouteSpeaker(call.id, false);
+        }
     }
 
     startGuestConference(targetUri) {
@@ -3731,6 +4061,7 @@ class Sylk extends Component {
             utils.timestampedLog('Push notification: cancel call', callUUID);
             VoipPushNotification.presentLocalNotification({alertBody:'Call cancelled'});
             this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
+            this.resetStartedByPush('cancel');
         } else if (event === 'message') {
             utils.timestampedLog('Push for messages received');
             VoipPushNotification.presentLocalNotification({alertBody:'Messages received'});
@@ -3752,6 +4083,7 @@ class Sylk extends Component {
     }
 
     backToForeground() {
+        //console.log('backToForeground...');
         if (this.state.appState !== 'active') {
             this.callKeeper.backToForeground();
         }
@@ -3786,7 +4118,9 @@ class Sylk extends Component {
             return;
         }
 
-        this.setState({incomingCallUUID: callUUID});
+        let incomingContact = this.newContact(from, displayName);
+
+        this.setState({incomingCallUUID: callUUID, incomingContact: incomingContact});
         this.callKeeper.handleConference(callUUID, to, from, displayName, mediaType, outgoingMedia);
     }
 
@@ -3854,6 +4188,7 @@ class Sylk extends Component {
             let from;
             let to;
             let displayName;
+            let mediaType = 'audio';
 
             var url_parts = url.split("/");
             let scheme = url_parts[0];
@@ -3862,7 +4197,7 @@ class Sylk extends Component {
             if (scheme === 'sylk:') {
                 //sylk://conference/incoming/callUUID/from/to/media - when Android is asleep
                 //sylk://call/outgoing/callUUID/to/displayName - from system dialer/history
-                //sylk://call/incoming/callUUID/from/to/displayName - when Android is asleep
+                //sylk://call/incoming/callUUID/from/to/displayName/media - when Android is asleep
                 //sylk://call/cancel//callUUID - when Android is asleep
 
                 event       = url_parts[2];
@@ -3896,6 +4231,14 @@ class Sylk extends Component {
                 this.setState({targetUri: to});
             }
 
+            let data = {};
+            data['session-id'] = callUUID;
+            data['event'] = event;
+            data['to_uri'] = to;
+            data['from_uri'] = from;
+            data['from_display_name'] = displayName;
+            data['media-type'] = mediaType;
+
             if (event === 'conference') {
                 utils.timestampedLog('Conference from external URL:', url);
                 this.startedByPush = true;
@@ -3909,6 +4252,7 @@ class Sylk extends Component {
                     // allow app to wake up
                     this.backToForeground();
                     const media = {audio: true, video: mediaType === 'video'}
+                    this.postAndroidIncomingCallNotification(data);
                     this.incomingConference(callUUID, to, from, displayName, media);
                 }
 
@@ -3918,11 +4262,12 @@ class Sylk extends Component {
                     utils.timestampedLog('Call from external URL:', url);
                     utils.timestampedLog('Outgoing call to', from);
                     this.backToForeground();
-                    this.callKeepStartCall(from, {audio: true, video: false, callUUID: callUUID});
+                    this.callKeepStartCall(from, {audio: true, video: false, notification: callUUID});
                 } else if (direction === 'incoming') {
                     utils.timestampedLog('Call from external URL:', url);
-                    utils.timestampedLog('Incoming call from', from);
-                    this.backToForeground();
+                    utils.timestampedLog('Incoming', mediaType, 'call from', from);
+                    //this.playIncomingRingtone(callUUID, true);
+                    this.postAndroidIncomingCallNotification(data);
                     this.incomingCallFromPush(callUUID, from, displayName, mediaType, true);
                 } else if (direction === 'cancel') {
                     this.cancelIncomingCall(callUUID);
@@ -4020,11 +4365,11 @@ class Sylk extends Component {
             return;
         }
 
-        //this.showInternalAlertPanel();
-
         if (this.autoAcceptIncomingCall(callUUID, from)) {
             return;
         }
+
+        this.backToForeground();
 
         this.goToReadyNowAndCancelTimer();
 
@@ -4053,6 +4398,8 @@ class Sylk extends Component {
 
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
+
+        //this.playIncomingRingtone(callUUID);
 
         //utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
 
@@ -4083,7 +4430,7 @@ class Sylk extends Component {
 
         if (this.state.currentCall && this.state.currentCall.direction === 'outgoing') {
             if (Platform.OS === 'android') {
-                this.showInternalAlertPanel();
+                this.showAlertPanel(call);
                 skipNativePanel = true;
             }
         }
@@ -4114,8 +4461,20 @@ class Sylk extends Component {
     }
 
     updateServerHistory(from) {
-        console.log('updateServerHistory by', from);
+        //console.log('updateServerHistory by', from);
         //this.contactsCount();
+
+        if (this.state.serverHistoryUpdatedBy === 'registered' && from === 'syncConversations') {
+            // Avoid double query at start
+            return;
+        }
+
+        if (this.state.serverHistoryUpdatedBy === 'syncConversations' && from === 'registered') {
+            // Avoid double query at start
+            return;
+        }
+
+        this.setState({serverHistoryUpdatedBy: from})
 
         if (!this.state.contactsLoaded) {
             return;
@@ -4453,9 +4812,7 @@ class Sylk extends Component {
                     this.state.account.sendMessage(this.state.accountId, 'Private key imported on another device', 'text/pgp-public-key-imported');
                 }
 
-                if (this.state.account) {
-                    this.state.account.syncConversations();
-                }
+                this.requestSyncConversations();
 
             } else {
                 status = 'Private key is the same';
@@ -4470,6 +4827,41 @@ class Sylk extends Component {
             this.setState({privateKeyImportStatus: 'Incorrect password!',
                            privateKeyImportSuccess: false});
         }
+    }
+
+    resetStartedByPush(from) {
+        console.log('resetStartedByPush', from);
+        this.startedByPush = false;
+        if (this.state.lastSyncId) {
+            this.requestSyncConversations(this.state.lastSyncId);
+        }
+    }
+
+    requestSyncConversations(lastId) {
+        console.log('Request sync conversations from', lastId);
+        if (!this.state.account) {
+            return;
+        }
+
+        if (!this.state.keys) {
+            console.log('Wait for sync until we have keys')
+            return;
+        }
+
+        if (this.startedByPush) {
+            console.log('Wait for sync until incoming call ends')
+            return;
+        }
+
+        if (this.syncRequested) {
+            console.log('Sync already requested')
+            return;
+        }
+
+        this.syncRequested = true;
+        console.log('Request sync messages from server', lastId);
+
+        this.state.account.syncConversations(lastId);
     }
 
     async savePublicKey(uri, key) {
@@ -4953,9 +5345,7 @@ class Sylk extends Component {
                     console.log('Sync conversations since', item.msg_id, new Date(item.unix_timestamp * 1000));
                     this.setState({saveLastSyncId: item.msg_id});
                     setTimeout(() => {
-                        if (this.state.account) {
-                            this.state.account.syncConversations(item.msg_id);
-                        }
+                        this.requestSyncConversations(item.msg_id);
                     }, 100);
                 });
 
@@ -6557,7 +6947,7 @@ class Sylk extends Component {
         let content = decryptedBody || message.content;
 
         if (!this.state.selectedContact || this.state.selectedContact.uri != message.sender.uri) {
-            this.sendLocalAndroidNotification(message.sender.uri, content);
+            this.postAndroidMessageNotification(message.sender.uri, content);
         }
 
         this.saveIncomingMessage(message, decryptedBody);
@@ -7357,10 +7747,14 @@ class Sylk extends Component {
 
         if (uri in replicateContacts) {
             if (timestamp < replicateContacts[uri].timestamp) {
-                //purgeMessages.push(id);
-                //this.setState({purgeMessages: purgeMessages});
-                //console.log('Sync replicate contact skipped because is too old', timestamp, uri, 'with name', contact.name);
-               return;
+                purgeMessages.push(id);
+                this.setState({purgeMessages: purgeMessages});
+                //console.log('Sync replicate contact skipped because is too old', timestamp, uri);
+                return;
+            } else {
+                purgeMessages.push(replicateContacts[uri].msg_id);
+                this.setState({purgeMessages: purgeMessages});
+                //console.log('Sync replicate contact is newer', timestamp, 'than', replicateContacts[uri].timestamp, 'remove previous one', replicateContacts[uri].msg_id);
             }
             //
         } else {
@@ -7374,9 +7768,10 @@ class Sylk extends Component {
             replicateContacts[uri] = new_contact;
         }
 
-        console.log('Sync replicate contact', uri, 'with name', contact.name);
+        console.log('Sync replicate contact', uri);
 
         replicateContacts[uri].uri = uri;
+        replicateContacts[uri].msg_id = id;
         replicateContacts[uri].name = contact.name;
         replicateContacts[uri].email = contact.email;
         replicateContacts[uri].timestamp = timestamp;
@@ -7697,8 +8092,6 @@ class Sylk extends Component {
             myContacts[uri].lastCallId = callUUID;
             this.replicateContact(myContacts[uri])
             this.saveSylkContact(uri, myContacts[uri], 'updateHistoryEntry');
-        } else {
-            console.log('History entry does not exists for', callUUID);
         }
     }
 
@@ -7730,11 +8123,15 @@ class Sylk extends Component {
                                                                         }, ()=> this._detectOrientation())}>
                         <SafeAreaView style={[styles.root, extraStyles]}>
                             <IncomingCallModal
-                                call={this.state.incomingCall}
+                                contact={this.state.incomingContact}
+                                media={this.state.incomingMedia}
+                                CallUUID={this.state.incomingCallUUID}
                                 onAccept={this.callKeepAcceptCall}
                                 onReject={this.callKeepRejectCall}
-                                show={this.state.showIncomingModal}
-                                contacts = {this.state.contacts}
+                                onHide={this.dismissCall}
+                                orientation={this.state.orientation}
+                                isTablet={this.state.isTablet}
+                                playIncomingRingtone = {this.playIncomingRingtone}
                             />
 
                             <LogsModal
@@ -7748,7 +8145,7 @@ class Sylk extends Component {
 
                             <LoadingScreen
                             text={loadingLabel}
-                            show={(this.state.loading !== null && !this.state.accountVerified) || this.state.syncConversations || this.state.generatingKey || this.state.reconnectingCall}
+                            show={loadingLabel ? true : false}
                             orientation={this.state.orientation}
                             isTablet={this.state.isTablet}
                             />
@@ -8074,6 +8471,7 @@ class Sylk extends Component {
                     generateKeysFunc={this.generateKeys}
                     privateKey={this.state.privateKey}
                     keyDifferentOnServer={this.state.keyDifferentOnServer}
+                    keyStatus={this.state.keyStatus}
                     status={this.state.privateKeyImportStatus}
                     success={this.state.privateKeyImportSuccess}
                 />
@@ -8271,6 +8669,19 @@ class Sylk extends Component {
         return contacts;
     }
 
+    updateLoading(state, by='') {
+        if (this.state.loading === incomingCallLabel && by !== 'incoming_call' && this.state.incomingCallUUID) {
+            //console.log('Skip updateLoading because we wait for a call', this.state.loading);
+            return;
+        } else if (by === 'incoming_call' && this.state.loading && this.state.loading !== incomingCallLabel) {
+            //console.log('Skip updateLoading by incoming_call', this.state.loading);
+            return;
+        }
+
+        console.log('updateLoading', this.state.loading, '->', state, 'by', by);
+        this.setState({loading: state});
+    }
+
     conferenceByUri(urlParameters) {
         const targetUri = utils.normalizeUri(urlParameters.targetUri, config.defaultConferenceDomain);
         const idx = targetUri.indexOf('@');
@@ -8329,6 +8740,8 @@ class Sylk extends Component {
                     handleRegistration = {this.handleRegistration}
                     handleEnrollment = {this.handleEnrollment}
                     autoLogin={this.state.autoLogin}
+                    connected={this.state.connection && this.state.connection.state !== 'ready' ? false : true}
+                    showLogo={!this.state.keyboardVisible || this.state.isTablet}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
                     phoneNumber= {this.state.phoneNumber}
@@ -8346,8 +8759,6 @@ class Sylk extends Component {
 
     logout() {
         this.syncRequested = false;
-        this.serverPublicKey = null;
-        this.serverQueriedForPublicKey = false;
         this.callKeeper.setAvailable(false);
         this.sql_contacts_keys = [];
 
@@ -8382,6 +8793,7 @@ class Sylk extends Component {
         this.setState({account: null,
                        displayName: '',
                        email: '',
+                       keyStatus: {},
                        contactsLoaded: false,
                        registrationState: null,
                        registrationKeepalive: false,

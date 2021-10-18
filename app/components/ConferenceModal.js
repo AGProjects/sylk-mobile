@@ -50,7 +50,6 @@ class ConferenceModal extends Component {
         if (nextProps.targetUri) {
             this.handleConferenceTargetChange(uri);
         }
-
     }
 
     handleConferenceTargetChange(value) {
