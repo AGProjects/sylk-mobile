@@ -157,6 +157,26 @@
     background-color: rgba(#2E4C6F, 1);
 }
 
+.greenButtoniOS {
+    padding-top: 4px;
+    background-color: rgba(#6DAA63, .9);
+}
+
+.disabledGreenButtoniOS {
+    padding-top: 4px;
+    background-color: rgba(#395936, .9);
+}
+
+.blueButtoniOS {
+    padding-top: 4px;
+    background-color: rgba(#4572a6, 1);
+}
+
+.disabledBlueButtoniOS {
+    padding-top: 4px;
+    background-color: rgba(#2E4C6F, 1);
+}
+
 .footer {
     flex: 1;
     justify-content: flex-end;
@@ -173,7 +193,6 @@
 }
 
 .navigationContainer {
-    border: 0.5px;
 }
 
 .navigationButtonGroup {
@@ -184,7 +203,7 @@
 }
 
 .navigationButtonSelected {
-    background-color: rgba(#6DAA63, .9);
+    background-color: white;
 }
 
 

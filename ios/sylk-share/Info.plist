@@ -48,5 +48,7 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>
 	</dict>
+<key>UIViewControllerBasedStatusBarAppearance</key>
+<true/>
 </dict>
 </plist>

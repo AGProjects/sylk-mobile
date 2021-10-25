@@ -106,7 +106,9 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
         this._RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
         this._RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
-        this._RNCallKeep.addEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
+        if (Platform.OS === 'android') {
+            this._RNCallKeep.addEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
+        }
 
         this._RNCallKeep.setup(options);
         this.selfManaged = options.android.selfManaged && Platform.OS === 'android';
@@ -177,7 +179,7 @@ export default class CallManager extends events.EventEmitter {
         }
 
         utils.timestampedLog('Callkeep: will start call', callUUID, 'to', targetUri);
-        //this.callKeep.startCall(callUUID, targetUri, targetUri, 'sip', hasVideo);
+        this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
     }
 
     updateDisplay(callUUID, displayName, uri) {
@@ -193,7 +195,6 @@ export default class CallManager extends events.EventEmitter {
         utils.timestampedLog('Callkeep: active call', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
         this.backToForeground();
-
     }
 
     endCalls() {
@@ -263,12 +264,14 @@ export default class CallManager extends events.EventEmitter {
     }
 
     _rnAccept(data) {
+        utils.timestampedLog('---- Callkeep: accept callback', callUUID);
+
         if (!data.callUUID) {
-            return;
+            utils.timestampedLog('---- Callkeep: accept callback failed, no callUUID');
+           return;
         }
 
         let callUUID = data.callUUID.toLowerCase();
-        utils.timestampedLog('---- Callkeep: accept callback', callUUID);
 
         if (this._pushCalls.has(callUUID)) {
             this._pushCalls.delete(callUUID);
@@ -291,6 +294,10 @@ export default class CallManager extends events.EventEmitter {
         // this is called both when user touches Reject and when the call ends
         let callUUID = data.callUUID.toLowerCase();
         utils.timestampedLog('---- Callkeep: end callback', callUUID);
+        if (this._timeouts.has(callUUID)) {
+            clearTimeout(this._timeouts.get(callUUID));
+            this._timeouts.delete(callUUID);
+        }
 
         if (this._terminatedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: call', callUUID, 'already terminated');
@@ -618,6 +625,7 @@ export default class CallManager extends events.EventEmitter {
         if (this.unmounted()) {
             return;
         }
+
         if (this._incoming_conferences.has(callUUID)) {
             return;
         }
@@ -651,17 +659,22 @@ export default class CallManager extends events.EventEmitter {
         if (this.unmounted()) {
             return;
         }
+
         if (this._alertedCalls.has(callUUID)) {
             utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
             return;
         }
 
         let panelFrom = from;
+        let callerType = 'number';
+        let supportsDTMF = false;
         const username = from.split('@')[0];
         const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
         if (isPhoneNumber) {
             panelFrom = username;
+            supportsDTMF = true;
         } else {
+            callerType = 'email';
             panelFrom = from.indexOf('@guest.') > -1 ? displayName : from;
         }
 
@@ -670,10 +683,10 @@ export default class CallManager extends events.EventEmitter {
         const options = {supportsHolding: false,
                          supportsGrouping: false,
                          supportsUngrouping: false,
-                         supportsDTMF: false}
+                         supportsDTMF: supportsDTMF}
 
         utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
-        this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, 'sip', hasVideo, options);
+        this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, callerType, hasVideo, options);
     }
 
    _startedCall(data) {
@@ -715,6 +728,8 @@ export default class CallManager extends events.EventEmitter {
         this._RNCallKeep.removeEventListener('didResetProvider', this._boundRnProviderReset);
         this._RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
         this._RNCallKeep.removeEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
-        this._RNCallKeep.removeEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
+        if (Platform.OS === 'android') {
+            this._RNCallKeep.removeEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
+        }
     }
 }

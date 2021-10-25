@@ -924,6 +924,7 @@ class Call extends Component {
                             pinMessage = {this.props.pinMessage}
                             unpinMessage = {this.props.unpinMessage}
                             selectedContact = {this.state.selectedContact}
+                            selectedContacts = {this.state.selectedContacts}
                             callContact = {this.state.callContact}
                             inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                             finishInvite = {this.props.finishInvite}

@@ -107,7 +107,7 @@ class EditConferenceModal extends Component {
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
-                       <Dialog.Title style={styles.title}>Conference room - {this.props.room}</Dialog.Title>
+                       <Dialog.Title style={styles.title}>Conference {this.props.room}</Dialog.Title>
                        <TextInput
                             mode="flat"
                             name="display_name"

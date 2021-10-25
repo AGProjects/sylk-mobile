@@ -67,6 +67,8 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null, direction='incomin
     //console.log(sylkToRenderMessage, sylkMessage);
     direction = direction || sylkMessage.direction;
 
+    let encrypted = decryptedBody ? 2 : 0;
+
     /*
     export interface IMessage {
       _id: string | number
@@ -108,9 +110,11 @@ function sylkToRenderMessage(sylkMessage, decryptedBody=null, direction='incomin
         _id: g_id,
         text: content,
         image: image,
+        pinned: false,
         createdAt: sylkMessage.timestamp,
         received: direction === 'incoming',
         direction: direction,
+        encrypted: encrypted,
         system: system,
         user: direction === 'incoming' ? {_id: sylkMessage.sender.uri, name: sylkMessage.sender.toString()} : {}
         }

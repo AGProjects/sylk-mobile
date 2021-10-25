@@ -326,7 +326,7 @@ PODS:
     - ReactCommon/jscallinvoker (= 0.61.5)
   - ReactNativeIncallManager (3.2.3):
     - React
-  - RNCallKeep (4.0.1):
+  - RNCallKeep (4.3.1):
     - React
   - RNCAsyncStorage (1.8.0):
     - React
@@ -608,7 +608,7 @@ SPEC CHECKSUMS:
   React-RCTVibration: a49a1f42bf8f5acf1c3e297097517c6b3af377ad
   ReactCommon: 198c7c8d3591f975e5431bec1b0b3b581aa1c5dd
   ReactNativeIncallManager: 155aa4612c0daa6e8f0af761b7b660aa6b13e20f
-  RNCallKeep: eac6e6b4892f1b1c2890a1ce6d5f5451d7543c57
+  RNCallKeep: 3ac23a8074aa4b25901a437ee4c6fcbbd7509bfd
   RNCAsyncStorage: 5d83b49070d41fd72906a116c5e7bdac4ea3a814
   RNCPushNotificationIOS: 4d9ffd08f00ef6c1029ebbf4d72fc711eca3ff01
   RNDeviceInfo: 8a06046616c6b5c03787b04f265fa3b52b37c80b

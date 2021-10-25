@@ -1,7 +1,7 @@
 import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { View, Dimensions } from 'react-native';
+import { View, Dimensions, TouchableHighlight } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import { IconButton, Button, Text} from 'react-native-paper';
 
@@ -114,7 +114,14 @@ class LocalMedia extends Component {
                     </View>
                 :
                 <View style={buttonContainerClass}>
-                <IconButton style={styles.hangupbutton} key="hangupButton" onPress={this.hangupCall} icon="phone-hangup" size={buttonSize} />
+                          <TouchableHighlight style={styles.roundshape}>
+                        <IconButton
+                            size={buttonSize}
+                            style={styles.hangupbutton}
+                            icon="phone-hangup"
+                            onPress={this.hangupCall}
+                        />
+                        </TouchableHighlight>
                 </View>
                 }
                 <View style={styles.container}>

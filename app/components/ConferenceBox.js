@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {useState, Component, Fragment} from 'react';
-import { Clipboard, View, Platform, TouchableWithoutFeedback, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Keyboard, Switch  } from 'react-native';
+import { Clipboard, View, Platform, TouchableWithoutFeedback, TouchableOpacity, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Keyboard, Switch, Animated, PanResponder} from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -37,6 +37,10 @@ import styles from '../assets/styles/blink/_ConferenceBox.scss';
 import RNBackgroundDownloader from 'react-native-background-downloader';
 import md5 from "react-native-md5";
 import FileViewer from 'react-native-file-viewer';
+import _ from 'lodash'; import { produce } from "immer"
+import cloneDeep from 'lodash/cloneDeep';
+import moment from 'moment';
+
 
 const DEBUG = debug('blinkrtc:ConferenceBox');
 debug.enable('*');
@@ -75,7 +79,7 @@ class ConferenceBox extends Component {
 
         this.mediaLost = new Map();
 
-        this.sampleInterval = 5;
+        this.sampleInterval = 1;
 
         this.typingTimer = null;
 
@@ -85,9 +89,13 @@ class ConferenceBox extends Component {
             renderMessages = this.props.messages[this.props.remoteUri];
         }
 
+        let duration = 0;
+
         if (this.props.call) {
             let giftedChatMessage;
             let direction;
+            duration = Math.floor((new Date() - this.props.callState.startTime) / 1000);
+
             this.props.call.messages.forEach((sylkMessage) => {
                 if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
                     return;
@@ -117,6 +125,19 @@ class ConferenceBox extends Component {
 
         const videoEnabled = this.props.call && this.props.call.getLocalStreams()[0].getVideoTracks().length > 0;
 
+        let bottomHeight = Dimensions.get('window').height * 50/100;
+        //console.log('bottomHeight', bottomHeight);
+
+        let participants = [];
+        if (props.call) {
+            props.call.participants.forEach((p) => {
+                if (!p.timestamp) {
+                    p.timestamp = Date.now();
+                }
+            });
+            participants = props.call.participants.slice();
+        }
+
         this.state = {
             callOverlayVisible: true,
             remoteUri: this.props.remoteUri,
@@ -124,6 +145,7 @@ class ConferenceBox extends Component {
             accountId: this.props.call ? this.props.call.account.id : null,
             renderMessages: renderMessages,
             ended: false,
+            duration: duration,
             isTyping: false,
             keyboardVisible: false,
             videoEnabled: videoEnabled,
@@ -131,9 +153,10 @@ class ConferenceBox extends Component {
             videoMuted: !this.props.inFocus,
             videoMutedbyUser: false,
             messages: this.props.messages,
-            participants: props.call.participants.slice(),
+            participants: participants,
             showInviteModal: false,
             showDrawer: false,
+            keyboardHeight: 0,
             showFiles: false,
             shareOverlayVisible: false,
             showSpeakerSelection: false,
@@ -150,8 +173,54 @@ class ConferenceBox extends Component {
             audioView: !videoEnabled,
             isLandscape: this.props.isLandscape,
             selectedContacts: this.props.selectedContacts,
-            activeDownloads: {}
+            activeDownloads: {},
+            offset          : 0,
+            topHeight       : Dimensions.get('window').height - bottomHeight,
+            bottomHeight    : duration > 10 && this.props.conferenceSliderPosition ? this.props.conferenceSliderPosition : bottomHeight, // min height for bottom pane header,
+            deviceHeight    : Dimensions.get('window').height,
+            isDividerClicked: false,
+            pan             : new Animated.ValueXY()
         };
+
+
+        this._panResponder = PanResponder.create({
+            onMoveShouldSetResponderCapture: () => true,
+            onMoveShouldSetPanResponderCapture: () => true,
+
+            // Initially, set the Y position offset when touch start
+            onPanResponderGrant: (e, gestureState) => {
+                this.setState({
+                    offset: e.nativeEvent.pageY,
+                    isDividerClicked: true
+                })
+            },
+
+            // When we drag the divider, set the bottomHeight (component state) again.
+            onPanResponderMove: (e, gestureState) => {
+                let b = gestureState.moveY > (this.state.deviceHeight - 40) ? 40 : this.state.deviceHeight - gestureState.moveY - 40;
+
+                var d = this.state.bottomHeight - b;
+                if (d < 0) {
+                    d = -d;
+                }
+
+                if (d >= 40) {
+                    this.setState({
+                        bottomHeight    : b,
+                        offset: e.nativeEvent.pageY
+                    })
+                    this.props.saveSliderFunc(b);
+                }
+            },
+
+            onPanResponderRelease: (e, gestureState) => {
+                // Do something here for the touch end event
+                this.setState({
+                    offset: e.nativeEvent.pageY,
+                    isDividerClicked: false
+                })
+            }
+        });
 
         const friendlyName = this.state.remoteUri.split('@')[0];
         //if (window.location.origin.startsWith('file://')) {
@@ -193,9 +262,14 @@ class ConferenceBox extends Component {
         this.invitedParticipants = new Map();
         // TODO preserve this list between route changes
 
+        console.log('Initial call duration', duration);
+
         props.initialParticipants.forEach((uri) => {
-            this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
-            this.lookupContact(uri);
+            const existing_participants = participants.filter(p => p.identity._uri === uri);
+            if (existing_participants.length === 0) {
+                this.invitedParticipants.set(uri, {timestamp: Date.now(), status: duration < 10 ? 'Invited' : 'No answer'})
+                this.lookupContact(uri);
+            }
         });
 
         this.participantsTimer = setInterval(() => {
@@ -205,6 +279,10 @@ class ConferenceBox extends Component {
         setTimeout(() => {
             this.listSharedFiles();
         }, 1000);
+    }
+
+    get chatViewHeight() {
+        return Dimensions.get('window').height - this.state.keyboardHeight - 83;
     }
 
     messageExists(giftedChatMessage, sylkMessage) {
@@ -229,6 +307,10 @@ class ConferenceBox extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.hasOwnProperty('keyboardVisible')) {
+            this.setState({keyboardVisible: nextProps.keyboardVisible});
         }
 
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
@@ -265,6 +347,7 @@ class ConferenceBox extends Component {
 
                 let giftedChatMessage;
                 let existingMessages;
+                let previousMessages;
 
                 nextProps.call.messages.forEach((sylkMessage) => {
                     if (sylkMessage.type === 'status') {
@@ -285,7 +368,7 @@ class ConferenceBox extends Component {
                         return;
                     }
 
-                    direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
+                    let direction = sylkMessage.state === 'received' ? 'incoming': 'outgoing';
 
                     if (direction === 'incoming' && sylkMessage.sender.uri === this.props.account.id) {
                         direction = 'outgoing';
@@ -298,14 +381,24 @@ class ConferenceBox extends Component {
             }
         }
 
+        if (nextProps.bottomHeight) {
+            this.setState({
+                       topHeight       : nextProps.keyboardVisible === false ? nextProps.topHeight : 0, // min height for top pane heade
+                       bottomHeight    : nextProps.bottomHeight, // min height for bottom pane header,
+                       });
+        }
+
         this.setState({terminated: nextProps.terminated,
                        remoteUri: nextProps.remoteUri,
                        renderMessages: GiftedChat.append(this.state.renderMessages, renderMessages),
                        isLandscape: nextProps.isLandscape,
                        messages: nextProps.messages,
+                       offset: nextProps.offset,
+                       isDividerClicked: nextProps.isDividerClicked,
                        activeDownloads: nextProps.activeDownloads,
                        accountId: !this.state.accountId && nextProps.call ? this.props.call.account.id : this.state.accountId,
                        selectedContacts: nextProps.selectedContacts});
+
     }
 
     getInfo() {
@@ -383,11 +476,14 @@ class ConferenceBox extends Component {
         let newRenderMessages = [];
         renderMessages.forEach((msg) => {
              if (msg._id === metadata.msg_id) {
-                 console.log('Found message', msg.metadata);
+                 //console.log('Found message', msg.metadata);
                  if (msg.metadata.progress === null) {
                      msg.metadata.progress = 0;
+                     msg.metadata.failed = false;
+                     //console.log('Start metadata', msg.metadata);
                      this.downloadFile(metadata);
                  } else {
+                     //console.log('Stop metadata', msg.metadata);
                      this.stopDownloadFile(metadata);
                      msg.metadata.progress = null;
                  }
@@ -401,23 +497,18 @@ class ConferenceBox extends Component {
       <CustomChatActions {...props} onSend={this.onSendFromUser} onSendWithFile={this.uploadFile}/>
     )
 
-    renderMessageText(props) {
+    renderCustomView(props) {
         const {currentMessage} = props;
         const { text: currText } = currentMessage;
+
+        if (!currentMessage.metadata) {
+            return null;
+        }
 
         let status = '';
         let label = 'Uploading...';
 
-        if (!currentMessage.metadata) {
-            return (
-                 <MessageText {...props}
-                      currentMessage={{
-                        ...currentMessage
-                      }}/>
-            );
-        }
-
-        let showSwitch = currentMessage.download || (currentMessage.url && (!currentMessage.metadata.progress || !currentMessage.metadata.progress !== 100) && !currentMessage.local_url && !utils.isImage(currentMessage.metadata.name)) ;
+        let showSwitch = currentMessage.download || (currentMessage.url && (currentMessage.metadata.progress || !currentMessage.metadata.progress !== 100) && !currentMessage.local_url && !utils.isImage(currentMessage.metadata.name)) ;
         let switchOn = (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) ? true : false;
 
         if (currentMessage.direction === 'incoming') {
@@ -432,6 +523,10 @@ class ConferenceBox extends Component {
                 }
             }
         } else {
+            if (!currentMessage.local_url && currentMessage.metadata.progress === null) {
+                switchOn = false;
+            }
+
             if (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) {
                 status = currentMessage.label + ' - ' + currentMessage.metadata.progress + '%';
             } else {
@@ -440,33 +535,32 @@ class ConferenceBox extends Component {
         }
 
         if (currentMessage.url && !currentMessage.local_url) {
-            if (currentMessage.url.indexOf('pdf') > -1) {
-                //console.log('--- Render message', currentMessage.metadata.name, currentMessage.metadata.progress);
-            }
+            //console.log('--- Render message', currentMessage.metadata.name, currentMessage.metadata.progress);
         }
 
         if (!utils.isImage(currentMessage.metadata.name) && !currentMessage.local_url) {
-            console.log('Show switch', currentMessage._id, currentMessage.metadata.name, switchOn);
+            //console.log('Show switch', currentMessage._id, currentMessage.metadata.name, switchOn, currentMessage.metadata.progress);
         }
         //console.log('text =', currentMessage.text, 'label =', label, 'status =', status);
 
-        return (
-            <View>
-                {showSwitch ?
-                <View style={styles.switch}>
+        let progress = 'Download';
+
+        if (currentMessage.metadata.progress !== null) {
+            progress = currentMessage.metadata.progress + ' %';
+        }
+        if (showSwitch) {
+            return (
+                <View style={styles.downloadContainer}>
+                    <Text style={styles.uploadProgress}>{progress}</Text>
+                    <View style={styles.switch}>
                     <Switch value={switchOn} onValueChange={(value) => this.toggleDownload(currentMessage.metadata)}/>
+                    </View>
                 </View>
-                : null
-                }
+               );
 
-             <MessageText {...props}
-                  currentMessage={{
-                    ...currentMessage,
-                    text: currText.replace(label, status).trim(),
-                  }}/>
-             </View>
-
-        );
+        } else {
+            return null;
+        }
     };
 
     renderMessageBubble (props) {
@@ -475,6 +569,7 @@ class ConferenceBox extends Component {
 
         if (props.currentMessage.failed) {
             rightColor = 'red';
+            leftColor = 'red';
         } else {
             if (props.currentMessage.pinned) {
                 rightColor = '#2ecc71';
@@ -555,7 +650,7 @@ class ConferenceBox extends Component {
                 _id: metadata.msg_id,
                 key: metadata.msg_id,
                 createdAt: new Date(),
-                text: 'Uploading...',
+                text: label,
                 metadata: metadata,
                 received: false,
                 sent: false,
@@ -593,23 +688,33 @@ class ConferenceBox extends Component {
     }
 
     updateFileMessage(id, progress, failed=false) {
-        //console.log('Update file progress', id, progress);
+    //make a change togglePlay(msgidx) {
+
+        console.log('Update file progress', id, progress);
         let renderMessages = this.state.renderMessages;
         let newRenderMessages = [];
+        let nextState;
         renderMessages.forEach((msg) => {
              if (msg._id === id) {
-                //console.log('Update file', id, msg.metadata.name, progress, failed);
+                console.log('Update file', id, msg.metadata.name, progress, failed);
                  if (failed) {
                      msg.failed = true;
-                     msg.sent = msg.direction === 'outgoing' ? true : false;
+                     msg.sent = true;
                      msg.pending = false;
+                     msg.received = false;
                      msg.metadata.progress = null;
                      console.log('Message failed');
+                     this.postChatSystemMessage('Download failed', false);
                      this.updateConferenceMessage(this.state.remoteUri, msg);
                      return;
                  }
 
                  msg.metadata.progress = progress;
+
+                 if (progress !== null) {
+                     msg.failed = false;
+                     msg.received = null;
+                 }
 
                  if (progress === 100 && (!msg.sent || !msg.received)) {
                      msg.local_url = msg.metadata.local_url;
@@ -628,13 +733,32 @@ class ConferenceBox extends Component {
                      }
 
                      console.log(msg.metadata.name, msg.direction === 'outgoing' ? 'Upload completed' : 'Download completed');
+                     //console.log('Update metadata', msg.metadata);
+
                      this.updateConferenceMessage(this.state.remoteUri, msg);
                  }
+                 newRenderMessages.push(cloneDeep(msg));
+             } else {
+                 newRenderMessages.push(msg);
              }
-             newRenderMessages.push(msg);
         });
 
-        //this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
+        this.setState({ renderMessages: newRenderMessages});
+    }
+
+    purgeSharedFiles() {
+        this.state.renderMessages.forEach((msg) => {
+            if (msg.url) {
+                if (!msg.image && !msg.local_url) {
+                    const parts = msg.url.split('/');
+                    const filename = parts[parts.length - 1];
+                    let existingFiles = this.state.sharedFiles.filter(file => md5.hex_md5(this.state.remoteUri + '_' + filename) === msg._id);
+                    if (existingFiles.length === 0) {
+                        this.props.deleteConferenceMessage(this.state.remoteUri, msg);
+                    }
+                }
+            }
+        });
     }
 
     async listSharedFiles() {
@@ -681,7 +805,7 @@ class ConferenceBox extends Component {
                 text = 'Image of ';
             }
 
-            text = text + " (" + this.tsize(metadata.size); + ")";
+            text = text + " (" + this.tsize(metadata.size) + ")";
             metadata.local_url = this.filePath(metadata.name);
 
             RNFS.exists(metadata.local_url).then(res => {
@@ -703,7 +827,7 @@ class ConferenceBox extends Component {
                           received: false,
                           failed: false,
                           sent: false,
-                          user: direction === 'incoming' ? {_id: metadata.uploader.uri, name: metadata.uploader.displayName} : {}
+                          user: direction === 'incoming' ? {_id: metadata.uploader.uri, name: metadata.uploader.displayName || metadata.uploader.uri} : {}
                         };
 
                     this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
@@ -716,7 +840,7 @@ class ConferenceBox extends Component {
                           _id: metadata.msg_id,
                           key: metadata.msg_id,
                           createdAt: new Date(),
-                          text: direction === 'incoming' ? 'Downloading...' : 'Uploading...',
+                          text: text,
                           url: url,
                           metadata: metadata,
                           label: label,
@@ -724,7 +848,7 @@ class ConferenceBox extends Component {
                           received: false,
                           sent: false,
                           direction: direction,
-                          user: direction === 'incoming' ? {_id: metadata.uploader.uri, name: metadata.uploader.displayName} : {}
+                          user: direction === 'incoming' ? {_id: metadata.uploader.uri, name: metadata.uploader.displayName || metadata.uploader.uri} : {}
                         };
 
                     this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
@@ -738,6 +862,10 @@ class ConferenceBox extends Component {
 
             i = i + 1;
         });
+
+        setTimeout(() => {
+            this.purgeSharedFiles();
+        }, 1000);
     }
 
     async stopDownloadFile(metadata) {
@@ -758,7 +886,6 @@ class ConferenceBox extends Component {
     }
 
     async downloadFile(metadata) {
-        console.log('Start download:', metadata.url);
         let lostTasks = await RNBackgroundDownloader.checkForExistingDownloads();
 
         /*
@@ -789,8 +916,8 @@ class ConferenceBox extends Component {
                 console.log(task.url, 'download error:', error);
             });
         } else {
+            console.log('Start new download:', metadata.url);
             this.updateFileMessage(metadata.msg_id, 0);
-
             this.downloadRequests[metadata.msg_id] = RNBackgroundDownloader.download({
                 id: metadata.msg_id,
                 url: metadata.url,
@@ -807,6 +934,7 @@ class ConferenceBox extends Component {
             }).error((error) => {
                 console.log(metadata.name, 'download error:', error);
                 this.updateFileMessage(metadata.msg_id, 0, error);
+                delete this.downloadRequests[metadata.msg_id];
             });
         }
     }
@@ -820,7 +948,7 @@ class ConferenceBox extends Component {
             }
             options.push('Cancel');
 
-            console.log('currentMessage', currentMessage);
+            //console.log('currentMessage', currentMessage);
             let l = options.length - 1;
 
             context.actionSheet().showActionSheetWithOptions({options, l}, (buttonIndex) => {
@@ -840,6 +968,13 @@ class ConferenceBox extends Component {
         }
     };
 
+    removeInvitedParticipant(uri) {
+        if (this.invitedParticipants.has(uri) > 0) {
+            this.invitedParticipants.delete(uri);
+            this.forceUpdate();
+        }
+    }
+
     updateParticipantsStatus() {
         let participants_uris = [];
 
@@ -855,6 +990,7 @@ class ConferenceBox extends Component {
 
         let p;
         let interval;
+
         invitedParties.forEach((_uri) => {
             if (participants_uris.indexOf(_uri) > 0) {
                 this.invitedParticipants.delete(_uri);
@@ -864,22 +1000,27 @@ class ConferenceBox extends Component {
             if (!p) {
                 return;
             }
-            interval = Math.floor((Date.now() - p.timestamp) / 1000);
 
-            if (interval >= 60) {
-                this.invitedParticipants.delete(_uri);
-                this.forceUpdate();
+            interval = Math.floor((Date.now() - p.timestamp) / 1000);
+            if (p.status == 'No answer' && interval >= 15) {
+                //this.invitedParticipants.delete(_uri);
+                //console.log('Update status', _uri, p.status);
+                p.status = 'reinvite';
+                interval = 0;
             }
 
             if (p.status.indexOf('Invited') > -1 && interval > 5) {
+                //console.log('Update status', _uri, p.status);
                 p.status = 'Wait .';
             }
 
             if (p.status.indexOf('.') > -1) {
-                if (interval > 45) {
+                if (interval > 10) {
+                    //console.log('Update status', _uri, p.status);
                     p.status = 'No answer';
                     this.postChatSystemMessage(_uri + ' did not answer', false);
                 } else {
+                    //console.log('Update status', _uri, p.status);
                     p.status = p.status + '.';
                 }
             }
@@ -983,12 +1124,12 @@ class ConferenceBox extends Component {
         this.keyboardDidHideListener.remove();
     }
 
-    _keyboardDidShow() {
-       this.setState({keyboardVisible: true});
+    _keyboardDidShow(e) {
+       this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
     }
 
     _keyboardDidHide() {
-        this.setState({keyboardVisible: false});
+        this.setState({keyboardVisible: false, keyboardHeight: 0});
     }
 
     findObjectByKey(array, key, value) {
@@ -1305,6 +1446,7 @@ class ConferenceBox extends Component {
         // this.refs.audioPlayerParticipantJoined.play();
         p.on('stateChanged', this.onParticipantStateChanged);
         p.attach();
+        p.timestamp = Date.now();
         this.setState({
             participants: this.state.participants.concat([p])
         });
@@ -1498,7 +1640,7 @@ class ConferenceBox extends Component {
      }
 
     toggleChat(event) {
-        event.preventDefault();
+        //event.preventDefault();
         if (!this.state.videoEnabled) {
             if (this.state.chatView && !this.state.audioView) {
                 this.setState({audioView: !this.state.audioView});
@@ -1508,7 +1650,7 @@ class ConferenceBox extends Component {
     }
 
     toggleAudioParticipants(event) {
-        event.preventDefault();
+        //event.preventDefault();
         if (this.state.audioView && !this.state.chatView) {
             this.setState({chatView: !this.state.chatView});
         }
@@ -1560,7 +1702,7 @@ class ConferenceBox extends Component {
     }
 
     hangup(event) {
-        event.preventDefault();
+        //event.preventDefault();
         for (let participant of this.state.participants) {
             participant.detach();
         }
@@ -1612,7 +1754,11 @@ class ConferenceBox extends Component {
         clearTimeout(this.overlayTimer);
     }
 
-    inviteParticipants(uris) {
+    inviteParticipants(uris=[]) {
+        if (uris.length === 0) {
+            return;
+        }
+        //console.log('inviteParticipants', uris);
         this.props.call.inviteParticipants(uris);
         uris.forEach((uri) => {
             uri = uri.replace(/ /g, '');
@@ -1712,7 +1858,25 @@ class ConferenceBox extends Component {
 
         //console.log('----speakerSelectionParticipants', speakerSelectionParticipants);
         const floatingButtons = [];
-        if (!this.state.showDrawer && speakerSelectionParticipants.length > 2 && this.state.videoEnabled) {
+
+     if (this.state.videoEnabled && this.state.isLandscape) {
+       floatingButtons.push(
+          <View style={styles.hangupButtonVideoContainerLandscape}>
+          <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                style={[buttonClass, styles.hangupButton]}
+                title="Leave conference"
+                onPress={this.hangup}
+                icon="phone-hangup"
+                key="hangupButton"
+            />
+            </TouchableHighlight>
+          </View>
+       );
+       }
+
+        if (!this.state.chatView && !this.state.showDrawer && speakerSelectionParticipants.length > 2 && this.state.videoEnabled) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1729,10 +1893,10 @@ class ConferenceBox extends Component {
             );
         }
 
-        if (!this.state.isTablet && !this.state.isLandscape) {
+        if (this.state.videoEnabled) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
-                  <TouchableHighlight style={styles.roundshape}>
+                <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={this.state.videoEnabled ? 25 : 25}
                     style={buttonClass}
@@ -1746,14 +1910,32 @@ class ConferenceBox extends Component {
             );
        }
 
+     if (!this.state.videoEnabled ) {
+       floatingButtons.push(
+          <View style={styles.hangupButtonAudioContainer}>
+          <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                style={[buttonClass, styles.hangupButton]}
+                title="Leave conference"
+                onPress={this.hangup}
+                icon="phone-hangup"
+                key="hangupButton"
+            />
+            </TouchableHighlight>
+          </View>
+       );
+       }
+
        if (!this.state.videoEnabled && !this.state.isLandscape) {
+            /*
                floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={this.state.videoEnabled ? 25 : 25}
                     style={buttonClass}
-                    title="Chat"
+                    title="Audio"
                     onPress={this.toggleAudioParticipants}
                     icon="account-multiple"
                     key="toggleAudio"
@@ -1761,9 +1943,10 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
+            */
         }
 
-       if (this.state.videoEnabled) {
+       if (this.state.videoEnabled && !this.state.chatView) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1773,7 +1956,7 @@ class ConferenceBox extends Component {
                     title="Mute/unmute video"
                     onPress={this.muteVideo}
                     icon={muteVideoButtonIcons}
-                    key="muteButton"
+                    key="muteVideoButton"
                 />
                 </TouchableHighlight>
               </View>
@@ -1795,7 +1978,7 @@ class ConferenceBox extends Component {
               </View>
         );
 
-        if (this.state.videoEnabled) {
+        if (this.state.videoEnabled && !this.state.chatView) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -1815,7 +1998,7 @@ class ConferenceBox extends Component {
         if (!this.state.reconnectingCall) {
             floatingButtons.push(
               <View style={styles.buttonContainer}>
-                  <TouchableHighlight style={styles.roundshape}>
+                <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={this.state.videoEnabled ? 25 : 25}
                     style={buttonClass}
@@ -1828,21 +2011,24 @@ class ConferenceBox extends Component {
             )
         }
 
-        floatingButtons.push(
-          <View style={styles.buttonContainer}>
-              <TouchableHighlight style={styles.roundshape}>
+     if (this.state.videoEnabled && !this.state.isLandscape) {
+       floatingButtons.push(
+          <View style={styles.hangupButtonVideoContainer}>
+          <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
-                style={buttonClass}
-                title="Share"
-                onPress={this.props.inviteToConferenceFunc}
-                icon="account-plus"
-                key="invite"
+                style={[buttonClass, styles.hangupButton]}
+                title="Leave conference"
+                onPress={this.hangup}
+                icon="phone-hangup"
+                key="hangupButton"
             />
             </TouchableHighlight>
           </View>
-        );
+       );
+       }
 
+        /*
         floatingButtons.push(
           <View style={styles.buttonContainer}>
               <TouchableHighlight style={styles.roundshape}>
@@ -1857,13 +2043,32 @@ class ConferenceBox extends Component {
             </TouchableHighlight>
           </View>
         );
+        */
 
-        if (this.props.isLandscape) {
+        /*
+        floatingButtons.push(
+          <View style={styles.buttonContainer}>
+              <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                style={buttonClass}
+                title="Share"
+                onPress={this.props.inviteToConferenceFunc}
+                icon="account-plus"
+                key="invite"
+            />
+            </TouchableHighlight>
+          </View>
+        );
+        */
+
+        if (this.props.isLandscape && !this.state.chatView && !this.props.audioOnly) {
             buttons.additional = floatingButtons;
         } else {
             buttons.additional = [];
         }
 
+        /*
         buttons.additional.push(
           <View style={styles.buttonContainer}>
           <TouchableHighlight style={styles.roundshape}>
@@ -1876,45 +2081,30 @@ class ConferenceBox extends Component {
             </TouchableHighlight>
           </View>
         );
+        */
 
-        buttons.additional.push(
+        /*
+        floatingButtons.push(
           <View style={styles.buttonContainer}>
-          <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
-                style={[buttonClass, styles.hangupButton]}
-                title="Leave conference"
-                onPress={this.hangup}
-                icon="phone-hangup"
-                key="hangupButton"
+                title="spacer"
+                key="spacer"
             />
-            </TouchableHighlight>
           </View>
         );
+        */
 
         const audioParticipants = [];
         let _contact;
         let _identity;
         let participants_uris = [];
 
+        let sessionButtons = floatingButtons;
+
         if (this.props.audioOnly) {
-            _contact = this.foundContacts.get(this.props.call.localIdentity._uri);
-            _identity = {uri: this.props.call.localIdentity._uri,
-                         displayName: _contact.displayName,
-                         photo: _contact.photo
-                        };
-
-            participants_uris.push(this.props.call.localIdentity._uri);
-
-            audioParticipants.push(
-                <ConferenceAudioParticipant
-                    key="myself"
-                    participant={null}
-                    identity={_identity}
-                    isLocal={true}
-                    supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
-                />
-            );
+            sessionButtons = [];
+            buttons.additional = [];
 
             this.state.participants.forEach((p) => {
                 _contact = this.foundContacts.get(p.identity._uri);
@@ -1925,17 +2115,16 @@ class ConferenceBox extends Component {
 
                 participants_uris.push(p.identity._uri);
 
-                let status;
-                if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-                    status = '';
-                } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-                    if (this.packetLoss.get(p.id) === 100) {
-                        status = 'No media';
+                let status = '';
+                let duration = 0;
+
+                if (p.timestamp) {
+                    duration = Math.floor(new Date() - p.timestamp) / 1000;
+                    if (duration > 3600) {
+                        status = moment.duration(new Date() - p.timestamp).format('hh:mm:ss', {trim: false});
                     } else {
-                        status = this.packetLoss.get(p.id) + '% loss';
+                        status = moment.duration(new Date() - p.timestamp).format('mm:ss', {trim: false});
                     }
-                } else if (this.latency.has(p.id) && this.latency.get(p.id) > 150) {
-                    status = this.latency.get(p.id) + ' ms';
                 }
 
                 audioParticipants.push(
@@ -1943,6 +2132,9 @@ class ConferenceBox extends Component {
                         key={p.id}
                         participant={p}
                         identity={_identity}
+                        latency={this.latency.has(p.id) ? this.latency.get(p.id) : null}
+                        loss={this.packetLoss.has(p.id) && duration > 10 ? this.packetLoss.get(p.id) : 0}
+                        timestamp={p.timestamp}
                         isLocal={false}
                         status={status}
                         supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
@@ -1970,12 +2162,46 @@ class ConferenceBox extends Component {
                     alreadyInvitedParticipants.push(_uri)
                 }
 
+                //console.log('p.status', p.status);
+
+                let extraButtons = [];
+                let invite_uris = [];
+                invite_uris.push(_uri);
+
+                if (p.status === 'reinvite') {
+                    extraButtons.push(
+                      <View style={styles.buttonContainer}>
+                        <TouchableHighlight style={styles.roundshape}>
+                        <IconButton
+                            size={25}
+                            style={buttonClass}
+                            icon={'delete'}
+                            onPress={() => this.removeInvitedParticipant(_uri)}
+                        />
+                        </TouchableHighlight>
+                      </View>
+                    );
+                    extraButtons.push(
+                      <View style={styles.buttonContainer}>
+                        <TouchableHighlight style={styles.roundshape}>
+                        <IconButton
+                            size={25}
+                            style={buttonClass}
+                            icon={'phone'}
+                            onPress={() => this.inviteParticipants(invite_uris)}
+                        />
+                        </TouchableHighlight>
+                      </View>
+                    );
+                }
+
                 audioParticipants.push(
                     <ConferenceAudioParticipant
                         key={_uri}
                         identity={_identity}
                         isLocal={false}
                         status={p.status}
+                        extraButtons={extraButtons}
                         supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                     />
                 );
@@ -1983,27 +2209,106 @@ class ConferenceBox extends Component {
 
             const audioContainer = this.state.isLandscape ? styles.audioContainerLandscape : styles.audioContainerPortrait;
 
-/*
-            //console.log('-----------------------------------');
-            //console.log(Object.keys(this.switchRefs));
+            audioParticipants.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
+            _contact = this.foundContacts.get(this.props.call.localIdentity._uri);
+            _identity = {uri: this.props.call.localIdentity._uri,
+                         displayName: _contact.displayName,
+                         photo: _contact.photo
+                        };
 
-            let i = 0;
-        renderMessages.forEach((m) => {
-            i = i + 1;
-            if (m.metadata && m.metadata.name) {
-                console.log('----', i, m._id, m.metadata.name, m.local_url);
-            }
-//                console.log('Render message local_url', m.local_url);
-                //console.log('Render message image', m.image);
-//                console.log('Render message text', m.text);
-        });
-*/
-            return (
+            participants_uris.push(this.props.call.localIdentity._uri);
+
+            audioParticipants.splice(0, 0,
+                <ConferenceAudioParticipant
+                    key="myself"
+                    participant={null}
+                    identity={_identity}
+                    isLocal={true}
+                    timestamp={Date.now()}
+                    extraButtons={floatingButtons}
+                    supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
+                />
+            );
+
+            if (this.state.isLandscape) {
+                return (
+                    <View style={conferenceContainer}>
+                        <View style={styles.buttonsContainer}>
+                            {sessionButtons}
+                        </View>
+                        <ConferenceHeader
+                            show={true}
+                            call={this.state.call}
+                            callContact={this.props.callContact}
+                            isTablet={this.props.isTablet}
+                            isLandscape={this.state.isLandscape}
+                            remoteUri={this.state.remoteUri}
+                            participants={this.state.participants.length}
+                            reconnectingCall={this.state.reconnectingCall}
+                            buttons={buttons}
+                            audioOnly={this.props.audioOnly}
+                            terminated={this.state.terminated}
+                            info={this.getInfo()}
+                            goBackFunc={this.props.goBackFunc}
+                            toggleInviteModal={this.toggleInviteModal}
+                            inviteToConferenceFunc={this.props.inviteToConferenceFunc}
+                            callState={this.props.callState}
+                            toggleAudioParticipantsFunc={this.toggleAudioParticipants}
+                            toggleChatFunc={this.toggleChat}
+                            hangUpFunc={this.hangup}
+                            audioView={this.state.audioView}
+                            chatView={this.state.chatView}
+                        />
+
+                        <View style={audioContainer}>
+                            <ConferenceAudioParticipantList >
+                                {audioParticipants}
+                            </ConferenceAudioParticipantList>
+                        </View>
+
+                        <View style={chatContainer}>
+                            <GiftedChat
+                              messages={renderMessages}
+                              isTyping={this.state.isTyping}
+                              renderActions={this.renderCustomActions}
+                              onLongPress={this.onLongMessagePress}
+                              renderCustomView={this.renderCustomView}
+                              onSend={this.onSendMessage}
+                              renderBubble={this.renderMessageBubble}
+                              shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
+                              alwaysShowSend={true}
+                              scrollToBottom
+                              lockStyle={styles.lock}
+                              inverted={true}
+                              timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                              infiniteScroll
+                            />
+                        </View>
+                    </View>
+                );
+
+            } else {
+
+                return (
                 <View style={styles.container} >
+                    <InviteParticipantsModal
+                        show={this.state.showInviteModal && !this.state.reconnectingCall}
+                        inviteParticipants={this.inviteParticipants}
+                        previousParticipants={this.state.previousParticipants}
+                        alreadyInvitedParticipants={alreadyInvitedParticipants}
+                        currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
+                        close={this.toggleInviteModal}
+                        room={this.state.remoteUri}
+                        defaultDomain = {this.props.defaultDomain}
+                        accountId = {this.props.call.localIdentity._uri}
+                        notificationCenter = {this.props.notificationCenter}
+                        lookupContacts = {this.props.lookupContacts}
+                    />
+
                     <View style={conferenceContainer}>
                         {!this.state.keyboardVisible && !this.props.isLandscape ?
                         <View style={styles.buttonsContainer}>
-                            {floatingButtons}
+                            {sessionButtons}
                         </View>
                         : null}
                         <ConferenceHeader
@@ -2023,86 +2328,78 @@ class ConferenceBox extends Component {
                             toggleInviteModal={this.toggleInviteModal}
                             inviteToConferenceFunc={this.props.inviteToConferenceFunc}
                             callState={this.props.callState}
+                            toggleAudioParticipantsFunc={this.toggleAudioParticipants}
+                            toggleChatFunc={this.toggleChat}
+                            hangUpFunc={this.hangup}
+                            audioView={this.state.audioView}
+                            chatView={this.state.chatView}
                         />
 
-                        {this.state.isLandscape || (!this.state.keyboardVisible && this.state.audioView) ?
-                        <View style={audioContainer}>
+                        {!this.state.keyboardVisible ?
+
+                        <Animated.View
+                            style       = {[{minHeight: this.state.keyboardVisible ? 0 : 170, flex: 1}, {height: this.state.keyboardVisible ? 0 : this.state.topHeight}]}
+                        >
+
                             <ConferenceAudioParticipantList >
                                 {audioParticipants}
                             </ConferenceAudioParticipantList>
-                        </View>
+                        </Animated.View>
                         : null}
 
-                        {this.state.chatView || this.state.isLandscape ?
-                        <View style={chatContainer}>
+                        {/* Divider */}
+                        {!this.state.keyboardVisible ?
+                        <View
+                            style={[styles.slider]}
+                            {...this._panResponder.panHandlers}
+                        >
+                            <View style={[styles.dotsContainer, this.state.isDividerClicked ? {backgroundColor: 'rgba(100, 100, 100, 1)'} : {backgroundColor: 'rgba(52, 52, 52, 0.5)'}]}>
+                                <IconButton
+                                style={Platform.OS === 'ios' ? styles.dotsiOS : styles.dots}
+                                    size={30}
+                                    title="spacer"
+                                    key="spacer_one"
+                                    icon="dots-horizontal"
+                                />
+
+                                <IconButton
+                                style={Platform.OS === 'ios' ? styles.dotsiOS : styles.dots}
+                                    size={30}
+                                    title="spacer"
+                                    key="spacer_two"
+                                    icon="dots-horizontal"
+                                />
+                           </View>
+
+                       </View>
+                       : null}
+
+                    {/* Bottom View */}
+                    <Animated.View
+                        style={[{minHeight: 150}, {height: this.state.keyboardVisible ? this.chatViewHeight * 2: this.state.bottomHeight}]}
+                    >
                             <GiftedChat
                               messages={renderMessages}
                               isTyping={this.state.isTyping}
                               renderActions={this.renderCustomActions}
                               onLongPress={this.onLongMessagePress}
+                              renderCustomView={this.renderCustomView}
                               onSend={this.onSendMessage}
                               renderBubble={this.renderMessageBubble}
-                              renderMessageText={this.renderMessageText}
+                              shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
                               alwaysShowSend={true}
+                              lockStyle={styles.lock}
                               scrollToBottom
                               inverted={true}
                               timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                               infiniteScroll
                             />
-                        </View>
-                        : null}
+                        </Animated.View>
+
                     </View>
-
-                    <InviteParticipantsModal
-                        show={this.state.showInviteModal && !this.state.reconnectingCall}
-                        inviteParticipants={this.inviteParticipants}
-                        previousParticipants={this.state.previousParticipants}
-                        alreadyInvitedParticipants={alreadyInvitedParticipants}
-                        currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
-                        close={this.toggleInviteModal}
-                        room={this.state.remoteUri}
-                        defaultDomain = {this.props.defaultDomain}
-                        accountId = {this.props.call.localIdentity._uri}
-                        notificationCenter = {this.props.notificationCenter}
-                        lookupContacts = {this.props.lookupContacts}
-                    />
-
-                    <ConferenceDrawer
-                        show={this.state.showDrawer && !this.state.reconnectingCall}
-                        close={this.toggleDrawer}
-                        isLandscape={this.state.isLandscape}
-                        title="Conference configuration"
-                        >
-                        <View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 160}, styles.landscapeDrawer] : styles.portraitDrawer}>
-                            <View style={{flex: this.state.isLandscape ? 1 : 2}}>
-                                <ConferenceDrawerSpeakerSelectionWrapper
-                                    selectSpeaker={this.startSpeakerSelection}
-                                    activeSpeakers={this.state.activeSpeakers}
-                                />
-                                <ConferenceDrawerParticipantList style={styles.container}>
-                                    {drawerParticipants}
-                                </ConferenceDrawerParticipantList>
-                            </View>
-                        </View>
-                    </ConferenceDrawer>
-
-                    <ConferenceDrawer
-                        show={this.state.showSpeakerSelection}
-                        close={this.toggleSpeakerSelection}
-                        isLandscape={this.state.isLandscape}
-                        showBackdrop={false}
-                        title={`Select speaker ${this.selectSpeaker}`}
-                        >
-                        <ConferenceDrawerSpeakerSelection
-                            participants={speakerSelectionParticipants}
-                            selected={this.handleActiveSpeakerSelected}
-                            activeSpeakers={this.state.activeSpeakers}
-                            selectSpeaker={this.selectSpeaker}
-                            key = {this.state.activeSpeakers}
-                        />
-                    </ConferenceDrawer>
-             </View>
-            );
+                 </View>
+                );
+            }
         }
 
         const participants = [];
@@ -2282,14 +2579,15 @@ class ConferenceBox extends Component {
         const currentParticipants = this.state.participants.map((p) => {return p.identity.uri})
         const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
 
-        if (!this.state.isLandscape && this.state.callOverlayVisible) {
+        if (this.state.callOverlayVisible) {
             buttons.bottom = floatingButtons;
+            buttons.additional = [];
         }
 
         return (
             <View style={styles.container}>
                 <View style={conferenceContainer}>
-                    {this.state.callOverlayVisible ?
+                    {this.state.callOverlayVisible || this.state.chatView ?
                     <ConferenceHeader
                         remoteUri={this.state.remoteUri}
                         callContact={this.props.callContact}
@@ -2306,6 +2604,11 @@ class ConferenceBox extends Component {
                         toggleInviteModal={this.toggleInviteModal}
                         inviteToConferenceFunc={this.props.inviteToConferenceFunc}
                         callState={this.props.callState}
+                        toggleAudioParticipantsFunc={this.toggleAudioParticipants}
+                        toggleChatFunc={this.toggleChat}
+                        hangUpFunc={this.hangup}
+                        audioView={this.state.audioView}
+                        chatView={this.state.chatView}
                     />
                     : null}
 
@@ -2315,11 +2618,6 @@ class ConferenceBox extends Component {
                         </View>
                     </TouchableWithoutFeedback>
 
-                    <View style={styles.carouselContainer}>
-                        <ConferenceCarousel align={'right'}>
-                            {participants}
-                        </ConferenceCarousel>
-                    </View>
 
                     {this.state.chatView ?
                     <View style={chatContainer}>
@@ -2327,10 +2625,11 @@ class ConferenceBox extends Component {
                           messages={renderMessages}
                           isTyping={this.state.isTyping}
                           renderActions={this.renderCustomActions}
+                          renderCustomView={this.renderCustomView}
                           onLongPress={this.onLongMessagePress}
                           onSend={this.onSendMessage}
                           renderBubble={this.renderMessageBubble}
-                          renderMessageText={this.renderMessageText}
+                          shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
                           alwaysShowSend={true}
                           scrollToBottom
                           inverted={true}
@@ -2338,7 +2637,13 @@ class ConferenceBox extends Component {
                           infiniteScroll
                         />
                     </View>
-                    : null}
+                    :
+                    <View style={styles.carouselContainer}>
+                        <ConferenceCarousel align={'right'}>
+                            {participants}
+                        </ConferenceCarousel>
+                    </View>
+                    }
 
                 </View>
 
@@ -2402,6 +2707,7 @@ ConferenceBox.propTypes = {
     saveParticipant     : PropTypes.func,
     saveConferenceMessage: PropTypes.func,
     updateConferenceMessage : PropTypes.func,
+    deleteConferenceMessage : PropTypes.func,
     messages            : PropTypes.array,
     previousParticipants: PropTypes.array,
     remoteUri           : PropTypes.string,
@@ -2430,7 +2736,9 @@ ConferenceBox.propTypes = {
     messages            : PropTypes.object,
     getMessages         : PropTypes.func,
     fileSharingUrl      : PropTypes.string,
-    sendConferenceMessage: PropTypes.func
+    sendConferenceMessage: PropTypes.func,
+    conferenceSliderPosition: PropTypes.number,
+    saveSliderFunc: PropTypes.func
 };
 
 export default ConferenceBox;

@@ -209,7 +209,7 @@ class AudioCallBox extends Component {
                               };
 
         const username = this.state.remoteUri.split('@')[0];
-        const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+        const isPhoneNumber = utils.isPhoneNumber(this.state.remoteUri);
 
         let displayName = this.state.remoteUri ? toTitleCase(this.state.remoteUri.split('@')[0]) : '';
 
@@ -241,6 +241,11 @@ class AudioCallBox extends Component {
                 disablePlus = true;
             }
         }
+
+        let whiteButtonClass         = Platform.OS === 'ios' ? styles.whiteButtoniOS         : styles.whiteButton;
+        let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS         : styles.greenButton;
+        let hangupButtonClass        = Platform.OS === 'ios' ? styles.hangupButtoniOS        : styles.hangupButton;
+        let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
 
         return (
             <View style={styles.container}>
@@ -290,7 +295,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                     <IconButton
                         size={buttonSize}
-                        style={disablePlus ? styles.disabledGreenButton: styles.greenButton}
+                        style={disablePlus ? disabledGreenButtonClass: greenButtonClass}
                         icon="chat"
                         onPress={this.props.goBackFunc}
                         disabled={disablePlus}
@@ -304,7 +309,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                     <IconButton
                         size={buttonSize}
-                        style={styles.whiteButton}
+                        style={whiteButtonClass}
                         icon="account-plus"
                         onPress={this.props.inviteToConferenceFunc}
                         disabled={disablePlus}
@@ -317,7 +322,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
                                 size={buttonSize}
-                                style={styles.whiteButton}
+                                style={whiteButtonClass}
                                 icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
                                 onPress={this.muteAudio}
                             />
@@ -327,7 +332,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
                                 size={buttonSize}
-                                style={styles.whiteButton}
+                                style={whiteButtonClass}
                                 icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                                 onPress={this.props.toggleSpeakerPhone}
                             />
@@ -339,7 +344,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
                                 size={buttonSize}
-                                style={styles.whiteButton}
+                                style={whiteButtonClass}
                                 icon="dialpad"
                                 onPress={this.showDtmfModal}
                                 disabled={!(this.state.call && (this.state.call.state === 'early-media' || this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
@@ -352,7 +357,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                         <IconButton
                             size={buttonSize}
-                            style={styles.hangupButton}
+                            style={hangupButtonClass}
                             icon="phone-hangup"
                             onPress={this.hangupCall}
                         />
@@ -365,7 +370,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
                                 size={buttonSize}
-                                style={styles.whiteButton}
+                                style={whiteButtonClass}
                                 icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
                                 onPress={this.props.toggleSpeakerPhone}
                             />
@@ -375,7 +380,7 @@ class AudioCallBox extends Component {
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
                                 size={buttonSize}
-                                style={styles.hangupButton}
+                                style={hangupButtonClass}
                                 icon="phone-hangup"
                                 onPress={this.cancelCall}
                             />

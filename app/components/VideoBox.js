@@ -26,6 +26,9 @@ class VideoBox extends Component {
         autoBind(this);
 
         this.state = {
+            remoteUri: this.props.remoteUri,
+            photo: this.props.photo,
+            remoteDisplayName: this.props.remoteDisplayName,
             call: this.props.call,
             reconnectingCall: this.props.reconnectingCall,
             audioMuted: this.props.muted,
@@ -36,6 +39,9 @@ class VideoBox extends Component {
             remoteVideoShow: true,
             remoteSharesScreen: false,
             showEscalateConferenceModal: false,
+            callContact: this.props.callContact,
+            selectedContact: this.props.selectedContact,
+            selectedContacts: this.props.selectedContacts,
             localStream: this.props.call.getLocalStreams()[0],
             remoteStream: this.props.call.getRemoteStreams()[0],
             info: this.props.info,
@@ -90,6 +96,15 @@ class VideoBox extends Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
+        this.setState({
+                       callContact: nextProps.callContact,
+                       remoteUri: nextProps.remoteUri,
+                       photo: nextProps.photo ? nextProps.photo : this.state.photo,
+                       remoteDisplayName: nextProps.remoteDisplayName,
+                       selectedContact: nextProps.selectedContact,
+                       selectedContacts: nextProps.selectedContacts
+                       });
+
     }
 
     callStateChanged(oldState, newState, data) {
@@ -115,6 +130,10 @@ class VideoBox extends Component {
             this.state.call.on('stateChanged', this.callStateChanged);
         }
         this.armOverlayTimer();
+
+        if (this.state.selectedContacts.length > 0) {
+            this.toggleEscalateConferenceModal();
+        }
     }
 
     componentWillUnmount() {
@@ -209,16 +228,23 @@ class VideoBox extends Component {
     }
 
     toggleEscalateConferenceModal() {
+        if (this.state.showEscalateConferenceModal) {
+            this.props.finishInvite();
+        }
+
         this.setState({
             callOverlayVisible          : false,
-            showEscalateConferenceModal : !this.state.showEscalateConferenceModal
+            showEscalateConferenceModal: !this.state.showEscalateConferenceModal
         });
     }
 
     render() {
+
         if (this.state.call === null) {
             return null;
         }
+
+        const isPhoneNumber = utils.isPhoneNumber(this.state.remoteUri);
 
         // 'mirror'          : !this.state.call.sharingScreen && !this.props.generatedVideoTrack,
         // we do not want mirrored local video once the call has started, just in preview
@@ -256,14 +282,31 @@ class VideoBox extends Component {
             buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
         }
 
+        let disablePlus = false;
+        if (this.state.callContact) {
+            if (isPhoneNumber) {
+                disablePlus = true;
+            }
+
+            if (this.state.callContact.tags.indexOf('test') > -1) {
+                disablePlus = true;
+            }
+
+            if (this.state.callContact.tags.indexOf('conference') > -1) {
+                disablePlus = true;
+            }
+        }
+
         if (this.state.callOverlayVisible) {
             let content = (<View style={buttonContainerClass}>
+                {!disablePlus ?
                 <IconButton
                     size={buttonSize}
                     style={buttonClass}
-                    onPress={this.toggleEscalateConferenceModal}
+                    onPress={this.props.inviteToConferenceFunc}
                     icon="account-plus"
                 />
+                : null}
                 <IconButton
                     size={buttonSize}
                     style={buttonClass}
@@ -299,12 +342,12 @@ class VideoBox extends Component {
             <View style={styles.container}>
                 <CallOverlay
                     show = {show}
-                    remoteUri = {this.props.remoteUri}
-                    remoteDisplayName = {this.props.remoteDisplayName}
-                    photo={this.props.photo}
+                    remoteUri = {this.state.remoteUri}
+                    remoteDisplayName = {this.state.remoteDisplayName}
+                    photo={this.state.photo}
                     call = {this.state.call}
-                    connection = {this.props.connection}
-                    accountId = {this.props.accountId}
+                    connection = {this.state.connection}
+                    accountId = {this.state.accountId}
                     info={this.state.info}
                     media='video'
                     goBackFunc={this.props.goBackFunc}
@@ -394,7 +437,9 @@ VideoBox.propTypes = {
     getMessages             : PropTypes.func,
     pinMessage              : PropTypes.func,
     unpinMessage            : PropTypes.func,
+    callContact             : PropTypes.object,
     selectedContact         : PropTypes.object,
+    selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func
 };

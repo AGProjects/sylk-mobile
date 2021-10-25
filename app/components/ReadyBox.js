@@ -45,7 +45,10 @@ class ReadyBox extends Component {
             messageZoomFactor: this.props.messageZoomFactor,
             isTyping: this.props.isTyping,
             navigationItems: this.props.navigationItems,
-            fontScale: this.props.fontScale
+            fontScale: this.props.fontScale,
+            historyFilter: this.props.historyFilter,
+            isTable: this.props.isTablet,
+            myContacts: this.props.myContacts
         };
         this.ended = false;
     }
@@ -69,6 +72,10 @@ class ReadyBox extends Component {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
         }
 
+        if (!nextProps.historyFilter && this.state.historyFilter) {
+            this.filterHistory(null);
+        }
+
         if (nextProps.missedCalls.length === 0 && this.state.historyCategoryFilter === 'missed') {
             this.setState({'historyCategoryFilter': null});
         }
@@ -81,8 +88,14 @@ class ReadyBox extends Component {
             this.setState({'historyCategoryFilter': null});
         }
 
+        if (Object.keys(this.state.myContacts).length === 0 && nextProps.myContacts && Object.keys(nextProps.myContacts).length > 0) {
+            this.bounceNavigation();
+        }
+
         this.setState({myInvitedParties: nextProps.myInvitedParties,
+                        myContacts: nextProps.myContacts,
                         messages: nextProps.messages,
+                        historyFilter: nextProps.historyFilter,
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
                         showConferenceModal: nextProps.showConferenceModal,
@@ -99,6 +112,7 @@ class ReadyBox extends Component {
                         blockedUris: nextProps.blockedUris,
                         missedCalls: nextProps.missedCalls,
                         fontScale: nextProps.fontScale,
+                        isTablet: nextProps.isTablet,
                         isLandscape: nextProps.isLandscape});
     }
 
@@ -115,9 +129,11 @@ class ReadyBox extends Component {
     }
 
     filterHistory(filter) {
-        if (this.ended) {
+       if (this.ended) {
             return;
-        }
+       }
+
+       this.props.filterHistoryFunc(filter);
 
        if (!filter) {
            this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
@@ -152,11 +168,11 @@ class ReadyBox extends Component {
     }
 
     get showSearchBar() {
-        if (this.state.selectedContact && !this.props.isTablet) {
+        if (this.state.selectedContact && !this.state.isTablet) {
             return false;
         }
 
-        if (this.props.isTablet || (!this.props.isLandscape && this.state.selectedContact)) {
+        if (this.state.isTablet || (!this.state.isLandscape && this.state.selectedContact)) {
             return true;
         }
 
@@ -172,7 +188,7 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.props.isTablet) {
+        if (this.state.isTablet) {
             return true;
         }
 
@@ -185,7 +201,7 @@ class ReadyBox extends Component {
         }
 
         if (this.state.selectedContact) {
-            if (this.props.isLandscape && !this.props.isTablet) {
+            if (this.state.isLandscape && !this.state.isTablet) {
                 return false;
             }
             return true;
@@ -476,6 +492,46 @@ class ReadyBox extends Component {
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
+    bounceNavigation() {
+        setTimeout(() => {
+            if (this.navigationRef && !this.state.selectedContact) {
+                this.navigationRef.scrollToIndex({animated: true, index: Math.floor(this.navigationItems.length / 2)});
+            }
+        }, 3000);
+
+        setTimeout(() => {
+            if (this.navigationRef && !this.state.selectedContact) {
+                this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
+            }
+        }, 4500);
+
+        setTimeout(() => {
+            if (this.navigationRef && !this.state.selectedContact) {
+                this.navigationRef.scrollToIndex({animated: true, index: 0});
+            }
+        }, 6000);
+    }
+
+    get navigationItems() {
+        let conferenceEnabled = Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
+        if (this.state.inviteContacts) {
+            conferenceEnabled = false;
+        }
+
+        return [
+                                  {key: null, title: 'All', enabled: true, selected: false},
+                                  {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
+                                  {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
+                                  {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
+                                  {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
+                                  {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
+                                  {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
+                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
+                                  {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
+                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
+                                  ];
+    }
+
     render() {
         let uriClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
@@ -511,23 +567,20 @@ class ReadyBox extends Component {
         console.log('Render chat', this.state.chat);
         */
 
-        let buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
-        let disabledButtonClass = styles.disabledButton;
-
-        if (this.props.isTablet) {
+        if (this.state.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;
         } else {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTitle : styles.portraitTitle;
         }
 
-        if (this.props.isTablet) {
+        if (this.state.isTablet) {
              uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriButtonGroup : styles.portraitTabletUriButtonGroup;
         } else {
              uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
         }
 
-        if (this.props.isTablet) {
+        if (this.state.isTablet) {
             uriClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriInputBox : styles.portraitTabletUriInputBox;
         } else {
             uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
@@ -548,28 +601,16 @@ class ReadyBox extends Component {
             }
         }
 
-        let conferenceEnabled = Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
-        if (this.state.inviteContacts) {
-            conferenceEnabled = false;
-        }
+        let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
+        let blueButtonClass          = Platform.OS === 'ios' ? styles.blueButtoniOS              : styles.blueButton;
+        let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS     : styles.disabledGreenButton;
+        let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
 
-        let navigationMenuData = [
-                                  {key: null, title: 'All', enabled: true, selected: false},
-                                  {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
-                                  {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
-                                  {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
-                                  {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
-                                  {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
-                                  {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
-                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
-                                  {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
-                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
-                                  ];
         return (
             <Fragment>
                 <View style={styles.container}>
                     <View >
-                        {this.showSearchBar && !this.props.isLandscape ?
+                        {this.showSearchBar && !this.state.isLandscape ?
                         <View style={uriClass}>
                             <URIInput
                                 defaultValue={this.state.targetUri}
@@ -584,7 +625,7 @@ class ReadyBox extends Component {
 
                         {this.showButtonsBar ?
                         <View style={uriGroupClass}>
-                        {this.showSearchBar && this.props.isLandscape ?
+                        {this.showSearchBar && this.state.isLandscape ?
                         <View style={uriClass}>
                             <URIInput
                                 defaultValue={this.state.targetUri}
@@ -612,7 +653,7 @@ class ReadyBox extends Component {
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                        style={this.chatButtonDisabled ? styles.disabledGreenButton : styles.greenButton}
+                                        style={this.chatButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
                                         size={32}
                                         disabled={this.chatButtonDisabled}
                                         onPress={this.handleChat}
@@ -623,7 +664,7 @@ class ReadyBox extends Component {
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                            style={this.callButtonDisabled ? styles.disabledGreenButton : styles.greenButton}
+                                            style={this.callButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
                                             size={32}
                                             disabled={this.callButtonDisabled}
                                             onPress={this.handleAudioCall}
@@ -634,7 +675,7 @@ class ReadyBox extends Component {
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                            style={this.videoButtonDisabled ? styles.disabledGreenButton : styles.greenButton}
+                                            style={this.videoButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
                                             size={32}
                                             disabled={this.videoButtonDisabled}
                                             onPress={this.handleVideoCall}
@@ -645,7 +686,7 @@ class ReadyBox extends Component {
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                            style={this.conferenceButtonDisabled ? styles.disabledBlueButton : styles.blueButton}
+                                            style={this.conferenceButtonDisabled ? disabledBlueButtonClass : blueButtonClass}
                                             disabled={this.conferenceButtonDisabled}
                                             size={32}
                                             onPress={this.showConferenceModal}
@@ -657,7 +698,7 @@ class ReadyBox extends Component {
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                            style={!this.state.shareToContacts ? styles.disabledBlueButton : styles.blueButton}
+                                            style={!this.state.shareToContacts ? disabledBlueButtonClass : blueButtonClass}
                                             disabled={!this.state.shareToContacts}
                                             size={32}
                                             onPress={this.shareContent}
@@ -680,7 +721,7 @@ class ReadyBox extends Component {
                             orientation={this.props.orientation}
                             setTargetUri={this.handleTargetChange}
                             selectedContact={this.state.selectedContact}
-                            isTablet={this.props.isTablet}
+                            isTablet={this.state.isTablet}
                             chat={this.state.chat && !this.state.inviteContacts}
                             isLandscape={this.state.isLandscape}
                             account={this.props.account}
@@ -700,7 +741,7 @@ class ReadyBox extends Component {
                             periodFilter={this.state.historyPeriodFilter}
                             defaultDomain={this.props.defaultDomain}
                             saveContact={this.props.saveContact}
-                            myContacts = {this.props.myContacts}
+                            myContacts = {this.state.myContacts}
                             messages = {this.state.messages}
                             sendMessage = {this.props.sendMessage}
                             reSendMessage = {this.props.reSendMessage}
@@ -731,7 +772,8 @@ class ReadyBox extends Component {
                     <View style={styles.navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
-                            data={navigationMenuData}
+                            ref={(ref) => { this.navigationRef = ref; }}
+                            data={this.navigationItems}
                             extraData={this.state}
                             keyExtractor={(item, index) => item.key}
                             renderItem={this.renderNavigationItem}
@@ -739,7 +781,7 @@ class ReadyBox extends Component {
                     </View>
                     : null}
 
-                    {this.props.isTablet && 0?
+                    {this.state.isTablet && 0?
                     <View style={styles.footer}>
                         <FooterBox />
                     </View>
@@ -815,7 +857,11 @@ ReadyBox.propTypes = {
     hideConferenceModalFunc: PropTypes.func,
     shareContent:  PropTypes.func,
     fetchSharedItems: PropTypes.func,
-    fontScale: PropTypes.number
+    filterHistoryFunc:  PropTypes.func,
+    historyFilter: PropTypes.string,
+    fontScale: PropTypes.number,
+    inviteToConferenceFunc: PropTypes.func,
+    myContacts: PropTypes.object
 };
 
 

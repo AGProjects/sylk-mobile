@@ -60,13 +60,13 @@ class ConferenceModal extends Component {
         let domain;
 
         if (targetUri) {
-            let uri = `${targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
+            let uri = `${targetUri.replace(/[\s\@()]/g, '')}@${config.defaultConferenceDomain}`;
             uri = uri.split('@')[0];
 
-            if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
-                participants = this.state.myInvitedParties[uri];
-            } else if (this.state.selectedContact && this.state.selectedContact.participants) {
+            if (this.state.selectedContact && this.state.selectedContact.participants) {
                 participants = this.state.selectedContact.participants;
+            } else if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
+                participants = this.state.myInvitedParties[uri];
             }
 
             participants.forEach((item) => {
@@ -111,7 +111,7 @@ class ConferenceModal extends Component {
         if (!this.state.targetUri) {
             return;
         }
-        const uri = `${this.state.targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
+        const uri = `${this.state.targetUri.replace(/[\s\@()]/g, '')}@${config.defaultConferenceDomain}`;
         const participants = [];
 
         if (this.state.participants) {
@@ -131,7 +131,7 @@ class ConferenceModal extends Component {
 
     joinVideo(event) {
         event.preventDefault();
-        const uri = `${this.state.targetUri.replace(/[\s()-]/g, '')}@${config.defaultConferenceDomain}`;
+        const uri = `${this.state.targetUri.replace(/[\s\@()]/g, '')}@${config.defaultConferenceDomain}`;
         const participants = [];
 
         if (this.state.participants) {
@@ -190,16 +190,6 @@ class ConferenceModal extends Component {
         }
     }
 
-    isPhoneNumber(uri) {
-        let username = uri.split('@')[0];
-        let domain = uri.split('@')[1];
-        if (username.match(/^(\+|0)(\d+)$/) && !domain) {
-            return true;
-        }
-
-        return false;
-    }
-
     updateParticipants(contact) {
         let participants = this.state.participants;
         let els = participants;
@@ -217,6 +207,7 @@ class ConferenceModal extends Component {
     }
 
     render() {
+        //console.log('selectedContact', this.state.selectedContact, this.state.participants);
         const validUri = this.state.targetUri.length > 0 && this.state.targetUri.indexOf('@') === -1;
 
         let data = [];

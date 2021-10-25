@@ -25,7 +25,9 @@ class ConferenceHeader extends React.Component {
             reconnectingCall: this.props.reconnectingCall,
             info: this.props.info,
             remoteUri: this.props.remoteUri,
-            menuVisible: true
+            menuVisible: true,
+            chatView: this.props.chatView,
+            audioView: this.props.audioView
         }
 
         this.duration = null;
@@ -106,6 +108,8 @@ class ConferenceHeader extends React.Component {
                        remoteUri: nextProps.remoteUri,
                        displayName: nextProps.callContact ? nextProps.callContact.name : nextProps.remoteUri,
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
+                       chatView: nextProps.chatView,
+                       audioView: nextProps.audioView,
                        participants: nextProps.participants});
     }
 
@@ -135,14 +139,31 @@ class ConferenceHeader extends React.Component {
        this.props.goBackFunc();
     }
 
+    hangUp() {
+        console.log('Hangup');
+        return;
+        this.props.hangUpFunc();
+    }
+
     handleMenu(event) {
-        console.log('handle conference Menu', event);
+        if (!this.state.menuVisible) {
+            return;
+        }
         switch (event) {
             case 'back':
                 this.goBack();
                 break;
             case 'invite':
                 this.props.inviteToConferenceFunc();
+                break;
+            case 'hangup':
+                this.hangUp();
+                break;
+            case 'chat':
+                this.props.toggleChatFunc();
+                break;
+            case 'participants':
+                this.props.toggleAudioParticipantsFunc();
                 break;
             case 'share':
                 this.props.toggleInviteModal();
@@ -188,6 +209,10 @@ class ConferenceHeader extends React.Component {
             callDetail = callDetail + ' - ' + this.state.info;
         }
 
+        let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
+        let participantsTitle = this.state.audioView ? 'Hide participants' : 'Show participants';
+        let buttonsContainerClass = this.props.isLandscape && !this.state.chatView ? styles.buttonsContainerLandscape : styles.buttonsContainer;
+
         return (
         <View style={styles.container}>
             <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
@@ -197,31 +222,47 @@ class ConferenceHeader extends React.Component {
                     subtitle={callDetail}
                 />
                 {this.props.buttons.additional}
+                <Appbar.Action onPress={() => this.handleMenu('invite')} icon="account-plus"/>
+                <Appbar.Action onPress={() => this.handleMenu('share')} icon="share-variant"/>
 
             </Appbar.Header>
-            {this.props.buttons.bottom}
+            <View style={buttonsContainerClass}>
+                {this.props.buttons.bottom}
+            </View>
         </View>
         );
     }
 }
+
 /*
 
-            <Menu
-                visible={this.state.menuVisible}
-                onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
-                anchor={
-                    <Appbar.Action
-                        ref={this.menuRef}
-                        color="white"
-                        icon="account-plus"
-                        onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
-                    />
-                }
-            >
-                <Menu.Item onPress={() => this.handleMenu('back')} title="Go back..."/>
-                <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite contacts"/>
-                <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share link..." />
-            </Menu>
+This menu somehow causes the action button and menu itself to require double tap to be activated!
+
+                <Menu
+                    visible={this.state.menuVisible}
+                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    anchor={
+                        <Appbar.Action
+                            ref={this.menuRef}
+                            color="white"
+                            icon="menu"
+                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                        />
+                    }
+                >
+                    <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
+                    <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share web link..." />
+                    {!this.props.isLandscape ?
+                    <Menu.Item onPress={() => this.handleMenu('chat')} icon="chat" title={chatTitle} />
+                    : null}
+
+                    { this.props.audioOnly && !this.props.isLandscape?
+                    <Menu.Item onPress={() => this.handleMenu('participants')} icon="account-multiple" title={participantsTitle} />
+                    : null}
+                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
+
+                </Menu>
+
 */
 
 ConferenceHeader.propTypes = {
@@ -237,9 +278,14 @@ ConferenceHeader.propTypes = {
     terminated: PropTypes.bool,
     info: PropTypes.string,
     callContact: PropTypes.object,
+    toggleChatFunc: PropTypes.func,
+    toggleAudioParticipantsFunc: PropTypes.func,
     goBackFunc: PropTypes.func,
+    hangUpFunc: PropTypes.func,
     toggleInviteModal: PropTypes.func,
     inviteToConferenceFunc: PropTypes.func,
+    audioView: PropTypes.bool,
+    chatView: PropTypes.bool,
     callState: PropTypes.object
 };
 

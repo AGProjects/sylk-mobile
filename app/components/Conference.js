@@ -353,6 +353,7 @@ class Conference extends React.Component {
                         saveParticipant = {this.saveParticipant}
                         saveConferenceMessage = {this.props.saveConferenceMessage}
                         updateConferenceMessage = {this.props.updateConferenceMessage}
+                        deleteConferenceMessage = {this.props.deleteConferenceMessage}
                         saveConference = {this.props.saveConference}
                         previousParticipants = {this.props.previousParticipants}
                         remoteUri = {this.state.room}
@@ -380,6 +381,8 @@ class Conference extends React.Component {
                         getMessages={this.props.getMessages}
                         fileSharingUrl = {this.props.fileSharingUrl}
                         sendConferenceMessage = {this.props.sendConferenceMessage}
+                        conferenceSliderPosition = {this.props.conferenceSliderPosition}
+                        saveSliderFunc = {this.props.saveSliderFunc}
                    />
                 );
             } else {
@@ -420,6 +423,7 @@ Conference.propTypes = {
     hangupCall              : PropTypes.func,
     saveParticipant         : PropTypes.func,
     updateConferenceMessage : PropTypes.func,
+    deleteConferenceMessage : PropTypes.func,
     saveConferenceMessage   : PropTypes.func,
     saveConference          : PropTypes.func,
     previousParticipants    : PropTypes.array,
@@ -453,7 +457,9 @@ Conference.propTypes = {
     messages                : PropTypes.object,
     getMessages             : PropTypes.func,
     fileSharingUrl          : PropTypes.string,
-    sendConferenceMessage   : PropTypes.func
+    sendConferenceMessage   : PropTypes.func,
+    conferenceSliderPosition : PropTypes.number,
+    saveSliderFunc: PropTypes.func
 };
 
 

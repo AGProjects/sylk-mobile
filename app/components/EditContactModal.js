@@ -4,6 +4,7 @@ import autoBind from 'auto-bind';
 import { View } from 'react-native';
 import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, Subheading } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -205,7 +206,17 @@ class EditContactModal extends Component {
                             >{this.state.confirm ? 'Confirm delete': 'Delete'}
                         </Button>
                         : null}
+
+
                         </View>
+
+                        {true ?
+                        <View style={{flexDirection: 'row'}}>
+                        <Icon style={styles.lock} name={"lock"} />
+                        <Text style={styles.pgp}>Messages are encrypted</Text>
+                        </View>
+                        : null}
+
                     </Surface>
                 </DialogType>
             </Portal>

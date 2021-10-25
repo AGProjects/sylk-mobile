@@ -25,6 +25,7 @@ const ConferenceDrawerLog = props => {
                 style={styles.lessPadding}
                 titleNumberOfLines={2}
                 title={title}
+                key={originator}
                 titleStyle={styles.messageText}
                 left={props => <View style={styles.leftContainer}><Text style={styles.messageText}>{number}</Text></View>}
             />

@@ -30,6 +30,8 @@ import {Keyboard} from 'react-native';
 import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from 'react-native-background-downloader';
 
+import cloneDeep from 'lodash/cloneDeep';
+
 registerGlobals();
 
 import * as sylkrtc from 'react-native-sylkrtc';
@@ -204,6 +206,7 @@ class Sylk extends Component {
             outgoingCallUUID: null,
             incomingCallUUID: null,
             incomingContact: null,
+            keyboardHeight: 0,
             hardware: '',
             phoneNumber: '',
             isTablet: isTablet(),
@@ -262,6 +265,7 @@ class Sylk extends Component {
             firstSyncDone: false,
             keysNotFound: false,
             showLogo: true,
+            historyFilter: null,
             showExportPrivateKeyModal: false,
             navigationItems: {today: false,
                               yesterday: false,
@@ -539,7 +543,9 @@ class Sylk extends Component {
 
     async saveMyKey(keys) {
         this.setState({keys: {private: keys.private,
-                              public: keys.public}});
+                              public: keys.public,
+                              showImportPrivateKeyModal: false
+                              }});
 
         let myContacts = this.state.myContacts;
 
@@ -1271,6 +1277,10 @@ class Sylk extends Component {
 
     ExecuteQuery = (sql, params = []) => new Promise((resolve, reject) => {
         //console.log('-- Execute SQL query:', sql, params);
+        //console.log('-- Execute SQL query:', sql);
+        if (!sql) {
+            return;
+        }
         this.db.transaction((trans) => {
           trans.executeSql(sql, params, (trans, results) => {
             resolve(results);
@@ -1403,7 +1413,9 @@ class Sylk extends Component {
     }
 
     _detectOrientation() {
-        if(this.state.Width_Layout > this.state.Height_Layout && this.state.orientation !== 'landscape') {
+        //console.log('_detectOrientation', this.state.Width_Layout, this.state.Height_Layout);
+        let H = this.state.Height_Layout + this.state.keyboardHeight;
+        if(this.state.Width_Layout > H && this.state.orientation !== 'landscape') {
             this.setState({orientation: 'landscape'});
         } else {
             this.setState({orientation: 'portrait'});
@@ -1527,13 +1539,22 @@ class Sylk extends Component {
                         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
                     }
                 } else if (reason === 'escalate_to_conference') {
-                    const uri = `${utils.generateSillyName()}@${config.defaultConferenceDomain}`;
+
+                    let conf_uri = [];
+                    conf_uri.push(this.state.accountId.split('@')[0]);
+                    this.participantsToInvite.forEach((p) => {
+                        conf_uri.push(p.split('@')[0]);
+                    });
+                    conf_uri.sort();
+
+                    let uri = conf_uri.toString().toLowerCase().replace(/,/g,'-') + '@' + config.defaultConferenceDomain;
+
                     const options = {audio: this.outgoingMedia ? this.outgoingMedia.audio: true,
                                      video: this.outgoingMedia ? this.outgoingMedia.video: true,
                                      participants: this.participantsToInvite,
                                      skipHistory: true}
-
-                    this.callKeepStartConference(uri.toLowerCase(), options);
+                    this.participantsToInvite = [];
+                    this.callKeepStartConference(uri, options);
                 } else {
                     if (this.state.account && this._loaded) {
                         setTimeout(() => {
@@ -1613,6 +1634,8 @@ class Sylk extends Component {
         } else if (this.currentRoute === '/ready') {
             if (this.state.selectedContact) {
                 this.goBackToHome();
+            } else if (this.state.historyFilter) {
+                this.filterHistory(null);
             } else {
                 BackHandler.exitApp();
             }
@@ -1693,29 +1716,40 @@ class Sylk extends Component {
         this.checkVersion();
     }
 
-    _keyboardDidShow() {
-       this.setState({keyboardVisible: true});
+    _keyboardDidShow(e) {
+       this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
     }
 
     _keyboardDidHide() {
-        this.setState({keyboardVisible: false});
+        this.setState({keyboardVisible: false, keyboardHeight: 0});
     }
 
     checkVersion() {
-        let appId = Platform.OS === 'android' ? "com.agprojects.sylk" : "1489960733";
         if (Platform.OS === 'android') {
-            // TODO fix me
-            return;
+            getAppstoreAppMetadata("com.agprojects.sylk") //put any apps packageId here
+              .then(metadata => {
+                console.log(
+                  "Sylk app version on playstore",
+                  metadata.version,
+                  "published on",
+                  metadata.currentVersionReleaseDate
+                );
+                this.setState({appStoreVersion: metadata.version});
+              })
+              .catch(err => {
+                console.log("error occurred", err);
+              });
+              return;
+        } else {
+            getAppstoreAppMetadata("1489960733") //put any apps id here
+            .then(appVersion => {
+                console.log("Sylk app version on appstore", appVersion.version, "published on", appVersion.currentVersionReleaseDate);
+                this.setState({appStoreVersion: appVersion});
+            })
+            .catch(err => {
+                console.log("Error fetching app store version occurred", err);
+            });
         }
-
-        getAppstoreAppMetadata("1489960733") //put any apps id here
-        .then(appVersion => {
-            console.log("Sylk app version on appstore", appVersion.version, "published on", appVersion.currentVersionReleaseDate);
-            this.setState({appStoreVersion: appVersion});
-        })
-        .catch(err => {
-            console.log("Error fetching app store version occurred", err);
-        });
     }
 
     listenforSoundNotifications() {
@@ -2140,7 +2174,11 @@ class Sylk extends Component {
                 this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
                 if (this.startedByPush) {
                     this.resetStartedByPush('cancelIncomingCall')
-                    this.changeRoute('/ready', 'incoming_call_cancelled');
+                    if (this.currentRoute) {
+                        this.changeRoute('/ready', 'incoming_call_cancelled');
+                    } else {
+                        this.changeRoute('/login', 'start_up');
+                    }
                 }
 
                 this.updateLoading(null, 'incoming_call');
@@ -2152,7 +2190,11 @@ class Sylk extends Component {
             utils.timestampedLog('Cancel incoming call that was not yet accepted', callUUID);
             this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
             if (this.startedByPush) {
-                this.changeRoute('/ready', 'incoming_call_cancelled');
+                if (this.currentRoute) {
+                    this.changeRoute('/ready', 'incoming_call_cancelled');
+                } else {
+                    this.changeRoute('/login', 'start_up');
+                }
             }
         }
     }
@@ -2426,6 +2468,7 @@ class Sylk extends Component {
     }
 
     logTimeline(step) {
+        return;
         let diff = Math.floor((new Date() - this.startTimestamp) / 1000);
         console.log('Timeline:', step, diff);
     }
@@ -2487,7 +2530,7 @@ class Sylk extends Component {
 
                 break;
             default:
-                if (this.state.registrationKeepalive) {
+                if (this.state.registrationKeepalive && !this.state.accountVerified) {
                     this.updateLoading('Connecting...', 'connection');
                 }
                 break;
@@ -2534,6 +2577,7 @@ class Sylk extends Component {
 
         if (!this.state.account) {
             utils.timestampedLog('Account', this.state.accountId, 'is disabled');
+            this.updateLoading(null, 'account_disabled');
             return;
         }
 
@@ -3029,14 +3073,16 @@ class Sylk extends Component {
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
 
-                if (mediaType === 'video') {
-                    this.speakerphoneOn();
-                } else {
-                    this.speakerphoneOff();
-                }
 
                 if (!this.isConference(call)){
                     InCallManager.startRingback('_BUNDLE_');
+                    if (mediaType === 'video') {
+                        this.speakerphoneOn();
+                    } else {
+                        this.speakerphoneOff();
+                    }
+                } else {
+                    this.speakerphoneOn();
                 }
 
                 break;
@@ -3215,7 +3261,7 @@ class Sylk extends Component {
                     let duration = moment.duration(new Date() - startTime);
                     diff = Math.floor((new Date() - startTime) / 1000);
 
-                    if (duration > 3600) {
+                    if (diff > 3600) {
                         duration = duration.format('hh:mm:ss', {trim: false});
                     } else {
                         duration = duration.format('mm:ss', {trim: false});
@@ -3665,6 +3711,8 @@ class Sylk extends Component {
             return;
         }
 
+        this.backToForeground();
+
         this.resetGoToReadyTimer();
 
         this.requestMicPermission();
@@ -3775,6 +3823,7 @@ class Sylk extends Component {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
         this.logTimeline('accept call');
+        this.backToForeground();
         this.callKeeper.acceptCall(callUUID, options);
         this.hideInternalAlertPanel('accept');
         this.updateLoading(incomingCallLabel, 'incoming_call');
@@ -3797,6 +3846,8 @@ class Sylk extends Component {
         this.hideInternalAlertPanel('accept');
         this.vibrate();
 
+        this.backToForeground();
+
         this.resetGoToReadyTimer();
 
         if (this.state.currentCall) {
@@ -3806,7 +3857,10 @@ class Sylk extends Component {
         } else {
             utils.timestampedLog('Will get local media now');
             let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
-            this.getLocalMedia(Object.assign({audio: true, video: hasVideo && options.video}), '/call');
+            if ('video' in options) {
+                hasVideo = hasVideo && options.video;
+            }
+            this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
         }
     }
 
@@ -4011,6 +4065,7 @@ class Sylk extends Component {
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
+        this.updateLoading(null, 'incoming_call');
     }
 
     outgoingConference(call) {
@@ -4018,6 +4073,7 @@ class Sylk extends Component {
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
+        this.updateLoading(null, 'incoming_call');
     }
 
     _onLocalNotificationReceivedBackground(notification) {
@@ -4125,6 +4181,8 @@ class Sylk extends Component {
     }
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
+        this.backToForeground();
+        this.updateLoading(null, 'incoming_call');
         utils.timestampedLog('New outgoing conference to room', targetUri);
         this.setState({targetUri: targetUri});
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
@@ -4272,8 +4330,6 @@ class Sylk extends Component {
                 } else if (direction === 'cancel') {
                     this.cancelIncomingCall(callUUID);
                 }
-
-
             } else {
                  utils.timestampedLog('Error: Invalid external URL event', event);
             }
@@ -5105,7 +5161,7 @@ class Sylk extends Component {
     }
 
     async updateConferenceMessage(room, message, update=false) {
-        console.log('Update conference message', message);
+        console.log('Update conference message', message._id);
         let messages = this.state.messages;
         let sent = message.sent ? 1 : 0;
         let received = message.received ? 1 : 0;
@@ -5137,18 +5193,39 @@ class Sylk extends Component {
         });
     }
 
+    async deleteConferenceMessage(room, message) {
+        console.log('Delete conference message', message._id);
+        let messages = this.state.messages;
+
+        var params = [message._id];
+        await this.ExecuteQuery("delete from messages where msg_id = ?", params).then((result) => {
+            console.log('SQL delete conference message', message._id);
+            let renderMessages = messages[room];
+            let newRenderMessages = [];
+            renderMessages.forEach((msg) => {
+                 if (msg._id !== message._id) {
+                     newRenderMessages.push(msg);
+                 }
+            });
+            messages[room] = newRenderMessages;
+            this.setState({messages: messages});
+        }).catch((error) => {
+            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+                console.log('SQL error:', error);
+            }
+        });
+    }
+
     sql2GiftedChat(item, content) {
         let image;
         let timestamp = new Date(item.unix_timestamp * 1000);
 
-        //if (item.url || item.image) {
-        //console.log('sql2GiftedChat', item.msg_id, item.local_url, item.image);
-        //}
-
-        let failed = (item.pending === 0 && item.sent === 0 && item.direction === 'outgoing') ? true: false;
+        let failed = (item.received === 0) ? true: false;
         let received = item.received === 1 ? true : false;
         let sent = item.sent === 1 ? true : false;
         let pending = item.pending === 1 ? true : false;
+
+        //console.log('sql2GiftedChat', failed);
 
         let msg;
         let from_uri = item.sender ? item.sender : item.from_uri;
@@ -5193,7 +5270,6 @@ class Sylk extends Component {
             pinned: (item.pinned === 1) ? true: false,
             user: item.direction == 'incoming' ? {_id: from_uri, name: from_uri} : {}
             }
-
         //console.log(msg);
         return msg;
     }
@@ -5254,20 +5330,19 @@ class Sylk extends Component {
         utils.timestampedLog('Message', id, 'is', state);
         let query;
 
+        const failed_states = ['failed', 'error', 'forbidden'];
+
         if (state == 'accepted') {
             query = "UPDATE messages set pending = 0 where msg_id = '" + id + "'";
         } else if (state == 'delivered') {
             query = "UPDATE messages set pending = 0, sent = 1 where msg_id = '" + id + "'";
         } else if (state == 'displayed') {
             query = "UPDATE messages set received = 1, sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'received') {
-            query = "UPDATE messages set sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (failed) {
+        } else if (failed_states.indexOf(state) > -1) {
             query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'error') {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'forbidden') {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+        } else {
+            console.log('Invalid message state', id, state);
+            return;
         }
 
         //console.log(query);
@@ -5292,19 +5367,15 @@ class Sylk extends Component {
 
         let query;
 
+        const failed_states = ['failed', 'error', 'forbidden'];
+
         if (state == 'accepted') {
             query = "UPDATE messages set pending = 0 where msg_id = '" + id + "'";
         } else if (state == 'delivered') {
             query = "UPDATE messages set pending = 0, sent = 1 where msg_id = '" + id + "'";
         } else if (state == 'displayed') {
             query = "UPDATE messages set received = 1, sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'received') {
-            query = "UPDATE messages set sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'failed') {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'error') {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
-        } else if (state == 'forbidden') {
+        } else if (failed_states.indexOf(state) > -1) {
             query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
         }
 
@@ -5555,7 +5626,7 @@ class Sylk extends Component {
                 var item = rows.item(0);
                 //console.log(item);
                 uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
-                console.log('Message uri', uri, 'new state', state);
+                //console.log('Message uri', uri, 'new state', state);
                 if (uri in this.state.messages) {
                     let renderedMessages = this.state.messages;
 
@@ -5619,7 +5690,7 @@ class Sylk extends Component {
     }
 
     async saveOutgoingChatUri(uri, content='') {
-        console.log('saveOutgoingChatUri', uri);
+        //console.log('saveOutgoingChatUri', uri);
         let query;
 
         let myContacts = this.state.myContacts;
@@ -6084,7 +6155,7 @@ class Sylk extends Component {
         query = query + ' order by unix_timestamp desc limit ?, ?';
 
         await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
-            console.log('SQL get messages, rows =', results.rows.length);
+            //console.log('SQL get messages, rows =', results.rows.length);
 
             let rows = results.rows;
             messages[orig_uri] = [];
@@ -7202,9 +7273,8 @@ class Sylk extends Component {
 
     saveOutgoingMessageSql(message, decryptedBody=null, is_encrypted=false) {
         let pending = 0;
-        let sent = 0;
+        let sent = null;
         let received = null;
-        let failed = 0;
         let encrypted = 0;
         let content = decryptedBody || message.content;
 
@@ -7214,24 +7284,23 @@ class Sylk extends Component {
             encrypted = 1;
         }
 
+        const failed_states = ['failed', 'error', 'forbidden'];
+
         if (message.state == 'pending') {
             pending = 1;
+        } else if (message.state == 'accepted') {
+            pending = 0;
         } else if (message.state == 'delivered') {
             sent = 1;
         } else if (message.state == 'displayed') {
             received = 1;
             sent = 1;
-        } else if (message.state == 'failed') {
+        } else if (failed_states.indexOf(message.state) > -1) {
             sent = 1;
             received = 0;
-            failed = 1;
-        } else if (message.state == 'error') {
-            sent = 1;
-            received = 0;
-            failed = 1;
-        } else if (message.state == 'forbidden') {
-            sent = 1;
-            received = 0;
+        } else {
+            console.log('Invalid state for message', message.id, message.state);
+            return;
         }
 
         let ts = message.timestamp;
@@ -7383,8 +7452,9 @@ class Sylk extends Component {
 
         let received = 1;
         let unix_timestamp = Math.floor(message.timestamp / 1000);
-        let params = [this.state.accountId, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
-        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let encrypted = decryptedBody === null ? 0 : 2;
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.sender.uri, this.state.account.id, "incoming", received];
+        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 
             if (myContacts[uri].name === null || myContacts[uri].name === '' && message.sender.displayName) {
                 myContacts[uri].name = message.sender.displayName;
@@ -8028,6 +8098,10 @@ class Sylk extends Component {
                        shareToContacts: false});
     }
 
+    filterHistory(filter) {
+        this.setState({historyFilter: filter});
+    }
+
     saveConference(room, participants, displayName=null) {
         let uri = room;
         console.log('Save conference', room, 'with display name', displayName, 'and participants', participants);
@@ -8122,6 +8196,7 @@ class Sylk extends Component {
                                                                         Height_Layout : event.nativeEvent.layout.height
                                                                         }, ()=> this._detectOrientation())}>
                         <SafeAreaView style={[styles.root, extraStyles]}>
+                            { Platform.OS === 'android' ?
                             <IncomingCallModal
                                 contact={this.state.incomingContact}
                                 media={this.state.incomingMedia}
@@ -8133,6 +8208,7 @@ class Sylk extends Component {
                                 isTablet={this.state.isTablet}
                                 playIncomingRingtone = {this.playIncomingRingtone}
                             />
+                            : null}
 
                             <LogsModal
                                 logs={this.state.logs}
@@ -8462,6 +8538,9 @@ class Sylk extends Component {
                     showConferenceModalFunc = {this.showConferenceModal}
                     shareContent = {this.shareContent}
                     fetchSharedItems = {this.fetchSharedItems}
+                    filterHistoryFunc = {this.filterHistory}
+                    historyFilter = {this.state.historyFilter}
+                    inviteToConferenceFunc = {this.inviteToConference}
                 />
 
                 <ImportPrivateKeyModal
@@ -8490,6 +8569,10 @@ class Sylk extends Component {
                 />
             </Fragment>
         );
+    }
+
+    saveSlider(position) {
+        this.setState({conferenceSliderPosition: position});
     }
 
     call() {
@@ -8608,6 +8691,7 @@ class Sylk extends Component {
                 saveParticipant = {this.saveParticipant}
                 saveConferenceMessage = {this.saveConferenceMessage}
                 updateConferenceMessage = {this.updateConferenceMessage}
+                deleteConferenceMessage = {this.deleteConferenceMessage}
                 myInvitedParties = {this.state.myInvitedParties}
                 saveConference = {this.appendInvitedParties}
                 previousParticipants = {previousParticipants}
@@ -8640,6 +8724,8 @@ class Sylk extends Component {
                 getMessages = {this.getMessages}
                 finishInvite={this.finishInviteToConference}
                 sendConferenceMessage={this.sendConferenceMessage}
+                conferenceSliderPosition={this.state.conferenceSliderPosition}
+                saveSliderFunc={this.saveSlider}
             />
         )
     }
@@ -8678,7 +8764,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('updateLoading', this.state.loading, '->', state, 'by', by);
+        //console.log('updateLoading', this.state.loading, '->', state, 'by', by);
         this.setState({loading: state});
     }
 
@@ -8793,6 +8879,7 @@ class Sylk extends Component {
         this.setState({account: null,
                        displayName: '',
                        email: '',
+                       loading: null,
                        keyStatus: {},
                        contactsLoaded: false,
                        registrationState: null,

@@ -1,7 +1,7 @@
 import React, {Component, Fragment} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { View } from 'react-native';
+import { View, TouchableOpacity } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import UserIcon from './UserIcon';
 import { List, Text } from 'react-native-paper';
@@ -53,30 +53,50 @@ class ConferenceAudioParticipant extends Component {
     }
 
     render() {
-        const tag = this.props.isLocal ? 'Myself' : this.props.status;
         let identity = this.props.identity;
-
         let rightStyle = styles.right ;
 
-        if (tag === 'Muted') {
+        if (this.props.status === 'Muted') {
             rightStyle = styles.rightOrange;
-        } else if (tag && tag.indexOf('kbit') > -1) {
+        } else if (this.props.status && this.props.status.indexOf('kbit') > -1) {
             rightStyle = styles.rightGreen;
+        }
+
+        //console.log(this.props.extraButtons);
+
+        let media = '';
+        let mediaStyle = styles.media;
+        if (this.props.loss && this.props.loss > 10) {
+            media = this.props.loss + '% packet loss';
+            mediaStyle = styles.mediaBad;
+        } else if (this.props.latency && this.props.latency > 300) {
+            media = this.props.latency + ' ms delay';
+            mediaStyle = styles.mediaBad;
         }
 
         return (
             <List.Item
             style={styles.card}
                 title={identity.displayName||identity.uri}
+                key={identity.uri}
                 titleStyle={styles.displayName}
                 description={identity.uri}
                 descriptionStyle={styles.uri}
-                left={props => <View style={styles.userIconContainer}><UserIcon small={true} identity={identity} /></View>}
-                right={props => <View>
-                                <Text style={rightStyle}>{tag}</Text>
-                                <RTCView streamURL={this.state.stream ? this.state.stream.toURL() : null}/>
+                left={props => <View style={styles.userIconContainer}>
+                                  <UserIcon small={true} identity={identity}/>
+                               </View>
+                      }
+                right={props =>
+                           <View style={styles.userButtonsContainer}>
+                              {this.props.extraButtons && this.props.extraButtons.length > 0 ? this.props.extraButtons :
+                                <View style={styles.mediaContainer}>
+                                  <Text style={mediaStyle}>{media}</Text>
+                                  <Text style={rightStyle}>{this.props.status}</Text>
                                 </View>
-                                }
+                              }
+                              <RTCView streamURL={this.state.stream ? this.state.stream.toURL() : null }/>
+                           </View>
+                      }
             />
         );
     }
@@ -87,7 +107,11 @@ ConferenceAudioParticipant.propTypes = {
     participant: PropTypes.object,
     isLocal: PropTypes.bool,
     supportsVideo: PropTypes.bool,
-    status: PropTypes.string
+    status: PropTypes.string,
+    loss: PropTypes.number,
+    latency: PropTypes.number,
+    extraButtons: PropTypes.array
+
 };
 
 

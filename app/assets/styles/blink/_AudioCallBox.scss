@@ -82,10 +82,6 @@
     background-color: white;
 }
 
-.disabledWhiteButton {
-    background-color: rgba(#395936, .9);
-}
-
 .greenButton {
     background-color: rgba(#6DAA63, .9);
 }
@@ -98,15 +94,23 @@
     background-color: rgba(#a94442, .8);
 }
 
-
-.button {
+.whiteButtoniOS {
+    padding-top: 4px;
     background-color: white;
-    margin: 10px;
-    padding-top: 5px;
-    padding-left: 0px;
 }
 
-.hangupButton {
+.greenButtoniOS {
+    padding-top: 4px;
+    background-color: rgba(#6DAA63, .9);
+}
+
+.disabledGreenButtoniOS {
+    padding-top: 4px;
+    background-color: rgba(#395936, .9);
+}
+
+.hangupButtoniOS {
+    padding-top: 4px;
     background-color: rgba(#a94442, .8);
 }
 

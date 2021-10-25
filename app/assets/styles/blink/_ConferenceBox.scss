@@ -32,9 +32,24 @@
 .buttonsContainer {
     flex-direction: row;
     justify-content: center;
-    margin-top: 60px;
     height: 55;
     border: 0px;
+}
+
+.hangupButtonAudioContainer {
+    flex-direction: row;
+    justify-content: center;
+    margin-right: 15px;
+    height: 55;
+    border: 0px;
+}
+
+.hangupButtonVideoContainer {
+    margin-top: 15px;
+}
+
+.hangupButtonVideoContainerLandscape {
+    margin-right: 15px;
 }
 
 .conferenceContainerLandscape {
@@ -47,18 +62,12 @@
     top: 0;
 }
 
-.uploadProgress {
-    font-size: 14px;
-    margin-left: 10px;
-    color: white;
-}
-
 .audioContainerLandscape {
     align-content: flex-start;
     margin-top: 55px;
     margin-left: 0px;
     margin-right: 5px;
-    width: 40%;
+    width: 50%;
     border: 0px;
 }
 
@@ -68,7 +77,7 @@
     margin-left: 5px;
     border-color: grey;
     border-radius: 5px;
-    width: 59%;
+    width: 49%;
     border: 0px;
 }
 
@@ -77,19 +86,36 @@
     width: 400px;
 }
 
+.slider {
+   height: 20px;
+   justify-content: center;
+}
+
+.dotsContainer {
+   height: 8px;
+   flex-direction: row;
+   justify-content: space-between;
+}
+
+.dots {
+    margin-top: -19px;
+    margin-right: 0px;
+}
+
+.dotsiOS {
+    margin-top: -17px;
+    margin-right: 0px;
+}
+
 .audioContainerPortrait {
-    flex: 3;
     border: 0.5px;
 }
 
 .chatContainerPortraitAudio {
-    flex: 6;
-    border: 0px;
-    border-radius: 5px;
 }
 
 .chatContainerPortrait {
-    flex: 5;
+    flex: 1;
     border: 0px;
     border-radius: 5px;
 }
@@ -121,8 +147,20 @@
     flex-direction: row;
 }
 
+.downloadContainer {
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
+
+}
+
 .switch {
    padding: 10px;
+}
+
+.uploadProgress {
+    font-size: 14px;
+    color: orange;
 }
 
 .button {

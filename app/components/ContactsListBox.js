@@ -90,7 +90,8 @@ class ContactsListBox extends Component {
             isTyping: false,
             isLoadingEarlier: false,
             fontScale: this.props.fontScale,
-            call: this.props.call
+            call: this.props.call,
+            isTablet: this.props.isTablet
         }
 
         this.ended = false;
@@ -203,6 +204,7 @@ class ContactsListBox extends Component {
         }
 
         this.setState({isLandscape: nextProps.isLandscape,
+                       isTablet: nextProps.isTablet,
                        chat: nextProps.chat,
                        fontScale: nextProps.fontScale,
                        filter: nextProps.filter,
@@ -277,7 +279,7 @@ class ContactsListBox extends Component {
             chat={this.state.chat}
             fontScale={this.state.fontScale}
             orientation={this.props.orientation}
-            isTablet={this.props.isTablet}
+            isTablet={this.state.isTablet}
             isLandscape={this.state.isLandscape}
             contacts={this.state.contacts}
             defaultDomain={this.props.defaultDomain}
@@ -352,6 +354,7 @@ class ContactsListBox extends Component {
         } else {
             uri = this.state.selectedContact.uri;
         }
+
         messages.forEach((message) => {
             /*
               sent: true,
@@ -360,13 +363,11 @@ class ContactsListBox extends Component {
               // Mark the message as pending with a clock loader
               pending: true,
             */
+            message.encrypted = this.state.selectedContact && this.state.selectedContact.publicKey ? 2 : 0;
             this.props.sendMessage(uri, message);
         });
 
-        let renderMessages = this.state.renderMessages;
-        renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
-        Array.prototype.push.apply(messages, renderMessages);
-        this.setState({renderMessages: GiftedChat.append(messages, [])});
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
     searchedContact(uri, contact=null) {
@@ -649,9 +650,6 @@ class ContactsListBox extends Component {
 
     renderMessageVideo(props){
         const { currentMessage } = props;
-
-        console.log('----------- Render video', currentMessage.video);
-
         return (null);
 
         return (
@@ -707,6 +705,11 @@ class ContactsListBox extends Component {
         );
     };
 
+    renderMessageText(props) {
+        return (
+              <MessageText {...props}/>
+          );
+    };
 
     renderMessageBubble (props) {
         let rightColor = '#0084ff';
@@ -714,6 +717,7 @@ class ContactsListBox extends Component {
 
         if (props.currentMessage.failed) {
             rightColor = 'red';
+            leftColor = 'red';
         } else {
             if (props.currentMessage.pinned) {
                 rightColor = '#2ecc71';
@@ -784,7 +788,7 @@ class ContactsListBox extends Component {
             contacts.push(this.state.myContacts[uri]);
         });
 
-        //console.log('--- Render contacts with message uris', Object.keys(this.state.messages));
+        //console.log('--- Render contacts', this.state.isLandscape, this.state.isTablet);
         //console.log('--- Render contacts with filter', this.state.filter, 's c', this.state.selectedContact, this.state.inviteContacts);
 
         let chatInputClass;
@@ -925,7 +929,7 @@ class ContactsListBox extends Component {
 
         let columns = 1;
 
-        if (this.props.isTablet) {
+        if (this.state.isTablet) {
             columns = this.props.orientation === 'landscape' ? 3 : 2;
         } else {
             columns = this.props.orientation === 'landscape' ? 2 : 1;
@@ -942,13 +946,22 @@ class ContactsListBox extends Component {
             }
         }
 
+        let filteredMessages = [];
         messages.forEach((m) => {
+            if (!m.image && m.url && !m.local_url) {
+                //return;
+            }
+
             if (m.url || m.local_url || m.image) {
                 //console.log('----');
-                //console.log('Render message local_url', m.local_url);
+                //console.log('Render message local_url', m.failed);
             }
+
+            filteredMessages.push(m);
             //console.log(m);
         });
+
+        messages = filteredMessages;
 
         let pinned_messages = []
         if (this.state.pinned) {
@@ -981,7 +994,6 @@ class ContactsListBox extends Component {
                 onRefresh={this.getServerHistory}
                 onLongPress={this.onLongMessagePress}
                 refreshing={this.state.isRefreshing}
-                renderBubble={this.renderMessageBubble}
                 data={items}
                 renderItem={this.renderItem}
                 listKey={item => item.id}
@@ -1003,6 +1015,7 @@ class ContactsListBox extends Component {
                   renderMessageVideo={this.renderMessageVideo}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   renderMessageText={this.renderMessageText}
+                  lockStyle={styles.lock}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
                   maxInputLength={16000}
@@ -1016,13 +1029,15 @@ class ContactsListBox extends Component {
               </View>
               : (items.length === 1) ?
               <View style={[chatContainer, borderClass]}>
-                <GiftedChat
+                <GiftedChat ref={this.chatListRef}
                   messages={messages}
                   renderInputToolbar={() => { return null }}
-                  renderBubble={this.renderBubble}
+                  renderBubble={this.renderMessageBubble}
                   renderMessageVideo={this.renderMessageVideo}
+                  renderMessageText={this.renderMessageText}
                   onSend={this.onSendMessage}
                   renderActions={this.renderCustomActions}
+                  lockStyle={styles.lock}
                   onLongPress={this.onLongMessagePress}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   onPress={this.onLongMessagePress}
