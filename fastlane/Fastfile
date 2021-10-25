@@ -50,7 +50,7 @@ platform :android do
 
     next_version_name = increment_version_name(
       app_project_dir: '**/app',
-      bump_type: 'minor'
+      bump_type: 'patch'
     )
     UI.message(next_version_name)
     set_value_in_build(
@@ -62,7 +62,6 @@ platform :android do
       "android.enableJetifier" => "true",
       "android.useAndroidX" => "true"
     })
-
 
     upload_to_play_store(track: 'beta', package_name: 'com.agprojects.sylk', skip_upload_apk: true, timeout: 5000)
 

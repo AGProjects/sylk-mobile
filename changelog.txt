@@ -1,4 +1,19 @@
-Android 2.20 Mon Oct 18 17:55:17 -03 2021
+Android 2.7.0 Sat Oct 23 11:54:51 -03 2021
+
+  * Fixed detect landscape when keyboard is raised
+  * Improve Conference menus 
+  * Give a hint about navigation items in Ready
+  * Only render Connecting at first connect
+  * Improve conference controls for file downloads
+
+Android 2.5.0 Thu Oct 21 18:41:05 -03 2021
+
+  * Fix updating message state
+  * Fixed setting encryption flag for outgoing message
+  * Use back button to reset filtering
+  * Improve UI layout
+
+iOS 2.3.9 & Android 2.2.0 Mon Oct 18 17:55:17 -03 2021
 
   * Improved handling of incoming calls
   * Allow answer video calls with audio only
@@ -6,7 +21,6 @@ Android 2.20 Mon Oct 18 17:55:17 -03 2021
   * Use internal alert panel
   * Improved navigation
   * Various bug fixes
-
 
 iOS 2.3.6 & Android 1.98 Wed Oct  6 17:16:36 -03 2021 
 
