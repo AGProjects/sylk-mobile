@@ -345,13 +345,18 @@ class Sylk extends Component {
                                                 );
 
         if (InCallManager.recordPermission !== 'granted') {
+            /*
+            console.log('InCallManager request record permission');
             InCallManager.requestRecordPermission()
             .then((requestedRecordPermissionResult) => {
-                //console.log("InCallManager.requestRecordPermission() requestedRecordPermissionResult: ", requestedRecordPermissionResult);
+                console.log("InCallManager.requestRecordPermission() requestedRecordPermissionResult: ", requestedRecordPermissionResult);
             })
             .catch((err) => {
-                //console.log("InCallManager.requestRecordPermission() catch: ", err);
+                console.log("InCallManager.requestRecordPermission() catch: ", err);
             });
+            */
+        } else {
+            console.log('InCallManager recordPermission', InCallManager.recordPermission);
         }
 
         // Load camera/mic preferences
@@ -484,9 +489,9 @@ class Sylk extends Component {
 
     async requestCameraPermission() {
         if (Platform.OS !== 'android') {
-            return;
+            return true;
         }
-        //console.log('Request camera permission');
+        console.log('Request camera permission');
 
         try {
             const granted = await PermissionsAndroid.request(
@@ -495,27 +500,31 @@ class Sylk extends Component {
                 title: "Sylk camera permission",
                 message:
                   "Sylk needs access to your camera " +
-                  "so you can have video chat.",
+                  "for video calls",
                 buttonNeutral: "Ask Me Later",
                 buttonNegative: "Cancel",
                 buttonPositive: "OK"
                 }
             );
             if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                //console.log("You can use the camera");
+                console.log("You can use the camera");
+                return true;
             } else {
                 console.log("Camera permission denied");
+                return false;
             }
         } catch (err) {
             console.warn(err);
+            return false;
         }
     }
 
     async requestMicPermission() {
         if (Platform.OS !== 'android') {
-            return;
+            return true;
         }
-        //console.log('Request mic permission');
+
+        console.log('Request mic permission');
 
         try {
             const granted = await PermissionsAndroid.request(
@@ -524,22 +533,25 @@ class Sylk extends Component {
                 title: "Sylk microphone permission",
                 message:
                   "Sylk needs access to your microphone " +
-                  "so you can have audio calls.",
+                  "for audio calls.",
                 buttonNeutral: "Ask Me Later",
                 buttonNegative: "Cancel",
                 buttonPositive: "OK"
               }
             );
+
             if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                //console.log("You can now use the microphone");
+                console.log("You can now use the microphone");
+                return true;
             } else {
                 console.log("Microphone permission denied");
+                return false;
             }
         } catch (err) {
             console.warn(err);
+            return false;
         }
     };
-
 
     async saveMyKey(keys) {
         this.setState({keys: {private: keys.private,
@@ -734,6 +746,8 @@ class Sylk extends Component {
         let email;
         let contact;
         let timestamp;
+
+        this.loadAddressBook();
 
         if (this.state.accountId in this.signup) {
             email = this.signup[this.state.accountId];
@@ -1291,108 +1305,140 @@ class Sylk extends Component {
         });
       });
 
-    async loadDeviceContacts() {
-        Contacts.checkPermission((err, permission) => {
-            if (permission === Contacts.PERMISSION_UNDEFINED) {
-              Contacts.requestPermission((err, requestedContactsPermissionResult) => {
-                if (err) {
-                    console.log("Contacts.requestPermission()catch: ", err);
-                }
-                console.log("Contacts.requestPermission() requestPermission: ", requestedContactsPermissionResult);
-              })
+    async requestReadContactsPermission() {
+        console.log('Request contacts permission...');
+        try {
+          const granted = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.READ_CONTACTS,
+            {
+              title: 'Sylk contacts',
+              message: 'Sylk will ask for permission to read your contacts',
+              buttonPositive: "Next"
             }
-          })
+          )
+          if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+               console.log("You can now read your contacts")
+               this.getABContacts();
 
-          Contacts.getAll((err, contacts) => {
-            if (err === 'denied'){
-                console.log('Access to contacts denied')
+          } else {
+               console.log("Read contacts permission denied")
+          }
+        } catch (err) {
+          console.warn(err)
+        }
+      }
+
+    async loadAddressBook() {
+        console.log('Load system address book');
+        Contacts.checkPermission((err, permission) => {
+            //console.log('Current contacts permissions is', permission);
+
+            if (err) throw err;
+
+            // Contacts.PERMISSION_AUTHORIZED || Contacts.PERMISSION_UNDEFINED || Contacts.PERMISSION_DENIED
+            if (permission === 'authorized') {
+                this.getABContacts();
+                return;
+            }
+
+            if (Platform.OS === 'android') {
+               this.requestReadContactsPermission();
             } else {
-                // contacts returned in Array
-                let contact_cards = [];
-                let name;
-                let photo;
-                let avatarPhotos = {};
-                let avatarEmails = {};
 
-                let seen_uris = new Map();
+               Contacts.requestPermission((err, permission) => {
+               });
+            }
+        })
+    }
 
-                var arrayLength = contacts.length;
-                for (var i = 0; i < arrayLength; i++) {
+    getABContacts() {
+      Contacts.getAll((err, contacts) => {
+           if (err) throw err;
+            // contacts returned in Array
+            let contact_cards = [];
+            let name;
+            let photo;
+            let avatarPhotos = {};
+            let avatarEmails = {};
+
+            let seen_uris = new Map();
+
+            var arrayLength = contacts.length;
+            for (var i = 0; i < arrayLength; i++) {
+                photo = null;
+                contact = contacts[i];
+                if (contact['givenName'] && contact['familyName']) {
+                    name = contact['givenName'] + ' ' + contact['familyName'];
+                } else if (contact['givenName']) {
+                    name = contact['givenName'];
+                } else if (contact['familyName']) {
+                    name = contact['familyName'];
+                } else if (contact['company']) {
+                    name = contact['company'];
+                } else {
+                    continue;
+                }
+
+                if (contact.hasThumbnail) {
+                    photo = contact.thumbnailPath;
+                } else {
                     photo = null;
-                    contact = contacts[i];
-                    if (contact['givenName'] && contact['familyName']) {
-                        name = contact['givenName'] + ' ' + contact['familyName'];
-                    } else if (contact['givenName']) {
-                        name = contact['givenName'];
-                    } else if (contact['familyName']) {
-                        name = contact['familyName'];
-                    } else if (contact['company']) {
-                        name = contact['company'];
-                    } else {
-                        continue;
-                    }
+                }
 
-                    if (contact.hasThumbnail) {
-                        photo = contact.thumbnailPath;
-                    } else {
-                        photo = null;
-                    }
-
-                    //console.log(name);
-                    contact['phoneNumbers'].forEach(function (number, index) {
-                        let number_stripped = number['number'].replace(/\s|\-|\(|\)/g, '');
-                        if (number_stripped) {
-                            if (!seen_uris.has(number_stripped)) {
-                                //console.log('   ---->    ', number['label'], number_stripped);
-                                var contact_card = {id: uuid.v4(),
-                                                    name: name.trim(),
-                                                    uri: number_stripped,
-                                                    type: 'contact',
-                                                    photo: photo,
-                                                    label: number['label'],
-                                                    tags: ['contact']};
-                                if (photo) {
-                                    var name_idx = name.trim().toLowerCase();
-                                    avatarPhotos[name_idx] = photo;
-                                }
-                                contact_cards.push(contact_card);
-                                //console.log('Added AB contact', name, number_stripped);
-                                seen_uris.set(number_stripped, true);
-                            }
-                        }
-                    });
-
-                    contact['emailAddresses'].forEach(function (email, index) {
-                        let email_stripped =  email['email'].replace(/\s|\(|\)/g, '');
-                        if (!seen_uris.has(email_stripped)) {
-                            //console.log(name, email['label'], email_stripped);
+                //console.log(name);
+                contact['phoneNumbers'].forEach(function (number, index) {
+                    let number_stripped = number['number'].replace(/\s|\-|\(|\)/g, '');
+                    if (number_stripped) {
+                        if (!seen_uris.has(number_stripped)) {
+                            //console.log('   ---->    ', number['label'], number_stripped);
                             var contact_card = {id: uuid.v4(),
                                                 name: name.trim(),
-                                                uri: email_stripped,
+                                                uri: number_stripped,
                                                 type: 'contact',
                                                 photo: photo,
-                                                label: email['label'],
-                                                tags: ['contact']
-                                                };
-                            var name_idx = name.trim().toLowerCase();
+                                                label: number['label'],
+                                                tags: ['contact']};
                             if (photo) {
+                                var name_idx = name.trim().toLowerCase();
                                 avatarPhotos[name_idx] = photo;
                             }
-
-                            if (name_idx in avatarEmails) {
-                            } else {
-                                avatarEmails[name_idx] = email_stripped;
-                            }
                             contact_cards.push(contact_card);
-                            seen_uris.set(email_stripped, true);
+                            //console.log('Added AB contact', name, number_stripped);
+                            seen_uris.set(number_stripped, true);
                         }
-                    });
-                }
+                    }
+                });
 
-              this.setState({contacts: contact_cards, avatarPhotos: avatarPhotos, avatarEmails: avatarEmails});
-              console.log('Loaded', contact_cards.length, 'addressbook entries');
+                contact['emailAddresses'].forEach(function (email, index) {
+                    let email_stripped =  email['email'].replace(/\s|\(|\)/g, '');
+                    if (!seen_uris.has(email_stripped)) {
+                        //console.log(name, email['label'], email_stripped);
+                        var contact_card = {id: uuid.v4(),
+                                            name: name.trim(),
+                                            uri: email_stripped,
+                                            type: 'contact',
+                                            photo: photo,
+                                            label: email['label'],
+                                            tags: ['contact']
+                                            };
+                        var name_idx = name.trim().toLowerCase();
+                        if (photo) {
+                            avatarPhotos[name_idx] = photo;
+                        }
+
+                        if (name_idx in avatarEmails) {
+                        } else {
+                            avatarEmails[name_idx] = email_stripped;
+                        }
+                        contact_cards.push(contact_card);
+                        seen_uris.set(email_stripped, true);
+                    }
+                });
             }
-          })
+
+          this.setState({contacts: contact_cards, avatarPhotos: avatarPhotos, avatarEmails: avatarEmails});
+          console.log('Loaded', contact_cards.length, 'addressbook entries');
+      })
     }
 
     get _notificationCenter() {
@@ -1706,7 +1752,6 @@ class Sylk extends Component {
 
         getPhoneNumber().then(phoneNumber => {
             this.setState({myPhoneNumber: phoneNumber});
-            this.loadDeviceContacts();
         });
 
         this.listenforPushNotifications();
@@ -3706,7 +3751,7 @@ class Sylk extends Component {
         this.setState({showConferenceModal: false});
     }
 
-    callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}) {
+    async callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}) {
         if (!targetUri) {
             return;
         }
@@ -3715,9 +3760,16 @@ class Sylk extends Component {
 
         this.resetGoToReadyTimer();
 
-        this.requestMicPermission();
+        const micAllowed = await this.requestMicPermission();
+        if (!micAllowed) {
+            return;
+        }
+
         if (options.video) {
-            this.requestCameraPermission();
+            const cameraAllowed = await this.requestCameraPermission();
+            if (!cameraAllowed) {
+                options.video = false;
+            }
         }
 
         let callUUID = options.callUUID || uuid.v4();
@@ -3774,7 +3826,7 @@ class Sylk extends Component {
          this.setState({selectedContacts: selectedContacts});
     }
 
-    callKeepStartCall(targetUri, options) {
+    async callKeepStartCall(targetUri, options) {
         this.resetGoToReadyTimer();
         targetUri = targetUri.trim().toLowerCase();
 
@@ -3782,9 +3834,17 @@ class Sylk extends Component {
             targetUri = targetUri + '@' + this.state.defaultDomain;
         }
 
-        this.requestMicPermission();
+        const micAllowed = await this.requestMicPermission();
+
+        if (!micAllowed) {
+            return;
+        }
+
         if (options.video) {
-            this.requestCameraPermission();
+            const cameraAllowed = await this.requestCameraPermission();
+            if (!cameraAllowed) {
+                options.video = false;
+            }
         }
 
         let callUUID = options.callUUID || uuid.v4();
@@ -3819,9 +3879,21 @@ class Sylk extends Component {
         }
     }
 
-    callKeepAcceptCall(callUUID, options={}) {
+    async callKeepAcceptCall(callUUID, options={}) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
+        const micAllowed = await this.requestMicPermission();
+        if (!micAllowed) {
+            return;
+        }
+
+        if (options.video) {
+            const cameraAllowed = await this.requestCameraPermission();
+            if (!cameraAllowed) {
+                options.video = false;
+            }
+        }
+
         this.logTimeline('accept call');
         this.backToForeground();
         this.callKeeper.acceptCall(callUUID, options);
@@ -4465,11 +4537,6 @@ class Sylk extends Component {
 
         if (this.autoRejectIncomingCall(callUUID, from)) {
             return;
-        }
-
-        this.requestMicPermission();
-        if (mediaTypes.video) {
-            this.requestCameraPermission();
         }
 
         const autoAccept = this.autoAcceptIncomingCall(callUUID, from);
