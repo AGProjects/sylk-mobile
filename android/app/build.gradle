@@ -126,6 +126,9 @@ keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 
 android {
     compileSdkVersion rootProject.ext.compileSdkVersion
+    dexOptions {
+       javaMaxHeapSize "3g"
+    }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
