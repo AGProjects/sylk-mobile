@@ -146,9 +146,7 @@ class ConferenceHeader extends React.Component {
     }
 
     handleMenu(event) {
-        if (!this.state.menuVisible) {
-            return;
-        }
+        //console.log('handleMenu', event);
         switch (event) {
             case 'back':
                 this.goBack();
@@ -189,7 +187,7 @@ class ConferenceHeader extends React.Component {
 
         const room = this.state.remoteUri.split('@')[0];
         let displayName = (this.state.displayName && this.state.displayName !== this.state.remoteUri) ? this.state.displayName : room;
-        let callDetail;
+        let callDetail = '';
 
         if (this.state.reconnectingCall) {
             callDetail = 'Reconnecting call...';
@@ -206,7 +204,11 @@ class ConferenceHeader extends React.Component {
         }
 
         if (this.state.info) {
-            callDetail = callDetail + ' - ' + this.state.info;
+            if (callDetail) {
+                callDetail = callDetail + ' - ' + this.state.info;
+            } else {
+                callDetail = this.state.info;
+            }
         }
 
         let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';

@@ -47,7 +47,7 @@ class ReadyBox extends Component {
             navigationItems: this.props.navigationItems,
             fontScale: this.props.fontScale,
             historyFilter: this.props.historyFilter,
-            isTable: this.props.isTablet,
+            isTablet: this.props.isTablet,
             myContacts: this.props.myContacts
         };
         this.ended = false;
@@ -564,9 +564,9 @@ class ReadyBox extends Component {
             console.log('Render targetUri', this.state.targetUri);
         }
 
-        console.log('Render chat', this.state.chat);
         */
 
+        //console.log('RB', this.state.isTablet);
 
         if (this.state.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;

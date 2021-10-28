@@ -40,6 +40,7 @@ import FileViewer from 'react-native-file-viewer';
 import _ from 'lodash'; import { produce } from "immer"
 import cloneDeep from 'lodash/cloneDeep';
 import moment from 'moment';
+import {StatusBar} from 'react-native';
 
 
 const DEBUG = debug('blinkrtc:ConferenceBox');
@@ -59,6 +60,8 @@ class ConferenceBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
+        this.sliderTimeout = null;
 
         this.downloadRequests = {};
 
@@ -88,6 +91,8 @@ class ConferenceBox extends Component {
         if (this.props.remoteUri in this.props.messages) {
             renderMessages = this.props.messages[this.props.remoteUri];
         }
+
+        this.audioViewMinHeight = 170;
 
         let duration = 0;
 
@@ -193,22 +198,49 @@ class ConferenceBox extends Component {
                     offset: e.nativeEvent.pageY,
                     isDividerClicked: true
                 })
+
+                this.sliderTimeout = setTimeout(() => {
+                    this.setState({
+                        isDividerClicked: false
+                    })
+                }, 2000);
             },
 
             // When we drag the divider, set the bottomHeight (component state) again.
             onPanResponderMove: (e, gestureState) => {
-                let b = gestureState.moveY > (this.state.deviceHeight - 40) ? 40 : this.state.deviceHeight - gestureState.moveY - 40;
+                //let b = gestureState.moveY > (this.state.deviceHeight - 40) ? 40 : this.state.deviceHeight - gestureState.moveY - 40;
+                const maxH = Dimensions.get('window').height - this.audioViewMinHeight - 110;
+
+                let b = Math.floor(this.state.deviceHeight - gestureState.moveY);
+                if (b > maxH) {
+                    b = maxH;
+                }
 
                 var d = this.state.bottomHeight - b;
                 if (d < 0) {
                     d = -d;
                 }
 
-                if (d >= 40) {
+                if (d >= 30) {
                     this.setState({
                         bottomHeight    : b,
-                        offset: e.nativeEvent.pageY
+                        offset: e.nativeEvent.pageY,
+                        isDividerClicked: true
                     })
+
+                    if (this.sliderTimeout) {
+                        clearTimeout(this.sliderTimeout);
+                        this.sliderTimeout = null;
+                    }
+
+                    this.sliderTimeout = setTimeout(() => {
+                        console.log('Turn slider off');
+                        this.setState({
+                            isDividerClicked: false
+                        })
+                        this.sliderTimeout = null;
+                    }, 2000);
+
                     this.props.saveSliderFunc(b);
                 }
             },
@@ -217,7 +249,6 @@ class ConferenceBox extends Component {
                 // Do something here for the touch end event
                 this.setState({
                     offset: e.nativeEvent.pageY,
-                    isDividerClicked: false
                 })
             }
         });
@@ -282,7 +313,16 @@ class ConferenceBox extends Component {
     }
 
     get chatViewHeight() {
-        return Dimensions.get('window').height - this.state.keyboardHeight - 83;
+        const wh = Dimensions.get('window').height;
+        const kh = this.state.keyboardHeight;
+        const sh = (Platform.OS === 'android') ? StatusBar.currentHeight : 0;
+        //console.log('window height', Math.floor(wh));
+        //console.log('keyboa height', Math.floor(kh));
+        //console.log('status height', Math.floor(sh));
+
+        let ah = Platform.OS === 'android' ? wh - kh - sh - 30: wh - 50;
+        //console.log('Available height', Math.floor(ah));
+        return ah;
     }
 
     messageExists(giftedChatMessage, sylkMessage) {
@@ -307,6 +347,10 @@ class ConferenceBox extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.hasOwnProperty('muted')) {
             this.setState({audioMuted: nextProps.muted});
+        }
+
+        if (nextProps.hasOwnProperty('isDividerClicked')) {
+            this.setState({isDividerClicked: nextProps.isDividerClicked});
         }
 
         if (nextProps.hasOwnProperty('keyboardVisible')) {
@@ -394,7 +438,6 @@ class ConferenceBox extends Component {
                        isLandscape: nextProps.isLandscape,
                        messages: nextProps.messages,
                        offset: nextProps.offset,
-                       isDividerClicked: nextProps.isDividerClicked,
                        activeDownloads: nextProps.activeDownloads,
                        accountId: !this.state.accountId && nextProps.call ? this.props.call.account.id : this.state.accountId,
                        selectedContacts: nextProps.selectedContacts});
@@ -766,7 +809,7 @@ class ConferenceBox extends Component {
         let i = 0;
         let image;
 
-        console.log('--- List shared files');
+        //console.log('--- List shared files');
 
         this.state.sharedFiles.forEach((file)=>{
             if (file.session === this.props.call.id) {
@@ -2102,6 +2145,22 @@ class ConferenceBox extends Component {
 
         let sessionButtons = floatingButtons;
 
+        let inviteParticipantsModal = (
+                    <InviteParticipantsModal
+                        show={this.state.showInviteModal && !this.state.reconnectingCall}
+                        inviteParticipants={this.inviteParticipants}
+                        previousParticipants={this.state.previousParticipants}
+                        alreadyInvitedParticipants={alreadyInvitedParticipants}
+                        currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
+                        close={this.toggleInviteModal}
+                        room={this.state.remoteUri}
+                        defaultDomain = {this.props.defaultDomain}
+                        accountId = {this.props.call.localIdentity._uri}
+                        notificationCenter = {this.props.notificationCenter}
+                        lookupContacts = {this.props.lookupContacts}
+                    />
+                    );
+
         if (this.props.audioOnly) {
             sessionButtons = [];
             buttons.additional = [];
@@ -2232,33 +2291,36 @@ class ConferenceBox extends Component {
 
             if (this.state.isLandscape) {
                 return (
+                <View style={styles.container} >
+                    {inviteParticipantsModal}
+
                     <View style={conferenceContainer}>
+                                            <ConferenceHeader
+                        remoteUri={this.state.remoteUri}
+                        callContact={this.props.callContact}
+                        isTablet={this.props.isTablet}
+                        isLandscape={this.state.isLandscape}
+                        call={this.state.call}
+                        participants={this.state.participants.length}
+                        reconnectingCall={this.state.reconnectingCall}
+                        buttons={buttons}
+                        audioOnly={this.props.audioOnly}
+                        terminated={this.state.terminated}
+                        info={this.getInfo()}
+                        goBackFunc={this.props.goBackFunc}
+                        toggleInviteModal={this.toggleInviteModal}
+                        inviteToConferenceFunc={this.props.inviteToConferenceFunc}
+                        callState={this.props.callState}
+                        toggleAudioParticipantsFunc={this.toggleAudioParticipants}
+                        toggleChatFunc={this.toggleChat}
+                        hangUpFunc={this.hangup}
+                        audioView={this.state.audioView}
+                        chatView={this.state.chatView}
+                    />
+
                         <View style={styles.buttonsContainer}>
                             {sessionButtons}
                         </View>
-                        <ConferenceHeader
-                            show={true}
-                            call={this.state.call}
-                            callContact={this.props.callContact}
-                            isTablet={this.props.isTablet}
-                            isLandscape={this.state.isLandscape}
-                            remoteUri={this.state.remoteUri}
-                            participants={this.state.participants.length}
-                            reconnectingCall={this.state.reconnectingCall}
-                            buttons={buttons}
-                            audioOnly={this.props.audioOnly}
-                            terminated={this.state.terminated}
-                            info={this.getInfo()}
-                            goBackFunc={this.props.goBackFunc}
-                            toggleInviteModal={this.toggleInviteModal}
-                            inviteToConferenceFunc={this.props.inviteToConferenceFunc}
-                            callState={this.props.callState}
-                            toggleAudioParticipantsFunc={this.toggleAudioParticipants}
-                            toggleChatFunc={this.toggleChat}
-                            hangUpFunc={this.hangup}
-                            audioView={this.state.audioView}
-                            chatView={this.state.chatView}
-                        />
 
                         <View style={audioContainer}>
                             <ConferenceAudioParticipantList >
@@ -2285,25 +2347,13 @@ class ConferenceBox extends Component {
                             />
                         </View>
                     </View>
+                </View>
                 );
 
             } else {
-
                 return (
                 <View style={styles.container} >
-                    <InviteParticipantsModal
-                        show={this.state.showInviteModal && !this.state.reconnectingCall}
-                        inviteParticipants={this.inviteParticipants}
-                        previousParticipants={this.state.previousParticipants}
-                        alreadyInvitedParticipants={alreadyInvitedParticipants}
-                        currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
-                        close={this.toggleInviteModal}
-                        room={this.state.remoteUri}
-                        defaultDomain = {this.props.defaultDomain}
-                        accountId = {this.props.call.localIdentity._uri}
-                        notificationCenter = {this.props.notificationCenter}
-                        lookupContacts = {this.props.lookupContacts}
-                    />
+                    {inviteParticipantsModal}
 
                     <View style={conferenceContainer}>
                         {!this.state.keyboardVisible && !this.props.isLandscape ?
@@ -2311,13 +2361,13 @@ class ConferenceBox extends Component {
                             {sessionButtons}
                         </View>
                         : null}
+
                         <ConferenceHeader
-                            show={true}
-                            call={this.state.call}
+                            remoteUri={this.state.remoteUri}
                             callContact={this.props.callContact}
                             isTablet={this.props.isTablet}
                             isLandscape={this.state.isLandscape}
-                            remoteUri={this.state.remoteUri}
+                            call={this.state.call}
                             participants={this.state.participants.length}
                             reconnectingCall={this.state.reconnectingCall}
                             buttons={buttons}
@@ -2336,11 +2386,7 @@ class ConferenceBox extends Component {
                         />
 
                         {!this.state.keyboardVisible ?
-
-                        <Animated.View
-                            style       = {[{minHeight: this.state.keyboardVisible ? 0 : 170, flex: 1}, {height: this.state.keyboardVisible ? 0 : this.state.topHeight}]}
-                        >
-
+                        <Animated.View style = {[{minHeight: this.audioViewMinHeight, flex: 1}, {height: this.state.topHeight}]}>
                             <ConferenceAudioParticipantList >
                                 {audioParticipants}
                             </ConferenceAudioParticipantList>
@@ -2348,36 +2394,21 @@ class ConferenceBox extends Component {
                         : null}
 
                         {/* Divider */}
-                        {!this.state.keyboardVisible ?
-                        <View
-                            style={[styles.slider]}
-                            {...this._panResponder.panHandlers}
-                        >
-                            <View style={[styles.dotsContainer, this.state.isDividerClicked ? {backgroundColor: 'rgba(100, 100, 100, 1)'} : {backgroundColor: 'rgba(52, 52, 52, 0.5)'}]}>
-                                <IconButton
-                                style={Platform.OS === 'ios' ? styles.dotsiOS : styles.dots}
-                                    size={30}
-                                    title="spacer"
-                                    key="spacer_one"
-                                    icon="dots-horizontal"
+                        <View style={[styles.slider]}{...this._panResponder.panHandlers} >
+                            <View style={[styles.dotsContainer, this.state.isDividerClicked ? {backgroundColor: 'white'} : {backgroundColor: 'rgba(52, 52, 52, 0.5)'}]}>
+                                <IconButton style={Platform.OS === 'ios' ? styles.dotsiOS : styles.dots}
+                                    size={30} title="spacer" key="spacer_one" icon="dots-horizontal"
                                 />
 
-                                <IconButton
-                                style={Platform.OS === 'ios' ? styles.dotsiOS : styles.dots}
-                                    size={30}
-                                    title="spacer"
-                                    key="spacer_two"
-                                    icon="dots-horizontal"
+                                <IconButton style={Platform.OS === 'ios' ? styles.dotsiOS : styles.dots}
+                                    size={30} title="spacer" key="spacer_two" icon="dots-horizontal"
                                 />
                            </View>
-
                        </View>
-                       : null}
 
-                    {/* Bottom View */}
-                    <Animated.View
-                        style={[{minHeight: 150}, {height: this.state.keyboardVisible ? this.chatViewHeight * 2: this.state.bottomHeight}]}
-                    >
+                        {/* Bottom View */}
+                        <Animated.View style={[{minHeight: 150}, {height: this.state.keyboardVisible ? this.chatViewHeight: this.state.bottomHeight}]}>
+                            {!this.state.isDividerClicked ?
                             <GiftedChat
                               messages={renderMessages}
                               isTyping={this.state.isTyping}
@@ -2394,8 +2425,9 @@ class ConferenceBox extends Component {
                               timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
                               infiniteScroll
                             />
-                        </Animated.View>
+                            : null}
 
+                        </Animated.View>
                     </View>
                  </View>
                 );
@@ -2586,9 +2618,11 @@ class ConferenceBox extends Component {
 
         return (
             <View style={styles.container}>
+                {inviteParticipantsModal}
+
                 <View style={conferenceContainer}>
                     {this.state.callOverlayVisible || this.state.chatView ?
-                    <ConferenceHeader
+                                            <ConferenceHeader
                         remoteUri={this.state.remoteUri}
                         callContact={this.props.callContact}
                         isTablet={this.props.isTablet}
@@ -2618,7 +2652,6 @@ class ConferenceBox extends Component {
                         </View>
                     </TouchableWithoutFeedback>
 
-
                     {this.state.chatView ?
                     <View style={chatContainer}>
                         <GiftedChat
@@ -2646,19 +2679,6 @@ class ConferenceBox extends Component {
                     }
 
                 </View>
-
-                <InviteParticipantsModal
-                    show={this.state.showInviteModal && !this.state.reconnectingCall}
-                    inviteParticipants={this.inviteParticipants}
-                    previousParticipants={this.state.previousParticipants}
-                    currentParticipants={currentParticipants}
-                    alreadyInvitedParticipants={alreadyInvitedParticipants}
-                    close={this.toggleInviteModal}
-                    room={this.state.remoteUri}
-                    defaultDomain = {this.props.defaultDomain}
-                    notificationCenter = {this.props.notificationCenter}
-                    lookupContacts = {this.props.lookupContacts}
-                />
 
                 <ConferenceDrawer
                     show={this.state.showDrawer && !this.state.reconnectingCall}
