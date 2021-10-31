@@ -141,12 +141,16 @@ class ContactsListBox extends Component {
         }
 
         if (nextProps.selectedContact !== this.state.selectedContact) {
+            //console.log('Selected contact changed to', nextProps.selectedContact);
+
             this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact) {
                this.setState({scrollToBottom: true});
                if (Object.keys(this.state.messages).indexOf(nextProps.selectedContact.uri) === -1) {
                    this.props.getMessages(nextProps.selectedContact.uri);
                }
+            } else {
+                this.setState({renderMessages: []});
             }
         };
 
@@ -788,7 +792,7 @@ class ContactsListBox extends Component {
             contacts.push(this.state.myContacts[uri]);
         });
 
-        //console.log('--- Render contacts', this.state.isLandscape, this.state.isTablet);
+        //console.log('--- Render contacts', this.state.selectedContact);
         //console.log('--- Render contacts with filter', this.state.filter, 's c', this.state.selectedContact, this.state.inviteContacts);
 
         let chatInputClass;
@@ -939,12 +943,6 @@ class ContactsListBox extends Component {
         const container = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
         const contactsContainer = this.props.orientation === 'landscape' ? styles.contactsLandscapeContainer : styles.contactsPortraitContainer;
         const borderClass = (messages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
-
-        if (items.length === 1) {
-            if (items[0].tags.toString() === 'synthetic') {
-                messages = [];
-            }
-        }
 
         let filteredMessages = [];
         messages.forEach((m) => {

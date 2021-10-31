@@ -154,6 +154,8 @@ class Call extends Component {
         this.audioBytesReceived = 0;
 
         this.packetLoss = 0;
+        this.audioCodec = '';
+        this.videoCodec = '';
 
         this.packetLossQueue = FixedQueue(this.samples);
         this.latencyQueue = FixedQueue(this.samples);
@@ -380,7 +382,13 @@ class Call extends Component {
                  });
 
                  report.values.forEach(object => {
-                     if (object.bytesReceived) {
+                     if (object.googCodecName) {
+                        if (mediaType === 'video') {
+                            this.audioCodec = object.googCodecName;
+                        } else {
+                            this.videoCodec = object.googCodecName;
+                        }
+                     } else if (object.bytesReceived) {
                          const bytesReceived = Math.floor(object.bytesReceived);
                          if (mediaType === 'audio') {
                              if (this.audioBytesReceived > 0 && this.audioBytesReceived < bytesReceived) {
@@ -864,6 +872,7 @@ class Call extends Component {
                         videoBandwidthQueue = {this.state.videoBandwidthQueue}
                         audioBandwidthQueue = {this.state.audioBandwidthQueue}
                         latencyQueue = {this.state.latencyQueue}
+                        audioCodec = {this.audioCodec}
                         info = {this.state.info}
                         declineReason = {this.state.declineReason}
                         showLogs = {this.props.showLogs}
@@ -909,6 +918,8 @@ class Call extends Component {
                             orientation = {this.props.orientation}
                             isTablet = {this.props.isTablet}
                             reconnectingCall = {this.state.reconnectingCall}
+                            audioCodec = {this.audioCodec}
+                            videoCodec = {this.videoCodec}
                             muted = {this.props.muted}
                             info = {this.state.info}
                             showLogs = {this.props.showLogs}

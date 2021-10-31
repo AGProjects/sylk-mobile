@@ -462,6 +462,7 @@ class NavigationBar extends Component {
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={this.state.displayName}
                     hasMessages={hasMessages}
+                    deleteContactFunc={this.props.removeContact}
                     deleteMessages={this.props.deleteMessages}
                 />
 
@@ -552,6 +553,7 @@ NavigationBar.propTypes = {
     saveContact        : PropTypes.func,
     addContact         : PropTypes.func,
     deleteContact      : PropTypes.func,
+    removeContact      : PropTypes.func,
     deletePublicKey    : PropTypes.func,
     sendPublicKey      : PropTypes.func,
     messages           : PropTypes.object,

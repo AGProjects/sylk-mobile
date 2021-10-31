@@ -7488,7 +7488,7 @@ class Sylk extends Component {
             msg = {
                 _id: uuid.v4(),
                 text: content,
-                createdAt: timestamp,
+                createdAt: timestamp || new Date(),
                 direction: direction,
                 sent: true,
                 pending: false,
@@ -8529,6 +8529,7 @@ class Sylk extends Component {
                     startConference = {this.callKeepStartConference}
                     saveContact = {this.saveContact}
                     deleteContact = {this.deleteContact}
+                    removeContact = {this.removeContact}
                     sendPublicKey = {this.sendPublicKey}
                     deletePublicKey = {this.deletePublicKey}
                     showImportModal = {this.showImportPrivateKeyModal}

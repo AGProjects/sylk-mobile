@@ -322,7 +322,7 @@ class VideoBox extends Component {
                 <IconButton
                     size={buttonSize}
                     style={[buttonClass]}
-                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                     onPress={this.props.toggleSpeakerPhone}
                 />
                 <IconButton
@@ -350,6 +350,8 @@ class VideoBox extends Component {
                     accountId = {this.state.accountId}
                     info={this.state.info}
                     media='video'
+                    videoCodec={this.props.videoCodec}
+                    audioCodec={this.props.audioCodec}
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
                 />
@@ -441,7 +443,9 @@ VideoBox.propTypes = {
     selectedContact         : PropTypes.object,
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
-    finishInvite            : PropTypes.func
+    finishInvite            : PropTypes.func,
+    audioCodec              : PropTypes.string,
+    videoCodec              : PropTypes.string
 };
 
 export default VideoBox;

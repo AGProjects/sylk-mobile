@@ -215,6 +215,8 @@ CallOverlay.propTypes = {
     reconnectingCall: PropTypes.bool,
     declineReason : PropTypes.string,
     media: PropTypes.string,
+    audioCodec: PropTypes.string,
+    videoCodec: PropTypes.string,
     info: PropTypes.string,
     goBackFunc: PropTypes.func,
     callState : PropTypes.object

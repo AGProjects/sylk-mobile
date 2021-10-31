@@ -107,7 +107,7 @@ class TrafficStats extends Component {
                 contentInset={{ top: 5, bottom: 5 }}
                 >
                 </BarChart>
-                <Text style={styles.text}>Latency {latency} ms</Text>
+                <Text style={styles.text}>{this.props.audioCodec} latency {latency} ms</Text>
 
                 <BarChart
                 style = {{ height: 60}}
@@ -134,7 +134,8 @@ TrafficStats.propTypes = {
     latencyQueue            : PropTypes.array,
     orientation             : PropTypes.string,
     isTablet                : PropTypes.bool,
-    media                   : PropTypes.string
+    media                   : PropTypes.string,
+    audioCodec                   : PropTypes.string
 };
 
 export default TrafficStats

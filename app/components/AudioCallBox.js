@@ -46,7 +46,8 @@ class AudioCallBox extends Component {
             latencyQueue                : [],
             declineReason               : this.props.declineReason,
             callContact                 : this.props.callContact,
-            selectedContact             : this.props.selectedContact
+            selectedContact             : this.props.selectedContact,
+            audioCodec                       : this.props.audioCodec
         };
 
         this.remoteAudio = React.createRef();
@@ -128,6 +129,7 @@ class AudioCallBox extends Component {
                        photo: nextProps.photo ? nextProps.photo : this.state.photo,
                        declineReason: nextProps.declineReason,
                        callContact: nextProps.callContact,
+                       audioCodec: nextProps.audioCodec,
                        selectedContacts: nextProps.selectedContacts,
                        selectedContact: nextProps.selectedContact
                        });
@@ -284,6 +286,7 @@ class AudioCallBox extends Component {
                     audioBandwidthQueue = {this.state.audioBandwidthQueue}
                     videoBandwidthQueue = {this.state.videoBandwidthQueue}
                     isTablet = {this.props.isTablet}
+                    audioCodec = {this.props.audioCodec}
                     orientation = {this.props.orientation}
                     media = 'audio'
                 />
@@ -333,7 +336,7 @@ class AudioCallBox extends Component {
                             <IconButton
                                 size={buttonSize}
                                 style={whiteButtonClass}
-                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                                 onPress={this.props.toggleSpeakerPhone}
                             />
                         </TouchableHighlight>
@@ -371,7 +374,18 @@ class AudioCallBox extends Component {
                             <IconButton
                                 size={buttonSize}
                                 style={whiteButtonClass}
-                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                                icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
+                                onPress={this.muteAudio}
+                            />
+                        </TouchableHighlight>
+                      </View>
+
+                      <View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={whiteButtonClass}
+                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                                 onPress={this.props.toggleSpeakerPhone}
                             />
                         </TouchableHighlight>
@@ -447,8 +461,8 @@ AudioCallBox.propTypes = {
     selectedContact         : PropTypes.object,
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
-    finishInvite            : PropTypes.func
-
+    finishInvite            : PropTypes.func,
+    audioCodec              : PropTypes.string
 };
 
 export default AudioCallBox;
