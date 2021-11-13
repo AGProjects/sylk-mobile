@@ -18,6 +18,8 @@ import EditContactModal from './EditContactModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
 import VersionNumber from 'react-native-version-number';
+import ShareConferenceLinkModal from './ShareConferenceLinkModal';
+
 
 class NavigationBar extends Component {
     constructor(props) {
@@ -39,6 +41,7 @@ class NavigationBar extends Component {
             showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
             showDeleteHistoryModal: false,
             showAddContactModal: false,
+            showConferenceLinkModal: false,
             privateKeyPassword: null,
             registrationState: this.props.registrationState,
             connection: this.props.connection,
@@ -106,6 +109,9 @@ class NavigationBar extends Component {
                 break;
             case 'callMeMaybe':
                 this.props.toggleCallMeMaybeModal();
+                break;
+            case 'shareConferenceLinkModal':
+                this.showConferenceLinkModal();
                 break;
             case 'displayName':
                 this.toggleEditContactModal();
@@ -208,6 +214,14 @@ class NavigationBar extends Component {
 
     toggleAboutModal() {
         this.setState({showAboutModal: !this.state.showAboutModal});
+    }
+
+    showConferenceLinkModal() {
+        this.setState({showConferenceLinkModal: true});
+    }
+
+    hideConferenceLinkModal() {
+        this.setState({showConferenceLinkModal: false});
     }
 
     audioCall() {
@@ -367,15 +381,12 @@ class NavigationBar extends Component {
                         {canCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {canCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
 
                         { hasMessages  && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
-
-                        {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
-                        : null}
 
                         { (hasMessages || this.state.pinned) && tags.indexOf('test') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title={this.state.pinned ? "Show all messages" : "Show pinned"}/>
@@ -395,6 +406,11 @@ class NavigationBar extends Component {
                         {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1  && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
+
+                        {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
+                        : null}
+
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
                         : null}
@@ -500,6 +516,13 @@ class NavigationBar extends Component {
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.state.accountId}
                     favoriteUris={this.props.favoriteUris}
+                />
+
+                <ShareConferenceLinkModal
+                    notificationCenter={this.props.notificationCenter}
+                    show={this.state.showConferenceLinkModal}
+                    close={this.hideConferenceLinkModal}
+                    room={this.state.selectedContact ? this.state.selectedContact.uri: ''}
                 />
 
                 <ExportPrivateKeyModal

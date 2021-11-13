@@ -127,7 +127,8 @@ function html2text(content) {
               stripIgnoreTagBody: ["script", "style"] // the script tag is a special case, we need
               // to filter out its content
             });
-    return escapeHtml(content);
+
+    return content.replace(/&nbsp;/g, ' ');
 }
 
 function normalizeUri(uri, defaultDomain) {
@@ -356,7 +357,6 @@ exports.getWindowHeight = getWindowHeight;
 exports.findContact = findContact;
 exports.sylkToRenderMessage = sylkToRenderMessage;
 exports.isAnonymous = isAnonymous;
-exports.escapeHtml = escapeHtml;
 exports.html2text = html2text;
 exports.isEmailAddress = isEmailAddress;
 exports.isPhoneNumber = isPhoneNumber;

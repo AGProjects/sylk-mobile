@@ -68,7 +68,7 @@ class InviteParticipantsModal extends Component {
 
     handleClipboardButton(event) {
         utils.copyToClipboard(this.state.roomUrl);
-        this.props.notificationCenter().postSystemNotification('Join conference', {body: 'Conference address copied to clipboard'});
+        this.props.notificationCenter().postSystemNotification('Conference', {body: 'address copied to clipboard'});
         this.props.close();
     }
 
@@ -214,7 +214,7 @@ class InviteParticipantsModal extends Component {
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface>
-                        <Dialog.Title style={styles.title}>Share conference link</Dialog.Title>
+                        <Dialog.Title style={styles.title}>Share web link</Dialog.Title>
                         {showAutocomplete ?
                         <View>
                         <Autocomplete

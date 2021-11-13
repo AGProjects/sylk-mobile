@@ -259,6 +259,7 @@ class Sylk extends Component {
             avatarEmails: {},
             showConferenceModal: false,
             keyDifferentOnServer: false,
+            keyExistsOnServer: false,
             serverPublicKey: null,
             generatingKey: false,
             appStoreVersion: null,
@@ -553,19 +554,31 @@ class Sylk extends Component {
         }
     };
 
+
+    useExistingKeys() {
+        var uri = uuid.v4() + '@' + this.state.defaultDomain;
+        console.log('Send public key to', uri);
+        this.sendPublicKey(uri);
+        this.setState({keyDifferentOnServer: false});
+    }
+
     async saveMyKey(keys) {
+        let keyStatus = this.state.keyStatus;
+
+        keyStatus['existsLocal'] = true;
+
         this.setState({keys: {private: keys.private,
                               public: keys.public,
-                              showImportPrivateKeyModal: false
+                              showImportPrivateKeyModal: false,
+                              keyStatus: keyStatus
                               }});
 
         let myContacts = this.state.myContacts;
 
         if (this.state.account) {
             this.requestSyncConversations();
-            var uri = uuid.v4() + '@' + this.state.defaultDomain;
-            console.log('Send 1st public to', uri);
-            this.sendPublicKey(uri);
+
+            this.useExistingKeys();
 
             let accountId = this.state.account.id;
 
@@ -643,7 +656,8 @@ class Sylk extends Component {
                 var item = rows.item(0);
                 //console.log('SQL has keys');
                 keys.public = item.public_key;
-                if (item.public_key && keyStatus['serverPublicKey'] === item.public_key) {
+                if (item.public_key) {
+                    //keyStatus['serverPublicKey'] === item.public_key) {
                     keyStatus['existsLocal'] = true;
                     this.setState({showImportPrivateKeyModal: false});
                 } else {
@@ -3562,6 +3576,7 @@ class Sylk extends Component {
             // server was queried
 
             if (keyStatus['existsOnServer']) {
+                this.setState({keyExistsOnServer: true})
                 if (keyStatus['existsLocal']) {
                     // key exists in both places
                     if (this.state.keys && keyStatus['serverPublicKey'] !== this.state.keys.public) {
@@ -3575,14 +3590,13 @@ class Sylk extends Component {
                     }
                 } else {
                     console.log('PGP key does not exist');
-                    this.setState({keyDifferentOnServer: true})
                     setTimeout(() => {
                         this.showImportPrivateKeyModal();
                     }, 10);
                 }
             } else {
                 if (!keyStatus['existsLocal']) {
-                    console.log('We have no PGP key here or on server');
+                    console.log('We have no PGP key here nor on server');
                     this.generateKeys();
                 } else {
                     console.log('PGP key exists local but not on server');
@@ -3596,6 +3610,7 @@ class Sylk extends Component {
 
                 if (key) {
                     keyStatus['existsOnServer'] = true;
+                    this.setState({keyExistsOnServer: true})
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== key) {
                             console.log('PGP key on server is different than ours');
@@ -3608,7 +3623,6 @@ class Sylk extends Component {
                         if (!this.state.contactsLoaded) {
                             console.log('Wait for PGP key until contacts are loaded');
                         } else {
-                            this.setState({keyDifferentOnServer: true})
                             console.log('We have no local PGP key');
                             setTimeout(() => {
                                 this.showImportPrivateKeyModal();
@@ -4660,6 +4674,7 @@ class Sylk extends Component {
     }
 
     async saveSylkContact(uri, contact, origin=null) {
+
         if (!contact) {
             contact = this.newContact(uri);
         } else {
@@ -4960,7 +4975,7 @@ class Sylk extends Component {
         }
     }
 
-    requestSyncConversations(lastId) {
+    requestSyncConversations(lastId=null) {
         console.log('Request sync conversations from', lastId);
         if (!this.state.account) {
             return;
@@ -5390,7 +5405,6 @@ class Sylk extends Component {
         if (failed && code) {
             if (code > 500 || code === 408) {
                 utils.timestampedLog('Message', id, 'failed on server:', reason, code);
-                return;
             }
         }
 
@@ -6350,7 +6364,6 @@ class Sylk extends Component {
         let messages = this.state.messages;
         let query;
         let params;
-        let wipe = false;
         let orig_uri = uri;
 
         if (uri) {
@@ -6374,33 +6387,31 @@ class Sylk extends Component {
             query = "DELETE FROM messages where ((from_uri = ? and to_uri = ? and direction = 'incoming') or (from_uri = ? and to_uri = ? and direction = 'outgoing'))";
             params = [uri, this.state.accountId, this.state.accountId, uri];
         } else {
-            wipe = true;
             console.log('--- Wiping device --- ');
             let dir = RNFS.DocumentDirectoryPath + '/conference/';
             RNFS.unlink(dir).then((success) => {
                 console.log('Removed folder', dir);
             }).catch((err) => {
-                console.log('Error deleting folder', dir, err.message);
+                //console.log('Error deleting folder', dir, err.message);
             });
-            query = "DELETE FROM messages where (to_uri = ? and direction = 'incoming') or (from_uri = ? and direction = 'outgoing')";
-            params = [this.state.accountId, this.state.accountId];
-            uri = this.state.accountId;
 
-            this.setState({messages: {}, myContacts: {}});
+            query = "DELETE FROM messages where (account = ? and to_uri = ? and direction = 'incoming') or (account = ? and from_uri = ? and direction = 'outgoing')";
+            params = [this.state.accountId, this.state.accountId, this.state.accountId, this.state.accountId];
+
+            this.setState({messages: {}});
             this.saveLastSyncId(null);
         }
 
         await this.ExecuteQuery(query, params).then((result) => {
             if (result.rowsAffected) {
                 console.log('SQL deleted', result.rowsAffected, 'messages');
-                this._notificationCenter.postSystemNotification(result.rowsAffected + ' messages removed');
+                if (uri) {
+                    this._notificationCenter.postSystemNotification(result.rowsAffected + ' messages removed');
+                }
             }
 
-            if (wipe) {
-                this.ExecuteQuery('delete from contacts where account = ?', [this.state.accountId]);
-                setTimeout(() => {
-                    this.logout();
-                }, 3000);
+            if (!uri) {
+                this.deleteAllContacts(this.state.accountId);
             } else {
                 if (result.rowsAffected === 0) {
                     this.removeContact(orig_uri);
@@ -6418,6 +6429,36 @@ class Sylk extends Component {
                     }
                 }
             }
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async deleteAllContacts(account) {
+        let query = 'delete from contacts where account = ?';
+        this.setState({myContacts: {}});
+        await this.ExecuteQuery(query, [account]).then((result) => {
+            if (result.rowsAffected) {
+                console.log('SQL deleted', result.rowsAffected, 'contacts');
+            }
+            this.deleteKeys(account);
+        }).catch((error) => {
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
+        });
+    }
+
+    async deleteKeys(account) {
+        let query = 'delete from keys where account = ?';
+        this.setState({keys: null});
+        await this.ExecuteQuery(query, [account]).then((result) => {
+            if (result.rowsAffected) {
+                console.log('SQL deleted', result.rowsAffected, 'keys');
+            }
+            setTimeout(() => {
+                this.logout();
+            }, 1000);
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -7794,7 +7835,7 @@ class Sylk extends Component {
         //console.log('Replicate contact', contact);
 
         if (!this.state.keys) {
-            console.log('Cannot replicate contact without aprivate key');
+            console.log('Cannot replicate contact without a private key');
             return;
         }
 
@@ -7825,6 +7866,7 @@ class Sylk extends Component {
     handleReplicateContact(json_contact) {
 
         let contact;
+        let new_contact;
         contact = JSON.parse(json_contact);
 
         if (contact.uri === null) {
@@ -7841,24 +7883,24 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
 
         if (uri in myContacts) {
-            contact = myContacts[uri];
+            new_contact = myContacts[uri];
             //
         } else {
-            contact = this.newContact(uri, contact.name);
-            if (!contact) {
+            new_contact = this.newContact(uri, contact.name);
+            if (!new_contact) {
                 return;
             }
         }
 
-        contact.uri = uri;
-        contact.name = contact.name;
-        contact.email = contact.email;
-        contact.organization = contact.organization;
-        contact.timestamp = new Date(contact.timestamp * 1000);
-        contact.tags = contact.tags;
-        contact.participants = contact.participants;
+        new_contact.uri = uri;
+        new_contact.name = contact.name;
+        new_contact.email = contact.email;
+        new_contact.organization = contact.organization;
+        new_contact.timestamp = new Date(contact.timestamp * 1000);
+        new_contact.tags = contact.tags;
+        new_contact.participants = contact.participants;
 
-        this.saveSylkContact(uri, contact, 'handleReplicateContact');
+        this.saveSylkContact(uri, new_contact, 'handleReplicateContact');
     }
 
     async handleReplicateContactSync(json_contact, id, msg_timestamp) {
@@ -8616,8 +8658,10 @@ class Sylk extends Component {
                     close={this.hideImportPrivateKeyModal}
                     saveFunc={this.savePrivateKey}
                     generateKeysFunc={this.generateKeys}
+                    useExistingKeysFunc={this.useExistingKeys}
                     privateKey={this.state.privateKey}
                     keyDifferentOnServer={this.state.keyDifferentOnServer}
+                    keyExistsOnServer={this.state.keyExistsOnServer}
                     keyStatus={this.state.keyStatus}
                     status={this.state.privateKeyImportStatus}
                     success={this.state.privateKeyImportSuccess}
@@ -8952,6 +8996,8 @@ class Sylk extends Component {
                        contactsLoaded: false,
                        registrationState: null,
                        registrationKeepalive: false,
+                       keyExistsOnServer: false,
+                       keyDifferentOnServer: false,
                        status: null,
                        keys: null,
                        lastSyncId: null,

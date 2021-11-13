@@ -98,9 +98,9 @@ class DeleteHistoryModal extends Component {
                         </View>
                              :
                              <Text style={styles.body}>
-                               You can delete all messages from this device.
+                               Delete all messages from this device.
                                {"\n"}{"\n"}
-                               Messages can still be retrieved from the server.
+                               Messages will remain on the server.
                              </Text>
                             }
 
@@ -135,6 +135,8 @@ class DeleteHistoryModal extends Component {
                                 </View>
                         : null}
 
+                            {this.state.uri ?
+
                             <View style={styles.checkBoxRow}>
                               <Text>Delete contact too </Text>
                               {Platform.OS === 'ios' ?
@@ -143,6 +145,7 @@ class DeleteHistoryModal extends Component {
                                 <Checkbox status={this.state.deleteContact ? 'checked' : 'unchecked'} onPress={() => {this.toggleDeleteContact()}}/>
                                 }
                                 </View>
+                            : null}
 
                         <View style={styles.buttonRow}>
 

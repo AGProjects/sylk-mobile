@@ -58,6 +58,12 @@ class ImportPrivateKeyModal extends Component {
         }
     }
 
+    useExistingKeys(event) {
+        event.preventDefault();
+        this.props.useExistingKeysFunc();
+        this.props.close();
+    }
+
     get disableButton() {
         if (!this.state.password || this.state.password.length < 6) {
             return true;
@@ -86,7 +92,7 @@ class ImportPrivateKeyModal extends Component {
                              <Text style={styles.body}>
                                  {'Enter the pincode shown on the sending device to import your private key:'}
                             </Text>
-                           <TextInput
+                            <TextInput
                                 style={styles.input}
                                 mode="flat"
                                 autoFocus={true}
@@ -113,7 +119,7 @@ class ImportPrivateKeyModal extends Component {
                                 onPress={this.save}
                                 icon="content-save"
                                 accessibilityLabel="Import private key"
-                                >Import
+                                >Import key
                             </Button>
                             :
                              <Text style={statusStyle}>
@@ -126,26 +132,48 @@ class ImportPrivateKeyModal extends Component {
                 </Portal>
             );
         } else {
-            let title = this.state.keyDifferentOnServer ? 'Another device?' : 'First device?';
-            let generate_key_title = this.state.confirm ? 'Confirm' : 'Generate key';
-            return (
+            if (this.state.keyDifferentOnServer) {
+                return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>{title}</Dialog.Title>
+                            <Dialog.Title style={styles.title}>Another device?</Dialog.Title>
                              <Text style={styles.body}>
-                                 To decrypt messages, you need a private key from another device. On another device go to  menu option 'Export private key'.
+                                 You have used messaging on more than one device. To decrypt messages, you need the same private key on all devices.
                             </Text>
-                             { !this.state.keyDifferentOnServer ?
                              <Text style={styles.body}>
-                                 If this is the first device, just generate a key by pressing the button bellow.
+                                 To use the private key from another device, choose on that device to menu option 'Export private key'.
                             </Text>
-                                 :
+                            <View style={styles.buttonRow}>
+                            <Button
+                                mode="contained"
+                                style={styles.button}
+                                onPress={this.useExistingKeys}
+                                icon="key"
+                                accessibilityLabel="keep existing key"
+                                >Keep existing key
+                            </Button>
+                            </View>
+                        </Surface>
+                    </DialogType>
+                </Portal>
+                );
+            } else {
+                return (
+                <Portal>
+                    <DialogType visible={this.state.show} onDismiss={this.props.close}>
+                        <Surface style={styles.container}>
+                            <Dialog.Title style={styles.title}>Another device?</Dialog.Title>
                              <Text style={styles.body}>
-                                 If you chose to generate a key, previous messages cannot be read on newer devices.
+                                 To decrypt messages, you need the same private key on all devices.
+                            </Text>
+                             <Text style={styles.body}>
+                                 To use the private key from another device, choose on that device to menu option 'Export private key'.
                             </Text>
 
-                                 }
+                             <Text style={styles.body}>
+                                 In case you lost access to your old devices, you must generate a new key. If you do this, older message cannot be read anymore.
+                            </Text>
                             <View style={styles.buttonRow}>
                             <Button
                                 mode="contained"
@@ -153,28 +181,31 @@ class ImportPrivateKeyModal extends Component {
                                 onPress={this.generateKeys}
                                 icon="content-save"
                                 accessibilityLabel="Generate key"
-                                >{generate_key_title}
+                                >{this.state.confirm ? 'Confirm' : 'Generate key'}
                             </Button>
                             </View>
                         </Surface>
                     </DialogType>
                 </Portal>
             );
+            }
         }
     }
 }
 
 
 ImportPrivateKeyModal.propTypes = {
-    show               : PropTypes.bool.isRequired,
-    close              : PropTypes.func.isRequired,
-    privateKey         : PropTypes.string,
-    saveFunc           : PropTypes.func.isRequired,
-    generateKeysFunc   : PropTypes.func.isRequired,
-    status             : PropTypes.string,
-    keyDifferentOnServer : PropTypes.bool,
-    keyStatus          : PropTypes.object,
-    success            : PropTypes.bool
+    show                : PropTypes.bool.isRequired,
+    close               : PropTypes.func.isRequired,
+    privateKey          : PropTypes.string,
+    saveFunc            : PropTypes.func.isRequired,
+    generateKeysFunc    : PropTypes.func.isRequired,
+    useExistingKeysFunc : PropTypes.func.isRequired,
+    status              : PropTypes.string,
+    keyDifferentOnServer: PropTypes.bool,
+    keyExistsOnServer   : PropTypes.bool,
+    keyStatus           : PropTypes.object,
+    success             : PropTypes.bool
 };
 
 export default ImportPrivateKeyModal;
