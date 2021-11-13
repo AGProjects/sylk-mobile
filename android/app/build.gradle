@@ -140,8 +140,8 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         missingDimensionStrategy "RNNotifications.reactNativeVersion", "reactNative60"
-        versionCode 218
-        versionName "2.8.0"
+        versionCode 219
+        versionName "2.8.1"
         multiDexEnabled true
     }
     splits {
