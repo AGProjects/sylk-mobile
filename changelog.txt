@@ -1,3 +1,28 @@
+Android 2.8.2 Fri Nov 26 15:48:32 -03 2021
+
+  * Show message id in info panel
+  * Fixed selecting chat contact at start from push
+  * Improve conference info
+  * Show iOS blocked permissions
+  * Fix alert panel for conference
+  * Capture call failure error
+  * Added share conference link menu item when selected contact is conference 
+  * Increase sdk to 30
+  * Fixed check if key exists
+  * Capture message failure
+  * Fixed import dialog title
+  * Replace html space 
+  * Added react native permissions module
+  * Remove broken html parsing funtiuon
+  * Fixed wiping device
+  * Fixed replicating keys
+  * Fixed replicate contact
+  * Save codecs
+  * Replace ear speaker icon
+  * Fixed deleting contact
+  * Fixed setting date for system message
+  * Fixed Conference Modal
+
 iOS 2.7.0 & Android 2.7.9 Thu Oct 28 13:47:15 -03 2021
 
   * Audio conferencing improvements
