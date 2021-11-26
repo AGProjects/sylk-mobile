@@ -630,7 +630,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        displayName = displayName + ' and others';
+        displayName = from_uri + ' and others';
         const hasVideo = mediaType === 'video' ? true : false;
 
         this._incoming_conferences.set(callUUID, {room: room, from: from_uri});

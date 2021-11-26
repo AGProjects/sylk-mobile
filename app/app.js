@@ -29,6 +29,7 @@ import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
 import {Keyboard} from 'react-native';
 import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from 'react-native-background-downloader';
+import {check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 
 import cloneDeep from 'lodash/cloneDeep';
 
@@ -489,68 +490,118 @@ class Sylk extends Component {
     }
 
     async requestCameraPermission() {
-        if (Platform.OS !== 'android') {
-            return true;
-        }
         console.log('Request camera permission');
 
-        try {
-            const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.CAMERA,
-                {
-                title: "Sylk camera permission",
-                message:
-                  "Sylk needs access to your camera " +
-                  "for video calls",
-                buttonNeutral: "Ask Me Later",
-                buttonNegative: "Cancel",
-                buttonPositive: "OK"
+        if (Platform.OS === 'ios') {
+            check(PERMISSIONS.IOS.CAMERA).then((result) => {
+                switch (result) {
+                  case RESULTS.UNAVAILABLE:
+                    console.log('Camera feature is not available (on this device / in this context)');
+                    break;
+                  case RESULTS.DENIED:
+                    console.log('Camera permission has not been requested / is denied but requestable');
+                    this._notificationCenter.postSystemNotification("Access to camera is denied. Go to Settings -> Sylk to enable access.");
+                    break;
+                  case RESULTS.LIMITED:
+                    console.log('Camera permission is limited: some actions are possible');
+                    break;
+                  case RESULTS.GRANTED:
+                    console.log('Camera permission is granted');
+                    break;
+                  case RESULTS.BLOCKED:
+                    this._notificationCenter.postSystemNotification("Access to camera is denied. Go to Settings -> Sylk to enable access.");
+                    console.log('Camera permission is denied and not requestable anymore');
+                    break;
                 }
-            );
-            if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                console.log("You can use the camera");
-                return true;
-            } else {
-                console.log("Camera permission denied");
+          }).catch((error) => {
+          });
+          return true;
+        }
+
+        if (Platform.OS === 'android') {
+            try {
+                const granted = await PermissionsAndroid.request(
+                PermissionsAndroid.PERMISSIONS.CAMERA,
+                    {
+                    title: "Sylk camera permission",
+                    message:
+                      "Sylk needs access to your camera " +
+                      "for video calls",
+                    buttonNeutral: "Ask Me Later",
+                    buttonNegative: "Cancel",
+                    buttonPositive: "OK"
+                    }
+                );
+                if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+                    console.log("You can use the camera");
+                    return true;
+                } else {
+                    console.log("Camera permission denied");
+                    return false;
+                }
+            } catch (err) {
+                console.warn(err);
                 return false;
             }
-        } catch (err) {
-            console.warn(err);
-            return false;
         }
     }
 
     async requestMicPermission() {
-        if (Platform.OS !== 'android') {
-            return true;
+       console.log('Request mic permission');
+
+        if (Platform.OS === 'ios') {
+            check(PERMISSIONS.IOS.MICROPHONE).then((result) => {
+                switch (result) {
+                  case RESULTS.UNAVAILABLE:
+                    console.log('Mic feature is not available (on this device / in this context)');
+                    break;
+                  case RESULTS.DENIED:
+                    console.log('Mic permission has not been requested / is denied but requestable');
+                    this._notificationCenter.postSystemNotification("Access to microphone is denied. Go to Settings -> Sylk to enable access.");
+                    break;
+                  case RESULTS.LIMITED:
+                    console.log('Mic permission is limited: some actions are possible');
+                    break;
+                  case RESULTS.GRANTED:
+                    console.log('Mic permission is granted');
+                    break;
+                  case RESULTS.BLOCKED:
+                    this._notificationCenter.postSystemNotification("Access to microphone is denied. Go to Settings -> Sylk to enable access.");
+                    console.log('Mic permission is denied and not requestable anymore');
+                    break;
+                }
+          }).catch((error) => {
+          });
+
+          return true;
         }
 
-        console.log('Request mic permission');
+        if (Platform.OS === 'android') {
+            try {
+                const granted = await PermissionsAndroid.request(
+                  PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+                  {
+                    title: "Sylk microphone permission",
+                    message:
+                      "Sylk needs access to your microphone " +
+                      "for audio calls.",
+                    buttonNeutral: "Ask Me Later",
+                    buttonNegative: "Cancel",
+                    buttonPositive: "OK"
+                  }
+                );
 
-        try {
-            const granted = await PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-              {
-                title: "Sylk microphone permission",
-                message:
-                  "Sylk needs access to your microphone " +
-                  "for audio calls.",
-                buttonNeutral: "Ask Me Later",
-                buttonNegative: "Cancel",
-                buttonPositive: "OK"
-              }
-            );
-
-            if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                console.log("You can now use the microphone");
-                return true;
-            } else {
-                console.log("Microphone permission denied");
+                if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+                    console.log("You can now use the microphone");
+                    return true;
+                } else {
+                    console.log("Microphone permission denied");
+                    return false;
+                }
+            } catch (err) {
+                console.warn(err);
                 return false;
             }
-        } catch (err) {
-            console.warn(err);
-            return false;
         }
     };
 
@@ -985,8 +1036,9 @@ class Sylk extends Component {
                     console.log('Starting chat with', this.initialChatContact);
                     if (this.initialChatContact in this.state.myContacts) {
                         this.selectContact(this.state.myContacts[this.initialChatContact]);
+                    } else {
+                        this.initialChatContact = null;
                     }
-                    this.initialChatContact = null;
                 }
             }, 100);
 
@@ -2079,6 +2131,8 @@ class Sylk extends Component {
             } else if (notification.action === 'Dismiss') {
                 this.dismissCall(callUUID);
             }
+        } else if (event === 'message') {
+            this.initialChatContact = data['from_uri'];
         }
     }
 
@@ -2113,19 +2167,6 @@ class Sylk extends Component {
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
         } else if (event === 'message') {
-            if (!from) {
-                return;
-            }
-
-            if (from in this.state.myContacts) {
-                if (!this.state.selectedContact) {
-                    this.selectContact(this.state.myContacts[from]);
-                }
-                this.initialChatContact = null;
-            } else {
-                this.initialChatContact = from;
-            }
-
             console.log('Push notification: new messages on Sylk server from', from);
         }
     }
@@ -2519,11 +2560,13 @@ class Sylk extends Component {
         this._notificationCenter.removeNotification();
     }
 
-    selectContact(contact) {
+    selectContact(contact, origin='') {
         if (contact !== this.state.selectedContact) {
             this.setState({pinned: false});
         }
+
         this.setState({selectedContact: contact});
+        this.initialChatContact = null;
     }
 
     logTimeline(step) {
@@ -3237,6 +3280,7 @@ class Sylk extends Component {
                 let missed = false;
                 let cancelled = false;
                 let server_failure = false;
+                CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState === 'progress' && direction === 'outgoing') {
@@ -3265,6 +3309,9 @@ class Sylk extends Component {
                 } else if (reason.match(/408/)) {
                     reason = 'Timeout';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                } else if (reason.match(/482/)) {
+                    reason = 'Loop detected';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/480/)) {
                     reason = 'Is not online';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
@@ -3288,7 +3335,10 @@ class Sylk extends Component {
                 } else if (reason.match(/488/)) {
                     reason = 'Unacceptable media';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
-                } else if (reason.match(/5\d\d/)) {
+                } else if (reason.match(/4\d\d/)) {
+                    reason = 'Call failure: ' + reason;
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                } else if (reason.match(/[5|6]\d\d/)) {
                     reason = 'Server failure: ' + reason;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                     server_failure = true;
@@ -3297,8 +3347,6 @@ class Sylk extends Component {
                     reason = 'Wrong account or password';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else {
-                    reason = 'Connection failed';
-                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                     server_failure = true;
                 }
 
@@ -3776,6 +3824,7 @@ class Sylk extends Component {
 
         const micAllowed = await this.requestMicPermission();
         if (!micAllowed) {
+            console.log('Cannot start call without access to microphone');
             return;
         }
 
@@ -3851,6 +3900,7 @@ class Sylk extends Component {
         const micAllowed = await this.requestMicPermission();
 
         if (!micAllowed) {
+            console.log('Cannot start call without access to microphone');
             return;
         }
 
@@ -6250,6 +6300,8 @@ class Sylk extends Component {
             let msg;
             let enc;
 
+            let last_content = null;
+
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 if (false) {
@@ -6313,6 +6365,14 @@ class Sylk extends Component {
                         myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                         continue;
                     }
+
+                    //console.log(item);
+
+                    if (last_content === content) {
+                        continue;
+                    }
+
+                    last_content = content;
 
                     msg = this.sql2GiftedChat(item, content);
                     messages[orig_uri].push(msg);
@@ -7130,11 +7190,14 @@ class Sylk extends Component {
         }
 
         this.saveIncomingMessage(message, decryptedBody);
+        let renderMessages = this.state.messages;
 
         if (this.state.selectedContact) {
-            let renderMessages = this.state.messages;
             if (message.sender.uri === this.state.selectedContact.uri) {
                 if (message.sender.uri in renderMessages) {
+                    if (renderMessages[message.sender.uri].some((obj) => obj.id === message.id)) {
+                        return;
+                    }
                 } else {
                     renderMessages[message.sender.uri] = [];
                 }
@@ -7274,8 +7337,12 @@ class Sylk extends Component {
 
                         let renderMessages = this.state.messages;
                         if (Object.keys(renderMessages).indexOf(uri) > -1) {
-                            renderMessages[uri].push(utils.sylkToRenderMessage(message, content, 'outgoing'));
-                            this.setState({renderMessages: renderMessages});
+                            if (!renderMessages[uri].some((obj) => obj.id === message.id)) {
+                                renderMessages[uri].push(utils.sylkToRenderMessage(message, content, 'outgoing'));
+                                this.setState({renderMessages: renderMessages});
+                            } else {
+                                return;
+                            }
                         }
                     }
 
@@ -7318,8 +7385,12 @@ class Sylk extends Component {
 
                 let renderMessages = this.state.messages;
                 if (Object.keys(renderMessages).indexOf(uri) > -1) {
-                    renderMessages[uri].push(utils.sylkToRenderMessage(message, content, 'outgoing'));
-                    this.setState({renderMessages: renderMessages});
+                    if (!renderMessages[uri].some((obj) => obj.id === message.id)) {
+                        renderMessages[uri].push(utils.sylkToRenderMessage(message, content, 'outgoing'));
+                        this.setState({renderMessages: renderMessages});
+                    } else {
+                        return;
+                    }
                 }
 
                 this.saveSylkContact(uri, myContacts[uri], 'outgoingMessage');

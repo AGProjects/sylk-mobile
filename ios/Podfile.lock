@@ -98,6 +98,16 @@ PODS:
     - nanopb/encode (= 0.3.9011)
   - nanopb/decode (0.3.9011)
   - nanopb/encode (0.3.9011)
+  - Permission-Camera (3.1.0):
+    - RNPermissions
+  - Permission-Contacts (3.1.0):
+    - RNPermissions
+  - Permission-MediaLibrary (3.1.0):
+    - RNPermissions
+  - Permission-Microphone (3.1.0):
+    - RNPermissions
+  - Permission-PhotoLibrary (3.1.0):
+    - RNPermissions
   - PromisesObjC (1.2.9)
   - Protobuf (3.12.0)
   - RCTRequired (0.61.5)
@@ -347,6 +357,8 @@ PODS:
     - React-Core
   - RNFS (2.18.0):
     - React
+  - RNPermissions (3.1.0):
+    - React-Core
   - RNSha1 (1.2.3):
     - React
   - RNShare (3.3.3):
@@ -368,6 +380,11 @@ DEPENDENCIES:
   - FBReactNativeSpec (from `../node_modules/react-native/Libraries/FBReactNativeSpec`)
   - Folly (from `../node_modules/react-native/third-party-podspecs/Folly.podspec`)
   - glog (from `../node_modules/react-native/third-party-podspecs/glog.podspec`)
+  - Permission-Camera (from `../node_modules/react-native-permissions/ios/Camera`)
+  - Permission-Contacts (from `../node_modules/react-native-permissions/ios/Contacts`)
+  - Permission-MediaLibrary (from `../node_modules/react-native-permissions/ios/MediaLibrary`)
+  - Permission-Microphone (from `../node_modules/react-native-permissions/ios/Microphone`)
+  - Permission-PhotoLibrary (from `../node_modules/react-native-permissions/ios/PhotoLibrary`)
   - RCTRequired (from `../node_modules/react-native/Libraries/RCTRequired`)
   - RCTTypeSafety (from `../node_modules/react-native/Libraries/TypeSafety`)
   - React (from `../node_modules/react-native/`)
@@ -413,6 +430,7 @@ DEPENDENCIES:
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
   - RNFileViewer (from `../node_modules/react-native-file-viewer`)
   - RNFS (from `../node_modules/react-native-fs`)
+  - RNPermissions (from `../node_modules/react-native-permissions`)
   - RNSha1 (from `../node_modules/react-native-sha1`)
   - RNShare (from `../node_modules/react-native-share`)
   - RNSoundPlayer (from `../node_modules/react-native-sound-player`)
@@ -453,6 +471,16 @@ EXTERNAL SOURCES:
     :podspec: "../node_modules/react-native/third-party-podspecs/Folly.podspec"
   glog:
     :podspec: "../node_modules/react-native/third-party-podspecs/glog.podspec"
+  Permission-Camera:
+    :path: "../node_modules/react-native-permissions/ios/Camera"
+  Permission-Contacts:
+    :path: "../node_modules/react-native-permissions/ios/Contacts"
+  Permission-MediaLibrary:
+    :path: "../node_modules/react-native-permissions/ios/MediaLibrary"
+  Permission-Microphone:
+    :path: "../node_modules/react-native-permissions/ios/Microphone"
+  Permission-PhotoLibrary:
+    :path: "../node_modules/react-native-permissions/ios/PhotoLibrary"
   RCTRequired:
     :path: "../node_modules/react-native/Libraries/RCTRequired"
   RCTTypeSafety:
@@ -537,6 +565,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-file-viewer"
   RNFS:
     :path: "../node_modules/react-native-fs"
+  RNPermissions:
+    :path: "../node_modules/react-native-permissions"
   RNSha1:
     :path: "../node_modules/react-native-sha1"
   RNShare:
@@ -573,6 +603,11 @@ SPEC CHECKSUMS:
   GoogleDataTransportCCTSupport: 0f39025e8cf51f168711bd3fb773938d7e62ddb5
   GoogleUtilities: e121a3867449ce16b0e35ddf1797ea7a389ffdf2
   nanopb: 18003b5e52dab79db540fe93fe9579f399bd1ccd
+  Permission-Camera: 0db4fd6e1c556c1cf47f38b989a8084cea3ec3dd
+  Permission-Contacts: c9c3306280576546619fc9ae7489012ed9fe091f
+  Permission-MediaLibrary: eb4dc997f8d3f81f28940f997651cd1a2bf16149
+  Permission-Microphone: 7b75718196244a6e59dd60f82f12962562c2ea12
+  Permission-PhotoLibrary: 9dcf80d1353d81b9f1e210c34291591236aaf2b6
   PromisesObjC: b48e0338dbbac2207e611750777895f7a5811b75
   Protobuf: 2793fcd0622a00b546c60e7cbbcc493e043e9bb9
   RCTRequired: b153add4da6e7dbc44aebf93f3cf4fcae392ddf1
@@ -617,6 +652,7 @@ SPEC CHECKSUMS:
   RNFBMessaging: 51cc7f6beaf4c4feac6f18ea941bba5854e3d9c6
   RNFileViewer: 83cc066ad795b1f986791d03b56fe0ee14b6a69f
   RNFS: 3ab21fa6c56d65566d1fb26c2228e2b6132e5e32
+  RNPermissions: 4b54095940aea8c03fa3e6c92d4ac3647b31ed4e
   RNSha1: 6de589cd0b0397d0f6248a2e5ee9e5f0d7da38dc
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
   RNSoundPlayer: aa3c998a1f9beaa0f9fdd4485846a74a53df7d07
@@ -625,6 +661,6 @@ SPEC CHECKSUMS:
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36
   Yoga: f2a7cd4280bfe2cca5a7aed98ba0eb3d1310f18b
 
-PODFILE CHECKSUM: 3e4de7f816dfa55ab91ba78bd5284a450daaaa82
+PODFILE CHECKSUM: 54352e37dc72ad66bc95fa49966b1ce032a1b2d0
 
 COCOAPODS: 1.10.1

@@ -446,16 +446,17 @@ class ConferenceBox extends Component {
 
     getInfo() {
         let info;
-        if (this.bandwidthDownload > 0 && this.bandwidthUpload > 0) {
-            info = '⇣' + this.bandwidthDownload + ' ⇡' + this.bandwidthUpload;
-        } else if (this.bandwidthDownload > 0) {
-            info = '⇣' + this.bandwidthDownload ;
-        } else if (this.bandwidthUpload > 0) {
-            info = '⇡' + this.bandwidthUpload;
-        }
+        let bandwidthDownload = this.bandwidthDownload;
+        let bandwidthUpload = this.bandwidthUpload;
+        let unit = 'Kbit/s';
 
-        if (info) {
-            return info + ' Mbit/s';
+        if (this.bandwidthDownload > 0 && this.bandwidthUpload > 0) {
+            if (this.bandwidthDownload > 1100 || this.bandwidthUpload > 1100) {
+                bandwidthDownload = Math.ceil(this.bandwidthDownload / 1000 * 100) / 100;
+                bandwidthUpload = Math.ceil(this.bandwidthUpload / 1000 * 100) / 100;
+                unit = 'Mbit/s';
+            }
+            info = '⇣' + bandwidthDownload + ' ⇡' + bandwidthUpload + ' ' + unit;
         }
 
         return info;
@@ -1454,9 +1455,8 @@ class ConferenceBox extends Component {
                  //console.log(identity, p.id, 'audio loss', audioPacketLoss, '%, video loss', videoPacketLoss, '%, total loss', totalPacketLoss, '%');
 
                  const bandwidthDownload = totalVideoBandwidth + totalAudioBandwidth;
-                 this.bandwidthDownload = Math.ceil(bandwidthDownload / 1000 * 100) / 100;
-
-                 this.bandwidthUpload = Math.ceil(bandwidthUpload / 1000 * 100) / 100;
+                 this.bandwidthDownload = bandwidthDownload;
+                 this.bandwidthUpload = bandwidthUpload;
 
                  this.videoBandwidth.set('total', totalVideoBandwidth);
                  this.audioBandwidth.set('total', totalAudioBandwidth);
@@ -2295,7 +2295,7 @@ class ConferenceBox extends Component {
                     {inviteParticipantsModal}
 
                     <View style={conferenceContainer}>
-                                            <ConferenceHeader
+                    <ConferenceHeader
                         remoteUri={this.state.remoteUri}
                         callContact={this.props.callContact}
                         isTablet={this.props.isTablet}

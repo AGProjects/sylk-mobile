@@ -67,10 +67,6 @@ class ConferenceHeader extends React.Component {
             } else {
                 this.duration = duration.format('mm:ss', {trim: false});
             }
-
-            if (this.props.show) {
-                this.forceUpdate();
-            }
         }, 1000);
     }
 
@@ -194,7 +190,7 @@ class ConferenceHeader extends React.Component {
         } else if (this.state.terminated) {
             callDetail = 'Conference ended';
         } else if (this.duration) {
-            callDetail = (this.props.isTablet ? 'Duration: ' : '') + this.duration;
+            callDetail = this.duration;
             if (this.state.participants > 0) {
                 var participants = this.state.participants + 1;
                 callDetail = callDetail +  ' - ' + participants + ' participant' + (participants > 1 ? 's' : '');
@@ -268,7 +264,6 @@ This menu somehow causes the action button and menu itself to require double tap
 */
 
 ConferenceHeader.propTypes = {
-    show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string.isRequired,
     call: PropTypes.object,
     isTablet: PropTypes.bool,

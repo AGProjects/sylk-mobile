@@ -87,6 +87,9 @@ class MessageInfoModal extends Component {
                     : null}
                      <DataTable>
                         <DataTable.Row>
+                          <DataTable.Cell>{this.state.message._id}</DataTable.Cell>
+                        </DataTable.Row>
+                        <DataTable.Row>
                           <DataTable.Cell>{this.state.message.createdAt.toString()}</DataTable.Cell>
                         </DataTable.Row>
                         {!this.state.message.url ?
@@ -107,7 +110,6 @@ class MessageInfoModal extends Component {
                           <DataTable.Cell>{fileExists}</DataTable.Cell>
                         </DataTable.Row>
                         : null}
-
                       </DataTable>
                     </Surface>
                 </DialogType>

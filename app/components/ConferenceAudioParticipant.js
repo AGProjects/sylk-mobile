@@ -62,15 +62,23 @@ class ConferenceAudioParticipant extends Component {
             rightStyle = styles.rightGreen;
         }
 
-        //console.log(this.props.extraButtons);
-
         let media = '';
-        let mediaStyle = styles.media;
-        if (this.props.loss && this.props.loss > 10) {
-            media = this.props.loss + '% packet loss';
+        let mediaStyle = styles.mediaGood;
+        if (this.props.loss && this.props.loss > 7) {
+            media = this.props.loss > 50 ? 'Audio lost' : this.props.loss + '% packet loss';
             mediaStyle = styles.mediaBad;
-        } else if (this.props.latency && this.props.latency > 300) {
-            media = this.props.latency + ' ms delay';
+        } else if (this.props.latency) {
+            if (this.props.latency < 300) {
+                media = this.props.latency + ' ms delay';
+            } else if (this.props.latency && this.props.latency >= 300 && this.props.latency < 600) {
+                media = this.props.latency + ' ms delay';
+                mediaStyle = styles.mediaMedium;
+            } else if (this.props.latency && this.props.latency >= 600) {
+                media = this.props.latency + ' ms big delay';
+                mediaStyle = styles.mediaBad;
+            }
+        } else {
+            media = 'Waiting for audio...';
             mediaStyle = styles.mediaBad;
         }
 

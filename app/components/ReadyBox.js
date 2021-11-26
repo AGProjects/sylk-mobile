@@ -21,7 +21,7 @@ class ReadyBox extends Component {
         autoBind(this);
 
         this.state = {
-            targetUri: '',
+            targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
             contacts: this.props.contacts,
             selectedContact: this.props.selectedContact,
             showConferenceModal: this.props.showConferenceModal,
@@ -58,9 +58,8 @@ class ReadyBox extends Component {
             return;
         }
 
-        if (this.state.selectedContact && !nextProps.selectedContact) {
-            this.setState({targetUri: '',
-                           chat: false});
+        if (this.state.selectedContact) {
+            this.setState({targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : '', chat: false});
         }
 
         if (!this.state.inviteContacts && nextProps.inviteContacts) {
