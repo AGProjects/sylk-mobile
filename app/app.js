@@ -327,8 +327,10 @@ class Sylk extends Component {
         this.prevPath = null;
         this.shouldUseHashRouting = false;
         this.goToReadyTimer = null;
-        this.msg_sound_played_ts = null;
+        this.incoming_sound_ts = null;
+        this.outgoing_sound_ts = null;
         this.initialChatContact = null;
+        this.mustPlayIncomingSoundAfterSync = false;
 
         storage.initialize();
         this.callKeeper = new CallManager(RNCallKeep,
@@ -4753,11 +4755,17 @@ class Sylk extends Component {
             return;
         }
 
+        let unread_messages = contact.unread.toString();
+        if (origin === 'saveIncomingMessage' && this.state.selectedContact && this.state.selectedContact.uri === uri) {
+            unread_messages = '';
+            console.log('Do not update unread messages for', uri);
+        }
+
+
         let conference = contact.conference ? 1: 0;
         let tags = contact.tags.toString();
         let media = contact.lastCallMedia.toString();
         let participants = contact.participants.toString();
-        let unread_messages = contact.unread.toString();
         let unixTime = Math.floor(contact.timestamp / 1000);
 
         let params = [this.state.accountId, contact.email, contact.photo, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
@@ -5790,6 +5798,7 @@ class Sylk extends Component {
                                 m.sent = true;
                                 m.pending = false;
                                 changes = true;
+                                this.playMessageSound('outgoing');
                             }
 
                             if (state === 'failed') {
@@ -5981,7 +5990,7 @@ class Sylk extends Component {
         //console.log('Confirm read messages for', uri);
         let displayed = [];
 
-        await this.ExecuteQuery("SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and system is NULL and to_uri = ?", [this.state.accountId]).then((results) => {
+        await this.ExecuteQuery("SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and encrypted not in (1, 3) and system is NULL and to_uri = ?", [this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length > 0) {
                //console.log('We must confirm read of', rows.length, 'messages');
@@ -6074,7 +6083,8 @@ class Sylk extends Component {
         let query;
         let result = {};
         let id = message.msg_id || message.id;
-        this.state.account.sendDispositionNotification(message.from_uri, id, message.timestamp, state,(error) => {
+        let uri =  message.sender ? message.sender.uri : message.from_uri;
+        this.state.account.sendDispositionNotification(uri, id, message.timestamp, state,(error) => {
             if (!error) {
                 utils.timestampedLog('Message', id, 'was', state, 'now');
                 return true;
@@ -6113,6 +6123,7 @@ class Sylk extends Component {
     async decryptMessage(message, updateContact=false) {
         // encrypted
         // 0 not encrypted
+        // null not encrypted
         // 1 encrypted content
         // 2 decrypted content
         // 3 failed to decrypt
@@ -6152,6 +6163,12 @@ class Sylk extends Component {
             if (updateContact) {
                 let myContacts = this.state.myContacts;
                 console.log('Update contact after decryption', uri);
+
+                if (this.mustPlayIncomingSoundAfterSync) {
+                    this.playMessageSound();
+                    this.mustPlayIncomingSoundAfterSync = false;
+                }
+
                 if (message.timestamp > myContacts[uri].timestamp) {
                     myContacts[uri].lastMessage = content.substring(0, 100);
                     myContacts[uri].lastMessageId = message.id;
@@ -6189,9 +6206,8 @@ class Sylk extends Component {
 
         }).catch((error) => {
             let params = [id];
-            //console.log('Failed to decrypt message:', error);
             this.ExecuteQuery("update messages set encrypted = 3 where msg_id = ?", params).then((result) => {
-                //console.log('SQL updated message decrypted', id, 'rows affected', result.rowsAffected);
+                console.log('SQL failed to decrypt message', id, 'rows affected', result.rowsAffected);
             }).catch((error) => {
                 console.log('SQL message update error:', error);
             });
@@ -6350,6 +6366,14 @@ class Sylk extends Component {
                     if (item.encrypted === null) {
                         item.encrypted = 1;
                     }
+
+                    /*
+                     encrypted:
+                     1 = unencrypted
+                     2 = decrypted
+                     3 = failed to decrypt message
+                    */
+
                     enc = parseInt(item.encrypted);
                     if (enc && enc !== 3 ) {
                         if (uri in decryptingMessages) {
@@ -6536,27 +6560,45 @@ class Sylk extends Component {
         });
     }
 
-    playIncomingSound() {
+    playMessageSound(direction='incoming') {
         let must_play_sound = true;
 
-        if (this.msg_sound_played_ts) {
-            let diff = (Date.now() - this.msg_sound_played_ts)/ 1000;
-            if (diff < 10) {
-                must_play_sound = false;
+        if (direction === 'incoming') {
+            if (this.incoming_sound_ts) {
+                let diff = (Date.now() - this.incoming_sound_ts)/ 1000;
+                if (diff < 5) {
+                    must_play_sound = false;
+                }
+            }
+        } else {
+            if (this.outgoing_sound_ts) {
+                let diff = (Date.now() - this.outgoing_sound_ts)/ 1000;
+                if (diff < 5) {
+                    must_play_sound = false;
+                }
             }
         }
 
-        this.msg_sound_played_ts = Date.now();
+        if (!must_play_sound) {
+            console.log('Play incoming sound skipped');
+        }
 
-        if (must_play_sound) {
-            try {
-              if (Platform.OS === 'ios') {
-                  SoundPlayer.setSpeaker(true);
-              }
-              SoundPlayer.playSoundFile('message_received', 'wav');
-            } catch (e) {
-              console.log('Cannot play message_received.wav', e);
-            }
+        console.log('Play', direction, 'message sound');
+
+        try {
+          if (Platform.OS === 'ios') {
+              SoundPlayer.setSpeaker(true);
+          }
+          //SoundPlayer.playSoundFile('message_received', 'wav');
+          if (direction === 'incoming') {
+            this.incoming_sound_ts = Date.now();
+            SoundPlayer.playSoundFile('beluga_in', 'wav');
+          } else {
+            this.outgoing_sound_ts = Date.now();
+            SoundPlayer.playSoundFile('beluga_out', 'wav');
+          }
+        } catch (e) {
+          console.log('Error playing', direction,' sound:', e);
         }
     }
 
@@ -6693,6 +6735,7 @@ class Sylk extends Component {
             this.afterSyncTasks();
         }
     }
+
     remove_sync_pending_item(item) {
         //console.log('remove_sync_pending_item', this.sync_pending_items.length);
         let idx = this.sync_pending_items.indexOf(item);
@@ -6844,6 +6887,7 @@ class Sylk extends Component {
             }
 
             this.saveSylkContact(uri, myContacts[uri], 'syncEnd');
+
         });
 
         let purgeMessages = this.state.purgeMessages;
@@ -6872,7 +6916,10 @@ class Sylk extends Component {
             this.addTestContacts();
             this.refreshNavigationItems();
             this.updateServerHistory('syncConversations')
-        }, 2000);
+            if (this.state.selectedContact) {
+                this.getMessages(this.state.selectedContact.uri);
+            }
+        }, 1000);
     }
 
     async syncConversations(messages) {
@@ -7089,6 +7136,9 @@ class Sylk extends Component {
                     myContacts[uri].lastMessage = null; // need to be loaded later after decryption
                     myContacts[uri].lastCallDuration = null;
                     myContacts[uri].direction = 'incoming';
+                    if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                        this.mustPlayIncomingSoundAfterSync = true;
+                    }
                     if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
                         myContacts[uri].tags.push('chat');
                     }
@@ -7176,15 +7226,17 @@ class Sylk extends Component {
         if (is_encrypted) {
             if (!this.state.keys || !this.state.keys.private) {
                 console.log('Missing private key, cannot decrypt message');
-                this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: no private key', 'incoming');
+                this.sendDispositionNotification(message, 'error');
+                this.saveSystemMessage(message.sender.uri, 'Cannot decrypt message, no private key', 'incoming');
             } else {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
                     //console.log('Incoming message', message.id, 'decrypted');
                     this.handleIncomingMessage(message, decryptedBody);
                 }).catch((error) => {
-                    //console.log('Failed to decrypt message:', error);
+                    console.log('Failed to decrypt message', message.id, error);
                     this.sendPublicKey(message.sender.uri);
-                    //this.saveSystemMessage(message.sender.uri, 'Cannot decrypt: wrong public key', 'incoming');
+                    this.sendDispositionNotification(message, 'error');
+                    this.saveSystemMessage(message.sender.uri, 'Cannot decrypt last message, wrong key', 'incoming');
                 });
             }
         } else {
@@ -7223,6 +7275,7 @@ class Sylk extends Component {
             selectedContact.lastCallDuration = null;
 
             this.setState({selectedContact: selectedContact, messages: renderMessages});
+            this.playMessageSound();
         } else {
             this.setState({messages: renderMessages});
         }
@@ -8551,9 +8604,9 @@ class Sylk extends Component {
          });
 
          if (i > 0) {
-             console.log('Saved new', i, 'history items');
+             console.log('Saved new', i, 'call history items');
          } else {
-             console.log('Server history was already in sync');
+             console.log('Server call history was already in sync');
          }
 
          this.setState({missedCalls: missedCalls});

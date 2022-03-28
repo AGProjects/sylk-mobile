@@ -3,7 +3,7 @@ import { NativeModules, AppState } from 'react-native';
 const { SylkNative } = NativeModules;
 
 export default async (remoteMessage) => {
-    //console.log('Push notification received', remoteMessage.data.event, 'in state', AppState.currentState);
+    console.log('Push notification received', remoteMessage.data.event, 'in state', AppState.currentState);
 
     if (AppState.currentState === "background") {
 
