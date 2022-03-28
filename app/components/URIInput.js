@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { TextInput, Searchbar  } from 'react-native-paper';
+import { Button, TextInput, Searchbar  } from 'react-native-paper';
 import autoBind from 'auto-bind';
 
 class URIInput extends React.Component {

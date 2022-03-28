@@ -269,6 +269,7 @@ class Sylk extends Component {
             showLogo: true,
             historyFilter: null,
             showExportPrivateKeyModal: false,
+            showQRCodeScanner: false,
             navigationItems: {today: false,
                               yesterday: false,
                               conference: false}
@@ -1732,6 +1733,11 @@ class Sylk extends Component {
 
         if (this.state.incomingCallUUID) {
             this.hideInternalAlertPanel('backPressed');
+            return;
+        }
+
+        if (this.state.showQRCodeScanner) {
+            this.toggleQRCodeScanner();
             return;
         }
 
@@ -4169,6 +4175,11 @@ class Sylk extends Component {
 
     toggleCallMeMaybeModal() {
         this.setState({showCallMeMaybeModal: !this.state.showCallMeMaybeModal});
+    }
+
+    toggleQRCodeScanner() {
+        utils.timestampedLog('Toggle QR code scanner');
+        this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
     }
 
     speakerphoneOn() {
@@ -8722,6 +8733,8 @@ class Sylk extends Component {
                     filterHistoryFunc = {this.filterHistory}
                     historyFilter = {this.state.historyFilter}
                     inviteToConferenceFunc = {this.inviteToConference}
+                    showQRCodeScanner = {this.state.showQRCodeScanner}
+                    toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
                 />
 
                 <ImportPrivateKeyModal

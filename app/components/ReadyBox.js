@@ -2,8 +2,8 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, TouchableHighlight} from 'react-native';
-import { IconButton, Title, Button, Colors  } from 'react-native-paper';
+import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity} from 'react-native';
+import { IconButton, Title, Button, Colors, Text  } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';
@@ -14,6 +14,8 @@ import config from '../config';
 import utils from '../utils';
 import styles from '../assets/styles/blink/_ReadyBox.scss';
 import {Keyboard} from 'react-native';
+import QRCodeScanner from 'react-native-qrcode-scanner';
+import { RNCamera } from 'react-native-camera';
 
 class ReadyBox extends Component {
     constructor(props) {
@@ -48,9 +50,11 @@ class ReadyBox extends Component {
             fontScale: this.props.fontScale,
             historyFilter: this.props.historyFilter,
             isTablet: this.props.isTablet,
-            myContacts: this.props.myContacts
+            myContacts: this.props.myContacts,
+            showQRCodeScanner: this.props.showQRCodeScanner
         };
         this.ended = false;
+
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -112,6 +116,7 @@ class ReadyBox extends Component {
                         missedCalls: nextProps.missedCalls,
                         fontScale: nextProps.fontScale,
                         isTablet: nextProps.isTablet,
+                        showQRCodeScanner: nextProps.showQRCodeScanner,
                         isLandscape: nextProps.isLandscape});
     }
 
@@ -166,8 +171,20 @@ class ReadyBox extends Component {
         return false;
     }
 
+    get showNavigationBar(){
+        if (this.state.selectedContact) {
+            return false;
+        }
+        return true;
+
+    }
+
     get showSearchBar() {
         if (this.state.selectedContact && !this.state.isTablet) {
+            return false;
+        }
+
+        if (this.state.showQRCodeScanner) {
             return false;
         }
 
@@ -184,6 +201,10 @@ class ReadyBox extends Component {
 
     get showButtonsBar() {
         if (this.state.historyCategoryFilter === 'blocked') {
+            return false;
+        }
+
+        if (this.state.showQRCodeScanner) {
             return false;
         }
 
@@ -286,6 +307,7 @@ class ReadyBox extends Component {
         event.preventDefault();
         this.props.showConferenceModalFunc();
     }
+
 
     handleChat(event) {
         event.preventDefault();
@@ -488,6 +510,11 @@ class ReadyBox extends Component {
         let key = object.item.key;
         let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
 
+        if (key === "hideQRCodeScanner") {
+            return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
+        }
+
+
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
@@ -517,22 +544,47 @@ class ReadyBox extends Component {
             conferenceEnabled = false;
         }
 
+        if (this.state.showQRCodeScanner) {
+            return [
+              {key: "hideQRCodeScanner", title: 'Cancel', enabled: true, selected: false}
+              ];
+        }
+
         return [
-                                  {key: null, title: 'All', enabled: true, selected: false},
-                                  {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
-                                  {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
-                                  {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
-                                  {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
-                                  {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
-                                  {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
-                                  {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
-                                  {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
-                                  {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
-                                  ];
+              {key: null, title: 'All', enabled: true, selected: false},
+              {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
+              {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
+              {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
+              {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
+              {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
+              {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
+              {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
+              {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
+              {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
+              ];
+    }
+
+    toggleQRCodeScanner(event) {
+        if (event) {
+            event.preventDefault();
+        }
+        console.log('Scan QR code...');
+        this.props.toggleQRCodeScannerFunc();
+    }
+
+    QRCodeRead(e) {
+        console.log('QR code data:', e.data);
+        this.handleTargetChange(e.data);
+        this.props.toggleQRCodeScannerFunc();
+    }
+
+    get showQRCodeButton() {
+        let uri = this.state.targetUri.toLowerCase();
+        return uri.length === 0;
     }
 
     render() {
-        let uriClass = styles.portraitUriInputBox;
+        let URIContainerClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
 
@@ -580,9 +632,9 @@ class ReadyBox extends Component {
         }
 
         if (this.state.isTablet) {
-            uriClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriInputBox : styles.portraitTabletUriInputBox;
+            URIContainerClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriInputBox : styles.portraitTabletUriInputBox;
         } else {
-            uriClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
+            URIContainerClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
         }
 
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
@@ -610,7 +662,7 @@ class ReadyBox extends Component {
                 <View style={styles.container}>
                     <View >
                         {this.showSearchBar && !this.state.isLandscape ?
-                        <View style={uriClass}>
+                        <View style={URIContainerClass}>
                             <URIInput
                                 defaultValue={this.state.targetUri}
                                 onChange={this.handleTargetChange}
@@ -625,7 +677,7 @@ class ReadyBox extends Component {
                         {this.showButtonsBar ?
                         <View style={uriGroupClass}>
                         {this.showSearchBar && this.state.isLandscape ?
-                        <View style={uriClass}>
+                        <View style={URIContainerClass}>
                             <URIInput
                                 defaultValue={this.state.targetUri}
                                 onChange={this.handleTargetChange}
@@ -636,7 +688,6 @@ class ReadyBox extends Component {
                             />
                         </View>
                         : null}
-
                             {showBackToCallButton ?
                             <View style={buttonGroupClass}>
                                 <Button
@@ -682,17 +733,6 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.conferenceButtonDisabled ? disabledBlueButtonClass : blueButtonClass}
-                                            disabled={this.conferenceButtonDisabled}
-                                            size={32}
-                                            onPress={this.showConferenceModal}
-                                            icon="account-group"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
 
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
@@ -705,6 +745,34 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
+
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.conferenceButtonDisabled ? disabledBlueButtonClass : blueButtonClass}
+                                            disabled={this.conferenceButtonDisabled}
+                                            size={32}
+                                            onPress={this.showConferenceModal}
+                                            icon="account-group"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+
+
+                                 { this.showQRCodeButton ?
+
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            onPress={this.toggleQRCodeScanner}
+                                            style={styles.qrCodeButton}
+                                            disabled={!this.showQRCodeButton}
+                                            size={32}
+                                            icon="qrcode"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null}
                             </View>
                             }
 
@@ -713,6 +781,16 @@ class ReadyBox extends Component {
 
                     </View>
                     <View style={[historyContainer, borderClass]}>
+                      { this.state.showQRCodeScanner &&  !showBackToCallButton ?
+
+                    <QRCodeScanner
+                        onRead={this.QRCodeRead}
+                        showMarker={true}
+                        flashMode={RNCamera.Constants.FlashMode.torch}
+                        containerStyle={styles.QRcodeContainer}
+                     />
+                      :
+
                         <ContactsListBox
                             contacts={this.state.contacts}
                             targetUri={this.state.targetUri}
@@ -765,9 +843,11 @@ class ReadyBox extends Component {
                             isTyping = {this.state.isTyping}
                             call = {this.state.call}
                         />
+                        }
+
                     </View>
 
-                    { !this.state.selectedContact ?
+                    {this.showNavigationBar ?
                     <View style={styles.navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
@@ -843,6 +923,7 @@ ReadyBox.propTypes = {
     sendPublicKey   : PropTypes.func,
     inviteContacts  : PropTypes.bool,
     shareToContacts  : PropTypes.bool,
+    showQRCodeScanner      : PropTypes.bool,
     selectedContacts: PropTypes.array,
     updateSelection : PropTypes.func,
     loadEarlierMessages: PropTypes.func,
@@ -860,6 +941,7 @@ ReadyBox.propTypes = {
     historyFilter: PropTypes.string,
     fontScale: PropTypes.number,
     inviteToConferenceFunc: PropTypes.func,
+    toggleQRCodeScannerFunc: PropTypes.func,
     myContacts: PropTypes.object
 };
 
