@@ -7304,9 +7304,12 @@ class Sylk extends Component {
             selectedContact.lastCallDuration = null;
 
             this.setState({selectedContact: selectedContact, messages: renderMessages});
-            this.playMessageSound();
         } else {
             this.setState({messages: renderMessages});
+        }
+
+        if (this.state.selectedContact || this.currentRoute === '/ready') {
+            this.playMessageSound();
         }
 
         this.notifyIncomingMessageWhileInACall(message.sender.uri);
