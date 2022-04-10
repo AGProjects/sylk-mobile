@@ -3315,7 +3315,7 @@ class Sylk extends Component {
                     reason = 'User not found';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/408/)) {
-                    reason = 'Timeout';
+                    reason = 'No answer';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/482/)) {
                     reason = 'Loop detected';
