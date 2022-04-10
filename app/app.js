@@ -2289,7 +2289,7 @@ class Sylk extends Component {
                     }
                 }
 
-                this.updateLoading(null, 'incoming_call');
+                this.updateLoading(null, 'cancel_incoming_call');
             }
             return;
         }
@@ -4217,7 +4217,7 @@ class Sylk extends Component {
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
-        this.updateLoading(null, 'incoming_call');
+        this.updateLoading(null, 'outgoing_call');
     }
 
     outgoingConference(call) {
@@ -4225,7 +4225,7 @@ class Sylk extends Component {
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
-        this.updateLoading(null, 'incoming_call');
+        this.updateLoading(null, 'outgoing_call');
     }
 
     _onLocalNotificationReceivedBackground(notification) {
@@ -4334,7 +4334,7 @@ class Sylk extends Component {
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
         this.backToForeground();
-        this.updateLoading(null, 'incoming_call');
+        this.updateLoading(null, 'start_conference');
         utils.timestampedLog('New outgoing conference to room', targetUri);
         this.setState({targetUri: targetUri});
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
