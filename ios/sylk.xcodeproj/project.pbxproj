@@ -12,6 +12,8 @@
 		13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB11A68108700A75B9A /* LaunchScreen.xib */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
+		1F207F1527F35DF9000C83CA /* beluga_in.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F207F1327F35DF9000C83CA /* beluga_in.wav */; };
+		1F207F1627F35DF9000C83CA /* beluga_out.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F207F1427F35DF9000C83CA /* beluga_out.wav */; };
 		1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871726495CFF0096C518 /* hangup_tone.wav */; };
 		1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871826495CFF0096C518 /* outbound_ringtone.wav */; };
 		1F31871F26495CFF0096C518 /* participant_joined.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871926495CFF0096C518 /* participant_joined.wav */; };
@@ -64,6 +66,8 @@
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = sylk/Info.plist; sourceTree = "<group>"; };
 		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = sylk/main.m; sourceTree = "<group>"; };
 		16F8C88D0BB542C7BDD8C492 /* Octicons.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = Octicons.ttf; path = "../node_modules/react-native-vector-icons/Fonts/Octicons.ttf"; sourceTree = "<group>"; };
+		1F207F1327F35DF9000C83CA /* beluga_in.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_in.wav; path = ../app/assets/sounds/beluga_in.wav; sourceTree = "<group>"; };
+		1F207F1427F35DF9000C83CA /* beluga_out.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_out.wav; path = ../app/assets/sounds/beluga_out.wav; sourceTree = "<group>"; };
 		1F31871726495CFF0096C518 /* hangup_tone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = hangup_tone.wav; path = ../app/assets/sounds/hangup_tone.wav; sourceTree = "<group>"; };
 		1F31871826495CFF0096C518 /* outbound_ringtone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = outbound_ringtone.wav; path = ../app/assets/sounds/outbound_ringtone.wav; sourceTree = "<group>"; };
 		1F31871926495CFF0096C518 /* participant_joined.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_joined.wav; path = ../app/assets/sounds/participant_joined.wav; sourceTree = "<group>"; };
@@ -160,14 +164,6 @@
 		13B07FAE1A68108700A75B9A /* sylk */ = {
 			isa = PBXGroup;
 			children = (
-				1F31871726495CFF0096C518 /* hangup_tone.wav */,
-				1F31871A26495CFF0096C518 /* message_received.wav */,
-				1F31871B26495CFF0096C518 /* message_sent.wav */,
-				1F31871826495CFF0096C518 /* outbound_ringtone.wav */,
-				1F31871926495CFF0096C518 /* participant_joined.wav */,
-				1F31871C26495CFF0096C518 /* participant_left.wav */,
-				64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */,
-				64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
 				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
 				642006F924364F8D00F214A5 /* GoogleService-Info.plist */,
@@ -181,20 +177,24 @@
 			name = sylk;
 			sourceTree = "<group>";
 		};
-		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
+		1F207F1727F35E65000C83CA /* Sounds */ = {
 			isa = PBXGroup;
 			children = (
-				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				ED2971642150620600B7C4FE /* JavaScriptCore.framework */,
-				286EA52C71C0EEB870505AD8 /* libPods-sylk.a */,
-				51AD54962B9A7F91A5A59BD3 /* libPods-sylk-tvOS.a */,
-				4B7BA6FE0B4159DA52F2FD51 /* libPods-sylk-tvOSTests.a */,
-				E86E14896C117D3A871A0B0A /* libPods-sylkTests.a */,
+				1F207F1327F35DF9000C83CA /* beluga_in.wav */,
+				1F207F1427F35DF9000C83CA /* beluga_out.wav */,
+				1F31871726495CFF0096C518 /* hangup_tone.wav */,
+				1F31871A26495CFF0096C518 /* message_received.wav */,
+				1F31871B26495CFF0096C518 /* message_sent.wav */,
+				1F31871826495CFF0096C518 /* outbound_ringtone.wav */,
+				1F31871926495CFF0096C518 /* participant_joined.wav */,
+				1F31871C26495CFF0096C518 /* participant_left.wav */,
+				64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */,
+				64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */,
 			);
-			name = Frameworks;
+			name = Sounds;
 			sourceTree = "<group>";
 		};
-		351DDEB757664A18BFAFA3DC /* Resources */ = {
+		1F207F1827F35E80000C83CA /* Fonts */ = {
 			isa = PBXGroup;
 			children = (
 				671D4DAF69E7476BA7978555 /* AntDesign.ttf */,
@@ -213,6 +213,28 @@
 				16F8C88D0BB542C7BDD8C492 /* Octicons.ttf */,
 				ECE2C9FB9E504DD58FD917F4 /* SimpleLineIcons.ttf */,
 				C1EEC850E910413BBAA6C838 /* Zocial.ttf */,
+			);
+			name = Fonts;
+			sourceTree = "<group>";
+		};
+		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
+				ED2971642150620600B7C4FE /* JavaScriptCore.framework */,
+				286EA52C71C0EEB870505AD8 /* libPods-sylk.a */,
+				51AD54962B9A7F91A5A59BD3 /* libPods-sylk-tvOS.a */,
+				4B7BA6FE0B4159DA52F2FD51 /* libPods-sylk-tvOSTests.a */,
+				E86E14896C117D3A871A0B0A /* libPods-sylkTests.a */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		351DDEB757664A18BFAFA3DC /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				1F207F1827F35E80000C83CA /* Fonts */,
+				1F207F1727F35E65000C83CA /* Sounds */,
 			);
 			name = Resources;
 			sourceTree = "<group>";
@@ -416,6 +438,7 @@
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				1F31871F26495CFF0096C518 /* participant_joined.wav in Resources */,
 				64893BB52481601600F1ACB1 /* incallmanager_busytone.mp3 in Resources */,
+				1F207F1627F35DF9000C83CA /* beluga_out.wav in Resources */,
 				642006FA24364F8D00F214A5 /* GoogleService-Info.plist in Resources */,
 				1F31872226495CFF0096C518 /* participant_left.wav in Resources */,
 				1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */,
@@ -424,6 +447,7 @@
 				64893BB324815ED900F1ACB1 /* incallmanager_ringback.mp3 in Resources */,
 				13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */,
 				1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */,
+				1F207F1527F35DF9000C83CA /* beluga_in.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
