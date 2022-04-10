@@ -3991,10 +3991,7 @@ class Sylk extends Component {
     acceptCall(callUUID, options={}) {
         console.log('User accepted call', callUUID, options);
         this.hideInternalAlertPanel('accept');
-        this.vibrate();
-
         this.backToForeground();
-
         this.resetGoToReadyTimer();
 
         if (this.state.currentCall) {
