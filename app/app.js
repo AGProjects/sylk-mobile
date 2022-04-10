@@ -3954,6 +3954,7 @@ class Sylk extends Component {
     async callKeepAcceptCall(callUUID, options={}) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
+        this.hideInternalAlertPanel('accept');
         const micAllowed = await this.requestMicPermission();
         if (!micAllowed) {
             return;
@@ -3969,15 +3970,17 @@ class Sylk extends Component {
         this.logTimeline('accept call');
         this.backToForeground();
         this.callKeeper.acceptCall(callUUID, options);
-        this.hideInternalAlertPanel('accept');
         this.updateLoading(incomingCallLabel, 'incoming_call');
+        setTimeout(() => {
+            this.updateLoading(null, 'incoming_call_timeout');
+        }, 30000);
     }
 
     callKeepRejectCall(callUUID) {
         // called from user interaction with Old alert panel
         utils.timestampedLog('CallKeep will reject call', callUUID);
-        this.callKeeper.rejectCall(callUUID);
         this.hideInternalAlertPanel('reject');
+        this.callKeeper.rejectCall(callUUID);
     }
 
     dismissCall(callUUID) {
