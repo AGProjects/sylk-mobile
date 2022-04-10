@@ -34,3 +34,12 @@ with
 }
 
 
+Tag iOS 2.8.2
+
+After installing QR code scanner, and running pod install Pod.lock has these Permissions commented out!?
+
+-  pod 'Permission-PhotoLibrary', :path => "#{permissions_path}/PhotoLibrary"
+-  pod 'Permission-MediaLibrary', :path => "#{permissions_path}/MediaLibrary"
++#  pod 'Permission-PhotoLibrary', :path => "#{permissions_path}/PhotoLibrary"
++#  pod 'Permission-MediaLibrary', :path => "#{permissions_path}/MediaLibrary"
+
