@@ -272,7 +272,9 @@ class Sylk extends Component {
             showQRCodeScanner: false,
             navigationItems: {today: false,
                               yesterday: false,
-                              conference: false}
+                              conference: false},
+            ssiRequired: false,
+            ssiIdentity: {}
         };
 
         utils.timestampedLog('Init app');
@@ -390,6 +392,21 @@ class Sylk extends Component {
 
         }).catch((err) => {
             console.log("PGP keys loading error:", err);
+        });
+
+        storage.get('ssi').then((ssi) => {
+            if (ssi) {
+                console.log("Loaded SSI settings", ssi);
+                this.setState({ssiRequired: ssi.required,
+                               ssiIdentity: ssi.identity});
+            } else {
+                console.log("Init SSI settings", ssi);
+                storage.set('ssi', {required: false, identity: {}});
+                this.setState({ssiRequired: false, ssiIdentity: {}});
+            }
+
+        }).catch((err) => {
+            console.log("SSI settings loading error:", err);
         });
 
         storage.get('myParticipants').then((myParticipants) => {
@@ -3573,7 +3590,8 @@ class Sylk extends Component {
         const options = {
             account: accountId,
             password: password,
-            displayName: displayName || ''
+            displayName: displayName || '',
+            incomingHeaderPrefixes: ['SSI']
         };
 
         if (this.state.connection._accounts.has(options.account)) {
@@ -4167,6 +4185,13 @@ class Sylk extends Component {
         }
     }
 
+    toggleSSI() {
+        let ssiRequired = !this.state.ssiRequired;
+        console.log('toggleSSI to', ssiRequired);
+        this.setState({ssiRequired: ssiRequired});
+        storage.set('ssi', {required: ssiRequired, identity: this.state.ssiIdentity});
+    }
+
     toggleSpeakerPhone() {
         if (this.state.speakerPhoneEnabled === true) {
             this.speakerphoneOff();
@@ -4604,6 +4629,8 @@ class Sylk extends Component {
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
 
+        console.log('Extra headers', call.headers);
+
         //this.playIncomingRingtone(callUUID);
 
         //utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
@@ -4623,6 +4650,8 @@ class Sylk extends Component {
         call.mediaTypes = mediaTypes;
 
         call.on('stateChanged', this.callStateChanged);
+
+
 
         this.setState({incomingCall: call});
 
@@ -8721,6 +8750,8 @@ class Sylk extends Component {
                     hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
                     refetchMessages = {this.refetchMessages}
                     blockedUris = {this.state.blockedUris}
+                    toggleSSIFunc = {this.toggleSSI}
+                    ssiRequired = {this.state.ssiRequired}
                 />
 
                 <ReadyBox
@@ -8881,6 +8912,8 @@ class Sylk extends Component {
                 finishInvite={this.finishInviteToConference}
                 selectedContact={this.state.selectedContact}
                 selectedContacts={this.state.selectedContacts}
+                ssiRequired={this.state.ssiRequired}
+                ssiLocalIdentity={this.state.ssiLocalIdentity}
             />
         )
     }

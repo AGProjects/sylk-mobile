@@ -223,7 +223,12 @@ class Call extends Component {
                       messages: this.props.messages,
                       selectedContact: this.props.selectedContact,
                       callContact: this.props.callContact,
-                      selectedContacts: this.props.selectedContacts
+                      selectedContacts: this.props.selectedContacts,
+                      ssiRequired: this.props.ssiRequired,
+                      ssiRequiredByRemote: false,
+                      ssiLocalIdentity: this.props.ssiLocalIdentity,
+                      ssiRemoteIdentity: {},
+                      ssiEnabled: false
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -811,6 +816,11 @@ class Call extends Component {
 
         let options = {pcConfig: {iceServers: config.iceServers}, id: this.state.callUUID};
         options.localStream = this.state.localMedia;
+        if (this.state.ssiRequired) {
+            options.headers = [{name: 'SSI-Required', value: 'Yes'}];
+        }
+
+        console.log('Call extra headers:', options.headers);
 
         let call = this.state.account.call(this.state.targetUri, options);
 
@@ -1044,7 +1054,9 @@ Call.propTypes = {
     callContact             : PropTypes.object,
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
-    finishInvite            : PropTypes.func
+    finishInvite            : PropTypes.func,
+    ssiRequired             : PropTypes.bool,
+    ssiLocalIdentity        : PropTypes.object
 };
 
 

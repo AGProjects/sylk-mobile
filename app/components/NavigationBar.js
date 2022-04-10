@@ -60,7 +60,8 @@ class NavigationBar extends Component {
             messages: this.props.messages,
             userClosed: false,
             pinned: this.props.pinned,
-            blockedUris: this.props.blockedUris
+            blockedUris: this.props.blockedUris,
+            ssiRequired: this.props.ssiRequired
         }
 
         this.menuRef = React.createRef();
@@ -97,7 +98,8 @@ class NavigationBar extends Component {
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
-                       blockedUris: nextProps.blockedUris
+                       blockedUris: nextProps.blockedUris,
+                       ssiRequired: nextProps.ssiRequired
                        });
     }
 
@@ -121,6 +123,9 @@ class NavigationBar extends Component {
                 break;
             case 'proximity':
                 this.props.toggleProximity();
+                break;
+            case 'ssi':
+                this.props.toggleSSIFunc();
                 break;
             case 'logOut':
                 this.props.logout();
@@ -344,6 +349,8 @@ class NavigationBar extends Component {
             blockedTitle = 'Allow anonymous callers';
         }
 
+        let ssiTitle = this.state.ssiRequired ? 'Disable SSI' : 'Enable SSI';
+
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 {this.state.selectedContact?
@@ -450,6 +457,8 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                         </View>
                         : null}
+                        <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
+
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
                         <Divider />
@@ -587,6 +596,8 @@ NavigationBar.propTypes = {
     showConferenceModalFunc : PropTypes.func,
     appStoreVersion : PropTypes.object,
     checkVersionFunc: PropTypes.func,
+    toggleSSIFunc: PropTypes.func,
+    ssiRequired: PropTypes.bool,
     refetchMessages: PropTypes.func,
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,
