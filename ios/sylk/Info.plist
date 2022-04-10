@@ -82,14 +82,16 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Camera is used for video calls</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Required for file sharing. No data is collected.</string>
 	<key>NSContactsUsageDescription</key>
-	<string>Contacts permission is needed to call to phone numbers or email addresses found in addressbook</string>
+	<string>Contacts permission is needed to call to phone numbers or email addresses found in addressbook. No data is collected.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Microphone is used for audio calls</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Library is used to send old photos and videos</string>
+	<string>Library is used to send old photos and videos. No data is collected.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>AntDesign.ttf</string>
