@@ -1905,9 +1905,8 @@ class Sylk extends Component {
     }
 
     handleFirebasePushInForeground(parent) {
-
         // Must be outside of any component LifeCycle (such as `componentDidMount`).
-        //console.log('handleFirebasePushInForeground');
+        console.log('handleFirebasePushInForeground');
         PushNotification.configure({
           // (optional) Called when Token is generated (iOS and Android)
           onRegister: function (token) {
@@ -2130,7 +2129,7 @@ class Sylk extends Component {
     handleFirebasePushInteraction(notification) {
         let data = notification.data;
         let event = data.event;
-        console.log("handleFirebasePushInteraction", event);
+        console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
 
         const callUUID = data['session-id'];
         const media = {audio: true, video: data['media-type'] === 'video'};
@@ -6612,7 +6611,11 @@ class Sylk extends Component {
             console.log('Play incoming sound skipped');
         }
 
-        console.log('Play', direction, 'message sound');
+        console.log('Play', direction, 'message sound in the', this.state.appState);
+
+        if (Platform.OS === 'android' && this.state.appState === 'foreground') {
+        //
+        }
 
         try {
           if (Platform.OS === 'ios') {
@@ -9042,14 +9045,14 @@ class Sylk extends Component {
 
     updateLoading(state, by='') {
         if (this.state.loading === incomingCallLabel && by !== 'incoming_call' && this.state.incomingCallUUID) {
-            //console.log('Skip updateLoading because we wait for a call', this.state.loading);
+            console.log('Skip updateLoading because we wait for a call', this.state.loading);
             return;
         } else if (by === 'incoming_call' && this.state.loading && this.state.loading !== incomingCallLabel) {
-            //console.log('Skip updateLoading by incoming_call', this.state.loading);
+            console.log('Skip updateLoading by incoming_call', this.state.loading);
             return;
         }
 
-        //console.log('updateLoading', this.state.loading, '->', state, 'by', by);
+        console.log('updateLoading', this.state.loading, '->', state, 'by', by);
         this.setState({loading: state});
     }
 
