@@ -1870,7 +1870,7 @@ class Sylk extends Component {
                   "published on",
                   metadata.currentVersionReleaseDate
                 );
-                this.setState({appStoreVersion: metadata.version});
+                this.setState({appStoreVersion: metadata});
               })
               .catch(err => {
                 console.log("error occurred", err);
