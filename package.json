@@ -11,6 +11,8 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@aries-framework/core": "^0.1.0",
+    "@aries-framework/react-native": "^0.1.0",
     "@react-native-community/async-storage": "^1.6.3",
     "@react-native-community/cameraroll": "^4.0.4",
     "@react-native-community/push-notification-ios": "^1.2.0",
@@ -18,6 +20,7 @@
     "@react-native-firebase/messaging": "^6.3.4",
     "auto-bind": "^4.0.0",
     "immer": "^9.0.6",
+    "indy-sdk-react-native": "^0.1.21",
     "lodash": "^4.17.21",
     "random-string": "^0.2.0",
     "react": "16.9.0",
@@ -41,6 +44,7 @@
     "react-native-fast-openpgp": "^1.6.5",
     "react-native-file-viewer": "^2.1.4",
     "react-native-fs": "^2.18.0",
+    "react-native-get-random-values": "^1.7.2",
     "react-native-gifted-chat": "^0.16.3",
     "react-native-gravatar": "^1.0.2",
     "react-native-incall-manager": "nimbleape/react-native-incall-manager#start-ringback-method",

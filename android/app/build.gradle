@@ -215,6 +215,7 @@ dependencies {
     implementation "com.facebook.react:react-native:+"  // From node_modules
     implementation "androidx.multidex:multidex:2.0.1"
 
+
     if (enableHermes) {
         def hermesPath = "../../node_modules/hermes-engine/android/";
         debugImplementation files(hermesPath + "hermes-debug.aar")
@@ -222,6 +223,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    implementation 'net.java.dev.jna:jna:5.2.0'
 }
 
 // Run this once to be able to run the application with BUCK

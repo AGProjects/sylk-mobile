@@ -6,6 +6,10 @@ import androidx.annotation.Nullable;
 import io.wazo.callkeep.RNCallKeepModule;
 
 import android.os.Bundle;
+import android.system.ErrnoException;
+import android.system.Os;
+import java.io.File;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -46,6 +50,12 @@ public class MainActivity extends ReactActivity {
   protected void onCreate(Bundle savedInstanceState){
     //SplashScreen.show(this);
     super.onCreate(savedInstanceState);
+    try {
+      Os.setenv("EXTERNAL_STORAGE", getExternalFilesDir(null).getAbsolutePath(), true);
+      System.loadLibrary("indy");
+    } catch (ErrnoException e) {
+      e.printStackTrace();
+    }
   }
 
   @Override
