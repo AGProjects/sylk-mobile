@@ -65,6 +65,27 @@ import momenttz from 'moment-timezone';
 import utils from './utils';
 import config from './config';
 import storage from './storage';
+
+import {
+  Agent,
+  AutoAcceptCredential,
+  ConnectionEventTypes,
+  ConnectionInvitationMessage,
+  ConnectionRecord,
+  ConnectionStateChangedEvent,
+  ConsoleLogger,
+  CredentialEventTypes,
+  CredentialRecord,
+  CredentialState,
+  CredentialStateChangedEvent,
+  HttpOutboundTransport,
+  WsOutboundTransport,
+  InitConfig,
+  LogLevel,
+} from '@aries-framework/core';
+
+import {agentDependencies} from '@aries-framework/react-native';
+
 var randomString = require('random-string');
 
 const RNFS = require('react-native-fs');
@@ -86,7 +107,6 @@ const KeyOptions = {
   RSABits: 4096,
   compressionLevel: 5
 }
-
 
 const incomingCallLabel = 'Incoming call...';
 
@@ -274,7 +294,8 @@ class Sylk extends Component {
                               yesterday: false,
                               conference: false},
             ssiRequired: false,
-            ssiIdentity: {}
+            ssiIdentity: {},
+            SSIAgent: null
         };
 
         utils.timestampedLog('Init app');
@@ -333,6 +354,7 @@ class Sylk extends Component {
         this.outgoing_sound_ts = null;
         this.initialChatContact = null;
         this.mustPlayIncomingSoundAfterSync = false;
+        this.ssiAgent = null;
 
         storage.initialize();
         this.callKeeper = new CallManager(RNCallKeep,
@@ -396,7 +418,7 @@ class Sylk extends Component {
 
         storage.get('ssi').then((ssi) => {
             if (ssi) {
-                console.log("Loaded SSI settings", ssi);
+                //console.log("Loaded SSI settings", ssi);
                 this.setState({ssiRequired: ssi.required,
                                ssiIdentity: ssi.identity});
             } else {
@@ -3628,16 +3650,111 @@ class Sylk extends Component {
 
                 account.register();
 
+                if (this.state.ssiRequired) {
+                    this.initSSIAgent(this.state.accountId);
+                }
+
                 storage.set('account', {
                     accountId: this.state.accountId,
                     password: this.state.password
-
                 });
 
             } else {
                 this.showRegisterFailure(408);
             }
         });
+    }
+
+    async initSSIAgent(walletId) {
+        // SSI wallet - init agent with wallet Id this.state.accountId
+        if (this.ssiAgent) {
+            return;
+        }
+
+        if (!walletId) {
+            return;
+        }
+
+        walletId = `${walletId}_8`;
+
+        console.log('Init SSI wallet...');
+
+        const agentConfig = {
+            // The label is used for communication with other agents
+            label: walletId,
+            mediatorConnectionsInvite: 'https://http.mediator.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNDNlZmEwNzktMTU1OC00YzFiLWEzMzQtNWM5Y2UxNzIzYzQ5IiwgInNlcnZpY2VFbmRwb2ludCI6ICJodHRwczovL2h0dHAubWVkaWF0b3IuY29tbXVuaXR5LmFuaW1vLmlkIiwgInJlY2lwaWVudEtleXMiOiBbIjZNRVhNd1ZCdXZjVFRzS3VlbXVOZGpkZ0pnTDJRNmhSZ3Fpam9mSndjWUJFIl0sICJsYWJlbCI6ICJBbmltbyBDb21tdW5pdHkgTWVkaWF0b3IifQ==',
+            autoAcceptConnections: true,
+            logger: new ConsoleLogger(LogLevel.error),
+            autoAcceptCredentials: AutoAcceptCredential.ContentApproved,
+            walletConfig: {
+                id: walletId,
+                key: 'demo',
+            },
+        };
+
+        this.ssiAgent = new Agent(agentConfig, agentDependencies);
+
+        const httpOutboundTransporter = new HttpOutboundTransport();
+        this.ssiAgent.registerOutboundTransport(httpOutboundTransporter);
+
+        const WsOutboundTransporter = new WsOutboundTransport();
+        this.ssiAgent.registerOutboundTransport(WsOutboundTransporter);
+
+        try {
+            await this.ssiAgent.initialize();
+            console.log('SSI wallet initialised');
+
+            this.ssiAgent.events.on(CredentialEventTypes.CredentialStateChanged, this.handleSSIAgentCredentialStateChange);
+            this.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
+
+            const credentials = await this.ssiAgent.credentials.getAll();
+            console.log('SSI wallet has', credentials.length, 'credentials');
+            //console.log(credentials);
+
+            const allConnection = await this.ssiAgent.connections.getAll();
+            console.log('SSI wallet has', allConnection.length, 'connections');
+            //console.log(allConnection);
+
+            this._notificationCenter.postSystemNotification("SSI wallet initialised with " + credentials.length + " credentials");
+
+            if (!allConnection.map((x) => x.theirLabel).includes('Animo Community Agent')) {
+                // create a connection to Animo credential issuer, must be done once
+                // connection is saved and reused later when we recreate de agent
+                // once we do have a credential, we don't need to connect anymore
+                await this.initSSIConnection();
+            }
+        } catch (error) {
+            console.log('SSI wallet initialise error:', error);
+        }
+    }
+
+    async initSSIConnection() {
+        console.log('SSI connection init');
+        // this invitation should be obtained from a QR code from the issuer website
+        let url = 'https://didcomm.agent.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNTAwYmMzNmItM2YyOC00ZDA1LTllODctMTE1NzA4OGEyN2RkIiwgInJlY2lwaWVudEtleXMiOiBbIkZWNHVaczNGcFFrNzlZWlRiWlhnNGlUalJrOGJ5UnYzajJDRFJTWWtpeUQiXSwgInNlcnZpY2VFbmRwb2ludCI6ICJodHRwczovL2RpZGNvbW0uYWdlbnQuY29tbXVuaXR5LmFuaW1vLmlkIiwgImxhYmVsIjogIkFuaW1vIENvbW11bml0eSBBZ2VudCJ9';
+
+        try {
+            const result = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
+            console.log('SSI connection cached');
+            // now we can receive a credential from the issuer
+        } catch (error) {
+            console.log('SSI connection error', error);
+        }
+    }
+
+    async handleSSIAgentCredentialStateChange(event) {
+        console.log('SSI wallet Credential State Change', event.payload.credentialRecord.id, event.payload.previousState, '->', event.payload.credentialRecord.state);
+        if (event.payload.credentialRecord.state === CredentialState.OfferReceived) {
+            console.log('SSI credential received:', event.payload.credentialRecord);
+            this._notificationCenter.postSystemNotification("New SSI credential received");
+            this.ssiAgent.credentials.acceptOffer(event.payload.credentialRecord.id);
+        } else if (event.payload.credentialRecord.state === CredentialState.Done) {
+            console.log('SSI wallet credential saved');
+        }
+    }
+
+    async handleSSIAgentConnectionStateChange(event) {
+        console.log('SSI wallet Connection State Change', event);
     }
 
     generateKeysIfNecessary(account) {
@@ -3950,6 +4067,7 @@ class Sylk extends Component {
     }
 
     startCall(targetUri, options) {
+        // SSI wallet - start an outgoing call
         this.setState({targetUri: targetUri, callContact: this.state.selectedContact});
         this.getLocalMedia(Object.assign({audio: true, video: options.video}, options), '/call');
     }
@@ -4010,6 +4128,8 @@ class Sylk extends Component {
         this.hideInternalAlertPanel('accept');
         this.backToForeground();
         this.resetGoToReadyTimer();
+
+        // SSI wallet - start an incoming call
 
         if (this.state.currentCall) {
             utils.timestampedLog('Will hangup current call first');
@@ -4185,10 +4305,18 @@ class Sylk extends Component {
     }
 
     toggleSSI() {
+        // user setting to enable/disable SSIAgent
         let ssiRequired = !this.state.ssiRequired;
         console.log('toggleSSI to', ssiRequired);
         this.setState({ssiRequired: ssiRequired});
+        if (ssiRequired) {
+            this.initSSIAgent(this.state.accountId);
+        } else {
+            this.setState({SSIAgent: null});
+        }
         storage.set('ssi', {required: ssiRequired, identity: this.state.ssiIdentity});
+
+        // SSI wallet - enable or disable Agent ?
     }
 
     toggleSpeakerPhone() {
@@ -8874,6 +9002,8 @@ class Sylk extends Component {
             this.setState({callContact: callContact});
         }
 
+        // SSI wallet - initialise the Call component (for both incoming and outgoing calls)
+
         return (
             <Call
                 account = {this.state.account}
@@ -8920,6 +9050,7 @@ class Sylk extends Component {
                 selectedContacts={this.state.selectedContacts}
                 ssiRequired={this.state.ssiRequired}
                 ssiLocalIdentity={this.state.ssiLocalIdentity}
+                SSIAgent={this.ssiAgent}
             />
         )
     }
@@ -9052,7 +9183,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('updateLoading', this.state.loading, '->', state, 'by', by);
+        //console.log('updateLoading', this.state.loading, '->', state, 'by', by);
         this.setState({loading: state});
     }
 
@@ -9136,6 +9267,8 @@ class Sylk extends Component {
         this.callKeeper.setAvailable(false);
         this.sql_contacts_keys = [];
 
+        // SSI wallet - cleanup
+
         if (!this.mustLogout && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
             // remove token from server
             this.mustLogout = true;
@@ -9166,6 +9299,7 @@ class Sylk extends Component {
 
         this.setState({account: null,
                        displayName: '',
+                       SSIAgent: null,
                        email: '',
                        loading: null,
                        keyStatus: {},
@@ -9188,6 +9322,7 @@ class Sylk extends Component {
                        });
 
         this.mustLogout = false;
+        this.ssiAgent = null;
         this.changeRoute('/login', 'user logout');
 
         return null;

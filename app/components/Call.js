@@ -228,7 +228,8 @@ class Call extends Component {
                       ssiRequiredByRemote: false,
                       ssiLocalIdentity: this.props.ssiLocalIdentity,
                       ssiRemoteIdentity: {},
-                      ssiEnabled: false
+                      ssiEnabled: false,
+                      SSIAgent: this.props.SSIAgent
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -1056,7 +1057,8 @@ Call.propTypes = {
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
     ssiRequired             : PropTypes.bool,
-    ssiLocalIdentity        : PropTypes.object
+    ssiLocalIdentity        : PropTypes.object,
+    SSIAgent                : PropTypes.object
 };
 
 
