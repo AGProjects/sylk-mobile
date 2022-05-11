@@ -11,8 +11,8 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
-    "@aries-framework/core": "^0.1.0",
-    "@aries-framework/react-native": "^0.1.0",
+    "@aries-framework/core": "^0.2.0-alpha.20",
+    "@aries-framework/react-native": "^0.2.0-alpha.20",
     "@react-native-community/async-storage": "^1.6.3",
     "@react-native-community/cameraroll": "^4.0.4",
     "@react-native-community/push-notification-ios": "^1.2.0",
