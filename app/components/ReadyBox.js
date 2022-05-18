@@ -573,6 +573,7 @@ class ReadyBox extends Component {
     }
 
     QRCodeRead(e) {
+        console.log('QR code object:', e);
         console.log('QR code data:', e.data);
         this.handleTargetChange(e.data);
         this.props.toggleQRCodeScannerFunc();

@@ -12,6 +12,14 @@ import VideoBox from './VideoBox';
 import config from '../config';
 import utils from '../utils';
 
+import {
+  ConnectionStateChangedEvent,
+  ConnectionEventTypes,
+  ProofAttributeInfo,
+  ProofEventTypes,
+  AttributeFilter
+} from '@aries-framework/core';
+
 
 function randomIntFromInterval(min,max)
 {
@@ -90,7 +98,6 @@ FixedQueue.trimTail = function(){
 
 };
 
-
 // I synthesize wrapper methods that call the native Array
 // methods followed by a trimming method.
 FixedQueue.wrapMethod = function( methodName, trimMethod ){
@@ -163,6 +170,9 @@ class Call extends Component {
         this.videoBandwidthQueue = FixedQueue(this.samples);
 
         this.mediaLost = false;
+        this.ssiRoles = []; // can be holder, verifier or issuer
+        let ssiRequired = false;
+        this.cancelVerifyIdentityTimer = null;
 
         let callUUID;
         let remoteUri = '';
@@ -174,19 +184,35 @@ class Call extends Component {
         this.ended = false;
         this.answering = false;
 
+        if (this.props.ssiAgent) {
+            this.ssiRoles.push('holder'); // we are always a holder
+        }
+
         if (this.props.call) {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
+            this.props.call.on('incomingMessage', this.incomingMessage);
             remoteUri = this.props.call.remoteIdentity.uri;
             callState = this.props.call.state;
             remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
             direction = this.props.call.direction;
             callUUID = this.props.call.id;
+
+            if (this.props.ssiAgent) {
+                this.props.call.headers.forEach((header) => {
+                    if (header.name === 'SSI-role' && header.value === 'holder') {
+                        this.ssiRoles.push('verifier'); // we can verify the remote party
+                        console.log('Remote party is an SSI holder');
+                        return;
+                    }
+                });
+            }
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
             callUUID = this.props.callUUID;
             direction = callUUID ? 'outgoing' : 'incoming';
+            ssiRequired = this.props.ssiRequired;
         }
 
         if (this.props.connection) {
@@ -224,12 +250,13 @@ class Call extends Component {
                       selectedContact: this.props.selectedContact,
                       callContact: this.props.callContact,
                       selectedContacts: this.props.selectedContacts,
-                      ssiRequired: this.props.ssiRequired,
-                      ssiRequiredByRemote: false,
-                      ssiLocalIdentity: this.props.ssiLocalIdentity,
-                      ssiRemoteIdentity: {},
-                      ssiEnabled: false,
-                      SSIAgent: this.props.SSIAgent
+                      ssiRequired: ssiRequired,
+                      ssiAgent: this.props.ssiAgent,
+                      ssiInvitationUrl: null,
+                      ssiRemoteIdentity: null,
+                      ssiVerified: false,
+                      ssiVerifyInProgress: false,
+                      ssiCanVerify: false
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -248,6 +275,11 @@ class Call extends Component {
             this.startCallWhenReady(this.state.callUUID);
         }
 
+        if (this.props.ssiAgent) {
+            this.props.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
+            this.props.ssiAgent.events.on(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
+        }
+
         if (this.state.call === null) {
             this.mediaPlaying();
         }
@@ -259,10 +291,153 @@ class Call extends Component {
 
         if (this.state.call) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
+            this.state.call.removeListener('incomingMessage', this.incomingMessage);
         }
 
         if (this.state.connection) {
             this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
+        }
+    }
+
+    async handleSSIAgentConnectionStateChange(event) {
+        console.log('SSI session connection', event.payload.connectionRecord.id, event.payload.previousState, '->', event.payload.connectionRecord.state);
+        if (event.payload.connectionRecord.state === 'responded' || event.payload.connectionRecord.state === 'complete') {
+            console.log('We can now verify the remote party using SSI');
+            this.setState({ssiCanVerify: true});
+        }
+    }
+
+    async handleSSIAgentProofStateChange(event) {
+        const proofRecord = event.payload.proofRecord;
+        console.log('SSI proof record event', proofRecord.id, 'state', proofRecord.state);
+        console.log(proofRecord);
+        if (this.ssiRoles.indexOf('verifier') > -1) {
+            if (proofRecord.state === 'done') {
+                if (proofRecord.isVerified) {
+                    // the verification was successful --> call is authorized
+                    // this contains firstName, lastName and dob
+                    console.log('SSI verify proof succeeded');
+                    const credentialAttributes = proofRecord.presentationMessage.presentationAttachments;
+                    this.setState({ssiRemoteIdentity: credentialAttributes, ssiVerified: true});
+                } else {
+                    console.log('SSI verify proof failed');
+                }
+                this.setState({ssiVerifyInProgress: false});
+            }
+        }
+    }
+
+    cancelVerify() {
+        if (this.cancelVerifyIdentityTimer) {
+            clearTimeout(this.cancelVerifyIdentityTimer);
+            this.cancelVerifyIdentityTimer = null;
+            this.setState({ssiVerifyInProgress: false});
+        }
+    }
+
+    async verifySSIIdentity() {
+        if (this.state.ssiConnectionRecord) {
+            console.log('Call: verify SSI identity over connection', this.state.ssiConnectionRecord.id);
+            this.requestSSIProof(this.state.ssiConnectionRecord.id);
+        } else {
+            this.initSSIConnection(this.state.callUUID);
+        }
+    } 
+
+    async requestSSIProof(connectionRecordId) {
+        if (this.state.ssiVerifyInProgress) {
+            console.log('SSI verify in progress')
+        }
+
+        const credDefId = 'Ehx3RZSV38pn3MYvxtHhbQ:3:CL:279883:default';
+
+        const attributes = {
+            name: new ProofAttributeInfo({
+                names: ['firstName', 'lastName', 'dob'],
+                restrictions: [
+                    new AttributeFilter({ credentialDefinitionId: credDefId })
+                ]
+            })
+        }
+
+        const proofRequestOptions = {
+            name: "Proof Request Title",
+            requestedAttributes: attributes
+        }
+
+        this.setState({ssiVerifyInProgress: true});
+        this.cancelVerify();
+        this.cancelVerifyIdentityTimer = setTimeout(() => {
+            this.cancelVerify();
+        }, 15000);
+
+        try {
+            console.log('Request SSI proof over connection', connectionRecordId);
+            const proofRequest = await this.state.ssiAgent.proofs.requestProof(connectionRecordId, proofRequestOptions);
+            console.log(proofRequest);
+        } catch (error) {
+            utils.timestampedLog('SSI request proof error', error);
+            this.props.postSystemNotification('SSI proof ' + error);
+            this.setState({ssiVerifyInProgress: false});
+        }
+    }
+
+    async initSSIConnection(callUUID) {
+        if (!this.state.ssiAgent) {
+            console.log('No SSI Agent available');
+            return;
+        }
+
+        if (this.state.ssiConnectionRecord) {
+            console.log('SSI connection already active');
+            return;
+        }
+
+        try {
+            const ssiConnection = await this.state.ssiAgent.connections.createConnection();
+            const invitationUrl = ssiConnection.invitation.toUrl({domain: "http://example.com"});
+            this.setState({ssiInvitationUrl: invitationUrl, 
+                           ssiConnectionRecord: ssiConnection.connectionRecord});
+            this.props.postSystemNotification('SSI connection created');
+            //console.log('Using new SSI invitation URL', invitationUrl);
+            if (this.state.call && this.state.call.state === 'established') {
+                this.sendSSIInvitation();
+            }
+        } catch (error) {
+            utils.timestampedLog('SSI create connection error', error);
+            this.props.postSystemNotification('SSI connection ' + error);
+        }
+    }
+
+    sendSSIInvitation() {
+        if (!this.state.call) {
+            return;
+        }
+        console.log('SSI sent invitation URL');
+        let message = this.state.call.sendMessage(this.state.ssiInvitationUrl, 'text/ssi-invitation-url', {id: uuid.v4()}, (error) => {
+            if (error) {
+                console.log('Message', id, 'sending error:', error);
+            }
+        });
+    }
+
+    incomingMessage(message) {
+        console.log('Session message', message.id, message.contentType, 'received');
+        if (message.contentType === 'text/ssi-invitation-url' && this.state.ssiAgent && !this.state.ssiInvitationUrl) {
+            this.receiveSSIInvitation(message.content);
+        }
+    }
+
+    async receiveSSIInvitation(url) {
+        console.log('SSI received invitation URL', url);
+        try {
+            const ssiConnectionRecord = await this.state.ssiAgent.connections.receiveInvitationFromUrl(url);
+            console.log('SSI invitation accepted', ssiConnectionRecord.id);
+            this.props.postSystemNotification('SSI invitation accepted');
+            this.setState({ssiInvitationUrl: url, ssiConnectionRecord: ssiConnectionRecord});
+        } catch (error) {
+            utils.timestampedLog('SSI accept invitation error', error);
+            this.props.postSystemNotification('SSI accept ' + error);
         }
     }
 
@@ -299,6 +474,7 @@ class Call extends Component {
 
         if (this.state.call === null && nextProps.call !== null) {
             nextProps.call.on('stateChanged', this.callStateChanged);
+            nextProps.call.on('incomingMessage', this.incomingMessage);
 
             this.setState({
                            remoteUri: nextProps.call.remoteIdentity.uri,
@@ -345,7 +521,18 @@ class Call extends Component {
             //this.mediaPlaying(nextProps.localMedia);
         }
 
-        this.setState({messages: nextProps.messages, selectedContacts: nextProps.selectedContacts});
+        this.setState({messages: nextProps.messages, 
+                         selectedContacts: nextProps.selectedContacts, 
+                         ssiVerifyInProgress: nextProps.ssiVerifyInProgress,
+                         ssiCanVerify: nextProps.ssiCanVerify});
+        
+        if (nextProps.ssiConnectionRecord) {
+            this.setState({ssiConnectionRecord: nextProps.ssiConnectionRecord});
+        }
+
+        if (nextProps.ssiInvitationUrl) {
+            this.setState({ssiInvitationUrl: nextProps.ssiInvitationUrl});
+        }
     }
 
     getConnectionStats() {
@@ -547,7 +734,6 @@ class Call extends Component {
             }
         }
 
-
         if (this.packetLoss > 2) {
             info = info + ' - ' + Math.ceil(this.packetLoss) + '% loss';
         }
@@ -574,7 +760,7 @@ class Call extends Component {
         }
     }
 
-    answerCall(localMedia) {
+    async answerCall(localMedia) {
         const media = localMedia ? localMedia : this.state.localMedia;
         if (this.state.call && this.state.call.state === 'incoming' && media) {
             let options = {pcConfig: {iceServers: config.iceServers}};
@@ -656,7 +842,7 @@ class Call extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        //console.log('Call: callStateChanged', oldState, '->', newState);
+        console.log('Call: callStateChanged', oldState, '->', newState);
         if (this.ended) {
             return;
         }
@@ -671,6 +857,10 @@ class Call extends Component {
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
             const currentCall = this.state.call;
+
+            if (this.state.ssiInvitationUrl && this.state.direction === 'outgoing') {
+                this.sendSSIInvitation();
+            }
 
             if (currentCall) {
                 remoteStreams = currentCall.getRemoteStreams();
@@ -704,6 +894,11 @@ class Call extends Component {
                 this.setState({audioOnly: false});
             }
         }
+
+        if (newState !== 'established') {
+            this.cancelVerify();
+        }
+
 
         this.forceUpdate();
     }
@@ -740,6 +935,11 @@ class Call extends Component {
             return false;
         }
 
+        if (this.state.ssiAgent && this.state.ssiRequired && !this.state.ssiInvitationUrl) {
+            //console.log('Call: no outgoing SSI invite URL yet');
+            return false;
+        }
+
         if (this.state.connection.state !== 'ready') {
             console.log('Call: connection is not ready');
             return false;
@@ -764,6 +964,10 @@ class Call extends Component {
         this.waitCounter = 0;
 
         let diff = 0;
+
+        if (this.state.ssiRequired) {
+            this.initSSIConnection(callUUID);
+        }
 
         while (this.waitCounter < this.waitInterval) {
             if (this.waitCounter === 1) {
@@ -815,20 +1019,19 @@ class Call extends Component {
             return;
         }
 
-        let options = {pcConfig: {iceServers: config.iceServers}, id: this.state.callUUID};
-        options.localStream = this.state.localMedia;
-        if (this.state.ssiRequired) {
-            options.headers = [{name: 'SSI-Required', value: 'Yes'}];
-        }
+        let options = {
+                       pcConfig: {iceServers: config.iceServers},
+                       id: this.state.callUUID,
+                       localStream: this.state.localMedia
+                       };
 
-        console.log('Call extra headers:', options.headers);
+        if (this.state.ssiAgent && this.state.ssiInvitationUrl) {
+            options.headers = [{name: 'SSI-role', value: 'holder'}];
+            console.log('Outgoing call extra headers:', options.headers);
+        }
 
         let call = this.state.account.call(this.state.targetUri, options);
-
-        if (call) {
-            call.on('stateChanged', this.callStateChanged);
-            this.setState({call: call});
-        }
+        this.setState({call: call});
     }
 
     hangupCall(reason) {
@@ -838,6 +1041,7 @@ class Call extends Component {
         if (this.state.call) {
             //console.log('Remove listener for call', this.state.call.id);
             this.state.call.removeListener('stateChanged', this.callStateChanged);
+            this.state.call.removeListener('incomingMessage', this.incomingMessage);
             this.setState({call: null});
         }
 
@@ -903,7 +1107,12 @@ class Call extends Component {
                         callContact = {this.state.callContact}
                         inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                         finishInvite = {this.props.finishInvite}
-                    />
+                        ssiRemoteIdentity = {this.state.ssiRemoteIdentity}
+                        ssiVerifyFunc = {this.verifySSIIdentity}
+                        ssiVerified = {this.state.ssiVerified}
+                        ssiCanVerify = {this.state.ssiCanVerify}
+                        ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
+                        />
                 );
             } else {
                 if (this.state.call !== null && (this.state.call.state === 'established' || (this.state.call.state === 'terminated' && this.state.reconnectingCall))) {
@@ -950,7 +1159,12 @@ class Call extends Component {
                             callContact = {this.state.callContact}
                             inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                             finishInvite = {this.props.finishInvite}
-                        />
+                            ssiRemoteIdentity = {this.state.ssiRemoteIdentity}
+                            ssiVerifyFunc = {this.verifySSIIdentity}
+                            ssiVerified = {this.state.ssiVerified}
+                            ssiCanVerify = {this.state.ssiCanVerify}
+                            ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
+                            />
                     );
                 } else {
                     if (this.state.call && this.state.call.state === 'terminated' && this.state.reconnectingCall) {
@@ -974,7 +1188,7 @@ class Call extends Component {
                                 declineReason = {this.state.declineReason}
                                 showLogs = {this.props.showLogs}
                                 goBackFunc = {this.props.goBackFunc}
-                            />
+                                />
                         );
                     }
                 }
@@ -1007,9 +1221,13 @@ class Call extends Component {
                     callContact = {this.state.callContact}
                     inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                     finishInvite = {this.props.finishInvite}
-                />
+                    ssiRemoteIdentity = {this.state.ssiRemoteIdentity}
+                    ssiVerifyFunc = {this.verifySSIIdentity}
+                    ssiVerified = {this.state.ssiVerified}
+                    ssiCanVerify = {this.state.ssiCanVerify}
+                    ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
+                    />
             );
-
         }
         return box;
     }
@@ -1057,8 +1275,8 @@ Call.propTypes = {
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
     ssiRequired             : PropTypes.bool,
-    ssiLocalIdentity        : PropTypes.object,
-    SSIAgent                : PropTypes.object
+    ssiAgent                : PropTypes.object,
+    postSystemNotification  : PropTypes.func
 };
 
 

@@ -453,11 +453,11 @@ class NavigationBar extends Component {
                         <View>
 
                         <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Show logs" />
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                         </View>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Logs" />
 
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}

@@ -10,6 +10,7 @@ import DTMFModal from './DTMFModal';
 import UserIcon from './UserIcon';
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
 import utils from '../utils';
+import LoadingScreen from './LoadingScreen';
 
 import TrafficStats from './BarChart';
 
@@ -47,7 +48,11 @@ class AudioCallBox extends Component {
             declineReason               : this.props.declineReason,
             callContact                 : this.props.callContact,
             selectedContact             : this.props.selectedContact,
-            audioCodec                       : this.props.audioCodec
+            audioCodec                  : this.props.audioCodec,
+            ssiRemoteIdentity           : this.props.ssiRemoteIdentity,
+            ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
+            ssiVerified                 : this.props.ssiVerified,
+            ssiCanVerify                : this.props.ssiCanVerify
         };
 
         this.remoteAudio = React.createRef();
@@ -73,7 +78,7 @@ class AudioCallBox extends Component {
             }
         }
 
-        if (this.state.selectedContacts.length > 0) {
+        if (this.state.selectedContacts && this.state.selectedContacts.length > 0) {
             this.toggleEscalateConferenceModal();
         }
     }
@@ -124,6 +129,14 @@ class AudioCallBox extends Component {
             this.setState({latencyQueue: nextProps.latencyQueue});
         }
 
+        if (nextProps.hasOwnProperty('ssiCanVerify')) {
+            this.setState({ssiCanVerify: nextProps.ssiCanVerify});
+        }
+
+        if (nextProps.hasOwnProperty('ssiVerifyInProgress')) {
+            this.setState({ssiVerifyInProgress: nextProps.ssiVerifyInProgress});
+        }
+
         this.setState({remoteUri: nextProps.remoteUri,
                        remoteDisplayName: nextProps.remoteDisplayName,
                        photo: nextProps.photo ? nextProps.photo : this.state.photo,
@@ -131,7 +144,9 @@ class AudioCallBox extends Component {
                        callContact: nextProps.callContact,
                        audioCodec: nextProps.audioCodec,
                        selectedContacts: nextProps.selectedContacts,
-                       selectedContact: nextProps.selectedContact
+                       selectedContact: nextProps.selectedContact,
+                       ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
+                       ssiVerified: nextProps.ssiVerified
                        });
     }
 
@@ -175,6 +190,13 @@ class AudioCallBox extends Component {
 
     showDtmfModal() {
         this.setState({showDtmfModal: true});
+    }
+
+    verifyIdentity() {
+        if (this.state.ssiVerified) {
+            return;
+        }
+        this.props.ssiVerifyFunc();
     }
 
     hideDtmfModal() {
@@ -249,6 +271,21 @@ class AudioCallBox extends Component {
         let hangupButtonClass        = Platform.OS === 'ios' ? styles.hangupButtoniOS        : styles.hangupButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
 
+        let verifyIcon = 'account-question';
+        if (this.state.ssiVerified) {
+            verifyIcon = 'shield-account';
+        } else {
+            if (this.state.ssiVerifyInProgress) {
+                verifyIcon = 'account-search';
+            } 
+        }
+
+        let showVerifyButton = false;
+
+        if (this.state.ssiCanVerify && this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) {
+            showVerifyButton = true;
+        }
+
         return (
             <View style={styles.container}>
                 <CallOverlay style={styles.callStatus}
@@ -280,6 +317,8 @@ class AudioCallBox extends Component {
                 null
                 }
 
+                {!this.state.ssiVerifyInProgress ?
+
                 <TrafficStats
                     packetLossQueue = {this.state.packetLossQueue}
                     latencyQueue = {this.state.latencyQueue}
@@ -290,83 +329,91 @@ class AudioCallBox extends Component {
                     orientation = {this.props.orientation}
                     media = 'audio'
                 />
+                : null}
+
+                {showVerifyButton ?
+                                    <View style={buttonContainerClass}>
+                                    <View style={styles.buttonContainer}>
+                                        <TouchableHighlight style={styles.roundshape}>
+                                            <IconButton
+                                                size={buttonSize}
+                                                style={whiteButtonClass}
+                                                icon={verifyIcon}
+                                                onPress={this.verifyIdentity} />
+                                        </TouchableHighlight>
+                                    </View>
+                                </View>
+                : null}
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
-                    <View style={buttonContainerClass}>
-                    {!disablePlus ?
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                    <IconButton
-                        size={buttonSize}
-                        style={disablePlus ? disabledGreenButtonClass: greenButtonClass}
-                        icon="chat"
-                        onPress={this.props.goBackFunc}
-                        disabled={disablePlus}
-                    />
-                        </TouchableHighlight>
-                      </View>
-                    : null}
+                        <>
+                        <View style={buttonContainerClass}>
+                            {!disablePlus ?
+                                <View style={styles.buttonContainer}>
+                                    <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            size={buttonSize}
+                                            style={disablePlus ? disabledGreenButtonClass : greenButtonClass}
+                                            icon="chat"
+                                            onPress={this.props.goBackFunc}
+                                            disabled={disablePlus} />
+                                    </TouchableHighlight>
+                                </View>
+                                : null}
 
-                    {!disablePlus ?
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                    <IconButton
-                        size={buttonSize}
-                        style={whiteButtonClass}
-                        icon="account-plus"
-                        onPress={this.props.inviteToConferenceFunc}
-                        disabled={disablePlus}
-                    />
-                        </TouchableHighlight>
-                      </View>
-                    : null}
+                            {!disablePlus ?
+                                <View style={styles.buttonContainer}>
+                                    <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            size={buttonSize}
+                                            style={whiteButtonClass}
+                                            icon="account-plus"
+                                            onPress={this.props.inviteToConferenceFunc}
+                                            disabled={disablePlus} />
+                                    </TouchableHighlight>
+                                </View>
+                                : null}
+                            <View style={styles.buttonContainer}>
+                                <TouchableHighlight style={styles.roundshape}>
+                                    <IconButton
+                                        size={buttonSize}
+                                        style={whiteButtonClass}
+                                        icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
+                                        onPress={this.muteAudio} />
+                                </TouchableHighlight>
+                            </View>
+                            <View style={styles.buttonContainer}>
+                                <TouchableHighlight style={styles.roundshape}>
+                                    <IconButton
+                                        size={buttonSize}
+                                        style={whiteButtonClass}
+                                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
+                                        onPress={this.props.toggleSpeakerPhone} />
+                                </TouchableHighlight>
+                            </View>
 
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={whiteButtonClass}
-                                icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
-                                onPress={this.muteAudio}
-                            />
-                        </TouchableHighlight>
-                      </View>
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={whiteButtonClass}
-                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
-                                onPress={this.props.toggleSpeakerPhone}
-                            />
-                        </TouchableHighlight>
-                      </View>
-
-                    {isPhoneNumber ?
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={whiteButtonClass}
-                                icon="dialpad"
-                                onPress={this.showDtmfModal}
-                                disabled={!(this.state.call && (this.state.call.state === 'early-media' || this.state.call.state === 'accepted' || this.state.call.state === 'established'))}
-                            />
-                            </TouchableHighlight>
-                          </View>
-                    : null
-                    }
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                        <IconButton
-                            size={buttonSize}
-                            style={hangupButtonClass}
-                            icon="phone-hangup"
-                            onPress={this.hangupCall}
-                        />
-                        </TouchableHighlight>
-                      </View>
-                    </View>
+                            {isPhoneNumber ?
+                                <View style={styles.buttonContainer}>
+                                    <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            size={buttonSize}
+                                            style={whiteButtonClass}
+                                            icon="dialpad"
+                                            onPress={this.showDtmfModal}
+                                            disabled={!(this.state.call && (this.state.call.state === 'early-media' || this.state.call.state === 'accepted' || this.state.call.state === 'established'))} />
+                                    </TouchableHighlight>
+                                </View>
+                                : null}
+                            <View style={styles.buttonContainer}>
+                                <TouchableHighlight style={styles.roundshape}>
+                                    <IconButton
+                                        size={buttonSize}
+                                        style={hangupButtonClass}
+                                        icon="phone-hangup"
+                                        onPress={this.hangupCall} />
+                                </TouchableHighlight>
+                            </View>
+                        </View></>
                     :
                     <View style={buttonContainerClass}>
                       <View style={styles.buttonContainer}>
@@ -402,7 +449,12 @@ class AudioCallBox extends Component {
                       </View>
                     </View>
                 }
-
+                <LoadingScreen
+                            text={'Verify identity'}
+                            show={this.state.ssiVerifyInProgress ? true : false}
+                            orientation={this.state.orientation}
+                            isTablet={this.state.isTablet}
+                            />
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
@@ -462,7 +514,12 @@ AudioCallBox.propTypes = {
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
-    audioCodec              : PropTypes.string
+    audioCodec              : PropTypes.string,
+    ssiRemoteIdentity       : PropTypes.object,
+    ssiVerifyFunc           : PropTypes.func,
+    ssiVerified             : PropTypes.bool,
+    ssiCanVerify            : PropTypes.bool,
+    ssiVerifyInProgress     : PropTypes.bool
 };
 
 export default AudioCallBox;

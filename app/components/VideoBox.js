@@ -49,7 +49,11 @@ class VideoBox extends Component {
             doorOpened: false,
             packetLossQueue             : [],
             audioBandwidthQueue         : [],
-            latencyQueue                : []
+            latencyQueue                : [],
+            ssiRemoteIdentity           : this.props.ssiRemoteIdentity,
+            ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
+            ssiVerified                 : this.props.ssiVerified,
+            ssiCanVerify                : this.props.ssiCanVerify
         };
 
         this.overlayTimer = null;
@@ -96,13 +100,23 @@ class VideoBox extends Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
+        if (nextProps.hasOwnProperty('ssiCanVerify')) {
+            this.setState({ssiCanVerify: nextProps.ssiCanVerify});
+        }
+
+        if (nextProps.hasOwnProperty('ssiVerifyInProgress')) {
+            this.setState({ssiVerifyInProgress: nextProps.ssiVerifyInProgress});
+        }
+
         this.setState({
                        callContact: nextProps.callContact,
                        remoteUri: nextProps.remoteUri,
                        photo: nextProps.photo ? nextProps.photo : this.state.photo,
                        remoteDisplayName: nextProps.remoteDisplayName,
                        selectedContact: nextProps.selectedContact,
-                       selectedContacts: nextProps.selectedContacts
+                       selectedContacts: nextProps.selectedContacts,
+                       ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
+                       ssiVerified: nextProps.ssiVerified
                        });
 
     }
@@ -445,7 +459,12 @@ VideoBox.propTypes = {
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
     audioCodec              : PropTypes.string,
-    videoCodec              : PropTypes.string
+    videoCodec              : PropTypes.string,
+    ssiRemoteIdentity       : PropTypes.object,
+    ssiVerifyFunc           : PropTypes.func,
+    ssiVerified             : PropTypes.bool,
+    ssiCanVerify            : PropTypes.bool,
+    ssiVerifyInProgress     : PropTypes.bool
 };
 
 export default VideoBox;
