@@ -30,7 +30,7 @@
     "react-native-background-downloader": "^2.3.4",
     "react-native-background-timer": "2.1.1",
     "react-native-base64": "^0.2.1",
-    "react-native-callkeep": "^4.3.1",
+    "react-native-callkeep": "^4.3.3",
     "react-native-camera": "^4.2.1",
     "react-native-contacts": "^5.2.3",
     "react-native-debug": "^3.0.0",
