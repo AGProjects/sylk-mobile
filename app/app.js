@@ -295,7 +295,8 @@ class Sylk extends Component {
                               yesterday: false,
                               conference: false},
             ssiRequired: false,
-            ssiAgent: null
+            ssiAgent: null,
+            ssiRoles: []
         };
 
         utils.timestampedLog('Init app');
@@ -3689,7 +3690,7 @@ class Sylk extends Component {
             label: walletId,
             mediatorConnectionsInvite: 'https://http.mediator.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNDNlZmEwNzktMTU1OC00YzFiLWEzMzQtNWM5Y2UxNzIzYzQ5IiwgInNlcnZpY2VFbmRwb2ludCI6ICJodHRwczovL2h0dHAubWVkaWF0b3IuY29tbXVuaXR5LmFuaW1vLmlkIiwgInJlY2lwaWVudEtleXMiOiBbIjZNRVhNd1ZCdXZjVFRzS3VlbXVOZGpkZ0pnTDJRNmhSZ3Fpam9mSndjWUJFIl0sICJsYWJlbCI6ICJBbmltbyBDb21tdW5pdHkgTWVkaWF0b3IifQ==',
             autoAcceptConnections: true,
-            logger: new ConsoleLogger(LogLevel.error),
+//            logger: new ConsoleLogger(LogLevel.info),
             autoAcceptCredentials: AutoAcceptCredential.Always,
             autoAcceptProofs: AutoAcceptProof.Always,
             walletConfig: {
@@ -3709,13 +3710,27 @@ class Sylk extends Component {
         try {
             await this.ssiAgent.initialize();
             console.log('SSI wallet initialised');
+            let ssiRoles = this.state.ssiRoles;
 
             this.ssiAgent.events.on(CredentialEventTypes.CredentialStateChanged, this.handleSSIAgentCredentialStateChange);
             this.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
 
+            if (ssiRoles.indexOf('verifier') === -1) {
+                ssiRoles.push('verifier');
+            }
+
             const credentials = await this.ssiAgent.credentials.getAll();
             console.log('SSI wallet has', credentials.length, 'credentials');
+
             //console.log(credentials);
+            if (credentials.length > 0) {
+                console.log('SSI added holder role');
+                if (ssiRoles.indexOf('holder') === -1) {
+                    ssiRoles.push('holder');
+                }
+            }
+
+            this.setState({ssiRoles: ssiRoles});
 
             const allConnection = await this.ssiAgent.connections.getAll();
             console.log('SSI wallet has', allConnection.length, 'connections');
@@ -4114,10 +4129,12 @@ class Sylk extends Component {
         this.backToForeground();
         this.callKeeper.acceptCall(callUUID, options);
         this.updateLoading(incomingCallLabel, 'incoming_call');
+
         if (this.timeoutIncomingTimer) {
             clearTimeout(this.timeoutIncomingTimer);
             this.timeoutIncomingTimer = null;
         }
+
         this.timeoutIncomingTimer = setTimeout(() => {
             this.updateLoading(null, 'incoming_call_timeout');
         }, 45000);
@@ -9062,6 +9079,7 @@ class Sylk extends Component {
                 selectedContacts={this.state.selectedContacts}
                 ssiAgent={this.ssiAgent}
                 ssiRequired = {this.state.ssiRequired}
+                ssiRoles = {this.state.ssiRoles}
                 postSystemNotification = {this.postSystemNotification}
             />
         )

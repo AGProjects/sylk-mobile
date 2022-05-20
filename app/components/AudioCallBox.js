@@ -277,12 +277,15 @@ class AudioCallBox extends Component {
         } else {
             if (this.state.ssiVerifyInProgress) {
                 verifyIcon = 'account-search';
-            } 
+            }
         }
 
         let showVerifyButton = false;
 
-        if (this.state.ssiCanVerify && this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established') && !this.state.reconnectingCall) {
+        if ((this.props.orientation === 'portrait' ||  this.props.isTablet) &&
+             this.state.ssiCanVerify &&
+             this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established') &&
+             !this.state.reconnectingCall) {
             showVerifyButton = true;
         }
 
@@ -311,11 +314,30 @@ class AudioCallBox extends Component {
                 <Text style={styles.uri}>{this.state.remoteUri}</Text>
                 </TouchableWithoutFeedback>
 
-                {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
+                {this.props.orientation !== 'landscape' && (this.state.reconnectingCall || this.state.ssiVerifyInProgress) ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
                 :
                 null
                 }
+
+                {showVerifyButton ?
+                    <View style={styles.verifyContainerClass}>
+                        <View style={styles.buttonContainer}>
+                        {!this.state.ssiVerifyInProgress ?
+                            <TouchableHighlight style={styles.roundshape}>
+                                <IconButton
+                                    size={buttonSize}
+                                    style={whiteButtonClass}
+                                    icon={verifyIcon}
+                                    onPress={this.verifyIdentity} />
+                            </TouchableHighlight>
+                        :
+                        <Text style={styles.uri}>Verifying identity...</Text>
+                        }
+                        </View>
+                    </View>
+
+                : null}
 
                 {!this.state.ssiVerifyInProgress ?
 
@@ -329,20 +351,6 @@ class AudioCallBox extends Component {
                     orientation = {this.props.orientation}
                     media = 'audio'
                 />
-                : null}
-
-                {showVerifyButton ?
-                                    <View style={buttonContainerClass}>
-                                    <View style={styles.buttonContainer}>
-                                        <TouchableHighlight style={styles.roundshape}>
-                                            <IconButton
-                                                size={buttonSize}
-                                                style={whiteButtonClass}
-                                                icon={verifyIcon}
-                                                onPress={this.verifyIdentity} />
-                                        </TouchableHighlight>
-                                    </View>
-                                </View>
                 : null}
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
@@ -449,9 +457,10 @@ class AudioCallBox extends Component {
                       </View>
                     </View>
                 }
+
                 <LoadingScreen
                             text={'Verify identity'}
-                            show={this.state.ssiVerifyInProgress ? true : false}
+                            show={false}
                             orientation={this.state.orientation}
                             isTablet={this.state.isTablet}
                             />
