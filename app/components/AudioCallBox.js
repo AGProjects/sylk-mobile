@@ -275,8 +275,11 @@ class AudioCallBox extends Component {
         if (this.state.ssiVerified) {
             verifyIcon = 'shield-account';
         } else {
-            if (this.state.ssiVerifyInProgress) {
-                verifyIcon = 'account-search';
+            if (this.state.ssiVerified === false) {
+            } else {
+                if (this.state.ssiVerifyInProgress) {
+                    verifyIcon = 'account-search';
+                }
             }
         }
 
@@ -334,6 +337,19 @@ class AudioCallBox extends Component {
                         :
                         <Text style={styles.uri}>Verifying identity...</Text>
                         }
+                        {this.state.ssiVerified ?
+                            <Text style={styles.ssiSucceeded}>Verified account</Text>                            
+                        : null}
+
+                        </View>
+                    </View>
+
+                : null}
+
+                {this.state.ssiVerified === false ?
+                    <View style={styles.verifyContainerClass}>
+                        <View style={styles.buttonContainer}>
+                        <Text style={styles.ssiFailed}>SSI verification failed</Text>
                         </View>
                     </View>
 

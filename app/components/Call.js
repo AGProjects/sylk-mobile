@@ -267,7 +267,7 @@ class Call extends Component {
                       ssiAgent: this.props.ssiAgent,
                       ssiInvitationUrl: null,
                       ssiRemoteIdentity: null,
-                      ssiVerified: false,
+                      ssiVerified: null,
                       ssiVerifyInProgress: false,
                       ssiCanVerify: false
                       }
@@ -311,8 +311,10 @@ class Call extends Component {
     }
 
     async handleSSIAgentConnectionStateChange(event) {
-        console.log('SSI session connection', event.payload.connectionRecord.id, event.payload.previousState, '->', event.payload.connectionRecord.state);
-        if (event.payload.connectionRecord.state === 'responded' || event.payload.connectionRecord.state === 'complete' && !this.state.ssiCanVerify) {
+        const connectionRecord = event.payload.connectionRecord;
+        console.log('SSI session connection', connectionRecord.id, event.payload.previousState, '->', connectionRecord.state);
+        // console.log('SSI connection event', connectionRecord);
+        if (connectionRecord.state === 'responded' || connectionRecord.state === 'complete' && !this.state.ssiCanVerify) {
             console.log('SSI connection established');
             this.props.postSystemNotification('You may now verify the remote party');
             this.setState({ssiCanVerify: true});
@@ -321,30 +323,40 @@ class Call extends Component {
 
     async handleSSIAgentProofStateChange(event) {
         const proofRecord = event.payload.proofRecord;
-        console.log('SSI proof record event', proofRecord.id, 'state', proofRecord.state);
-        console.log(proofRecord);
+        console.log('SSI proof event', proofRecord.id, 'new state:', proofRecord.state);
+        //console.log('SSI proof event', proofRecord);
         if (this.ssiRoles.indexOf('verifier') > -1) {
             if (proofRecord.state === 'done') {
-                if (proofRecord.isVerified) {
+                if (proofRecord.isVerified === undefined) {
+                    // the other party did the verification
+                    this.props.postSystemNotification('We were verified');
+                    console.log('The other party verified us');
+                } else if (proofRecord.isVerified === true) {
                     // the verification was successful --> call is authorized
                     // this contains firstName, lastName and dob
                     console.log('SSI verify proof succeeded');
-                    const credentialAttributes = proofRecord.presentationMessage.presentationAttachments;
+                    const credentialAttributes = proofRecord.presentationMessage.indyProof;
+                    console.log(credentialAttributes.proof.proofs);
                     this.setState({ssiRemoteIdentity: credentialAttributes, ssiVerified: true});
-                } else {
+                } else if (proofRecord.isVerified === false) {
                     console.log('SSI verify proof failed');
+                    this.setState({ssiVerified: false});
+                } else {
+                    console.log('Invalid proof record isVerified value', proofRecord.isVerified);
                 }
                 this.setState({ssiVerifyInProgress: false});
             }
         }
     }
 
-    cancelVerify() {
-        if (this.cancelVerifyIdentityTimer) {
-            clearTimeout(this.cancelVerifyIdentityTimer);
-            this.cancelVerifyIdentityTimer = null;
-            this.setState({ssiVerifyInProgress: false});
+    cancelSSIVerify() {
+        if (!this.cancelVerifyIdentityTimer) {
+            return;
         }
+
+        clearTimeout(this.cancelVerifyIdentityTimer);
+        this.cancelVerifyIdentityTimer = null;
+        this.setState({ssiVerifyInProgress: false});
     }
 
     async verifySSIIdentity() {
@@ -378,9 +390,10 @@ class Call extends Component {
         }
 
         this.setState({ssiVerifyInProgress: true});
-        this.cancelVerify();
+        this.cancelSSIVerify();
         this.cancelVerifyIdentityTimer = setTimeout(() => {
-            this.cancelVerify();
+            this.cancelSSIVerify();
+            this.props.postSystemNotification('SSI verification timeout');
         }, 15000);
 
         try {
@@ -406,14 +419,16 @@ class Call extends Component {
         }
 
         try {
+            utils.timestampedLog('Creating SSI connection...');
             const ssiConnection = await this.state.ssiAgent.connections.createConnection();
             const invitationUrl = ssiConnection.invitation.toUrl({domain: "http://example.com"});
             this.setState({ssiInvitationUrl: invitationUrl, ssiConnectionRecord: ssiConnection.connectionRecord});
 
             this.sendSSIInvitation();
         } catch (error) {
-            utils.timestampedLog('SSI create connection error', error);
+            utils.timestampedLog('SSI create connection', error);
             this.props.postSystemNotification('SSI connection ' + error);
+            this.setState({ssiVerified: false});
         }
     }
 
@@ -446,6 +461,7 @@ class Call extends Component {
             this.props.postSystemNotification('SSI invitation accepted');
             this.setState({ssiInvitationUrl: url, ssiConnectionRecord: ssiConnectionRecord});
         } catch (error) {
+            this.setState({ssiVerified: false});
             utils.timestampedLog('SSI accept invitation error', error);
             this.props.postSystemNotification('SSI accept ' + error);
         }
@@ -951,7 +967,7 @@ class Call extends Component {
         }
 
         if (newState !== 'established') {
-            this.cancelVerify();
+            this.cancelSSIVerify();
         }
 
         this.forceUpdate();

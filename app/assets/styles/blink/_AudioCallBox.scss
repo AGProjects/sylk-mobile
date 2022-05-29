@@ -128,6 +128,20 @@
     color: white;
 }
 
+.ssiFailed {
+    padding: 0px;
+    font-size: 16px;
+    text-align: center;
+    color: red;
+}
+
+.ssiSucceeded {
+    padding: 0px;
+    font-size: 16px;
+    text-align: center;
+    color: green;
+}
+
 .verifyContainerClass {
     height: 50px;
     margin-top: 30px;
