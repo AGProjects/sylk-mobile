@@ -338,7 +338,7 @@ class AudioCallBox extends Component {
                         <Text style={styles.uri}>Verifying identity...</Text>
                         }
                         {this.state.ssiVerified ?
-                            <Text style={styles.ssiSucceeded}>Verified account</Text>                            
+                            <Text style={styles.ssiSucceeded}>Verified account</Text>
                         : null}
 
                         </View>
@@ -352,7 +352,6 @@ class AudioCallBox extends Component {
                         <Text style={styles.ssiFailed}>SSI verification failed</Text>
                         </View>
                     </View>
-
                 : null}
 
                 {!this.state.ssiVerifyInProgress ?

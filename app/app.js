@@ -3681,7 +3681,7 @@ class Sylk extends Component {
             return;
         }
 
-        walletId = `${walletId}_9`;
+        walletId = `${walletId}_10`;
 
         console.log('Init SSI wallet...');
 
@@ -3693,7 +3693,7 @@ class Sylk extends Component {
         const agentConfig = {
             // The label is used for communication with other agents
             label: walletId,
-            mediatorConnectionsInvite: 'https://http.mediator.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiMjc1NTBkNzUtNzVjMi00MGVkLTg3NjEtN2QzN2M1YjNiYTc1IiwgImxhYmVsIjogIkFuaW1vIENvbW11bml0eSBNZWRpYXRvciIsICJzZXJ2aWNlRW5kcG9pbnQiOiAiaHR0cHM6Ly9odHRwLm1lZGlhdG9yLmNvbW11bml0eS5hbmltby5pZCIsICJyZWNpcGllbnRLZXlzIjogWyJIYTJiWFNubVVmTThuZmhYaldGWDJvckRMYUNac1dyZ1hmV2RrYWh5MlZNdyJdfQ==',
+            mediatorConnectionsInvite: 'https://http.mediator.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNTZjMTlhYzgtYjc1YS00ODdmLWJiMjUtNTVkYTlhMTNmODVlIiwgImxhYmVsIjogIkFuaW1vIENvbW11bml0eSBNZWRpYXRvciIsICJzZXJ2aWNlRW5kcG9pbnQiOiAiaHR0cHM6Ly9odHRwLm1lZGlhdG9yLmNvbW11bml0eS5hbmltby5pZCIsICJyZWNpcGllbnRLZXlzIjogWyI5aUFkWlVqQTM2QTZ5YnRndFU2RmViY0JXM1J1cTM4QjZzaHBXY3RCV2RHZCJdfQ==',
             autoAcceptConnections: true,
             // logger: new ConsoleLogger(LogLevel.debug),
             autoAcceptCredentials: AutoAcceptCredential.Always,
@@ -3776,12 +3776,13 @@ class Sylk extends Component {
         console.log('SSI connection init');
         // this invitation should be obtained from a QR code from the issuer website
         // this is still demo with hardwired values -adi
-        let url = 'https://didcomm.agent.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiMmRjMWU5MWItZWE0Yi00ZTUxLTgxZDItZTJiNWExNzI5NDA0IiwgImxhYmVsIjogIkFuaW1vIENvbW11bml0eSBBZ2VudCIsICJzZXJ2aWNlRW5kcG9pbnQiOiAiaHR0cHM6Ly9kaWRjb21tLmFnZW50LmNvbW11bml0eS5hbmltby5pZCIsICJyZWNpcGllbnRLZXlzIjogWyI3OWlQcDRRdWRmc29TdjN1cGRLZW1lQ2Jkd0o0dGJ0MVp3eERyMjRxNFN6biJdfQ==';
+        let url = 'https://didcomm.agent.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNDdiNDE1ZjEtNDk3OS00OGM0LWI5YTMtYWM2OWZlMGM0ZjZiIiwgInJlY2lwaWVudEtleXMiOiBbIkJBMmt1N3FCQ2toZE5ud3N1cU5GS0ZQa2dNejZoMnA2TENDd2hIaEE3U0twIl0sICJsYWJlbCI6ICJBbmltbyBDb21tdW5pdHkgQWdlbnQiLCAic2VydmljZUVuZHBvaW50IjogImh0dHBzOi8vZGlkY29tbS5hZ2VudC5jb21tdW5pdHkuYW5pbW8uaWQifQ==';
 
         try {
             const result = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
             console.log('SSI connection cached');
             // now we can receive a credential from the issuer
+
         } catch (error) {
             console.log('SSI connection error', error);
         }

@@ -315,9 +315,9 @@ class Call extends Component {
         console.log('SSI session connection', connectionRecord.id, event.payload.previousState, '->', connectionRecord.state);
         // console.log('SSI connection event', connectionRecord);
         if (connectionRecord.state === 'responded' || connectionRecord.state === 'complete' && !this.state.ssiCanVerify) {
-            console.log('SSI connection established');
-            this.props.postSystemNotification('You may now verify the remote party');
             this.setState({ssiCanVerify: true});
+            console.log('SSI connection established, we can now verify the remote party');
+            this.props.postSystemNotification('You may now verify the remote party');
         }
     }
 
@@ -327,6 +327,8 @@ class Call extends Component {
         //console.log('SSI proof event', proofRecord);
         if (this.ssiRoles.indexOf('verifier') > -1) {
             if (proofRecord.state === 'done') {
+                this.cancelSSIVerify();
+
                 if (proofRecord.isVerified === undefined) {
                     // the other party did the verification
                     this.props.postSystemNotification('We were verified');
@@ -334,10 +336,23 @@ class Call extends Component {
                 } else if (proofRecord.isVerified === true) {
                     // the verification was successful --> call is authorized
                     // this contains firstName, lastName and dob
-                    console.log('SSI verify proof succeeded');
+
+                    const proofData = proofRecord.presentationMessage.presentationAttachments[0].getDataAsJson();
+                    const proofValues = proofData.requested_proof.revealed_attr_groups.name.values;
+
+                    const firstName = proofValues.firstName.raw;
+                    const lastName = proofValues.lastName.raw;
+                    const dob = proofValues.dob.raw;
+
+                    let verifiedDisplayName = firstName + ' ' + lastName + ' (' + dob + ')';
+                    console.log('SSI verify proof succeeded for:', verifiedDisplayName);
+
                     const credentialAttributes = proofRecord.presentationMessage.indyProof;
-                    console.log(credentialAttributes.proof.proofs);
-                    this.setState({ssiRemoteIdentity: credentialAttributes, ssiVerified: true});
+                    //console.log(credentialAttributes.proof.proofs);
+                    this.setState({ssiRemoteIdentity: credentialAttributes,
+                                   ssiVerified: true,
+                                   remoteDisplayName: verifiedDisplayName
+                                   });
                 } else if (proofRecord.isVerified === false) {
                     console.log('SSI verify proof failed');
                     this.setState({ssiVerified: false});
@@ -1120,7 +1135,6 @@ class Call extends Component {
     }
 
     render() {
-
         let box = null;
         if (this.state.localMedia !== null) {
             if (this.state.audioOnly) {
