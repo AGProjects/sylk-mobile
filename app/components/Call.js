@@ -279,8 +279,10 @@ class Call extends Component {
     }
 
     componentDidMount() {
-        this.props.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
-        this.props.ssiAgent.events.on(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
+        if (this.props.ssiAgent) {
+            this.props.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
+            this.props.ssiAgent.events.on(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
+        }
 
         this.resetStats();
 
