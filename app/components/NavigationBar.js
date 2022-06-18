@@ -511,6 +511,7 @@ class NavigationBar extends Component {
                     deleteContact={this.props.deleteContact}
                     deletePublicKey={this.props.deletePublicKey}
                     publicKey={this.state.showPublicKey ? this.state.publicKey: null}
+                    myuuid={this.props.myuuid}
                 />
 
                 <EditConferenceModal
@@ -602,7 +603,8 @@ NavigationBar.propTypes = {
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,
     hideExportPrivateKeyModalFunc: PropTypes.func,
-    blockedUris: PropTypes.array
+    blockedUris: PropTypes.array,
+    myuuid: PropTypes.string
 };
 
 export default NavigationBar;

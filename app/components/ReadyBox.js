@@ -240,6 +240,12 @@ class ReadyBox extends Component {
              return;
         }
 
+        // This URLs are used to request SSI credentials
+        if (new_uri && new_uri.indexOf('http') > -1 && new_uri.indexOf('?c_i=') > -1) {
+            this.props.handleSSIEnrolment(new_uri);
+            return;
+        }
+
         if (this.state.selectedContact === contact) {
             if (this.state.chat) {
                 this.setState({chat: false});
@@ -573,10 +579,10 @@ class ReadyBox extends Component {
     }
 
     QRCodeRead(e) {
-        console.log('QR code object:', e);
+        //console.log('QR code object:', e);
         console.log('QR code data:', e.data);
-        this.handleTargetChange(e.data);
         this.props.toggleQRCodeScannerFunc();
+        this.handleTargetChange(e.data);
     }
 
     get showQRCodeButton() {
@@ -787,7 +793,7 @@ class ReadyBox extends Component {
                     <QRCodeScanner
                         onRead={this.QRCodeRead}
                         showMarker={true}
-                        flashMode={RNCamera.Constants.FlashMode.torch}
+                        flashMode={RNCamera.Constants.FlashMode.off}
                         containerStyle={styles.QRcodeContainer}
                      />
                       :
@@ -943,7 +949,8 @@ ReadyBox.propTypes = {
     fontScale: PropTypes.number,
     inviteToConferenceFunc: PropTypes.func,
     toggleQRCodeScannerFunc: PropTypes.func,
-    myContacts: PropTypes.object
+    myContacts: PropTypes.object,
+    handleSSIEnrolment:  PropTypes.func
 };
 
 

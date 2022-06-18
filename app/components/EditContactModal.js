@@ -213,7 +213,13 @@ class EditContactModal extends Component {
                         {true ?
                         <View style={{flexDirection: 'row'}}>
                         <Icon style={styles.lock} name={"lock"} />
-                        <Text style={styles.pgp}>Messages are encrypted</Text>
+                        <Text style={styles.pgp}>Messages are encrypted end-to-end</Text>
+                        </View>
+                        : null}
+
+                        {true ?
+                        <View style={{flexDirection: 'row'}}>
+                        <Text style={styles.pgp}>My device id: {this.props.myuuid}</Text>
                         </View>
                         : null}
 
@@ -236,7 +242,8 @@ EditContactModal.propTypes = {
     myself             : PropTypes.bool,
     saveContact        : PropTypes.func,
     deleteContact      : PropTypes.func,
-    deletePublicKey    : PropTypes.func
+    deletePublicKey    : PropTypes.func,
+    myuuid             : PropTypes.string
 };
 
 export default EditContactModal;

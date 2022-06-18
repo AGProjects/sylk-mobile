@@ -296,7 +296,8 @@ class Sylk extends Component {
                               conference: false},
             ssiRequired: false,
             ssiAgent: null,
-            ssiRoles: []
+            ssiRoles: [],
+            myuuid: null
         };
 
         utils.timestampedLog('Init app');
@@ -482,7 +483,7 @@ class Sylk extends Component {
 
         this.sqlTableVersions = {'messages': 8,
                                  'contacts': 7,
-                                 'keys': 2}
+                                 'keys': 3}
 
         this.updateTableQueries = {'messages': {1: [],
                                                 2: [{query: 'delete from messages', params: []}],
@@ -509,7 +510,9 @@ class Sylk extends Component {
                                                 6: [{query: 'alter table contacts add column photo BLOB', params: []}],
                                                 7: [{query: 'alter table contacts add column email TEXT', params: []}]
                                                 },
-                                   'keys': {2: [{query: 'alter table keys add column last_sync_id TEXT', params: []}]}
+                                   'keys': {2: [{query: 'alter table keys add column last_sync_id TEXT', params: []}],
+                                            3: [{query: 'alter table keys add column my_uuid TEXT', params: []}]
+                                            }
                                    };
 
         this.db = null;
@@ -692,8 +695,9 @@ class Sylk extends Component {
 
         let current_datetime = new Date();
         const unixTime = Math.floor(current_datetime / 1000);
-        let params = [this.state.accountId, keys.private, keys.public, unixTime];
-        await this.ExecuteQuery("INSERT INTO keys (account, private_key, public_key, timestamp) VALUES (?, ?, ?, ?)", params).then((result) => {
+        const my_uuid = uuid.v4();
+        let params = [this.state.accountId, keys.private, keys.public, unixTime, my_uuid];
+        await this.ExecuteQuery("INSERT INTO keys (account, private_key, public_key, timestamp, my_uuid) VALUES (?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted private key');
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
@@ -734,7 +738,19 @@ class Sylk extends Component {
         await this.ExecuteQuery("update keys set private_key = ?, public_key = ?, timestamp = ? where account = ?", params).then((result) => {
             console.log('SQL updated private key');
         }).catch((error) => {
-            console.log('SQL error:', error);
+            console.log('SQL update keys error:', error);
+        });
+    }
+
+    async updateMyUUID() {
+        const my_uuid = uuid.v4();
+        let params = [my_uuid, this.state.accountId];
+
+        await this.ExecuteQuery("update keys set my_uuid = ? where account = ?", params).then((result) => {
+            console.log('SQL updated my uuid to', my_uuid);
+            this.setState({myuuid: my_uuid});
+        }).catch((error) => {
+            console.log('SQL update uuid error:', error);
         });
     }
 
@@ -757,6 +773,15 @@ class Sylk extends Component {
                     this.setState({showImportPrivateKeyModal: false});
                 } else {
                     keyStatus['existsLocal'] = false;
+                }
+
+                let my_uuid = item.my_uuid;
+
+                if (!my_uuid) {
+                    this.updateMyUUID();
+                } else {
+                    console.log('My device UUID', my_uuid);
+                    this.setState({myuuid: my_uuid});
                 }
 
                 keys.private = item.private_key;
@@ -1309,7 +1334,8 @@ class Sylk extends Component {
                                     'checksum' TEXT, \
                                     'public_key' TEXT, \
                                     'last_sync_id' TEXT, \
-                                    'timestamp' INTEGER ) \
+                                    'timestamp' INTEGER, \
+                                    'my_uuid' TEXT) \
                                     ";
 
         this.ExecuteQuery(create_table_keys).then((success) => {
@@ -3656,7 +3682,7 @@ class Sylk extends Component {
                 account.register();
 
                 if (this.state.ssiRequired) {
-                    this.initSSIAgent(this.state.accountId);
+                    this.initSSIAgent();
                 }
 
                 storage.set('account', {
@@ -3670,20 +3696,25 @@ class Sylk extends Component {
         });
     }
 
-    async initSSIAgent(walletId) {
+    async initSSIAgent() {
         // SSI wallet - init agent with wallet Id this.state.accountId
         if (this.ssiAgent) {
             // already initialized
             return;
         }
 
-        if (!walletId) {
+        if (!this.state.accountId) {
             return;
         }
 
-        walletId = `${walletId}_10`;
+        if (!this.state.myuuid) {
+            console.log('Missing UUID for SSI Agent');
+            return;
+        }
 
-        console.log('Init SSI wallet...');
+        let walletId = this.state.accountId + '_' + this.state.myuuid.replace(/-/g, '_');
+
+        console.log('Init SSI wallet...', walletId);
 
 
         const BCOVRIN_TEST_GENESIS = `{"reqSignature":{},"txn":{"data":{"data":{"alias":"Node1","blskey":"4N8aUNHSgjQVgkpm8nhNEfDf6txHznoYREg9kirmJrkivgL4oSEimFF6nsQ6M41QvhM2Z33nves5vfSn9n1UwNFJBYtWVnHYMATn76vLuL3zU88KyeAYcHfsih3He6UHcXDxcaecHVz6jhCYz1P2UZn2bDVruL5wXpehgBfBaLKm3Ba","blskey_pop":"RahHYiCvoNCtPTrVtP7nMC5eTYrsUA8WjXbdhNc8debh1agE9bGiJxWBXYNFbnJXoXhWFMvyqhqhRoq737YQemH5ik9oL7R4NTTCz2LEZhkgLJzB3QRQqJyBNyv7acbdHrAT8nQ9UkLbaVL9NBpnWXBTw4LEMePaSHEw66RzPNdAX1","client_ip":"138.197.138.255","client_port":9702,"node_ip":"138.197.138.255","node_port":9701,"services":["VALIDATOR"]},"dest":"Gw6pDLhcBcoQesN72qfotTgFa7cbuqZpkX3Xo6pLhPhv"},"metadata":{"from":"Th7MpTaRZVRYnPiabds81Y"},"type":"0"},"txnMetadata":{"seqNo":1,"txnId":"fea82e10e894419fe2bea7d96296a6d46f50f93f9eeda954ec461b2ed2950b62"},"ver":"1"}
@@ -3748,7 +3779,9 @@ class Sylk extends Component {
             console.log('SSI wallet has', allConnection.length, 'connections');
             //console.log(allConnection);
 
-            this._notificationCenter.postSystemNotification("SSI wallet initialised with " + credentials.length + " credentials");
+            let noCred = credentials.length > 0 ? credentials.length : "no";
+
+            this._notificationCenter.postSystemNotification("SSI wallet initialised with " + noCred + " credentials");
 
             const rmCommunityConnection = async () => {
                 const connections = allConnection.filter(x => x.theirLabel === 'Animo Community Agent')
@@ -3773,6 +3806,9 @@ class Sylk extends Component {
     }
 
     async initSSIConnection() {
+        // replaced by the QR code reader
+        return;
+
         console.log('SSI connection init');
         // this invitation should be obtained from a QR code from the issuer website
         // this is still demo with hardwired values -adi
@@ -4362,7 +4398,7 @@ class Sylk extends Component {
         console.log('toggleSSI to', ssiRequired);
         this.setState({ssiRequired: ssiRequired});
         if (ssiRequired) {
-            this.initSSIAgent(this.state.accountId);
+            this.initSSIAgent();
         } else {
             this.setState({ssiAgent: null});
         }
@@ -4385,6 +4421,29 @@ class Sylk extends Component {
     toggleQRCodeScanner() {
         utils.timestampedLog('Toggle QR code scanner');
         this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
+    }
+
+    async handleSSIEnrolment(url) {
+        if (!this.ssiAgent) {
+            console.log('No SSI agent available for handling enrolment to', url);
+            return;
+        }
+
+        console.log('SSI enrolment invitation URL', url);
+
+        try {
+            const ssiConnectionRecord = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
+            console.log('SSI enrolment requested', ssiConnectionRecord.id);
+            setTimeout(() => {
+                this._notificationCenter.postSystemNotification('SSI enrolment requested');
+            }, 2000);
+
+        } catch (error) {
+            utils.timestampedLog('SSI enrolment error', error);
+            setTimeout(() => {
+                this._notificationCenter.postSystemNotification('SSI enrolment ' + error);
+            }, 2000);
+        }
     }
 
     speakerphoneOn() {
@@ -8941,6 +9000,7 @@ class Sylk extends Component {
                     blockedUris = {this.state.blockedUris}
                     toggleSSIFunc = {this.toggleSSI}
                     ssiRequired = {this.state.ssiRequired}
+                    myuuid={this.state.myuuid}
                 />
 
                 <ReadyBox
@@ -9008,6 +9068,7 @@ class Sylk extends Component {
                     inviteToConferenceFunc = {this.inviteToConference}
                     showQRCodeScanner = {this.state.showQRCodeScanner}
                     toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
+                    handleSSIEnrolment = {this.handleSSIEnrolment}
                 />
 
                 <ImportPrivateKeyModal
