@@ -422,7 +422,7 @@ class Sylk extends Component {
 
         storage.get('ssi').then((ssi) => {
             if (ssi) {
-                //console.log("Loaded SSI settings", ssi);
+                console.log("Loaded SSI settings", ssi);
                 this.setState({ssiRequired: ssi.required});
             } else {
                 console.log("Init SSI settings", ssi);
@@ -747,7 +747,7 @@ class Sylk extends Component {
         let params = [my_uuid, this.state.accountId];
 
         await this.ExecuteQuery("update keys set my_uuid = ? where account = ?", params).then((result) => {
-            console.log('SQL updated my uuid to', my_uuid);
+            utils.timestampedLog('My device UUID was updated', my_uuid);
             this.setState({myuuid: my_uuid});
         }).catch((error) => {
             console.log('SQL update uuid error:', error);
@@ -780,7 +780,7 @@ class Sylk extends Component {
                 if (!my_uuid) {
                     this.updateMyUUID();
                 } else {
-                    console.log('My device UUID', my_uuid);
+                    utils.timestampedLog('My device UUID', my_uuid);
                     this.setState({myuuid: my_uuid});
                 }
 
@@ -3683,6 +3683,8 @@ class Sylk extends Component {
 
                 if (this.state.ssiRequired) {
                     this.initSSIAgent();
+                } else {
+                    utils.timestampedLog('SSI wallet is disabled');
                 }
 
                 storage.set('account', {
@@ -3704,17 +3706,18 @@ class Sylk extends Component {
         }
 
         if (!this.state.accountId) {
+            utils.timestampedLog('Init SSI wallet failed because missing device account id');
             return;
         }
 
         if (!this.state.myuuid) {
-            console.log('Missing UUID for SSI Agent');
+            utils.timestampedLog('Init SSI wallet failed because missing device id');
             return;
         }
 
         let walletId = this.state.accountId + '_' + this.state.myuuid.replace(/-/g, '_');
 
-        console.log('Init SSI wallet...', walletId);
+        utils.timestampedLog('Init SSI wallet will be initialised', walletId);
 
 
         const BCOVRIN_TEST_GENESIS = `{"reqSignature":{},"txn":{"data":{"data":{"alias":"Node1","blskey":"4N8aUNHSgjQVgkpm8nhNEfDf6txHznoYREg9kirmJrkivgL4oSEimFF6nsQ6M41QvhM2Z33nves5vfSn9n1UwNFJBYtWVnHYMATn76vLuL3zU88KyeAYcHfsih3He6UHcXDxcaecHVz6jhCYz1P2UZn2bDVruL5wXpehgBfBaLKm3Ba","blskey_pop":"RahHYiCvoNCtPTrVtP7nMC5eTYrsUA8WjXbdhNc8debh1agE9bGiJxWBXYNFbnJXoXhWFMvyqhqhRoq737YQemH5ik9oL7R4NTTCz2LEZhkgLJzB3QRQqJyBNyv7acbdHrAT8nQ9UkLbaVL9NBpnWXBTw4LEMePaSHEw66RzPNdAX1","client_ip":"138.197.138.255","client_port":9702,"node_ip":"138.197.138.255","node_port":9701,"services":["VALIDATOR"]},"dest":"Gw6pDLhcBcoQesN72qfotTgFa7cbuqZpkX3Xo6pLhPhv"},"metadata":{"from":"Th7MpTaRZVRYnPiabds81Y"},"type":"0"},"txnMetadata":{"seqNo":1,"txnId":"fea82e10e894419fe2bea7d96296a6d46f50f93f9eeda954ec461b2ed2950b62"},"ver":"1"}
@@ -3752,7 +3755,7 @@ class Sylk extends Component {
 
         try {
             await this.ssiAgent.initialize();
-            console.log('SSI wallet initialised');
+            utils.timestampedLog('SSI wallet initialised');
             let ssiRoles = this.state.ssiRoles;
 
             this.ssiAgent.events.on(CredentialEventTypes.CredentialStateChanged, this.handleSSIAgentCredentialStateChange);
@@ -3763,11 +3766,12 @@ class Sylk extends Component {
             }
 
             const credentials = await this.ssiAgent.credentials.getAll();
-            console.log('SSI wallet has', credentials.length, 'credentials');
+            let hm = credentials.length > 0 ? credentials.length : "no";
+            utils.timestampedLog('SSI wallet has', hm, 'credentials');
 
             //console.log(credentials);
             if (credentials.length > 0) {
-                console.log('SSI added holder role');
+                utils.timestampedLog('SSI added holder role');
                 if (ssiRoles.indexOf('holder') === -1) {
                     ssiRoles.push('holder');
                 }
@@ -3776,7 +3780,7 @@ class Sylk extends Component {
             this.setState({ssiRoles: ssiRoles});
 
             const allConnection = await this.ssiAgent.connections.getAll();
-            console.log('SSI wallet has', allConnection.length, 'connections');
+            utils.timestampedLog('SSI wallet has', allConnection.length, 'connections');
             //console.log(allConnection);
 
             let noCred = credentials.length > 0 ? credentials.length : "no";
@@ -3801,7 +3805,7 @@ class Sylk extends Component {
                 await this.initSSIConnection();
             }
         } catch (error) {
-            console.log('SSI wallet initialise error:', error);
+            utils.timestampedLog('SSI wallet initialise error:', error);
         }
     }
 
@@ -3809,36 +3813,36 @@ class Sylk extends Component {
         // replaced by the QR code reader
         return;
 
-        console.log('SSI connection init');
+        utils.timestampedLog('SSI connection init');
         // this invitation should be obtained from a QR code from the issuer website
         // this is still demo with hardwired values -adi
         let url = 'https://didcomm.agent.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNDdiNDE1ZjEtNDk3OS00OGM0LWI5YTMtYWM2OWZlMGM0ZjZiIiwgInJlY2lwaWVudEtleXMiOiBbIkJBMmt1N3FCQ2toZE5ud3N1cU5GS0ZQa2dNejZoMnA2TENDd2hIaEE3U0twIl0sICJsYWJlbCI6ICJBbmltbyBDb21tdW5pdHkgQWdlbnQiLCAic2VydmljZUVuZHBvaW50IjogImh0dHBzOi8vZGlkY29tbS5hZ2VudC5jb21tdW5pdHkuYW5pbW8uaWQifQ==';
 
         try {
             const result = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
-            console.log('SSI connection cached');
+            utils.timestampedLog('SSI connection cached');
             // now we can receive a credential from the issuer
 
         } catch (error) {
-            console.log('SSI connection error', error);
+            utils.timestampedLog('SSI connection error', error);
         }
     }
 
     async handleSSIAgentCredentialStateChange(event) {
-        console.log('SSI wallet Credential State Change', event.payload.credentialRecord.id, event.payload.previousState, '->', event.payload.credentialRecord.state);
+        utils.timestampedLog('SSI wallet Credential State Change', event.payload.credentialRecord.id, event.payload.previousState, '->', event.payload.credentialRecord.state);
         if (event.payload.credentialRecord.state === CredentialState.OfferReceived) {
-            console.log('SSI credential received:', event.payload.credentialRecord);
+            utils.timestampedLog('SSI credential received:', event.payload.credentialRecord);
             this._notificationCenter.postSystemNotification("New SSI credential received");
             // this is not needed if we are configured to auto accept
             // this.ssiAgent.credentials.acceptOffer(event.payload.credentialRecord.id);
         } else if (event.payload.credentialRecord.state === CredentialState.Done) {
-            console.log('SSI wallet credential saved');
+            utils.timestampedLog('SSI wallet credential saved');
             this.postSystemNotification('SSI credential saved');
         }
     }
 
     async handleSSIAgentConnectionStateChange(event) {
-        //console.log('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
+        //utils.timestampedLog('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
     }
 
     generateKeysIfNecessary(account) {
@@ -4419,7 +4423,7 @@ class Sylk extends Component {
     }
 
     toggleQRCodeScanner() {
-        utils.timestampedLog('Toggle QR code scanner');
+        //utils.timestampedLog('Toggle QR code scanner');
         this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
     }
 
@@ -4429,11 +4433,11 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('SSI enrolment invitation URL', url);
+        utils.timestampedLog('SSI enrolment invitation URL', url);
 
         try {
             const ssiConnectionRecord = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
-            console.log('SSI enrolment requested', ssiConnectionRecord.id);
+            utils.timestampedLog('SSI enrolment requested', ssiConnectionRecord.id);
             setTimeout(() => {
                 this._notificationCenter.postSystemNotification('SSI enrolment requested');
             }, 2000);
