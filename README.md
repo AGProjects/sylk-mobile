@@ -85,15 +85,13 @@ Messages are encrypted end-to-end using OpenPGP.
 
 ## Getting Started
 
-### Building ependencies
+### Building dependencies
 
-* Node.js version 12
-* NVM
-  https://heynode.com/tutorial/install-nodejs-locally-nvm/
+* Java from http://java.com
+* NVM from https://heynode.com/tutorial/install-nodejs-locally-nvm/
+* Using nvm install Node.js version 12
 * Yarn (for package management)
   curl -o- -L https://yarnpkg.com/install.sh | bash 
-* GPG (for git-crypt)
-* Git-Crypt (for keeping a google upload key keystore secret)
 * XCode
 * Android Studio (Or at least the Android SDK)
 * Gem (for installing gem files)
@@ -101,7 +99,10 @@ Messages are encrypted end-to-end using OpenPGP.
 * Cocoapods (for handling iOS Pods) 
   - Install RVM: curl -L https://get.rvm.io | bash -s stable
   - Update ruby: rvm install rvm install ruby
-  - Add LC_ALL="en_US.UTF-8" to .bach_profile
+  - Add to .bash_profile
+    export LANG=en_US.UTF-8
+    export LANGUAGE=en_US.UTF-8
+    export LC_ALL=en_US.UTF-8
   - sudo gem install cocoapods
 * watchman (for helping watch files during development)
   brew install watchman or port install watchman
