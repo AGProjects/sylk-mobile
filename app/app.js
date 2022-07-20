@@ -3725,7 +3725,7 @@ class Sylk extends Component {
 
         let walletId = this.state.accountId + '_' + this.state.myuuid.replace(/-/g, '_');
 
-        let mediatorUrl = 'ws://95.217.216.8:9001?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNTU0NDQxYTEtMzAxNS00ZTE3LWEzNGUtMGUwMjBiMWEwMDg1IiwgInNlcnZpY2VFbmRwb2ludCI6ICJ3czovLzk1LjIxNy4yMTYuODo5MDAxIiwgInJlY2lwaWVudEtleXMiOiBbIjZoVlYyYXhFaFN4NGpGbkRWWGk3TUxSNkw2cml0Q3lOWnBWZ3ljTEJid2ZRIl0sICJsYWJlbCI6ICJCbG9xem9uZSBNZWRpYXRvciBBZ2VudCJ9';
+        let mediatorUrl = 'wss://ws.didcomm.mediator.bloqzone.com?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiN2FlZTliZmItOTYwMi00YTliLWI1ZmEtNTA0YTFkNmZhYThiIiwgInJlY2lwaWVudEtleXMiOiBbIjRCa052dWJtUzFHeUM4aTVrWGdGQzJha2ZLSkpRM29kWWNEZHAxNXQ1OGE3Il0sICJsYWJlbCI6ICJCbG9xem9uZSBNZWRpYXRvciBBZ2VudCIsICJzZXJ2aWNlRW5kcG9pbnQiOiAid3NzOi8vd3MuZGlkY29tbS5tZWRpYXRvci5ibG9xem9uZS5jb20ifQ==';
 
         utils.timestampedLog('Init SSI wallet id', walletId,  'init via mediator', mediatorUrl);
 
@@ -3816,7 +3816,7 @@ class Sylk extends Component {
                 }
             }
 
-            // await rmCommunityConnection() // run only once
+            await rmCommunityConnection(); // run only once
 
             if (!allConnection.map((x) => x.theirLabel).includes('Animo Community Agent')) {
                 // create a connection to Animo credential issuer, must be done once
