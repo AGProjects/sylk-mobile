@@ -51,7 +51,9 @@ class ReadyBox extends Component {
             historyFilter: this.props.historyFilter,
             isTablet: this.props.isTablet,
             myContacts: this.props.myContacts,
-            showQRCodeScanner: this.props.showQRCodeScanner
+            showQRCodeScanner: this.props.showQRCodeScanner,
+            ssiCredentials: this.props.ssiCredentials,
+            ssiConnections: this.props.ssiConnections
         };
         this.ended = false;
 
@@ -77,6 +79,13 @@ class ReadyBox extends Component {
 
         if (!nextProps.historyFilter && this.state.historyFilter) {
             this.filterHistory(null);
+        }
+
+        if (nextProps.historyFilter === 'ssi' && !nextProps.selectedContact && !this.state.selectedContact) {
+            this.setState({'historyCategoryFilter': 'ssi'});
+            if (this.navigationRef) {
+                this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
+            }
         }
 
         if (nextProps.missedCalls.length === 0 && this.state.historyCategoryFilter === 'missed') {
@@ -117,7 +126,10 @@ class ReadyBox extends Component {
                         fontScale: nextProps.fontScale,
                         isTablet: nextProps.isTablet,
                         showQRCodeScanner: nextProps.showQRCodeScanner,
-                        isLandscape: nextProps.isLandscape});
+                        isLandscape: nextProps.isLandscape,
+                        ssiCredentials: nextProps.ssiCredentials,
+                        ssiConnections: nextProps.ssiConnections
+                        });
     }
 
     getTargetUri(uri) {
@@ -201,6 +213,10 @@ class ReadyBox extends Component {
 
     get showButtonsBar() {
         if (this.state.historyCategoryFilter === 'blocked') {
+            return false;
+        }
+
+        if (this.state.historyCategoryFilter === 'ssi') {
             return false;
         }
 
@@ -567,6 +583,7 @@ class ReadyBox extends Component {
               {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
               {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
+              {key: 'ssi', title: 'SSI', enabled: (this.state.ssiConnections && this.state.ssiConnections.length > 0) || (this.state.ssiCredentials && this.state.ssiCredentials.length > 0), selected: this.state.historyCategoryFilter === 'ssi'},
               ];
     }
 
@@ -608,8 +625,7 @@ class ReadyBox extends Component {
         }
 
         /*
-        console.log('Render -----');
-
+        console.log('Render -----', this.state.historyFilter, this.state.historyCategoryFilter);
         if (this.state.selectedContact) {
             console.log('Render selectedContact', this.state.selectedContact.name);
         }
@@ -849,6 +865,8 @@ class ReadyBox extends Component {
                             messageZoomFactor = {this.state.messageZoomFactor}
                             isTyping = {this.state.isTyping}
                             call = {this.state.call}
+                            ssiCredentials = {this.state.ssiCredentials}
+                            ssiConnections = {this.state.ssiConnections}
                         />
                         }
 
@@ -859,6 +877,12 @@ class ReadyBox extends Component {
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
                             ref={(ref) => { this.navigationRef = ref; }}
+                              onScrollToIndexFailed={info => {
+                                const wait = new Promise(resolve => setTimeout(resolve, 700));
+                                wait.then(() => {
+                                  this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                });
+                              }}
                             data={this.navigationItems}
                             extraData={this.state}
                             keyExtractor={(item, index) => item.key}
@@ -950,7 +974,9 @@ ReadyBox.propTypes = {
     inviteToConferenceFunc: PropTypes.func,
     toggleQRCodeScannerFunc: PropTypes.func,
     myContacts: PropTypes.object,
-    handleSSIEnrolment:  PropTypes.func
+    handleSSIEnrolment:  PropTypes.func,
+    ssiCredentials:  PropTypes.array,
+    ssiConnections:  PropTypes.array
 };
 
 

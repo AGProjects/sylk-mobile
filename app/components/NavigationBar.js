@@ -136,6 +136,12 @@ class NavigationBar extends Component {
             case 'refetchMessages':
                 this.props.refetchMessages();
                 break;
+            case 'deleteSsiCredential':
+                this.props.deleteSsiCredential(this.state.selectedContact);
+                break;
+            case 'deleteSsiConnection':
+                this.props.deleteSsiConnection(this.state.selectedContact);
+                break;
             case 'preview':
                 this.props.preview();
                 break;
@@ -323,8 +329,8 @@ class NavigationBar extends Component {
             isConference = this.state.selectedContact.conference || tags.indexOf('conference') > -1;
         }
 
-        let favoriteTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
-        let favoriteIcon = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
+        let favoriteTitle = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
+        let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
 
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
@@ -342,9 +348,9 @@ class NavigationBar extends Component {
         let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
         let isAnonymous = this.state.selectedContact && (this.state.selectedContact.uri.indexOf('@guest.') > -1 || this.state.selectedContact.uri.indexOf('anonymous@') > -1);
-        let canCall = !isConference && !this.state.inCall && !isAnonymous;
+        let canCall = !isConference && !this.state.inCall && !isAnonymous && tags.indexOf('ssi') === -1;
 
-        let blockedTitle = (this.state.selectedContact && this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
+        let blockedTitle = (this.state.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
         if (isAnonymous && this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
             blockedTitle = 'Allow anonymous callers';
         }
@@ -384,7 +390,7 @@ class NavigationBar extends Component {
                             />
                         }
                     >
-                        <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/>
+                        {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/> : null}
                         {canCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {canCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
@@ -406,16 +412,24 @@ class NavigationBar extends Component {
                         {this.props.publicKey && false?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous  ?
+                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('ssi') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
-                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1  && !this.state.inCall ?
+                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1  && !this.state.inCall && tags.indexOf('ssi') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1 ?
+                        {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1 && tags.indexOf('ssi') === -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
+                        : null}
+
+                        {this.state.selectedContact && tags.indexOf('ssi-credential') > -1?
+                        <Menu.Item onPress={() => this.handleMenu('deleteSsiCredential')} icon="delete" title="Delete SSI credential..."/>
+                        : null}
+
+                        {this.state.selectedContact && tags.indexOf('ssi-connection') > -1 && tags.indexOf('readonly') === -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('deleteSsiConnection')} icon="delete" title="Delete SSI connection..."/>
                         : null}
 
                         {!this.state.inCall ?
@@ -604,7 +618,9 @@ NavigationBar.propTypes = {
     showExportPrivateKeyModalFunc: PropTypes.func,
     hideExportPrivateKeyModalFunc: PropTypes.func,
     blockedUris: PropTypes.array,
-    myuuid: PropTypes.string
+    myuuid: PropTypes.string,
+    deleteSsiCredential: PropTypes.func,
+    deleteSsiConnection: PropTypes.func
 };
 
 export default NavigationBar;

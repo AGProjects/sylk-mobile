@@ -152,7 +152,7 @@ class ContactCard extends Component {
             name = name + ' - ' + this.state.contact.organization;
         }
 
-        //console.log('Render Contact', this.state.contact.uri, this.state.fontScale);
+        //console.log('Render Contact', this.state.contact);
 
         let showBlockButton = !this.state.contact.conference && !this.state.chat;
         let showBlockDomainButton = false;
@@ -388,6 +388,7 @@ class ContactCard extends Component {
                         : null
                         }
                     </View>
+
                 </View>
 
                     {showActions && false ?

@@ -298,7 +298,9 @@ class Sylk extends Component {
             ssiRequired: false,
             ssiAgent: null,
             ssiRoles: [],
-            myuuid: null
+            myuuid: null,
+            ssiCredentials: null,
+            ssiConnections: null
         };
 
         utils.timestampedLog('Init app');
@@ -3794,6 +3796,8 @@ class Sylk extends Component {
             utils.timestampedLog('SSI wallet has', allConnection.length, 'connections');
             //console.log(allConnection);
 
+            this.setState({ssiConnections: allConnection});
+
             allConnection.forEach((item) => {
                 utils.timestampedLog('SSI connection', item.id, 'to', item.theirLabel, 'in state', item.state);
             });
@@ -3802,21 +3806,23 @@ class Sylk extends Component {
 
             this._notificationCenter.postSystemNotification("SSI wallet initialised with " + noCred + " credentials");
 
-            /*
-            credentials.forEach((item) => {
-                console.log('SSI credential', item.id, 'in state', item.state);
-            });
-            */
+            this.setState({ssiCredentials: credentials});
 
             const rmCommunityConnection = async () => {
-                const connections = allConnection.filter(x => x.theirLabel === 'Animo Community Agent')
+                let connections = allConnection.filter(x => x.theirLabel === 'Animo Community Agent')
+
+                for (const x of connections) {
+                    await this.ssiAgent.connections.deleteById(x.id)
+                }
+
+                connections = allConnection.filter(x => x.theirLabel === 'Animo Community Mediator')
 
                 for (const x of connections) {
                     await this.ssiAgent.connections.deleteById(x.id)
                 }
             }
 
-            await rmCommunityConnection(); // run only once
+            //await rmCommunityConnection(); // run only once
 
             if (!allConnection.map((x) => x.theirLabel).includes('Animo Community Agent')) {
                 // create a connection to Animo credential issuer, must be done once
@@ -3859,6 +3865,9 @@ class Sylk extends Component {
         } else if (event.payload.credentialRecord.state === CredentialState.Done) {
             utils.timestampedLog('SSI wallet credential saved');
             this.postSystemNotification('SSI credential saved');
+            setTimeout(() => {
+                this.filterHistory('ssi');
+            }, 3000);
         }
     }
 
@@ -6753,6 +6762,34 @@ class Sylk extends Component {
         });
     }
 
+    async deleteSsiCredential(contact) {
+        this.setState({
+            selectedContact: null,
+            targetUri: ''
+            });
+
+        if (this.ssiAgent) {
+            await this.ssiAgent.credentials.deleteById(contact.uri);
+            utils.timestampedLog('Deleted SSI credential', contact.uri);
+            const credentials = await this.ssiAgent.credentials.getAll();
+            this.setState({ssiCredentials: credentials});
+        }
+    }
+
+    async deleteSsiConnection(contact) {
+        this.setState({
+            selectedContact: null,
+            targetUri: ''
+            });
+
+        if (this.ssiAgent) {
+            await this.ssiAgent.connections.deleteById(contact.uri);
+            utils.timestampedLog('Deleted SSI connection', contact.uri);
+            const connections = await this.ssiAgent.connections.getAll();
+            this.setState({ssiConnections: connections});
+        }
+    }
+
     async deleteMessages(uri, local=true) {
         console.log('Delete messages for', uri);
         let myContacts = this.state.myContacts;
@@ -8650,6 +8687,7 @@ class Sylk extends Component {
     }
 
     filterHistory(filter) {
+        //console.log('Filter history', filter);
         this.setState({historyFilter: filter});
     }
 
@@ -9031,6 +9069,8 @@ class Sylk extends Component {
                     toggleSSIFunc = {this.toggleSSI}
                     ssiRequired = {this.state.ssiRequired}
                     myuuid={this.state.myuuid}
+                    deleteSsiCredential = {this.deleteSsiCredential}
+                    deleteSsiConnection = {this.deleteSsiConnection}
                 />
 
                 <ReadyBox
@@ -9099,6 +9139,8 @@ class Sylk extends Component {
                     showQRCodeScanner = {this.state.showQRCodeScanner}
                     toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
                     handleSSIEnrolment = {this.handleSSIEnrolment}
+                    ssiCredentials = {this.state.ssiCredentials}
+                    ssiConnections = {this.state.ssiConnections}
                 />
 
                 <ImportPrivateKeyModal
