@@ -396,12 +396,12 @@ class NavigationBar extends Component {
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
 
-                        { hasMessages  && !this.state.inCall ?
+                        { hasMessages  && !this.state.inCall && tags.indexOf('ssi') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
 
-                        { (hasMessages || this.state.pinned) && tags.indexOf('test') === -1 ?
+                        { (hasMessages || this.state.pinned) && tags.indexOf('test') === -1 && tags.indexOf('ssi') ?
                         <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title={this.state.pinned ? "Show all messages" : "Show pinned"}/>
                         : null}
 

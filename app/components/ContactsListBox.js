@@ -590,9 +590,12 @@ class ContactsListBox extends Component {
 
     onLongMessagePress(context, currentMessage) {
         if (currentMessage && currentMessage.text) {
+            let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
             options.push('Copy');
-            options.push('Delete');
+            if (!isSsiMessage) {
+                options.push('Delete');
+            }
 
             const showResend = currentMessage.failed;
 
@@ -607,11 +610,15 @@ class ContactsListBox extends Component {
             if (currentMessage.pinned) {
                 options.push('Unpin');
             } else {
-                options.push('Pin');
+                if (!isSsiMessage) {
+                    options.push('Pin');
+                }
             }
 
             options.push('Info');
-            options.push('Share');
+            if (!isSsiMessage) {
+                options.push('Share');
+            }
             if (currentMessage.local_url) {
                 if (utils.isImage(currentMessage.local_url)) {
                     options.push('Save');
@@ -889,7 +896,8 @@ class ContactsListBox extends Component {
         if (this.state.ssiConnections) {
             this.state.ssiConnections.forEach((item) => {
                 //console.log('Contacts SSI connection', item);
-                let contact = this.props.newContactFunc(item.id, item.theirLabel);
+                let uri = item.id;
+                let contact = this.props.newContactFunc(uri, item.theirLabel);
                 contact.credential = new Object();
 
                 contact.timestamp = item.createdAt;
@@ -906,7 +914,6 @@ class ContactsListBox extends Component {
                 }
                 contact.ssiConnection = item;
                 contacts.push(contact);
-
             });
         }
 
@@ -966,6 +973,7 @@ class ContactsListBox extends Component {
         if (this.state.filter && this.state.targetUri) {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
         }
+
 
         const known = [];
         items = items.filter((elem) => {
@@ -1064,10 +1072,8 @@ class ContactsListBox extends Component {
         items.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
 
         if (items.length === 1) {
-            //console.log(items[0]);
             items[0].showActions = true;
             if (items[0].tags.indexOf('ssi-credential') > -1) {
-                messages = [];
                 let content = '';
                 let m;
 
@@ -1109,7 +1115,6 @@ class ContactsListBox extends Component {
             }
 
             if (items[0].tags.indexOf('ssi-connection') > -1) {
-                messages = [];
                 let content = '';
                 let m;
 
@@ -1158,6 +1163,7 @@ class ContactsListBox extends Component {
         } else {
             columns = this.props.orientation === 'landscape' ? 2 : 1;
         }
+
 
         const chatContainer = this.props.orientation === 'landscape' ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
         const container = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;

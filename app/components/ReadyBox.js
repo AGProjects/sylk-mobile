@@ -262,6 +262,10 @@ class ReadyBox extends Component {
             return;
         }
 
+        if (contact && contact.tags.indexOf('ssi') > -1) {
+            this.setState({'historyCategoryFilter': 'ssi'});
+        }
+
         if (this.state.selectedContact === contact) {
             if (this.state.chat) {
                 this.setState({chat: false});

@@ -86,6 +86,7 @@ import {
   LogLevel,
 } from '@aries-framework/core';
 
+import { AgentEventTypes } from "@aries-framework/core/build/agent/Events";
 import {agentDependencies} from '@aries-framework/react-native';
 
 var randomString = require('random-string');
@@ -3772,7 +3773,7 @@ class Sylk extends Component {
 
             this.ssiAgent.events.on(CredentialEventTypes.CredentialStateChanged, this.handleSSIAgentCredentialStateChange);
             this.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
-            this.ssiAgent.events.on(BasicMessageEventTypes.BasicMessageStateChanged, this.handleSSIAgentMessages);
+            this.ssiAgent.events.on(AgentEventTypes.AgentMessageProcessed, this.incomingSsiMessage);
 
             if (ssiRoles.indexOf('verifier') === -1) {
                 ssiRoles.push('verifier');
@@ -3804,7 +3805,7 @@ class Sylk extends Component {
 
             let noCred = credentials.length > 0 ? credentials.length : "no";
 
-            this._notificationCenter.postSystemNotification("SSI wallet initialised with " + noCred + " credentials");
+            //this._notificationCenter.postSystemNotification("SSI wallet initialised with " + noCred + " credentials");
 
             this.setState({ssiCredentials: credentials});
 
@@ -3875,10 +3876,41 @@ class Sylk extends Component {
         //utils.timestampedLog('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
     }
 
-    async handleSSIAgentMessages(event) {
-      if (event.payload.basicMessageRecord.role === BasicMessageRole.Receiver) {
-        utils.timestampedLog('SSI message:', event.payload.message.content);
-      }
+    async incomingSsiMessage(event) {
+        if (event.payload.message.type === "https://didcomm.org/basicmessage/1.0/message") {
+            let content = event.payload.message.content;
+            let uri = event.payload.connection.id;
+            let ssiName = uri;
+
+            let message = new Object();
+
+            if (this.state.ssiConnections) {
+                this.state.ssiConnections.forEach((item) => {
+                    //console.log('Contacts SSI connection', item);
+                    let uri = item.id;
+                    if (event.payload.connection.id === item.id) {
+                        ssiName = item.theirLabel;
+                        return;
+                    }
+                });
+            }
+
+            console.log('SSI message from', ssiName, ':', content);
+
+            message.id = event.payload.message.id;
+            message.type = 'normal';
+            message.contentType = 'text/plain';
+            message.content = content;
+            message.account = this.state.account;
+            message.ssiName = ssiName;
+            message.timestamp = event.payload.message.sentTime;
+            message.dispositionNotification = [];
+            message.state = 'received';
+            message.sender = new Object();
+            message.sender.uri = uri;
+            message.sender.displayName = null;
+            this.incomingMessage(message);
+        }
     }
 
     generateKeysIfNecessary(account) {
@@ -5069,7 +5101,6 @@ class Sylk extends Component {
             unread_messages = '';
             console.log('Do not update unread messages for', uri);
         }
-
 
         let conference = contact.conference ? 1: 0;
         let tags = contact.tags.toString();
@@ -8028,7 +8059,10 @@ class Sylk extends Component {
         if (uri in myContacts) {
             //
         } else {
-            myContacts[uri] = this.newContact(uri);
+            myContacts[uri] = this.newContact(uri, message.ssiName);
+            if (message.ssiName) {
+                myContacts[uri].tags.push('ssi');
+            }
         }
 
         if (myContacts[uri].tags.indexOf('blocked') > -1) {
@@ -8462,7 +8496,10 @@ class Sylk extends Component {
 
         let isNumber = utils.isPhoneNumber(username);
 
-        if (!isNumber && !utils.isEmailAddress(uri) && username !== '*') {
+        let uuidPattern = /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/gi;
+        let isUUID = uri.match(uuidPattern);
+
+        if (!isUUID && !isNumber && !utils.isEmailAddress(uri) && username !== '*') {
             console.log('Sanitize check failed for uri:', uri);
             return null;
         }
