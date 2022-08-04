@@ -4779,7 +4779,7 @@ class Sylk extends Component {
                 // https://webrtc.sipthor.net/call/alice@example.com from external web link
 
                 // This URLs are used to request SSI credentials
-                if (url.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
+                if (url.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
                     this.handleSSIEnrolment(url);
                 }
 
@@ -7629,7 +7629,7 @@ class Sylk extends Component {
         }
 
         // This URLs are used to request SSI credentials
-        if (message.content.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
+        if (message.content.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
             this.handleSSIEnrolment(message.content);
             this.saveSystemMessage(message.sender.uri, 'SSI enrolment proposal received', 'incoming');
             //return;

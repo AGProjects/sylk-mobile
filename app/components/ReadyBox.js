@@ -257,7 +257,7 @@ class ReadyBox extends Component {
         }
 
         // This URLs are used to request SSI credentials
-        if (new_uri && new_uri.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
+        if (new_uri && new_uri.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
             this.props.handleSSIEnrolment(new_uri);
             return;
         }
