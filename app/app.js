@@ -363,6 +363,7 @@ class Sylk extends Component {
         this.initialChatContact = null;
         this.mustPlayIncomingSoundAfterSync = false;
         this.ssiAgent = null;
+        this.pendingSsiUrl = null;
 
         storage.initialize();
         this.callKeeper = new CallManager(RNCallKeep,
@@ -3797,6 +3798,11 @@ class Sylk extends Component {
             utils.timestampedLog('SSI wallet has', allConnection.length, 'connections');
             //console.log(allConnection);
 
+            if (self.pendingSsiUrl) {
+                this.handleSSIEnrolment(self.pendingSsiUrl);
+                self.pendingSsiUrl = null;
+            }
+
             this.setState({ssiConnections: allConnection});
 
             allConnection.forEach((item) => {
@@ -4506,12 +4512,13 @@ class Sylk extends Component {
     }
 
     async handleSSIEnrolment(url) {
+        utils.timestampedLog('SSI enrolment invitation URL', url);
+
         if (!this.ssiAgent) {
-            console.log('No SSI agent available for handling enrolment to', url);
+            console.log('No SSI agent available yet for handling enrolment to', url);
+            self.pendingSsiUrl = url;
             return;
         }
-
-        utils.timestampedLog('SSI enrolment invitation URL', url);
 
         try {
             const ssiConnectionRecord = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
@@ -4724,12 +4731,13 @@ class Sylk extends Component {
 
     updateLinkingURL = (event) => {
         // this handles the use case where the app is running in the background and is activated by the listener...
-        //console.log('Updated Linking url', event.url);
+        console.log('Updated Linking url', event.url);
         this.eventFromUrl(event.url);
         DeepLinking.evaluateUrl(event.url);
     }
 
     eventFromUrl(url) {
+        //console.log('Event from url', url);
         url = decodeURI(url);
 
         try {
@@ -4769,9 +4777,25 @@ class Sylk extends Component {
             } else if (scheme === 'https:') {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
                 // https://webrtc.sipthor.net/call/alice@example.com from external web link
+
+                // This URLs are used to request SSI credentials
+                if (url.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
+                    this.handleSSIEnrolment(url);
+                }
+
                 direction = 'outgoing';
                 event = url_parts[3];
+
+                if (!event) {
+                    return;
+                }
+
                 to = url_parts[4];
+
+                if (!to) {
+                    return;
+                }
+
                 callUUID = uuid.v4();
 
                 if (to.indexOf('@') === -1 && event === 'conference') {
@@ -7605,7 +7629,7 @@ class Sylk extends Component {
         }
 
         // This URLs are used to request SSI credentials
-        if (message.content.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
+        if (message.content.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
             this.handleSSIEnrolment(message.content);
             this.saveSystemMessage(message.sender.uri, 'SSI enrolment proposal received', 'incoming');
             //return;
