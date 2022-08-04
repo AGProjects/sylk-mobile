@@ -3866,14 +3866,25 @@ class Sylk extends Component {
         } else if (event.payload.credentialRecord.state === CredentialState.Done) {
             utils.timestampedLog('SSI wallet credential saved');
             this.postSystemNotification('SSI credential saved');
+            const credentials = await this.ssiAgent.credentials.getAll();
+            this.setState({ssiCredentials: credentials});
             setTimeout(() => {
                 this.filterHistory('ssi');
-            }, 3000);
+            }, 1000);
         }
     }
 
     async handleSSIAgentConnectionStateChange(event) {
-        //utils.timestampedLog('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
+        utils.timestampedLog('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
+        const allConnection = await this.ssiAgent.connections.getAll();
+        utils.timestampedLog('SSI wallet has', allConnection.length, 'connections');
+        //console.log(allConnection);
+        this.setState({ssiConnections: allConnection});
+        if (event.payload.connectionRecord.state === 'complete') {
+            setTimeout(() => {
+                this.filterHistory('ssi');
+            }, 1000);
+        }
     }
 
     async incomingSsiMessage(event) {
@@ -7591,6 +7602,13 @@ class Sylk extends Component {
             console.log('Received PGP private key from another device');
             this.processRemotePrivateKey(message.content);
             return;
+        }
+
+        // This URLs are used to request SSI credentials
+        if (message.content.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
+            this.handleSSIEnrolment(message.content);
+            this.saveSystemMessage(message.sender.uri, 'SSI enrolment proposal received', 'incoming');
+            //return;
         }
 
         const is_encrypted =  message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;

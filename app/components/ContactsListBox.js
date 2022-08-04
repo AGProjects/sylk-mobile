@@ -910,7 +910,7 @@ class ContactsListBox extends Component {
                 }
 
                 if (item.theirLabel === 'Bloqzone Issuer Agent' && item.state === 'complete') {
-                    contact.tags.push('readonly');
+                    //contact.tags.push('readonly');
                 }
                 contact.ssiConnection = item;
                 contacts.push(contact);
