@@ -26,9 +26,11 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 
 ## Availability
 
-* [Google Play](https://play.google.com/store/apps/details?id=com.agprojects.sylk)
+* [SIP2SIP Web page](https://sip2sip.info)
+* [Google Play Store](https://play.google.com/store/apps/details?id=com.agprojects.sylk)
 * [Apple Store](https://apps.apple.com/us/app/id1489960733)
-* Source code
+* [Beta versions](https://sylkserver.com)
+* [Source code](https://github.com/AGProjects/sylk-mobile)
 
 
 ## Features
@@ -46,10 +48,11 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 * Support for tablets and phones
 * Interoperable with SIP clients
 * Receive calls from the web
-* Self Soverign Identity checks (SSI)
+* Support for Self Soverign Identity (SSI)
 
-Messages are encrypted end-to-end using OpenPGP.  SSI support is based on
-the hyperledger provided by Indy SDK and Animo SDK.
+Messages are encrypted end-to-end using OpenPGP.  
+
+SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 
 
 ## Credits
@@ -65,7 +68,6 @@ the hyperledger provided by Indy SDK and Animo SDK.
 * Saúl Ibarra Corretgé - Inception architect / original idea
 * Tijmen de Mes - API, Conference, Chat and desktop features
 * Dan Jenkins - WebRTC and React Native mechanic
-* Bibiana Rivadeneira - Push notifications backend
 * Michiel Leenaars - Strategic guidance
 
 
@@ -76,10 +78,6 @@ the hyperledger provided by Indy SDK and Animo SDK.
 * Sylk Push Server http://sylkserver.com
 * [Janus](https://github.com/meetecho/janus-gateway) Gateway
 * [Animo SDK for SSI support](https://github.com/animo/aries-mobile-sdk)
-
-## Demo client
-
-* [SIP2SIP](https://sip2sip.info) public infrastructure
 
 
 ## Getting Started
