@@ -129,10 +129,6 @@ class AudioCallBox extends Component {
             this.setState({latencyQueue: nextProps.latencyQueue});
         }
 
-        if (nextProps.hasOwnProperty('ssiCanVerify')) {
-            this.setState({ssiCanVerify: nextProps.ssiCanVerify});
-        }
-
         if (nextProps.hasOwnProperty('ssiVerifyInProgress')) {
             this.setState({ssiVerifyInProgress: nextProps.ssiVerifyInProgress});
         }
@@ -146,7 +142,8 @@ class AudioCallBox extends Component {
                        selectedContacts: nextProps.selectedContacts,
                        selectedContact: nextProps.selectedContact,
                        ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
-                       ssiVerified: nextProps.ssiVerified
+                       ssiVerified: nextProps.ssiVerified,
+                       ssiCanVerify: nextProps.ssiCanVerify
                        });
     }
 

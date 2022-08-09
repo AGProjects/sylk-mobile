@@ -847,24 +847,30 @@ class ContactsListBox extends Component {
         let contacts = [];
         if (this.state.ssiCredentials) {
             this.state.ssiCredentials.forEach((item) => {
-                //console.log('Contacts SSI credential', item);
                 let contact = this.props.newContactFunc(item.id, 'Credential');
                 contact.ssiCredential = item;
                 contact.credential = new Object();
-                item.credentialAttributes.forEach((attribute) => {
-                    contact.credential[attribute.name] = attribute.value;
-                    if (attribute.value.length > 0) {
-                        if (attribute.name === 'legalName') {
-                            contact.name = attribute.value;
-                        } else if (attribute.name === 'acceptDateTime') {
-                            contact.timestamp = attribute.value.toDate("dd-mm-yy hh:ii:ss");
-                        } else if (attribute.name === 'createdAt') {
-                            contact.timestamp = attribute.value;
-                        } else if (attribute.name === 'emailAddress') {
-                            contact.email = attribute.value;
+
+                const schemaId = item.metadata.data['_internal/indyCredential'].schemaId;
+
+                if (schemaId === 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0') {
+                    contact.schemaId = schemaId;
+
+                    item.credentialAttributes.forEach((attribute) => {
+                        contact.credential[attribute.name] = attribute.value;
+                        if (attribute.value.length > 0) {
+                            if (attribute.name === 'legalName') {
+                                contact.name = attribute.value;
+                            } else if (attribute.name === 'acceptDateTime') {
+                                contact.timestamp = attribute.value.toDate("dd-mm-yy hh:ii:ss");
+                            } else if (attribute.name === 'createdAt') {
+                                contact.timestamp = attribute.value;
+                            } else if (attribute.name === 'emailAddress') {
+                                contact.email = attribute.value;
+                            }
                         }
-                    }
-                });
+                    });
+                }
 
                 if (contact.credential.initials) {
                     contact.name = contact.credential.initials;
@@ -1082,6 +1088,7 @@ class ContactsListBox extends Component {
                 items[0].ssiCredential.credentialAttributes.forEach((attribute) => {
                     content = content + attribute.name + ": " + attribute.value + '\n';
                 });
+
                 m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
                 messages.push(m);
 
@@ -1089,23 +1096,19 @@ class ContactsListBox extends Component {
                 m.system = true;
                 messages.push(m);
 
-                content = 'State: ' + items[0].ssiCredential.state;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
+                content = '';
+                content = content + 'Id: ' + items[0].ssiCredential.id;
+                content = content + '\nState: ' + items[0].ssiCredential.state;
+                content = content + '\nSchema Id:' + items[0].schemaId;
 
                 let issuer = this.state.ssiConnections.filter(x => x.id === items[0].ssiCredential.connectionId);
 
                 if (issuer.length === 1) {
-                    content = 'Issued by: ' + issuer[0].theirLabel;
-                    m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                    messages.push(m);
+                    content = content + '\nIssuer: ' + issuer[0].theirLabel;
                 } else {
-                    content = 'Issued by connection: ' + items[0].ssiCredential.connectionId;
-                    m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                    messages.push(m);
+                    content = content + '\nIssuer: : ' + items[0].ssiCredential.connectionId;
                 }
 
-                content = 'Id: ' + items[0].ssiCredential.id;
                 m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
                 messages.push(m);
 

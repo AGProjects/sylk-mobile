@@ -315,7 +315,7 @@ class Call extends Component {
     async handleSSIAgentConnectionStateChange(event) {
         const connectionRecord = event.payload.connectionRecord;
         utils.timestampedLog('SSI session connection', connectionRecord.id, event.payload.previousState, '->', connectionRecord.state);
-        // utils.timestampedLog('SSI connection event', connectionRecord);
+        //utils.timestampedLog('SSI connection event', connectionRecord);
         if (connectionRecord.state === 'responded' || connectionRecord.state === 'complete' && !this.state.ssiCanVerify) {
             this.setState({ssiCanVerify: true});
             utils.timestampedLog('SSI connection established, we can now verify the remote party');
@@ -337,16 +337,22 @@ class Call extends Component {
                     console.log('The other party verified us');
                 } else if (proofRecord.isVerified === true) {
                     // the verification was successful --> call is authorized
-                    // this contains firstName, lastName and dob
 
                     const proofData = proofRecord.presentationMessage.presentationAttachments[0].getDataAsJson();
                     const proofValues = proofData.requested_proof.revealed_attr_groups.name.values;
+                    const schemaId = proofData.identifiers[0].schema_id;
 
-                    const firstName = proofValues.firstName.raw;
-                    const lastName = proofValues.lastName.raw;
-                    const dob = proofValues.dob.raw;
+                    if (schemaId !== 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0') {
+                        utils.timestampedLog('SSI credentials schema', schemaId, 'is not supported');
+                        this.props.postSystemNotification('SSI credential schema ' + schemaId + ' is invalid');
+                        return;
+                    }
 
-                    let verifiedDisplayName = firstName + ' ' + lastName + ' (' + dob + ')';
+                    const initials = proofValues.initials.raw;
+                    const legalName = proofValues.legalName.raw;
+                    const birthDate = proofValues.birthDate.raw;
+
+                    let verifiedDisplayName = initials + ' ' + legalName + ' (' + birthDate + ')';
                     utils.timestampedLog('SSI verify proof succeeded for:', verifiedDisplayName);
 
                     const credentialAttributes = proofRecord.presentationMessage.indyProof;

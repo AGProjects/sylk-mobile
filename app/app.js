@@ -2940,7 +2940,7 @@ class Sylk extends Component {
     }
 
     postAndroidIncomingCallNotification(data) {
-        console.log('postAndroidIncomingCallNotification', data);
+        //console.log('postAndroidIncomingCallNotification', data);
         if (Platform.OS !== 'android') {
             return;
         }
