@@ -60,7 +60,7 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 ### Financial support from:
 
 * NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement [No 825310](https://nlnet.nl/project/SylkMobile/)
-* NGI eSSIF-Lab program, in colaboration with Bloqzone [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
+* NGI eSSIF-Lab program, in collaboration with [Bloqzone](https://bloqzone.com) [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
 
 ### People
 
