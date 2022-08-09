@@ -21,7 +21,7 @@ Sylk Suite consists of:
 Sylk mobile licensed under GNU General Public License version 3.  A copy of
 the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
 
-Copyright 2020 [AG Projects](https://ag-projects.com)
+Copyright 2022 [AG Projects](https://ag-projects.com)
 
 
 ## Availability
@@ -46,41 +46,40 @@ Copyright 2020 [AG Projects](https://ag-projects.com)
 * Support for tablets and phones
 * Interoperable with SIP clients
 * Receive calls from the web
+* Self Soverign Identity checks (SSI)
 
-Messages are encrypted end-to-end using OpenPGP.
+Messages are encrypted end-to-end using OpenPGP.  SSI support is based on
+the hyperledger provided by Indy SDK and Animo SDK.
 
 
 ## Credits
 
-### Financial support
+### Financial support from:
 
-* NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement No 825310
-* [Project description](https://nlnet.nl/project/SylkMobile/)
-
-
+* NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement [No 825310](https://nlnet.nl/project/SylkMobile/)
+* NGI eSSIF-Lab program, in colaboration with Bloqzone [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
 
 ### People
 
+* Adrian Georgescu - Project lead
 * Saúl Ibarra Corretgé - Inception architect / original idea
-* Tijmen de Mes - API, Conference and desktop
+* Tijmen de Mes - API, Conference, Chat and desktop features
 * Dan Jenkins - WebRTC and React Native mechanic
-* Adrian Georgescu - Janitor
-* Bibiana Rivadeneira - Push notifications
+* Bibiana Rivadeneira - Push notifications backend
 * Michiel Leenaars - Strategic guidance
 
 
 ## Running dependencies
 
-* Sylk Server
-* Sylk Pushserver
-* SIP infra with push notifications support
+* Generic SIP infrastructure
+* Sylk Server http://sylkserver.com
+* Sylk Push Server http://sylkserver.com
+* [Janus](https://github.com/meetecho/janus-gateway) Gateway
+* [Animo SDK for SSI support](https://github.com/animo/aries-mobile-sdk)
 
 ## Demo client
 
-
-* [OpenSIPS](https://opensips.org) server software 
 * [SIP2SIP](https://sip2sip.info) public infrastructure
-* [Janus](https://github.com/meetecho/janus-gateway) Gateway
 
 
 ## Getting Started
@@ -106,6 +105,7 @@ Messages are encrypted end-to-end using OpenPGP.
   - sudo gem install cocoapods
 * watchman (for helping watch files during development)
   brew install watchman or port install watchman
+* Hyperledger Indy SDK from https://github.com/hyperledger/indy-sdk
 
 
 ### Install
@@ -141,12 +141,6 @@ npm rebuild node-sass
 3. https://github.com/facebook/create-react-app/issues/4540
 
 brew install watchman or port install watchman
-
-
-
-### Decrypting the git repo
-
-Run `git-crypt unlock` to check that you can decrypt the files in the repo. If you can't you'll need to generate a GPG key and pass it to someone with access to the repo. A good guide is located at https://medium.com/@sumitkum/securing-your-secret-keys-with-git-crypt-b2fa6ffed1a6
 
 ### Running the app
 
