@@ -1,0 +1,45 @@
+diff --git a/node_modules/react-native-gifted-chat/lib/Time.js b/node_modules/react-native-gifted-chat/lib/Time.js
+index 24b06cc..54268fc 100644
+--- a/node_modules/react-native-gifted-chat/lib/Time.js
++++ b/node_modules/react-native-gifted-chat/lib/Time.js
+@@ -5,6 +5,8 @@ import dayjs from 'dayjs';
+ import Color from './Color';
+ import { TIME_FORMAT } from './Constant';
+ import { StylePropType } from './utils';
++import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
++
+ const containerStyle = {
+     marginLeft: 10,
+     marginRight: 10,
+@@ -38,11 +40,13 @@ const styles = {
+ export default class Time extends Component {
+     render() {
+         const { position, containerStyle, currentMessage, timeFormat, timeTextStyle, } = this.props;
++        let lockColor = currentMessage.direction === "incoming" ? "gray" : "white";
+         if (!!currentMessage) {
+             return (<View style={[
+                 styles[position].container,
+                 containerStyle && containerStyle[position],
+             ]}>
++          <View style={{flex: 1, flexDirection: 'row'}}>
+           <Text style={[
+                 styles[position].text,
+                 timeTextStyle && timeTextStyle[position],
+@@ -51,6 +55,9 @@ export default class Time extends Component {
+                 .locale(this.context.getLocale())
+                 .format(timeFormat)}
+           </Text>
++          {currentMessage.encrypted > 0 ? <Icon style={[this.props.lockStyle]} color={lockColor} name={"lock"} size={10}/> : null}
++          </View>
++
+         </View>);
+         }
+         return null;
+@@ -76,6 +83,7 @@ Time.propTypes = {
+         right: StylePropType,
+     }),
+     timeFormat: PropTypes.string,
++    lockStyle: PropTypes,
+     timeTextStyle: PropTypes.shape({
+         left: StylePropType,
+         right: StylePropType,
