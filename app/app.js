@@ -3477,6 +3477,8 @@ class Sylk extends Component {
                     }
                 }
 
+                this.terminateSsiConnections(call.remoteIdentity.uri.toLowerCase());
+
                 this.updateHistoryEntry(call.remoteIdentity.uri.toLowerCase(), callUUID, diff);
 
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
@@ -3525,6 +3527,23 @@ class Sylk extends Component {
         if (this.state.incomingCall) {
             //console.log('Incoming:', this.state.incomingCall.id);
         }
+    }
+
+    async terminateSsiConnections(uri) {
+        if (!this.ssiAgent) {
+            return;
+        }
+
+        let allConnections = await this.ssiAgent.connections.getAll();
+        let callConnections = allConnections.filter(x => x.theirLabel.startsWith(uri));
+
+        for (const x of callConnections) {
+            utils.timestampedLog('SSI connection', x.id, 'to', uri, 'removed');
+            await this.ssiAgent.connections.deleteById(x.id);
+        }
+
+        allConnections = await this.ssiAgent.connections.getAll();
+        this.setState({ssiConnections: allConnections});
     }
 
     finishInviteToConference() {
@@ -3794,18 +3813,18 @@ class Sylk extends Component {
 
             this.setState({ssiRoles: ssiRoles});
 
-            const allConnection = await this.ssiAgent.connections.getAll();
-            utils.timestampedLog('SSI wallet has', allConnection.length, 'connections');
-            //console.log(allConnection);
+            const allConnections = await this.ssiAgent.connections.getAll();
+            utils.timestampedLog('SSI wallet has', allConnections.length, 'connections');
+            //console.log(allConnections);
 
             if (self.pendingSsiUrl) {
                 this.handleSSIEnrolment(self.pendingSsiUrl);
                 self.pendingSsiUrl = null;
             }
 
-            this.setState({ssiConnections: allConnection});
+            this.setState({ssiConnections: allConnections});
 
-            allConnection.forEach((item) => {
+            allConnections.forEach((item) => {
                 utils.timestampedLog('SSI connection', item.id, 'to', item.theirLabel, 'in state', item.state);
             });
 
@@ -3816,13 +3835,13 @@ class Sylk extends Component {
             this.setState({ssiCredentials: credentials});
 
             const rmCommunityConnection = async () => {
-                let connections = allConnection.filter(x => x.theirLabel === 'Animo Community Agent')
+                let connections = allConnections.filter(x => x.theirLabel === 'Animo Community Agent')
 
                 for (const x of connections) {
                     await this.ssiAgent.connections.deleteById(x.id)
                 }
 
-                connections = allConnection.filter(x => x.theirLabel === 'Animo Community Mediator')
+                connections = allConnections.filter(x => x.theirLabel === 'Animo Community Mediator')
 
                 for (const x of connections) {
                     await this.ssiAgent.connections.deleteById(x.id)
@@ -3831,7 +3850,7 @@ class Sylk extends Component {
 
             //await rmCommunityConnection(); // run only once
 
-            if (!allConnection.map((x) => x.theirLabel).includes('Animo Community Agent')) {
+            if (!allConnections.map((x) => x.theirLabel).includes('Animo Community Agent')) {
                 // create a connection to Animo credential issuer, must be done once
                 // connection is saved and reused later when we recreate de agent
                 // once we do have a credential, we don't need to connect anymore
@@ -3882,10 +3901,10 @@ class Sylk extends Component {
 
     async handleSSIAgentConnectionStateChange(event) {
         utils.timestampedLog('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
-        const allConnection = await this.ssiAgent.connections.getAll();
-        utils.timestampedLog('SSI wallet has', allConnection.length, 'connections');
-        //console.log(allConnection);
-        this.setState({ssiConnections: allConnection});
+        const allConnections = await this.ssiAgent.connections.getAll();
+        utils.timestampedLog('SSI wallet has', allConnections.length, 'connections');
+        //console.log(allConnections);
+        this.setState({ssiConnections: allConnections});
         if (event.payload.connectionRecord.state === 'complete') {
             setTimeout(() => {
                 this.filterHistory('ssi');
