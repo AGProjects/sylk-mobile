@@ -48,7 +48,7 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 * Support for tablets and phones
 * Interoperable with SIP clients
 * Receive calls from the web
-* Support for Self Soverign Identity (SSI)
+* Support for Self Sovereign Identity (SSI)
 
 Messages are encrypted end-to-end using OpenPGP.  
 
