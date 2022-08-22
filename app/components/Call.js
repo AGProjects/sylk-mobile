@@ -396,11 +396,11 @@ class Call extends Component {
             utils.timestampedLog('SSI verify in progress')
         }
 
-        const credDefId = 'Ehx3RZSV38pn3MYvxtHhbQ:3:CL:279883:default';
+        const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0';
 
         const attributes = {
             name: new ProofAttributeInfo({
-                names: ['firstName', 'lastName', 'dob'],
+                names: ['legalName', 'initials', 'birthDate'],
                 restrictions: [
                     new AttributeFilter({ credentialDefinitionId: credDefId })
                 ]
