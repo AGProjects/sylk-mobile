@@ -69,6 +69,8 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 * Tijmen de Mes - API, Conference, Chat and desktop features
 * Dan Jenkins - WebRTC and React Native mechanic
 * Michiel Leenaars - Strategic guidance
+* Alexander Blom - SSIcomms partnership
+* Karim Stekelenburg - Animo SDK integration
 
 
 ## Running dependencies
