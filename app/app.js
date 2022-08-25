@@ -5143,7 +5143,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Save Sylk Contact', uri, contact.name, 'by', origin);
+        //console.log('Save Sylk Contact', uri, contact.name, 'by', origin);
 
         if (this.sql_contacts_keys.indexOf(uri) > -1) {
             this.updateSylkContact(uri, contact, origin);
@@ -9045,12 +9045,6 @@ class Sylk extends Component {
             }
 
          });
-
-         if (i > 0) {
-             console.log('Saved new', i, 'call history items');
-         } else {
-             console.log('Server call history was already in sync');
-         }
 
          this.setState({missedCalls: missedCalls});
     }

@@ -20,6 +20,9 @@ import {
   AttributeFilter
 } from '@aries-framework/core';
 
+// Used for SSI credentials
+const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0';
+
 
 function randomIntFromInterval(min,max)
 {
@@ -334,7 +337,7 @@ class Call extends Component {
                 if (proofRecord.isVerified === undefined) {
                     // the other party did the verification
                     this.props.postSystemNotification('We were verified');
-                    console.log('The other party verified us');
+                    utils.timestampedLog('The other party verified our SSI credential');
                 } else if (proofRecord.isVerified === true) {
                     // the verification was successful --> call is authorized
 
@@ -342,7 +345,7 @@ class Call extends Component {
                     const proofValues = proofData.requested_proof.revealed_attr_groups.name.values;
                     const schemaId = proofData.identifiers[0].schema_id;
 
-                    if (schemaId !== 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0') {
+                    if (schemaId !== credDefId) {
                         utils.timestampedLog('SSI credentials schema', schemaId, 'is not supported');
                         this.props.postSystemNotification('SSI credential schema ' + schemaId + ' is invalid');
                         return;
@@ -384,7 +387,6 @@ class Call extends Component {
 
     async verifySSIIdentity() {
         if (this.state.ssiConnectionRecord) {
-            console.log('Call: verify SSI identity over connection', this.state.ssiConnectionRecord.id);
             this.requestSSIProof(this.state.ssiConnectionRecord.id);
         } else {
             this.initSSIConnection();
@@ -393,10 +395,8 @@ class Call extends Component {
 
     async requestSSIProof(connectionRecordId) {
         if (this.state.ssiVerifyInProgress) {
-            utils.timestampedLog('SSI verify in progress')
+            utils.timestampedLog('SSI proof verify in progress')
         }
-
-        const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0';
 
         const attributes = {
             name: new ProofAttributeInfo({
@@ -416,15 +416,15 @@ class Call extends Component {
         this.cancelSSIVerify();
         this.cancelVerifyIdentityTimer = setTimeout(() => {
             this.cancelSSIVerify();
-            this.props.postSystemNotification('SSI verification timeout');
+            this.props.postSystemNotification('SSI proof request timeout');
         }, 15000);
 
         try {
-            console.log('Request SSI proof over connection', connectionRecordId);
+            utils.timestampedLog('Request SSI proof over connection', connectionRecordId, 'for schema', credDefId);
             const proofRequest = await this.state.ssiAgent.proofs.requestProof(connectionRecordId, proofRequestOptions);
-            console.log(proofRequest);
+            //console.log(proofRequestOptions);
         } catch (error) {
-            utils.timestampedLog('SSI request proof error', error);
+            utils.timestampedLog('SSI proof request error', error);
             this.props.postSystemNotification('SSI proof ' + error);
             this.setState({ssiVerifyInProgress: false});
         }
@@ -902,7 +902,7 @@ class Call extends Component {
     }
 
     callStateChanged(oldState, newState, data) {
-        console.log('Call: callStateChanged', oldState, '->', newState);
+        //console.log('Call: callStateChanged', oldState, '->', newState);
         if (this.ended) {
             return;
         }
@@ -975,15 +975,15 @@ class Call extends Component {
                     this.ssiRemoteRoles = header.value.split(',');
 
                     if (this.ssiRemoteRoles.indexOf('holder') > -1) {
-                        console.log('Remote party is an SSI holder');
+                        utils.timestampedLog('Remote party is an SSI holder');
                     }
 
                     if (this.ssiRemoteRoles.indexOf('issuer') > -1) {
-                        console.log('Remote party is an SSI issuer');
+                        utils.timestampedLog('Remote party is an SSI issuer');
                     }
 
                     if (this.ssiRemoteRoles.indexOf('verifier') > -1) {
-                        console.log('Remote party is an SSI verifier');
+                        utils.timestampedLog('Remote party is an SSI verifier');
                     }
                 }
             });

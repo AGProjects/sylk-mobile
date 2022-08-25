@@ -432,7 +432,7 @@ class ContactsListBox extends Component {
             return;
         }
 
-        console.log('Get server history...');
+        //console.log('Get server history...');
 
         this.setState({isRefreshing: true});
 
