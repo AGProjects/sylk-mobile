@@ -911,13 +911,6 @@ class ContactsListBox extends Component {
                 contact.lastMessage = 'Connection is in state ' + item.state;
                 contact.tags.push('ssi');
                 contact.tags.push('ssi-connection');
-                if (item.theirLabel === 'Bloqzone Mediator Agent' && item.state === 'complete') {
-                    contact.tags.push('readonly');
-                }
-
-                if (item.theirLabel === 'Bloqzone Issuer Agent' && item.state === 'complete') {
-                    //contact.tags.push('readonly');
-                }
                 contact.ssiConnection = item;
                 contacts.push(contact);
             });

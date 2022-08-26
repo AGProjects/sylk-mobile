@@ -21,8 +21,7 @@ import {
 } from '@aries-framework/core';
 
 // Used for SSI credentials
-const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0';
-
+const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:3:CL:394132:default';
 
 function randomIntFromInterval(min,max)
 {
@@ -313,6 +312,11 @@ class Call extends Component {
         if (this.state.connection) {
             this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
         }
+
+        if (this.props.ssiAgent) {
+            this.props.ssiAgent.events.removeListener(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
+            this.props.ssiAgent.events.removeListener(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
+        }
     }
 
     async handleSSIAgentConnectionStateChange(event) {
@@ -343,11 +347,11 @@ class Call extends Component {
 
                     const proofData = proofRecord.presentationMessage.presentationAttachments[0].getDataAsJson();
                     const proofValues = proofData.requested_proof.revealed_attr_groups.name.values;
-                    const schemaId = proofData.identifiers[0].schema_id;
+                    const _credDefId = proofData.identifiers[0].cred_def_id;
 
-                    if (schemaId !== credDefId) {
-                        utils.timestampedLog('SSI credentials schema', schemaId, 'is not supported');
-                        this.props.postSystemNotification('SSI credential schema ' + schemaId + ' is invalid');
+                    if (_credDefId !== credDefId) {
+                        utils.timestampedLog('SSI credential definition id', _credDefId, 'is not supported');
+                        this.props.postSystemNotification('SSI credential id' + _credDefId + ' is invalid');
                         return;
                     }
 
