@@ -3748,7 +3748,7 @@ class Sylk extends Component {
 
         let walletId = this.state.accountId + '_' + this.state.myuuid.replace(/-/g, '_');
 
-        let mediatorUrl = 'wss://ws.didcomm.mediator.bloqzone.com?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiN2FlZTliZmItOTYwMi00YTliLWI1ZmEtNTA0YTFkNmZhYThiIiwgInJlY2lwaWVudEtleXMiOiBbIjRCa052dWJtUzFHeUM4aTVrWGdGQzJha2ZLSkpRM29kWWNEZHAxNXQ1OGE3Il0sICJsYWJlbCI6ICJCbG9xem9uZSBNZWRpYXRvciBBZ2VudCIsICJzZXJ2aWNlRW5kcG9pbnQiOiAid3NzOi8vd3MuZGlkY29tbS5tZWRpYXRvci5ibG9xem9uZS5jb20ifQ==';
+        let mediatorUrl = 'wss://ws.didcomm.mediator.bloqzone.com?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiZTUzYWRkMzMtYjZiYS00NWFlLWEwN2MtNTA3NzkxY2YzMjFlIiwgInNlcnZpY2VFbmRwb2ludCI6ICJ3c3M6Ly93cy5kaWRjb21tLm1lZGlhdG9yLmJsb3F6b25lLmNvbSIsICJsYWJlbCI6ICJCbG9xem9uZSBNZWRpYXRvciBBZ2VudCIsICJyZWNpcGllbnRLZXlzIjogWyIzQ2JieUYyVE43RVVTamtTZ3YyNHc2VHZZSGNSZk5yQ3I3eXVTNEJRc1U2RyJdfQ==';
 
         utils.timestampedLog('Init SSI wallet id', walletId,  'init via mediator', mediatorUrl);
 
