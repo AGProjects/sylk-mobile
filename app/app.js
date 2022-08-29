@@ -2323,7 +2323,7 @@ class Sylk extends Component {
         const sound = notification.getSound();
         const isClicked = notification.getData().userInteraction === 1;
 
-        console.log('Got remote notification', title, subtitle, body);
+        //console.log('Got remote notification', title, subtitle, body);
         this.sendLocalNotification(title + ' ' + subtitle, body);
     };
 
@@ -6678,7 +6678,7 @@ class Sylk extends Component {
             this.lookupPublicKey(myContacts[orig_uri]);
         }
 
-        console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
+        //console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
 
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
@@ -6690,7 +6690,7 @@ class Sylk extends Component {
         await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
-            console.log('Got', total, 'messages with', uri, 'from database');
+            //console.log('Got', total, 'messages with', uri, 'from database');
         }).catch((error) => {
             console.log('SQL error:', error);
         });
@@ -6808,7 +6808,7 @@ class Sylk extends Component {
                 }
             }
 
-            console.log('Got', messages[orig_uri].length, 'out of', total, 'messages for', uri);
+            //console.log('Got', messages[orig_uri].length, 'out of', total, 'messages for', uri);
 
             last_messages = messages[orig_uri];
             last_messages.reverse();
@@ -7004,8 +7004,6 @@ class Sylk extends Component {
         if (!must_play_sound) {
             console.log('Play incoming sound skipped');
         }
-
-        console.log('Play', direction, 'message sound in the', this.state.appState);
 
         if (Platform.OS === 'android' && this.state.appState === 'foreground') {
         //
