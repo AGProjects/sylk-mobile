@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
+import { Linking } from 'react-native';
 import { View } from 'react-native';
 import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, Subheading } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
@@ -10,6 +11,11 @@ const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
 import styles from '../assets/styles/blink/_EditContactModal.scss';
 import utils from '../utils';
+
+
+function handleUpdate() {
+    Linking.openURL('http://delete.sylk.link');
+}
 
 
 class EditContactModal extends Component {
@@ -207,7 +213,10 @@ class EditContactModal extends Component {
                         </Button>
                         : null}
 
+                        </View>
 
+                        <View>
+                        <Text onPress={() => handleUpdate()} style={styles.link}>Delete acount on server...</Text>
                         </View>
 
                         {true ?
