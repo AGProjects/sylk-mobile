@@ -908,7 +908,7 @@ class ContactsListBox extends Component {
 
                 contact.timestamp = item.createdAt;
 
-                contact.lastMessage = 'Connection is in state ' + item.state;
+                contact.lastMessage = 'Connection is ' + item.state;
                 contact.tags.push('ssi');
                 contact.tags.push('ssi-connection');
                 contact.ssiConnection = item;
@@ -1113,6 +1113,10 @@ class ContactsListBox extends Component {
             if (items[0].tags.indexOf('ssi-connection') > -1) {
                 let content = '';
                 let m;
+
+                m = this.ssi2GiftedChat(items[0].uri, 'SSI messages' , items[0].timestamp);
+                m.system = true;
+                messages.push(m);
 
                 chatInputClass = this.noChatInputToolbar;
 
