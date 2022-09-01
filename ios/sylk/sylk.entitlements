@@ -8,6 +8,7 @@
 	<array>
 		<string>applinks:webrtc.sipthor.net</string>
 		<string>applinks:didcomm.issuer.bloqzone.com</string>
+		<string>applinks:ssimandate.vismaconnect.nl</string>
 	</array>
 </dict>
 </plist>

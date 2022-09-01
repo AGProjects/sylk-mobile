@@ -262,6 +262,12 @@ class ReadyBox extends Component {
             return;
         }
 
+        // This URLs are used to request SSI credentials
+        if (new_uri && new_uri.startsWith('https://ssimandate.vismaconnect.nl/api/acapy?c_i=')) {
+            this.props.handleSSIEnrolment(new_uri);
+            return;
+        }
+
         if (contact && contact.tags.indexOf('ssi') > -1 && this.state.selectedContact !== contact) {
             this.setState({'historyCategoryFilter': 'ssi'});
         }

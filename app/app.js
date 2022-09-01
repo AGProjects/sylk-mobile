@@ -4797,8 +4797,17 @@ class Sylk extends Component {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
                 // https://webrtc.sipthor.net/call/alice@example.com from external web link
 
-                // This URLs are used to request SSI credentials
+                // This URLs are used to request SSI credentials:
+                // must be updated inside:
+                //  * ReadyBox as well
+                //  * android/app/src/main/AndroidManifest.xml
+                //  * ios/sylk/sylk.entitlements
+
                 if (url.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
+                    this.handleSSIEnrolment(url);
+                }
+
+                if (url.startsWith('https://ssimandate.vismaconnect.nl/api/acapy?c_i=')) {
                     this.handleSSIEnrolment(url);
                 }
 
