@@ -728,7 +728,7 @@ class Sylk extends Component {
 
         let params = [id, this.state.accountId];
         await this.ExecuteQuery("update keys set last_sync_id = ? where account = ?", params).then((result) => {
-            console.log('SQL saved last sync id', id);
+            utils.timestampedLog('Saved last message sync id', id);
             this.setState({lastSyncId: id});
         }).catch((error) => {
             console.log('Save last sync id SQL error:', error);
@@ -7342,7 +7342,7 @@ class Sylk extends Component {
         if (this.syncStartTimestamp) {
             let diff = (Date.now() - this.syncStartTimestamp)/ 1000;
             this.syncStartTimestamp = null;
-            console.log('Sync ended after', diff, 'seconds');
+            //console.log('Sync ended after', diff, 'seconds');
         }
 
         setTimeout(() => {
@@ -7374,12 +7374,12 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
         let renderMessages = this.state.messages;
         if (messages.length > 0) {
-            console.log('Sync', messages.length, 'events from server');
+            utils.timestampedLog('Sync', messages.length, 'message events from server');
             //this._notificationCenter.postSystemNotification('Syncing messages with the server');
             this.add_sync_pending_item('sync_in_progress');
         } else {
             this.setState({firstSyncDone: true});
-            console.log('Sync ended');
+            utils.timestampedLog('Sync messages ended');
             setTimeout(() => {
                 this.addTestContacts();
                 this.refreshNavigationItems();
