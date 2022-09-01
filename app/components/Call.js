@@ -314,8 +314,8 @@ class Call extends Component {
         }
 
         if (this.props.ssiAgent) {
-            this.props.ssiAgent.events.removeListener(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
-            this.props.ssiAgent.events.removeListener(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
+            this.props.ssiAgent.events.off(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
+            this.props.ssiAgent.events.off(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
         }
     }
 
