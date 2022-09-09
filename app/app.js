@@ -4803,7 +4803,7 @@ class Sylk extends Component {
                 //  * android/app/src/main/AndroidManifest.xml
                 //  * ios/sylk/sylk.entitlements
 
-                if (url.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
+                if (url.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
                     this.handleSSIEnrolment(url);
                 }
 
