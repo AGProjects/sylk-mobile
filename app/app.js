@@ -6807,6 +6807,7 @@ class Sylk extends Component {
                     //console.log(item);
 
                     if (last_content === content) {
+                        myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                         continue;
                     }
 
