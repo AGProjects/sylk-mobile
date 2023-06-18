@@ -20,6 +20,8 @@ import VideoPlayer from 'react-native-video-player';
 import RNFetchBlob from "rn-fetch-blob";
 import { IconButton} from 'react-native-paper';
 import ImageViewer from 'react-native-image-zoom-viewer';
+import fileType from 'react-native-file-type';
+import path from 'react-native-path';
 
 import Sound from 'react-native-sound';
 import SoundPlayer from 'react-native-sound-player';
@@ -508,16 +510,17 @@ class ContactsListBox extends Component {
 
         let asset = result.assets[0];
         asset.preview = true;
+
         let msg = await this.file2GiftedChat(asset);
-        //console.log('Asset:', asset);
-        //console.log('Metadata:', msg.metadata);
-        this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
+
         let assetType = 'file';
         if (msg.video) {
-            assetType = 'video';
+            assetType = 'movie';
         } else if (msg.image) {
             assetType = 'photo';
         }
+
+        this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
                         cameraAsset: msg,
                         placeholder: 'Delete/send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
@@ -1182,18 +1185,32 @@ class ContactsListBox extends Component {
         }
 
         let filepath = fileObject.uri ? fileObject.uri : fileObject;
-        const basename = filepath.split('\\').pop().split('/').pop();
-        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
-        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+        let basename = fileObject.fileName || filepath.split('\\').pop().split('/').pop();
+
+        basename = basename.replace(/\s|:/g, '_');
 
         let file_transfer = { 'path': filepath,
                               'filename': basename,
-                              'filesize': fileObject.fileSize || size,
                               'sender': {'uri': this.state.accountId},
                               'receiver': {'uri': uri},
                               'transfer_id': id,
                               'direction': 'outgoing'
                               };
+
+        if (filepath.startsWith('content://')) {
+            // on android we must copy this file early
+            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri + "/" + id + "/" + basename;
+            const dirname = path.dirname(localPath);
+            await RNFS.mkdir(dirname);
+            console.log('Copy', filepath, localPath);
+            await RNFS.copyFile(filepath, localPath);
+            filepath = localPath;
+            file_transfer.local_url = localPath;
+        }
+
+        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
+        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+        file_transfer.filesize = fileObject.fileSize || size;
 
         if (fileObject.preview) {
             file_transfer.preview = fileObject.preview;
@@ -1205,6 +1222,15 @@ class ContactsListBox extends Component {
 
         if (fileObject.fileType) {
             file_transfer.filetype = fileObject.fileType;
+        } else {
+            try {
+                let mime = await fileType(filepath);
+                if (mime.mime) {
+                    file_transfer.filetype = mime.mime;
+                }
+            } catch (e) {
+                console.log('Error getting mime type', e.message);
+            }
         }
 
         let text = utils.beautyFileNameForBubble(file_transfer);
@@ -1223,7 +1249,7 @@ class ContactsListBox extends Component {
             msg.image = filepath;
         } else if (utils.isAudio(basename)) {
             msg.audio = filepath;
-        } else if (utils.isVideo(basename)) {
+        } else if (utils.isVideo(basename) || file_transfer.duration) {
             msg.video = filepath;
         }
 
@@ -1264,10 +1290,16 @@ class ContactsListBox extends Component {
 
     onMessagePress(context, message) {
         if (message.metadata && message.metadata.filename) {
+            console.log('File metadata', message.metadata);
             let file_transfer = message.metadata;
             if (!file_transfer.local_url) {
-                console.log('We have no local_url in metadata');
-                this.props.downloadFunc(message.metadata);
+                if (!file_transfer.path) {
+                    // this was a local created upload, don't download as the file has not yet been uploaded
+                    console.log('We have no path, is not a local upload');
+                    this.props.downloadFunc(message.metadata);
+                } else {
+                    console.log('Skip downloading not yet uploaded file');
+                }
                 return;
             }
 
@@ -1284,8 +1316,14 @@ class ContactsListBox extends Component {
                         //this.openFile(message)
                     }
                 } else {
-                    console.log(file_transfer.local_url, 'does not exist localy');
-                    this.props.downloadFunc(message.metadata);
+                    if (file_transfer.path) {
+                        // this was a local created upload, don't download as the file has not yet been uploaded
+                        this.onLongMessagePress(context, message);
+                        console.log('We have a local path, this is a local upload');
+                    } else {
+                        console.log(file_transfer.local_url, 'does not exist localy');
+                        this.props.downloadFunc(message.metadata);
+                    }
                 }
             });
         } else {
@@ -1330,6 +1368,7 @@ class ContactsListBox extends Component {
     }
 
     onLongMessagePress(context, currentMessage) {
+        console.log('currentMessage metadata', currentMessage.metadata);
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
@@ -1381,7 +1420,9 @@ class ContactsListBox extends Component {
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {
                 if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.decryption_failed) {
-                    options.push('Download again');
+                    if (currentMessage.metadata.direction !== 'outgoing') {
+                        options.push('Download again');
+                    }
                 } else {
                     options.push('Download');
                 }
@@ -1410,6 +1451,7 @@ class ContactsListBox extends Component {
                 } else if (action === 'Save') {
                     this.savePicture(currentMessage.local_url);
                 } else if (action.startsWith('Download')) {
+                    console.log('Starting download...');
                     this.props.downloadFunc(currentMessage.metadata, true);
                 } else if (action === 'Open') {
                     FileViewer.open(currentMessage.metadata.local_url, { showOpenWithDialog: true })

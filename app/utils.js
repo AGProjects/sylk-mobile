@@ -309,7 +309,11 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
                 if (encrypted) {
                     text = 'Decrypt ' + file_name;
                 } else {
-                    text = 'Open ' + file_name;
+                    if (metadata.failed && metadata.direction === "outgoing") {
+                        text = 'Upload ' + file_name;
+                    } else {
+                        text = 'Open ' + file_name;
+                    }
                 }
             } else {
                 text = prefix + ' ' + file_name + ' of ' + beautySize(metadata.filesize);
@@ -521,10 +525,6 @@ function isAudio(filename) {
         return true;
     }
 
-    if (filename.toLowerCase().endsWith('.ogg')) {
-        return true;
-    }
-
     if (filename.toLowerCase().endsWith('.opus')) {
         return true
     }
@@ -545,13 +545,25 @@ function isVideo(filename, metadata=null) {
         return false;
     }
 
-    if (metadata && metadata.filetype && metadata.filetype.startsWith('video/')) {
-        return true;
+    if (metadata) {
+        if (metadata.filetype && metadata.filetype.startsWith('video/')) {
+            return true;
+        }
+
+        if (metadata.duration) {
+            return true;
+        }
     }
 
     if (filename.toLowerCase().endsWith('.mpeg')) {
         return true;
     } else if (filename.toLowerCase().endsWith('.mp4')) {
+        return true;
+    } else if (filename.toLowerCase().endsWith('.webm')) {
+        return true;
+    } else if (filename.toLowerCase().endsWith('.ogg')) {
+        return true;
+    } else if (filename.toLowerCase().endsWith('.mpg')) {
         return true;
     } else if (filename.toLowerCase().endsWith('.mov')) {
         return true;

@@ -65,8 +65,8 @@ import momenttz from 'moment-timezone';
 import utils from './utils';
 import config from './config';
 import storage from './storage';
-import fileType from 'react-native-file-type'
-import path from 'react-native-path'
+import fileType from 'react-native-file-type';
+import path from 'react-native-path';
 
 import {
   Agent,
@@ -440,7 +440,7 @@ class Sylk extends Component {
 
         storage.get('ssi').then((ssi) => {
             if (ssi) {
-                console.log("Loaded SSI settings", ssi);
+                //console.log("Loaded SSI settings", ssi);
                 this.setState({ssiRequired: ssi.required});
             } else {
                 console.log("Init SSI settings", ssi);
@@ -449,7 +449,7 @@ class Sylk extends Component {
             }
 
         }).catch((err) => {
-            console.log("SSI settings loading error:", err);
+            //console.log("SSI settings loading error:", err);
         });
 
         storage.get('myParticipants').then((myParticipants) => {
@@ -5682,8 +5682,13 @@ class Sylk extends Component {
         let must_encrypt = false;
 
         if (!file_transfer.filetype) {
-            let type = await fileType(file_transfer.local_url);
-            file_transfer.filetype = type ? type.mime : 'application/octet-stream';
+            file_transfer.filetype = 'application/octet-stream';
+            try {
+                let type = await fileType(file_transfer.local_url);
+                file_transfer.filetype = type ? type.mime : 'application/octet-stream';
+            } catch (e) {
+                console.log('Error getting mime type', e.message);
+            }
         }
 
         if (!this.state.connection) {
@@ -6024,7 +6029,6 @@ class Sylk extends Component {
         //console.log(query);
         await this.ExecuteQuery(query, [JSON.stringify(file_transfer)]).then((results) => {
             this.updateRenderFileTransferBubble(file_transfer);
-            console.log('SQL update OK:', query);
         }).catch((error) => {
             console.log('fileTransferStateChanged SQL error:', error);
         });
@@ -6671,7 +6675,6 @@ class Sylk extends Component {
         if (file_transfer.local_url) {
             const exists = await RNFS.exists(file_transfer.local_url);
             if (exists) {
-                const type = await fileType(file_transfer.local_url);
                 const { size } = await RNFetchBlob.fs.stat(file_transfer.local_url);
                 //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
                 if (size === 0) {
@@ -6763,7 +6766,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Downloading file', file_transfer.filetype, file_transfer.url);
+        console.log('Downloading file', file_transfer);
         // add a timer to cancel the download
 
         file_transfer.paused = false;
