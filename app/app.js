@@ -5766,7 +5766,7 @@ class Sylk extends Component {
                     // evt.loaded the bytes the browser received
                     // evt.total the total bytes set by the header
                     var progress = Math.floor((event.loaded/event.total) * 100);
-                    console.log('Upload ' + progress + '%!');
+                    //console.log('Upload ' + progress + '%!');
                     file_transfer.progress = progress;
                     this.updateRenderFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
                 }
@@ -5842,7 +5842,7 @@ class Sylk extends Component {
 
         var params = [JSON.stringify(message.metadata), message.text, 0, sent, received, message._id];
         await this.ExecuteQuery("update messages set metadata = ?, content = ?, pending = ?, sent = ?, received = ? where msg_id = ?", params).then((result) => {
-            console.log('SQL update conference message', message._id);
+            //console.log('SQL update conference message', message._id);
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('updateConferenceMessage SQL error:', error.message);
@@ -6980,7 +6980,7 @@ class Sylk extends Component {
 
     async getMessages(uri, filter={pinned: false, category: null}) {
 
-        console.log('Get messages', filter);
+        //console.log('Get messages', filter);
 
         let pinned=filter && 'pinned' in filter ? filter['pinned'] : false;
         let category=filter && 'category' in filter ? filter['category'] : null;
@@ -8301,7 +8301,7 @@ class Sylk extends Component {
     }
 
     saveOutgoingMessageSql(message, decryptedBody=null, is_encrypted=false) {
-        console.log('saveOutgoingMessageSql');
+        //console.log('saveOutgoingMessageSql');
 
         let pending = 0;
         let sent = null;

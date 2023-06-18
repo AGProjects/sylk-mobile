@@ -593,12 +593,13 @@ class ConferenceBox extends Component {
     };
 
     renderSend = (props) => {
+        let chatRightActionsContainer = Platform.OS === 'ios' ? styles.chatRightActionsContaineriOS : styles.chatRightActionsContainer;
         return (
             <Send {...props}>
               <View style={styles.chatSendContainer}>
               <TouchableOpacity onPress={this._launchCamera} onLongPress={this._launchImageLibrary}>
                 <Icon
-                  style={styles.chatPapperclip}
+                  style={chatRightActionsContainer}
                   type="font-awesome"
                   name="camera"
                   size={20}
@@ -607,7 +608,7 @@ class ConferenceBox extends Component {
                 </TouchableOpacity>
                   <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this.pickDocument}>
                     <Icon
-                      style={styles.chatPapperclip}
+                      style={chatRightActionsContainer}
                       type="font-awesome"
                       name="paperclip"
                       size={20}
@@ -823,7 +824,7 @@ class ConferenceBox extends Component {
     updateFileMessage(id, progress, failed=false) {
     //make a change togglePlay(msgidx) {
 
-        console.log('Update file progress', id, progress);
+        //console.log('Update file progress', id, progress);
         let renderMessages = this.state.renderMessages;
         let newRenderMessages = [];
         let nextState;

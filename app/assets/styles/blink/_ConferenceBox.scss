@@ -203,16 +203,29 @@ align-content: flex-end;
     flex-direction: row;
 }
 
-.chatPapperclip {
+.chatRightActionsContainer {
     marginBottom: 15;
     marginRight: 30;
     transform: rotateY(180deg);
     border: 0px;
 }
 
+.chatRightActionsContaineriOS {
+    marginBottom: 5;
+    marginRight: 30;
+    transform: rotateY(180deg);
+    border: 0px;
+}
+
+.chatInsideRightActionsContainer {
+    marginBottom: 0;
+    border: 0px;
+}
+
 .chatSendArrow {
-    marginBottom: 15;
+    marginBottom: 10;
     marginRight: 10;
+    border: 0px;
 }
 
 .videoContainer {

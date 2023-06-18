@@ -30,7 +30,6 @@ import Video from 'react-native-video';
 const RNFS = require('react-native-fs');
 import CameraRoll from "@react-native-community/cameraroll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
-import ImageResizer from 'react-native-image-resizer';
 
 import styles from '../assets/styles/blink/_ContactsListBox.scss';
 
@@ -478,36 +477,50 @@ class ContactsListBox extends Component {
           console.log('finished loading file', success, name, type)
         })
         this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
-          console.log('finished loading url', success, url)
+          //console.log('finished loading url', success, url)
         })
     }
 
     async _launchCamera() {
         let options = {maxWidth: 1000,
-                       cameraType: 'front'
+                        maxHeight: 1000,
+                        mediaType: 'mixed',
+                        quality:0.8,
+                        cameraType: 'front',
+                        formatAsMp4: true
                        }
         await launchCamera(options, this.cameraCallback);
     }
 
     async _launchImageLibrary() {
-        let options = {maxWidth: 1000
+        let options = {maxWidth: 1000,
+                        maxHeight: 1000,
+                        mediaType: 'mixed',
+                        formatAsMp4: true
                        }
         await launchImageLibrary(options, this.cameraCallback);
     }
 
     async cameraCallback(result) {
-        if (result.assets.length === 0) {
+        if (!result.assets || result.assets.length === 0) {
             return;
         }
 
         let asset = result.assets[0];
         asset.preview = true;
         let msg = await this.file2GiftedChat(asset);
-        console.log(msg);
+        //console.log('Asset:', asset);
+        //console.log('Metadata:', msg.metadata);
         this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
+        let assetType = 'file';
+        if (msg.video) {
+            assetType = 'video';
+        } else if (msg.image) {
+            assetType = 'photo';
+        }
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
                         cameraAsset: msg,
-                        placeholder: 'Delete or send image...'
+                        placeholder: 'Delete/send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
                         });
     }
 
@@ -649,7 +662,6 @@ class ContactsListBox extends Component {
                 });
             });
         } else {
-
             /*
             console.log('startPlaying', file);
 
@@ -699,6 +711,7 @@ class ContactsListBox extends Component {
     }
 
     renderSend = (props) => {
+        let chatRightActionsContainer = Platform.OS === 'ios' ? styles.chatRightActionsContaineriOS : styles.chatRightActionsContainer;
         if (this.state.recording) {
             return (
                   <View style={styles.chatSendContainer}>
@@ -711,7 +724,7 @@ class ContactsListBox extends Component {
                       <View style={styles.chatSendContainer}>
                       <TouchableOpacity onPress={this.deleteCameraAsset}>
                         <Icon
-                          style={styles.chatRightActionsContainer}
+                          style={chatRightActionsContainer}
                           type="font-awesome"
                           name="delete"
                           size={20}
@@ -760,7 +773,7 @@ class ContactsListBox extends Component {
                         :
                       <TouchableOpacity onPress={this._launchCamera} onLongPress={this._launchImageLibrary}>
                         <Icon
-                          style={styles.chatRightActionsContainer}
+                          style={chatRightActionsContainer}
                           type="font-awesome"
                           name="camera"
                           size={20}
@@ -773,7 +786,7 @@ class ContactsListBox extends Component {
                         :
                       <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
                         <Icon
-                          style={styles.chatRightActionsContainer}
+                          style={chatRightActionsContainer}
                           type="font-awesome"
                           name="paperclip"
                           size={20}
@@ -1053,9 +1066,7 @@ class ContactsListBox extends Component {
     }
 
     deleteCameraAsset() {
-        console.log('deleteCameraAsset');
         if (this.state.cameraAsset && this.state.cameraAsset.metadata.transfer_id in this.outgoingPendMessages) {
-            console.log('deleted pending message');
             delete this.outgoingPendMessages[this.state.cameraAsset.metadata.transfer_id]
         }
         this.setState({cameraAsset: null, placeholder: this.default_placeholder});
@@ -1188,8 +1199,12 @@ class ContactsListBox extends Component {
             file_transfer.preview = fileObject.preview;
         }
 
-        if (fileObject.filetype) {
-            file_transfer.filetype = fileObject.filetype;
+        if (fileObject.duration) {
+            file_transfer.duration = fileObject.duration;
+        }
+
+        if (fileObject.fileType) {
+            file_transfer.filetype = fileObject.fileType;
         }
 
         let text = utils.beautyFileNameForBubble(file_transfer);
@@ -1464,6 +1479,8 @@ class ContactsListBox extends Component {
 
     renderMessageAudio(props){
         const { currentMessage } = props;
+        let playAudioButtonStyle = Platform.OS === 'ios' ? styles.playAudioButtoniOS : styles.playAudioButton;
+
         if (currentMessage.metadata.playing === true) {
             return (
                 <View style={styles.audioContainer}>
@@ -1471,7 +1488,7 @@ class ContactsListBox extends Component {
                     <IconButton
                         size={32}
                         onPress={() => this.stopPlaying(currentMessage)}
-                        style={styles.playAudioButton}
+                        style={playAudioButtonStyle}
                         icon="pause"
                     />
                 </TouchableHighlight>
@@ -1484,7 +1501,7 @@ class ContactsListBox extends Component {
                     <IconButton
                         size={32}
                         onPress={() => this.startPlaying(currentMessage)}
-                        style={styles.playAudioButton}
+                        style={playAudioButtonStyle}
                         icon="play"
                     />
                 </TouchableHighlight>
@@ -2020,12 +2037,12 @@ class ContactsListBox extends Component {
                   onPress={this.onMessagePress}
                   renderInputToolbar={chatInputClass}
                   renderBubble={renderBubble}
-                  renderMessageVideo={this.renderMessageVideo}
-                  renderMessageAudio={this.renderMessageAudio}
-                  shouldUpdateMessage={this.shouldUpdateMessage}
                   renderMessageText={this.renderMessageText}
-                  renderActions={this.renderCustomActions}
                   renderMessageImage={this.renderMessageImage}
+                  renderMessageAudio={this.renderMessageAudio}
+                  renderMessageVideo={this.renderMessageVideo}
+                  shouldUpdateMessage={this.shouldUpdateMessage}
+                  renderActions={this.renderCustomActions}
                   renderTime={this.renderTime}
                   placeholder={this.state.placeholder}
                   lockStyle={styles.lock}
@@ -2048,8 +2065,10 @@ class ContactsListBox extends Component {
                   messages={messages}
                   renderInputToolbar={() => { return null }}
                   renderBubble={renderBubble}
-                  renderMessageVideo={this.renderMessageVideo}
                   renderMessageText={this.renderMessageText}
+                  renderMessageImage={this.renderMessageImage}
+                  renderMessageAudio={this.renderMessageAudio}
+                  renderMessageVideo={this.renderMessageVideo}
                   onSend={this.onSendMessage}
                   lockStyle={styles.lock}
                   onLongPress={this.onLongMessagePress}

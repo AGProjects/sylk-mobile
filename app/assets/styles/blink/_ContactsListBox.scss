@@ -58,6 +58,13 @@
     border: 0px;
 }
 
+.chatRightActionsContaineriOS {
+    marginBottom: 5;
+    marginRight: 30;
+    transform: rotateY(180deg);
+    border: 0px;
+}
+
 .chatInsideRightActionsContainer {
     marginBottom: 0;
     border: 0px;
@@ -74,13 +81,18 @@
     border: 0px;
 }
 
+.chatLeftActionsContaineriOS {
+    marginBottom: 0;
+    width: 40;
+    marginLeft: 10;
+    border: 0px;
+}
 
 .chatSendArrow {
     marginBottom: 10;
     marginRight: 10;
     border: 0px;
 }
-
 
 .chatIconText {
     color: '#b2b2b2';
@@ -116,6 +128,11 @@
 }
 
 .playAudioButton {
+    background-color: rgba(#4572a6, 1);
+}
+
+.playAudioButtoniOS {
+    padding-top: 4px;
     background-color: rgba(#4572a6, 1);
 }
 

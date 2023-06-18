@@ -277,7 +277,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let decrypted_file_name = encrypted ? file_name.slice(0, -4) : file_name;
 
     if (metadata.preview) {
-        return 'Photo preview';
+        return metadata.duration? 'Movie preview' : 'Photo preview';
     }
 
     if (isImage(decrypted_file_name)) {
@@ -549,10 +549,11 @@ function isVideo(filename, metadata=null) {
         return true;
     }
 
-
     if (filename.toLowerCase().endsWith('.mpeg')) {
         return true;
     } else if (filename.toLowerCase().endsWith('.mp4')) {
+        return true;
+    } else if (filename.toLowerCase().endsWith('.mov')) {
         return true;
     }
 

@@ -177,10 +177,12 @@ class CustomActions extends React.Component {
     };
 
     render() {
+        let chatLeftActionsContainer = Platform.OS === 'ios' ? styles.chatLeftActionsContaineriOS : styles.chatLeftActionsContainer;
+
         return (
           <View style={{flexDirection: 'row'}}>
           <TouchableOpacity
-            style={[styles.chatLeftActionsContainer]}
+            style={[chatLeftActionsContainer]}
             onPress={this.onActionsPress}
           >
             {this.renderIcon()}
