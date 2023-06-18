@@ -31,6 +31,7 @@ class ReadyBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             historyCategoryFilter: null,
+            messagesCategoryFilter: null,
             historyPeriodFilter: null,
             missedCalls: this.props.missedCalls,
             isLandscape: this.props.isLandscape,
@@ -53,7 +54,10 @@ class ReadyBox extends Component {
             myContacts: this.props.myContacts,
             showQRCodeScanner: this.props.showQRCodeScanner,
             ssiCredentials: this.props.ssiCredentials,
-            ssiConnections: this.props.ssiConnections
+            ssiConnections: this.props.ssiConnections,
+            keys: this.props.keys,
+            isTexting: this.props.isTexting,
+            keyboardVisible: this.props.keyboardVisible
         };
         this.ended = false;
 
@@ -75,6 +79,16 @@ class ReadyBox extends Component {
 
         if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
+        }
+
+        if (nextProps.selectedContact !== this.state.selectedContact) {
+           this.setState({'messagesCategoryFilter': null});
+           if (this.navigationRef) {
+               this.navigationRef.scrollToIndex({animated: true, index: 0});
+           }
+           if (this.state.selectedContact && this.state.pinned) {
+               this.props.togglePinned(this.state.selectedContact.uri);
+           }
         }
 
         if (!nextProps.historyFilter && this.state.historyFilter) {
@@ -128,7 +142,10 @@ class ReadyBox extends Component {
                         showQRCodeScanner: nextProps.showQRCodeScanner,
                         isLandscape: nextProps.isLandscape,
                         ssiCredentials: nextProps.ssiCredentials,
-                        ssiConnections: nextProps.ssiConnections
+                        ssiConnections: nextProps.ssiConnections,
+                        keys: nextProps.keys,
+                        isTexting: nextProps.isTexting,
+                        keyboardVisible: nextProps.keyboardVisible
                         });
     }
 
@@ -147,6 +164,25 @@ class ReadyBox extends Component {
     filterHistory(filter) {
        if (this.ended) {
             return;
+       }
+
+       console.log('filterHistory', filter);
+
+       if (this.state.selectedContact) {
+           if (!filter && this.state.pinned) {
+               this.props.togglePinned(this.state.selectedContact.uri);
+           }
+           if (filter === 'pinned') {
+               this.props.togglePinned(this.state.selectedContact.uri);
+               return;
+           }
+
+           if (filter === this.state.messagesCategoryFilter) {
+               this.setState({'messagesCategoryFilter': null});
+           } else {
+               this.setState({'messagesCategoryFilter': filter});
+           }
+           return;
        }
 
        this.props.filterHistoryFunc(filter);
@@ -183,9 +219,13 @@ class ReadyBox extends Component {
         return false;
     }
 
-    get showNavigationBar(){
+    get showNavigationBar() {
+        if (this.state.keyboardVisible) {
+            return;
+        }
+
         if (this.state.selectedContact) {
-            return false;
+            //return false;
         }
         return true;
 
@@ -546,24 +586,36 @@ class ReadyBox extends Component {
             return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
         }
 
-
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
     bounceNavigation() {
+        if (this.ended) {
+            return;
+        }
+
         setTimeout(() => {
+           if (this.ended) {
+                return;
+           }
             if (this.navigationRef && !this.state.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: Math.floor(this.navigationItems.length / 2)});
             }
         }, 3000);
 
         setTimeout(() => {
+           if (this.ended) {
+                return;
+           }
             if (this.navigationRef && !this.state.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
             }
         }, 4500);
 
         setTimeout(() => {
+           if (this.ended) {
+                return;
+           }
             if (this.navigationRef && !this.state.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: 0});
             }
@@ -579,6 +631,19 @@ class ReadyBox extends Component {
         if (this.state.showQRCodeScanner) {
             return [
               {key: "hideQRCodeScanner", title: 'Cancel', enabled: true, selected: false}
+              ];
+        }
+
+        if (this.state.selectedContact) {
+//              {key: null, title: 'All', enabled: true, selected: false},
+        return [
+              {key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned},
+              {key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'},
+              {key: 'image', title: 'Images', enabled: true, selected: this.state.messagesCategoryFilter === 'image'},
+              {key: 'movie', title: 'Movies', enabled: true, selected: this.state.messagesCategoryFilter === 'movie'},
+              {key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'},
+              {key: 'paused', title: 'Paused', enabled: true, selected: this.state.messagesCategoryFilter === 'paused'},
+              {key: 'large', title: 'Large', enabled: true, selected: this.state.messagesCategoryFilter === 'large'}
               ];
         }
 
@@ -622,6 +687,7 @@ class ReadyBox extends Component {
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
 
+
         let uri = this.state.targetUri.toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
@@ -633,22 +699,6 @@ class ReadyBox extends Component {
                 uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
             }
         }
-
-        /*
-        console.log('Render -----', this.state.historyFilter, this.state.historyCategoryFilter);
-        if (this.state.selectedContact) {
-            console.log('Render selectedContact', this.state.selectedContact.name);
-        }
-
-        if (this.state.callContact) {
-            console.log('Render callContact', this.state.callContact.uri);
-        }
-
-        if (this.state.targetUri) {
-            console.log('Render targetUri', this.state.targetUri);
-        }
-
-        */
 
         //console.log('RB', this.state.isTablet);
 
@@ -877,6 +927,11 @@ class ReadyBox extends Component {
                             call = {this.state.call}
                             ssiCredentials = {this.state.ssiCredentials}
                             ssiConnections = {this.state.ssiConnections}
+                            keys = {this.state.keys}
+                            downloadFunc = {this.props.downloadFunc}
+                            decryptFunc = {this.props.decryptFunc}
+                            messagesCategoryFilter = {this.state.messagesCategoryFilter}
+                            isTexting = {this.state.isTexting}
                         />
                         }
 
@@ -888,7 +943,7 @@ class ReadyBox extends Component {
                             horizontal={true}
                             ref={(ref) => { this.navigationRef = ref; }}
                               onScrollToIndexFailed={info => {
-                                const wait = new Promise(resolve => setTimeout(resolve, 700));
+                                const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
                                   this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
                                 });
@@ -986,7 +1041,13 @@ ReadyBox.propTypes = {
     myContacts: PropTypes.object,
     handleSSIEnrolment:  PropTypes.func,
     ssiCredentials:  PropTypes.array,
-    ssiConnections:  PropTypes.array
+    ssiConnections:  PropTypes.array,
+    keys            : PropTypes.object,
+    downloadFunc    : PropTypes.func,
+    decryptFunc     : PropTypes.func,
+    isTexting       :PropTypes.bool,
+    keyboardVisible: PropTypes.bool,
+    filteredMessageIds: PropTypes.array
 };
 
 

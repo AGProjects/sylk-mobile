@@ -46,9 +46,7 @@ class ConferenceModal extends Component {
                       participants: nextProps.participants || []
                       });
 
-        if (nextProps.targetUri) {
-            this.handleConferenceTargetChange(uri);
-        }
+        this.handleConferenceTargetChange(uri);
     }
 
     handleConferenceTargetChange(value) {

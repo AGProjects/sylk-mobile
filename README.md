@@ -5,13 +5,13 @@ applications using IETF SIP protocol and WebRTC specifications.
 
 Sylk Suite consists of:
 
-* SIP/WebRTC application server
-* Mobile push notifications server
-* Desktop clients for Windows, Linux and MacOS
-* Mobile clients for Apple iOS and Google Android
+* Sylk SIP/WebRTC application server
+* Sylk mobile push notifications server
+* Sylk desktop client for Windows, Linux and MacOS
+* Sylk mobile client for Apple iOS and Google Android
 * Web page for WebRTC enabled browsers
-* Mobile client development SDK
-* Desktop client development SDK
+* Mobile client API development SDK
+* Desktop client API development SDK
 
 [Home page](https://sylkserver.com)
 
@@ -37,8 +37,9 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 
 * 1-to-1 audio and video calls
 * Encrypted end-to-end messaging
+* Encrypted end-to-end file transfers
 * Synchronization of multiple devices 
-* Multiparty conferencing
+* Multiparty conferencing for all supported media
 * Call history entries management
 * Native address book lookup
 * Native OS telephony integration
@@ -51,6 +52,8 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 * Support for Self Sovereign Identity (SSI)
 
 Messages are encrypted end-to-end using OpenPGP.  
+
+File transfer are encrypted end-to-end using OpenPGP whenever possible.
 
 SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 
@@ -76,8 +79,10 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 ## Running dependencies
 
 * Generic SIP infrastructure
-* Sylk Server http://sylkserver.com
-* Sylk Push Server http://sylkserver.com
+
+
+## Developing dependencies
+
 * [Janus](https://github.com/meetecho/janus-gateway) Gateway
 * [Animo SDK for SSI support](https://github.com/animo/aries-mobile-sdk)
 
@@ -93,6 +98,14 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
   curl -o- -L https://yarnpkg.com/install.sh | bash 
 * XCode
 * Android Studio (Or at least the Android SDK)
+  export JAVA_HOME="/Library/Internet\ Plug-Ins/JavaAppletPlugin.plugin/Contents/Home"
+  export PATH=$JAVA_HOME/bin:$PATH
+  export ANDROID_SDK_ROOT=/Users/example/Library/Android/sdk
+
+  On Mac Copy tools.jar to the following location:
+  sudo cp /Applications/Android\ Studio.app/Contents/jre/jdk/Contents/Home/lib/tools.jar \
+  /Library/Internet\ Plug-Ins/JavaAppletPlugin.plugin/Contents/Home/lib/
+
 * Gem (for installing gem files)
 * Fastlane (for deploying to testflight/google play store)
 * Cocoapods (for handling iOS Pods) 
@@ -106,6 +119,16 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 * watchman (for helping watch files during development)
   brew install watchman or port install watchman
 * Hyperledger Indy SDK from https://github.com/hyperledger/indy-sdk
+
+  Download libindy libraries from https://repo.sovrin.org/android/libindy/main/
+
+  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_arm64_1.16.0.zip
+  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_arm_1.16.0.zip
+  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_armv7_1.16.0.zip
+  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_x86_1.16.0.zip
+  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_x86_64_1.16.0.zip
+
+  To ./android/app/src/main/jniLibs$
 
 
 ### Install
@@ -123,12 +146,26 @@ To be sure you're running the lastest code run:
 
 ```bash
 rm -rf node_modules
-rm -rf ios/Pods
+rm -r android/app/build
 yarn cache clean
 yarn
-cd ios; pod install; cd ..
+rm -rf ios/Pods
+rm Podfile.lock
+rm -r ~/.cocoapods
+cd ios; pod setup; pod install; cd ..
 ```
 
+You might want to bring the project back to a clean repo if you're hitting any issues.
+
+Try it as a dry-run first
+
+```bash
+git clean -d -x --dry-run
+```
+
+```bash
+git clean -d -x -f
+```
 
 ### XCODE 12.5 fixes
 
@@ -162,11 +199,20 @@ If you don't have any simulators running, and don't have an android device plugg
 yarn react-native run-android
 ```
 
+To see the logs of the attached Android device:
+
+adb logcat '*:W'.
+
+
 ### Debugging
 
 Install https://reactnative.dev/docs/debugging#react-developer-tools
 
 Shake the device and touch Debug.
+
+In XCode enable debugger:
+
+Product -> Scheme -> Edit -> Run -> Build Configuration -> Debug
 
 
 ### Running on the iOS Device
@@ -199,19 +245,6 @@ Select menu Product -> Scheme -> Edit scheme andselect for Run Build Configurati
 Beware that iOS push tokens are still meant for sandbox unless the app is
 released through Apple Store.
 
-### Clean the project
-
-You might want to bring the project back to a clean repo if you're hitting any issues.
-
-Try it as a dry-run first
-
-```bash
-git clean -d -x --dry-run
-```
-
-```bash
-git clean -d -x -f
-```
 
 ### Building the app for deployment
 

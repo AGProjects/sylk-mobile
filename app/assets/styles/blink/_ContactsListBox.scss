@@ -46,3 +46,78 @@
     bottom: 0;
     right: 0;
 }
+
+.chatSendContainer {
+    flex-direction: row;
+}
+
+.chatRightActionsContainer {
+    marginBottom: 15;
+    marginRight: 30;
+    transform: rotateY(180deg);
+    border: 0px;
+}
+
+.chatInsideRightActionsContainer {
+    marginBottom: 0;
+    border: 0px;
+}
+
+.chatAudioIcon {
+    marginBottom: 10;
+}
+
+.chatLeftActionsContainer {
+    marginBottom: 5;
+    width: 40;
+    marginLeft: 10;
+    border: 0px;
+}
+
+
+.chatSendArrow {
+    marginBottom: 10;
+    marginRight: 10;
+    border: 0px;
+}
+
+
+.chatIconText {
+    color: '#b2b2b2';
+    weight: 'bold';
+    fontSize: 15;
+    backgroundColor: 'transparent';
+    textAlign: 'center';
+}
+
+.bubbleContainer {
+}
+
+.videoContainer {
+    width: 100%;
+}
+
+.audioContainer {
+    margin-top: 10;
+    width: 100%;
+}
+
+.videoPlayer {
+}
+
+.audioPlayer {
+}
+
+.roundshape {
+    height: 48; //any of height
+    width: 48; //any of width
+    justifyContent: center;
+    borderRadius: 24px;
+}
+
+.playAudioButton {
+    background-color: rgba(#4572a6, 1);
+}
+
+.chatImage {
+}

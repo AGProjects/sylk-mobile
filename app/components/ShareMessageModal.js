@@ -6,6 +6,8 @@ import { Dialog, Portal, Text, Surface, IconButton} from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import { openComposer } from 'react-native-email-link';
 import Share from 'react-native-share';
+const RNFS = require('react-native-fs');
+//var Mailer = require('NativeModules').RNMail;
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -39,6 +41,29 @@ class ShareMessageModal extends Component {
         const emailMessage = this.state.message.text;
         const subject = 'Share Sylk message';
 
+        /*
+        let mailMessage = {
+            subject: subject,
+            body: emailMessage
+        };
+
+        if (this.state.message.metadata) {
+            local_url = this.state.message.metadata.local_url;
+            mailMessage.attachment = {
+                path: this.state.message.metadata.local_url,  // The absolute path of the file from which to read data.
+                type: this.state.message.metadata.filetype,   // Mime Type: jpg, png, doc, ppt, html, pdf
+                name: this.state.message.metadata.filename   // Optional: Custom filename for attachment
+              }
+        }
+
+        Mailer.mail(mailMessage, (error, event) => {
+            if (error) {
+              console.log('Error', error);
+            }
+        });
+        */
+
+
         openComposer({
             subject,
             body: emailMessage
@@ -46,13 +71,40 @@ class ShareMessageModal extends Component {
         this.props.close();
     }
 
-    handleShareButton(event) {
+    async handleShareButton(event) {
+        let local_url;
+        let what =  'message';
+
+        if (this.state.message.metadata) {
+            local_url = this.state.message.metadata.local_url;
+            if (this.state.message.image) {
+                what = 'photo';
+                let res = await RNFS.readFile(local_url, 'base64');
+                local_url = `data:${this.state.message.metadata.filetype};base64,${res}`;
+            } else if (utils.isAudio(this.state.message.metadata.filename)) {
+                what = 'Audio message';
+                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
+            } else if (this.state.message.metadata.video) {
+                what = 'Video';
+                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
+            } else {
+                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
+            }
+
+        }
+
         let options= {
             title: 'Share via',
-            subject: 'Share Sylk message',
-            message: this.state.message.local_url ? null : this.state.message.text,
-            url: this.state.message.local_url ? 'file://' + this.state.message.local_url : this.state.message.url
+            subject: 'Share ' + what,
+            message: this.state.message.text,
+            url: local_url
         }
+
+        if (this.state.message.metadata) {
+            options.type = this.state.message.metadata.filetype;
+        }
+
+        console.log('Sharing data...');
 
         Share.open(options)
             .then((res) => {

@@ -59,9 +59,9 @@ class NavigationBar extends Component {
             showPublicKey: false,
             messages: this.props.messages,
             userClosed: false,
-            pinned: this.props.pinned,
             blockedUris: this.props.blockedUris,
-            ssiRequired: this.props.ssiRequired
+            ssiRequired: this.props.ssiRequired,
+            filteredMessageIds: this.props.filteredMessageIds
         }
 
         this.menuRef = React.createRef();
@@ -90,7 +90,6 @@ class NavigationBar extends Component {
                        proximity: nextProps.proximity,
                        account: nextProps.account,
                        userClosed: true,
-                       pinned: nextProps.pinned,
                        menuVisible: nextProps.menuVisible,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
@@ -99,7 +98,8 @@ class NavigationBar extends Component {
                        messages: nextProps.messages,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
                        blockedUris: nextProps.blockedUris,
-                       ssiRequired: nextProps.ssiRequired
+                       ssiRequired: nextProps.ssiRequired,
+                       filteredMessageIds: nextProps.filteredMessageIds
                        });
     }
 
@@ -172,9 +172,6 @@ class NavigationBar extends Component {
                 break;
             case 'toggleBlocked':
                 this.props.toggleBlocked(this.state.selectedContact.uri);
-                break;
-            case 'togglePinned':
-                this.props.togglePinned(this.state.selectedContact.uri);
                 break;
             case 'sendPublicKey':
                 this.props.sendPublicKey(this.state.selectedContact.uri);
@@ -320,7 +317,7 @@ class NavigationBar extends Component {
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
         let isConference = false;
 
-        let hasMessages = false;
+        let hasMessages = true; // allow user to select this after local messages were removed, to delete them remotely
         if (this.state.selectedContact) {
             if (Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) > -1 && this.state.messages[this.state.selectedContact.uri].length > 0) {
                 hasMessages = true;
@@ -391,19 +388,16 @@ class NavigationBar extends Component {
                         }
                     >
                         {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/> : null}
-                        {canCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {canCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+
+                        {canCall && false ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {canCall && false ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
 
-                        { hasMessages  && !this.state.inCall && tags.indexOf('ssi') === -1 ?
+                        { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
-
-                        { (hasMessages || this.state.pinned) && tags.indexOf('test') === -1 && tags.indexOf('ssi') ?
-                        <Menu.Item onPress={() => this.handleMenu('togglePinned')} icon="pin" title={this.state.pinned ? "Show all messages" : "Show pinned"}/>
-                        : null}
 
                         { hasMessages && tags.indexOf('test') === -1 && !isConference && false?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
@@ -503,6 +497,7 @@ class NavigationBar extends Component {
                     hasMessages={hasMessages}
                     deleteContactFunc={this.props.removeContact}
                     deleteMessages={this.props.deleteMessages}
+                    filteredMessageIds={this.state.filteredMessageIds}
                 />
 
                 <AddContactModal
@@ -588,8 +583,6 @@ NavigationBar.propTypes = {
     publicKeyHash      : PropTypes.string,
     publicKey          : PropTypes.string,
     deleteMessages     : PropTypes.func,
-    togglePinned       : PropTypes.func,
-    pinned             : PropTypes.bool,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
     saveConference     : PropTypes.func,
@@ -620,7 +613,8 @@ NavigationBar.propTypes = {
     blockedUris: PropTypes.array,
     myuuid: PropTypes.string,
     deleteSsiCredential: PropTypes.func,
-    deleteSsiConnection: PropTypes.func
+    deleteSsiConnection: PropTypes.func,
+    filteredMessageIds: PropTypes.array
 };
 
 export default NavigationBar;

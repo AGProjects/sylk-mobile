@@ -1,146 +1,203 @@
 import PropTypes from 'prop-types'
 import React from 'react'
-import Switch from 'react-native'
-import { Bubble, MessageText, InputToolbar } from 'react-native-gifted-chat'
-import DocumentPicker from 'react-native-document-picker';
-//import * as ImagePicker from 'expo-image-picker';
+import autoBind from 'auto-bind';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
+import AudioRecorderPlayer from 'react-native-audio-recorder-player'
+import {TouchableOpacity, View, Platform} from 'react-native'
+import styles from '../assets/styles/blink/_ContactsListBox.scss';
+const RNFS = require('react-native-fs');
+import AudioRecord from 'react-native-audio-record';
 
+const options = {
+    sampleRate: 16000,  // default 44100
+    channels: 1,        // 1 or 2, default 1
+    bitsPerSample: 16,  // 8 or 16, default 16
+    audioSource: 6,     // android only (see below)
+    wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
+};
 
-import {
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  ViewPropTypes,
-} from 'react-native'
+AudioRecord.init(options);
 
-export default class CustomActions extends React.Component {
-  onActionsPress = () => {
-    let options = [
-      'Choose photo from library',
-      'Take a picture',
-      'Cancel',
-    ]
+class CustomActions extends React.Component {
+    constructor(props) {
 
-    options = [
-      'Upload file...',
-      'Cancel',
-    ]
-    const cancelButtonIndex = options.length - 1
-    this.context.actionSheet().showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex,
-      },
-      async buttonIndex => {
-        const { onSend } = this.props
-        switch (buttonIndex) {
-          case 0:
-            this.onAttachFile();
-            return
-          case 1:
-            takePictureAsync(onSend)
-            return
-          default:
+        super(props);
+        autoBind(this);
+
+        this.state = {recording: false, texting: false, sendingImage: false}
+        this.timer = null;
+        this.audioRecorderPlayer = new AudioRecorderPlayer();
+        this.ended = false;
+    }
+
+    componentWillUnmount() {
+        this.ended = true;
+        this.stopRecording();
+    }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        this.setState({texting: nextProps.texting,
+                       playing: nextProps.playing,
+                       audioSendFinished: nextProps.audioSendFinished,
+                       sendingImage: nextProps.sendingImage
+                       });
+        if (nextProps.audioSendFinished) {
+            this.deleteAudioRecording()
         }
-      },
-    )
-  }
+    }
 
-    onAttachFile = async () => { try { const results = await DocumentPicker.pick({ type: [DocumentPicker.types.allFiles], });
+    onActionsPress = () => {
+        if (this.state.audioRecording) {
+            this.setState({audioRecording: false});
+            this.props.audioRecorded(null);
 
-       console.log(results);
-       let res = results[0];
-       let type = res.name.slice(res.name.lastIndexOf('.') + 1);
-           this.props.onSendWithFile(res);
-           /*
-           if (
-                 res.type == 'application/pdf' ||
-                 res.type == 'image/jpeg' ||
-                 res.type == 'image/png' ||
-                 res.type == 'image/jpg'
-           ) {
-           } else {
-                 alert(`${type} is not allowed. Only images types are supported.`);
-           }
-           */
-     } catch (err) {
-       //Handling any exception (If any)
-       if (DocumentPicker.isCancel(err)) {
-         //If user canceled the document selection
-         // alert('Canceled from single doc picker');
-       } else {
-         //For Unknown Error
-         // alert('Unknown Error: ' + JSON.stringify(err));
-         throw err;
-       }
-     }
+            /*
+            if (this.state.playing) {
+                this.setState({playing: false});
+                this.onStopPlay();
+            } else {
+                this.setState({playing: true});
+                this.onStartPlay()
+            }
+            */
+        } else {
+            if (this.state.playing) {
+                this.props.stopPlaying();
+            } else if (!this.state.recording) {
+                this.setState({recording: true});
+                this.props.onRecording(true);
+                console.log('Recording audio start');
+                this.onStartRecord();
+                this.timer = setTimeout(() => {
+                    this.stopRecording();
+                }, 20000);
+            } else {
+                this.stopRecording();
+            }
+        }
+    }
+
+    stopRecording() {
+        if (this.timer !== null) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        this.setState({recording: false});
+        this.props.onRecording(false);
+        this.onStopRecord();
+    }
+
+    renderIcon () {
+        let color = "green";
+        let name = this.state.recording ? "pause" : "microphone";
+
+        if (this.state.audioRecording) {
+            name = "delete";
+            color = "red"
+        }
+
+        if (this.state.texting || this.state.sendingImage || this.state.playing) {
+            return (<View></View>)
+        }
+
+        return (
+            <View>
+                    <Icon
+                      type="font-awesome"
+                      name={name}
+                      style={styles.chatAudioIcon}
+                      size={20}
+                      color={color}
+                    />
+             </View>
+         )
+      }
+
+    deleteAudioRecording() {
+        this.setState({audioRecording: null});
+    }
+
+    onStartRecord = async () => {
+        AudioRecord.start();
+
+        /* bellow code only works on Android
+        let path = RNFS.DocumentDirectoryPath + "/" + 'sylk-audio-recording.mp4';
+        const result = await this.audioRecorderPlayer.startRecorder(path);
+        this.audioRecorderPlayer.addRecordBackListener((e) => {
+            this.setState({
+              recordSecs: e.currentPosition,
+              recordTime: this.audioRecorderPlayer.mmssss(
+                Math.floor(e.currentPosition),
+              ),
+            });
+        });
+        */
     };
 
-  renderIcon = () => {
-    if (this.props.renderIcon) {
-      return this.props.renderIcon()
+    onStopRecord = async () => {
+        if (this.ended) {
+            return;
+        }
+
+        const result = await AudioRecord.stop();
+        this.props.audioRecorded(result);
+        this.setState({audioRecording: result});
+
+        /* bellow code only works on Android
+
+        const result = await this.audioRecorderPlayer.stopRecorder();
+        this.audioRecorderPlayer.removeRecordBackListener();
+        this.setState({recordSecs: 0});
+        */
+
+        this.props.audioRecorded(result);
+    };
+
+    async onStartPlay () {
+        const msg = await this.audioRecorderPlayer.startPlayer();
+        this.audioRecorderPlayer.addPlayBackListener((e) => {
+            this.setState({
+              currentPositionSec: e.currentPosition,
+              currentDurationSec: e.duration,
+              playTime: this.audioRecorderPlayer.mmssss(Math.floor(e.currentPosition)),
+              duration: this.audioRecorderPlayer.mmssss(Math.floor(e.duration)),
+            });
+        });
+    };
+
+    onPausePlay = async () => {
+        await this.audioRecorderPlayer.pausePlayer();
+    };
+
+    onStopPlay = async () => {
+        console.log('onStopPlay');
+        this.audioRecorderPlayer.stopPlayer();
+        this.audioRecorderPlayer.removePlayBackListener();
+        this.setState({playing: false});
+    };
+
+    render() {
+        return (
+          <View style={{flexDirection: 'row'}}>
+          <TouchableOpacity
+            style={[styles.chatLeftActionsContainer]}
+            onPress={this.onActionsPress}
+          >
+            {this.renderIcon()}
+          </TouchableOpacity>
+          </View>
+        )
     }
-    return (
-      <View style={[styles.wrapper, this.props.wrapperStyle]}>
-        <Text style={[styles.iconText, this.props.iconTextStyle]}>+</Text>
-      </View>
-    )
-  }
-
-  render() {
-    return (
-      <TouchableOpacity
-        style={[styles.container, this.props.containerStyle]}
-        onPress={this.onActionsPress}
-      >
-        {this.renderIcon()}
-      </TouchableOpacity>
-    )
-  }
-}
-
-const styles = StyleSheet.create({
-  container: {
-    width: 26,
-    height: 26,
-    marginLeft: 10,
-    marginBottom: 10,
-  },
-  wrapper: {
-    borderRadius: 13,
-    borderColor: '#b2b2b2',
-    borderWidth: 2,
-    flex: 1,
-  },
-  iconText: {
-    color: '#b2b2b2',
-    fontWeight: 'bold',
-    fontSize: 16,
-    backgroundColor: 'transparent',
-    textAlign: 'center',
-  },
-})
-
-CustomActions.contextTypes = {
-  actionSheet: PropTypes.func,
-}
-
-CustomActions.defaultProps = {
-  onSend: () => {},
-  options: {},
-  renderIcon: null,
-  containerStyle: {},
-  wrapperStyle: {},
-  iconTextStyle: {},
 }
 
 CustomActions.propTypes = {
-  onSend: PropTypes.func,
-  onSendWithFile: PropTypes.func,
-  options: PropTypes.object,
-  renderIcon: PropTypes.func,
-  containerStyle: ViewPropTypes.style,
-  wrapperStyle: ViewPropTypes.style,
-  iconTextStyle: Text.propTypes.style,
+    audioRecorded: PropTypes.func,
+    onRecording: PropTypes.func,
+    stopPlaying: PropTypes.func,
+    options: PropTypes.object,
+    texting: PropTypes.bool,
+    sendingImage: PropTypes.bool,
+    audioSendFinished: PropTypes.bool
 }
+
+export default CustomActions;

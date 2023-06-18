@@ -198,3 +198,33 @@ align-content: flex-end;
 .portraitDrawer {
     width: 300px;
 }
+
+.chatSendContainer {
+    flex-direction: row;
+}
+
+.chatPapperclip {
+    marginBottom: 15;
+    marginRight: 30;
+    transform: rotateY(180deg);
+    border: 0px;
+}
+
+.chatSendArrow {
+    marginBottom: 15;
+    marginRight: 10;
+}
+
+.videoContainer {
+    width: 100%;
+}
+
+.audioContainer {
+    width: 100%;
+}
+
+.videoPlayer {
+}
+
+.audioPlayer {
+}

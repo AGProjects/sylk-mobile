@@ -48,9 +48,8 @@ class MessageInfoModal extends Component {
             return (null);
         }
 
-        //console.log('this.state.message', this.state.message.local_url);
-
         let status = this.state.message.direction === 'outgoing' ? 'Message is on the way' : 'Message was received';
+
         let encryption = 'Not encrypted';
 
         if (this.state.message.encrypted > 0) {
@@ -70,13 +69,23 @@ class MessageInfoModal extends Component {
         let title = this.state.message ? this.state.message.user._id : null;
         let filename;
         let what = 'message';
-        if (this.state.message.url) {
-            let path = this.state.message.url.split('/');
-            filename = path[path.length-1];
-            what = 'file';
+
+        if (this.state.message.metadata && this.state.message.metadata.filename) {
+            what = 'file'
+            if (this.state.message.metadata.filename.endsWith('.asc')) {
+                filename = this.state.message.metadata.filename.slice(0, -4);
+            } else {
+                filename = this.state.message.metadata.filename
+            }
+        } else {
+            if (this.state.message.url) {
+                what = 'file ' + filename;
+                let path = this.state.message.url.split('/');
+                filename = path[path.length-1];
+            }
         }
 
-        let fileExists = this.state.fileExists ? 'File is saved' : 'File was not saved';
+        let fileExists = this.state.fileExists ? 'File is cached on device' : 'File is not cached on device';
 
         return (
             <Portal>
@@ -87,9 +96,6 @@ class MessageInfoModal extends Component {
                     : null}
                      <DataTable>
                         <DataTable.Row>
-                          <DataTable.Cell>{this.state.message._id}</DataTable.Cell>
-                        </DataTable.Row>
-                        <DataTable.Row>
                           <DataTable.Cell>{this.state.message.createdAt.toString()}</DataTable.Cell>
                         </DataTable.Row>
                         {!this.state.message.url ?
@@ -98,7 +104,7 @@ class MessageInfoModal extends Component {
                         </DataTable.Row>
                         : null}
                         <DataTable.Row>
-                          <DataTable.Cell>{utils.titleCase(this.state.message.direction)} {what}</DataTable.Cell>
+                          <DataTable.Cell>{utils.titleCase(this.state.message.direction)} {what} {this.state.message._id}</DataTable.Cell>
                         </DataTable.Row>
                         { this.state.message.url ?
                         <DataTable.Row>

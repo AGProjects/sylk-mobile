@@ -1,27 +1,38 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
-
 import PropTypes from 'prop-types';
-import { Clipboard, SafeAreaView, View, FlatList, Text, Linking, PermissionsAndroid, Switch} from 'react-native';
-
+import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, PermissionsAndroid, Switch, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
-import { GiftedChat, IMessage, Bubble, MessageText } from 'react-native-gifted-chat'
+import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time} from 'react-native-gifted-chat'
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
 import MessageInfoModal from './MessageInfoModal';
 import ShareMessageModal from './ShareMessageModal';
+import DeleteMessageModal from './DeleteMessageModal';
 import CustomChatActions from './ChatActions';
 import FileViewer from 'react-native-file-viewer';
+import OpenPGP from "react-native-fast-openpgp";
+import DocumentPicker from 'react-native-document-picker';
+import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+import VideoPlayer from 'react-native-video-player';
+import RNFetchBlob from "rn-fetch-blob";
+import { IconButton} from 'react-native-paper';
+import ImageViewer from 'react-native-image-zoom-viewer';
+
+import Sound from 'react-native-sound';
+import SoundPlayer from 'react-native-sound-player';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
-//import Video from 'react-native-video';
+import Video from 'react-native-video';
 const RNFS = require('react-native-fs');
 import CameraRoll from "@react-native-community/cameraroll";
+import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
+import ImageResizer from 'react-native-image-resizer';
 
 import styles from '../assets/styles/blink/_ContactsListBox.scss';
-
 
 String.prototype.toDate = function(format)
 {
@@ -50,12 +61,154 @@ String.prototype.toDate = function(format)
   return new Date(year,month,day,hour,minute,second);
 };
 
+const audioRecorderPlayer = new AudioRecorderPlayer();
+
+// Note: copy and paste all styles in App.js from my repository
+function  renderBubble (props) {
+        let leftColor = 'green';
+        let rightColor = '#fff';
+
+        if (props.currentMessage.failed) {
+            rightColor = 'red';
+            leftColor = 'red';
+        } else {
+            if (props.currentMessage.pinned) {
+                rightColor = '#2ecc71';
+                leftColor = '#2ecc71';
+            }
+        }
+
+        if (props.currentMessage.image) {
+            return (
+              <Bubble
+                {...props}
+                wrapperStyle={{
+                  right: {
+                    backgroundColor: '#fff',
+                    alignSelf: 'stretch',
+                    marginLeft: 0
+                  },
+                  left: {
+                    backgroundColor: '#000',
+                    alignSelf: 'stretch',
+                    marginRight: 0
+                  }
+                }}
+                textProps={{
+                    style: {
+                      color: props.position === 'left' ? '#fff' : '#000',
+                    },
+                  }}
+                  textStyle={{
+                    left: {
+                      color: '#fff',
+                    },
+                    right: {
+                      color: '#000',
+                    },
+                  }}
+              />
+            )
+        } else if (props.currentMessage.video) {
+            return (
+              <Bubble
+                {...props}
+                wrapperStyle={{
+                  right: {
+                    backgroundColor: '#000',
+                    alignSelf: 'stretch',
+                    marginLeft: 0
+                  },
+                  left: {
+                    backgroundColor: '#000',
+                    alignSelf: 'stretch',
+                    marginRight: 0
+                  }
+                 }}
+
+                 textProps={{
+                    style: {
+                      color: props.position === 'left' ? '#fff' : '#fff',
+                    },
+                  }}
+                  textStyle={{
+                    left: {
+                      color: '#000',
+                    },
+                    right: {
+                      color: '#000',
+                    },
+                  }}
+              />
+            )
+        } else if (props.currentMessage.audio) {
+            return (
+              <Bubble
+                {...props}
+                wrapperStyle={{
+                  right: {
+                    backgroundColor: 'transparent',
+                  },
+                  left: {
+                    backgroundColor: 'transparent',
+                  }
+                 }}
+
+                 textProps={{
+                    style: {
+                      color: props.position === 'left' ? '#fff' : '#fff',
+                    },
+                  }}
+                  textStyle={{
+                    left: {
+                      color: '#000',
+                    },
+                    right: {
+                      color: '#000',
+                    },
+                  }}
+              />
+            )
+        } else {
+            return (
+              <Bubble
+                {...props}
+                 wrapperStyle={{
+                    left: {
+                      backgroundColor: leftColor,
+                    },
+                    right: {
+                      backgroundColor: rightColor,
+                    },
+                  }}
+                  textProps={{
+                    style: {
+                      color: props.position === 'left' ? '#fff' : '#000',
+                    },
+                  }}
+                  textStyle={{
+                    left: {
+                      color: '#fff',
+                    },
+                    right: {
+                      color: '#000',
+                    },
+                  }}
+
+                style={styles.bubbleContainer}
+              />
+            )
+        }
+    }
+
+
 class ContactsListBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
 
         this.chatListRef = React.createRef();
+        this.default_placeholder = 'Enter message...'
 
         let renderMessages = [];
         if (this.props.selectedContact) {
@@ -120,10 +273,25 @@ class ContactsListBox extends Component {
             call: this.props.call,
             isTablet: this.props.isTablet,
             ssiCredentials: this.props.ssiCredentials,
-            ssiConnections: this.props.ssiConnections
+            ssiConnections: this.props.ssiConnections,
+            keys: this.props.keys,
+            recording: false,
+            playing: false,
+            texting: false,
+            audioRecording: null,
+            cameraAsset: null,
+            placeholder: this.default_placeholder,
+            audioSendFinished: false,
+            messagesCategoryFilter: this.props.messagesCategoryFilter,
+            isTexting: this.props.isTexting,
+            showDeleteMessageModal: false
         }
 
         this.ended = false;
+        this.recordingTimer = null;
+        this.outgoingPendMessages = {};
+        BackHandler.addEventListener('hardwareBackPress', this.backPressed);
+        this.listenforSoundNotifications()
     }
 
     componentDidMount() {
@@ -132,6 +300,11 @@ class ContactsListBox extends Component {
 
     componentWillUnmount() {
         this.ended = true;
+        this.stopRecordingTimer()
+    }
+
+    backPressed() {
+       this.stopRecordingTimer()
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -169,13 +342,21 @@ class ContactsListBox extends Component {
             this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
         }
 
+        if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
+            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
+        }
+
+        if (nextProps.pinned !== this.state.pinned && nextProps.selectedContact) {
+            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: nextProps.pinned});
+        }
+
         if (nextProps.selectedContact !== this.state.selectedContact) {
             //console.log('Selected contact changed to', nextProps.selectedContact);
-
+            this.resetContact()
             this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact) {
                this.setState({scrollToBottom: true});
-               if (Object.keys(this.state.messages).indexOf(nextProps.selectedContact.uri) === -1) {
+               if (Object.keys(this.state.messages).indexOf(nextProps.selectedContact.uri) === -1 && nextProps.selectedContact) {
                    this.props.getMessages(nextProps.selectedContact.uri);
                }
             } else {
@@ -193,7 +374,8 @@ class ContactsListBox extends Component {
 
             if (uri in nextProps.messages) {
                 renderMessages = nextProps.messages[uri];
-                if (this.state.renderMessages.length !== renderMessages.length) {
+                if (this.state.renderMessages.length < renderMessages.length) {
+                    //console.log('Number of messages changed', this.state.renderMessages.length, '->', renderMessages.length);
                     this.setState({isLoadingEarlier: false});
                     this.props.confirmRead(uri);
                     if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
@@ -205,9 +387,27 @@ class ContactsListBox extends Component {
                 }
             }
 
-            if (renderMessages !== this.state.renderMessages) {
-                //renderMessages.sort((a, b) => (a.createdAt < b.createdAt) ? 1 : -1);
-                renderMessages = renderMessages.sort(function(a, b) {
+            let delete_ids = [];
+            Object.keys(this.outgoingPendMessages).forEach((_id) => {
+                if (renderMessages.some((obj) => obj._id === _id)) {
+                    console.log('Remove pending message id', _id);
+                    delete_ids.push(_id);
+                    // message exists
+                } else {
+                    if (this.state.renderMessages.some((obj) => obj._id === _id)) {
+                        console.log('Pending message id', _id, 'already exists');
+                    } else {
+                        console.log('Adding pending message id', _id);
+                        renderMessages.push(this.outgoingPendMessages[_id]);
+                    }
+                }
+            });
+
+            delete_ids.forEach((_id) => {
+                delete this.outgoingPendMessages[_id];
+            });
+
+            renderMessages = renderMessages.sort(function(a, b) {
                   if (a.createdAt < b.createdAt) {
                     return 1; //nameA comes first
                   }
@@ -224,15 +424,13 @@ class ContactsListBox extends Component {
                           return -1; // nameB comes first
                       }
                   }
-
                   return 0;  // names must be equal
-                });
+            });
 
-                this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
-                if (!this.state.scrollToBottom && renderMessages.length > 0) {
-                    //console.log('Scroll to first message');
-                    //this.scrollToMessage(0);
-                }
+            this.setState({renderMessages: GiftedChat.append(renderMessages, [])});
+            if (!this.state.scrollToBottom && renderMessages.length > 0) {
+                //console.log('Scroll to first message');
+                //this.scrollToMessage(0);
             }
         }
 
@@ -253,7 +451,11 @@ class ContactsListBox extends Component {
                        periodFilter: nextProps.periodFilter,
                        ssiCredentials: nextProps.ssiCredentials,
                        ssiConnections: nextProps.ssiConnections,
-                       targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri
+                       messagesCategoryFilter: nextProps.messagesCategoryFilter,
+                       targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri,
+                       keys: nextProps.keys,
+                       isTexting: nextProps.isTexting,
+                       showDeleteMessageModal: nextProps.showDeleteMessageModal
                        });
 
         if (nextProps.isTyping) {
@@ -263,14 +465,336 @@ class ContactsListBox extends Component {
         }
     }
 
+    listenforSoundNotifications() {
+     // Subscribe to event(s) you want when component mounted
+        this._onFinishedPlayingSubscription = SoundPlayer.addEventListener('FinishedPlaying', ({ success }) => {
+          //console.log('finished playing', success)
+          this.setState({playing: false, placeholder: this.default_placeholder});
+        })
+        this._onFinishedLoadingSubscription = SoundPlayer.addEventListener('FinishedLoading', ({ success }) => {
+          console.log('finished loading', success)
+        })
+        this._onFinishedLoadingFileSubscription = SoundPlayer.addEventListener('FinishedLoadingFile', ({ success, name, type }) => {
+          console.log('finished loading file', success, name, type)
+        })
+        this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
+          console.log('finished loading url', success, url)
+        })
+    }
+
+    async _launchCamera() {
+        let options = {maxWidth: 1000,
+                       cameraType: 'front'
+                       }
+        await launchCamera(options, this.cameraCallback);
+    }
+
+    async _launchImageLibrary() {
+        let options = {maxWidth: 1000
+                       }
+        await launchImageLibrary(options, this.cameraCallback);
+    }
+
+    async cameraCallback(result) {
+        if (result.assets.length === 0) {
+            return;
+        }
+
+        let asset = result.assets[0];
+        asset.preview = true;
+        let msg = await this.file2GiftedChat(asset);
+        console.log(msg);
+        this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
+                        cameraAsset: msg,
+                        placeholder: 'Delete or send image...'
+                        });
+    }
+
+    renderMessageImage =(props) => {
+    /*
+        return(
+          <TouchableOpacity onPress={() => this.onMessagePress(context, props.currentMessage)}>
+            <Image
+              source={{ uri: props.currentMessage.image }}
+              style = {{
+              width: '98%',
+              height: Dimensions.get('window').width,
+              resizeMode: 'cover'
+            }}
+            />
+          </TouchableOpacity>
+        );
+*/
+        return (
+          <MessageImage
+            {...props}
+            imageStyle={{
+              width: '98%',
+              height: Dimensions.get('window').width,
+              resizeMode: 'cover'
+            }}
+          />
+    )
+    }
+
     renderCustomActions = props =>
     (
-      <CustomChatActions {...props} onSend={this.onSendFromUser} onSendWithFile={this.onSendWithFile}/>
+      <CustomChatActions {...props} audioRecorded={this.audioRecorded} stopPlaying={this.stopPlaying} onRecording={this.onRecording} texting={this.state.texting} audioSendFinished={this.state.audioSendFinished} playing={this.state.playing} sendingImage={this.state.cameraAsset}/>
     )
 
-    onSendFromUser() {
-        console.log('On send from user...');
+    customInputToolbar = props => {
+      return (
+        <InputToolbar
+          {...props}
+          renderComposer={() => {this.renderComposer}}
+          containerStyle={styles.chatInsideRightActionsContainer}
+        />
+      );
+    };
+
+    chatInputChanged(text) {
+       this.setState({texting: (text.length > 0)})
     }
+
+    resetContact() {
+        this.stopRecordingTimer()
+        this.setState({
+            recording: false,
+            texting: false,
+            audioRecording: null,
+            cameraAsset: null,
+            placeholder: this.default_placeholder,
+            audioSendFinished: false
+        });
+    }
+
+    renderComposer(props) {
+        return(
+          <Composer
+          {...props}
+          onTextChanged={(text) => this.setState({ composerText: text })}
+          text={this.state.composerText}
+          multiline={true}
+          placeholderTextColor={'red'}
+          ></Composer>
+        )
+      }
+
+    onRecording(state) {
+        this.setState({recording: state});
+        if (state) {
+            this.startRecordingTimer();
+        } else {
+            this.stopRecordingTimer()
+        }
+    }
+
+    startRecordingTimer() {
+        let i = 0;
+        this.setState({placeholder: 'Recording audio'});
+        this.recordingTimer = setInterval(() => {
+            i = i + 1
+            this.setState({placeholder: 'Recording audio ' + i + 's'});
+        }, 1000);
+    }
+
+    stopRecordingTimer() {
+        if (this.recordingTimer) {
+            clearInterval(this.recordingTimer);
+            this.recordingTimer = null;
+            this.setState({placeholder: this.default_placeholder});
+        }
+    }
+
+    updateMessageMetadata(metadata) {
+        let renderMessages = this.state.renderMessages;
+        let newRenderMessages = [];
+        renderMessages.forEach((message) => {
+            if (metadata.transfer_id === message._id) {
+                message.metadata = metadata;
+            }
+            newRenderMessages.push(message);
+        });
+
+        this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
+    }
+
+    async startPlaying(message) {
+        if (this.state.playing || this.state.recording) {
+            console.log('Already playing or recording');
+            return;
+        }
+
+        this.setState({playing: true, placeholder: 'Playing audio message'});
+        message.metadata.playing = true;
+        this.updateMessageMetadata(message.metadata);
+
+        if (Platform.OS === "android") {
+            const msg = await audioRecorderPlayer.startPlayer(message.audio);
+            console.log('Audio playback started', message.audio);
+            audioRecorderPlayer.addPlayBackListener((e) => {
+                //console.log('duration', e.duration, e.currentPosition);
+                if (e.duration === e.currentPosition) {
+                    this.setState({playing: false, placeholder: this.default_placeholder});
+                    //console.log('Audio playback ended', message.audio);
+                    message.metadata.playing = false;
+                    this.updateMessageMetadata(message.metadata);
+                }
+                this.setState({
+                    currentPositionSec: e.currentPosition,
+                    currentDurationSec: e.duration,
+                    playTime: audioRecorderPlayer.mmssss(Math.floor(e.currentPosition)),
+                    duration: audioRecorderPlayer.mmssss(Math.floor(e.duration)),
+                });
+            });
+        } else {
+
+            /*
+            console.log('startPlaying', file);
+
+            this.sound = new Sound(file, '', error => {
+                if (error) {
+                    console.log('failed to load the file', file, error);
+                }
+            });
+            return;
+            */
+            try {
+                SoundPlayer.playUrl('file://'+message.audio);
+                this.setState({playing: true, placeholder: 'Playing audio message'});
+            } catch (e) {
+                console.log(`cannot play the sound file`, e)
+            }
+
+            try {
+                  const info = await SoundPlayer.getInfo() // Also, you need to await this because it is async
+                  console.log('Sound info', info) // {duration: 12.416, currentTime: 7.691}
+                } catch (e) {
+                  console.log('There is no song playing', e)
+            }
+        }
+    };
+
+    async stopPlaying(message) {
+        console.log('Audio playback ended', message.audio);
+        this.setState({playing: false, placeholder: this.default_placeholder});
+        message.metadata.playing = false;
+        this.updateMessageMetadata(message.metadata);
+        if (Platform.OS === "android") {
+            const msg = await audioRecorderPlayer.stopPlayer();
+        } else {
+            SoundPlayer.stop();
+        }
+    }
+
+    async audioRecorded(file) {
+        const placeholder = file ? 'Delete or send audio...' : this.default_placeholder;
+        if (file) {
+            console.log('Audio recording ready to send', file);
+        } else {
+            console.log('Audio recording removed');
+        }
+        this.setState({recording: false, placeholder: placeholder, audioRecording: file});
+    }
+
+    renderSend = (props) => {
+        if (this.state.recording) {
+            return (
+                  <View style={styles.chatSendContainer}>
+                  </View>
+            );
+        } else {
+            if (this.state.cameraAsset) {
+                return (
+                    <Send {...props}>
+                      <View style={styles.chatSendContainer}>
+                      <TouchableOpacity onPress={this.deleteCameraAsset}>
+                        <Icon
+                          style={styles.chatRightActionsContainer}
+                          type="font-awesome"
+                          name="delete"
+                          size={20}
+                          color='red'
+                        />
+                     </TouchableOpacity>
+                      <TouchableOpacity onPress={this.sendCameraAsset}>
+                        <Icon
+                          type="font-awesome"
+                          name="send"
+                          style={styles.chatSendArrow}
+                          size={20}
+                          color='gray'
+                        />
+                        </TouchableOpacity>
+                      </View>
+                    </Send>
+            );
+
+            } else if (this.state.audioRecording) {
+            return (
+                <Send {...props}>
+                  <View style={styles.chatSendContainer}>
+                  <TouchableOpacity onPress={this.sendAudioFile}>
+                    <Icon
+                      type="font-awesome"
+                      name="send"
+                      style={styles.chatSendArrow}
+                      size={20}
+                      color='gray'
+                    />
+                    </TouchableOpacity>
+                  </View>
+                </Send>
+            );
+            } else {
+
+            if (this.state.playing) {
+                return <View></View>;
+            } else {
+                return (
+                    <Send {...props}>
+                      <View style={styles.chatSendContainer}>
+                        {this.state.texting ?
+                        null
+                        :
+                      <TouchableOpacity onPress={this._launchCamera} onLongPress={this._launchImageLibrary}>
+                        <Icon
+                          style={styles.chatRightActionsContainer}
+                          type="font-awesome"
+                          name="camera"
+                          size={20}
+                          color='gray'
+                        />
+                        </TouchableOpacity>
+                        }
+                        {this.state.texting ?
+                        null
+                        :
+                      <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
+                        <Icon
+                          style={styles.chatRightActionsContainer}
+                          type="font-awesome"
+                          name="paperclip"
+                          size={20}
+                          color='gray'
+                        />
+                        </TouchableOpacity>
+                        }
+                        <Icon
+                          type="font-awesome"
+                          name="send"
+                          style={styles.chatSendArrow}
+                          size={20}
+                          color={'gray'}
+                        />
+                      </View>
+                    </Send>
+                );
+                }
+            }
+        }
+    };
 
     setTargetUri(uri, contact) {
         //console.log('Set target uri uri in history list', uri);
@@ -347,33 +871,6 @@ class ContactsListBox extends Component {
         this.props.loadEarlierMessages();
     }
 
-    onSendWithFile(selectedFile) {
-        let uri;
-        if (!this.state.selectedContact) {
-            if (this.state.targetUri && this.state.chat) {
-                 let contacts = this.searchedContact(this.state.targetUri);
-                 if (contacts.length !== 1) {
-                     return;
-                }
-                 uri = contacts[0].uri;
-            } else {
-                return;
-            }
-        } else {
-            uri = this.state.selectedContact.uri;
-        }
-
-        let fileData = {
-            name: selectedFile.name,
-            type: selectedFile.type,
-            size: selectedFile.size,
-            uri: selectedFile.uri
-        };
-
-        console.log('Sending file', fileData);
-        //this.props.sendMessage(uri, message);
-    }
-
     onSendMessage(messages) {
         let uri;
         if (!this.state.selectedContact) {
@@ -421,7 +918,6 @@ class ContactsListBox extends Component {
         }
         return [item];
     }
-
 
     getServerHistory() {
         if (!this.state.accountId) {
@@ -556,6 +1052,169 @@ class ContactsListBox extends Component {
         this.setState({isRefreshing: false});
     }
 
+    deleteCameraAsset() {
+        console.log('deleteCameraAsset');
+        if (this.state.cameraAsset && this.state.cameraAsset.metadata.transfer_id in this.outgoingPendMessages) {
+            console.log('deleted pending message');
+            delete this.outgoingPendMessages[this.state.cameraAsset.metadata.transfer_id]
+        }
+        this.setState({cameraAsset: null, placeholder: this.default_placeholder});
+        this.props.getMessages(this.state.selectedContact.uri);
+    }
+
+    sendCameraAsset() {
+        this.transferFile(this.state.cameraAsset);
+        this.setState({cameraAsset: null, placeholder: this.default_placeholder});
+    }
+
+    async sendAudioFile() {
+        if (this.state.audioRecording) {
+            this.setState({audioSendFinished: true, placeholder: this.default_placeholder});
+            setTimeout(() => {
+                this.setState({audioSendFinished: false});
+            }, 10);
+            let msg = await this.file2GiftedChat(this.state.audioRecording);
+            this.transferFile(msg);
+            this.setState({audioRecording: null});
+        }
+    }
+
+    async _pickDocument() {
+          try {
+            const result = await DocumentPicker.pick({
+              type: [DocumentPicker.types.allFiles],
+              copyTo: 'documentDirectory',
+              mode: 'import',
+              allowMultiSelection: false,
+            });
+
+            const fileUri = result[0].fileCopyUri;
+            if (!fileUri) {
+                console.log('File URI is undefined or null');
+                return;
+            }
+
+            let msg = await this.file2GiftedChat(fileUri);
+            this.transferFile(msg);
+
+          } catch (err) {
+            if (DocumentPicker.isCancel(err)) {
+              console.log('User cancelled file picker');
+            } else {
+              console.log('DocumentPicker err => ', err);
+              throw err;
+            }
+          }
+    };
+
+    postChatSystemMessage(text, imagePath=null) {
+        var id = uuid.v4();
+        let giftedChatMessage;
+
+        if (imagePath) {
+            giftedChatMessage = {
+                  _id: id,
+                  key: id,
+                  createdAt: new Date(),
+                  text: text,
+                  image: 'file://' + imagePath,
+                  user: {}
+                };
+        } else {
+            giftedChatMessage = {
+                  _id: id,
+                  key: id,
+                  createdAt: new Date(),
+                  text: text,
+                  system: true,
+                };
+        }
+
+        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
+    }
+
+    transferComplete(evt) {
+        console.log("Upload has finished", evt);
+        this.postChatSystemMessage('Upload has finished');
+    }
+
+    transferFailed(evt) {
+       console.log("An error occurred while transferring the file.", evt);
+       this.postChatSystemMessage('Upload failed')
+    }
+
+    transferCanceled(evt) {
+       console.log("The transfer has been canceled by the user.");
+       this.postChatSystemMessage('Upload has canceled')
+    }
+
+    async transferFile(msg) {
+        msg.metadata.preview = false;
+        this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
+    }
+
+    async file2GiftedChat(fileObject) {
+        var id = uuid.v4();
+        let uri;
+        if (!this.state.selectedContact) {
+            if (this.state.targetUri && this.state.chat) {
+                 let contacts = this.searchedContact(this.state.targetUri);
+                 if (contacts.length !== 1) {
+                     return;
+                }
+                 uri = contacts[0].uri;
+            } else {
+                return;
+            }
+        } else {
+            uri = this.state.selectedContact.uri;
+        }
+
+        let filepath = fileObject.uri ? fileObject.uri : fileObject;
+        const basename = filepath.split('\\').pop().split('/').pop();
+        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
+        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+
+        let file_transfer = { 'path': filepath,
+                              'filename': basename,
+                              'filesize': fileObject.fileSize || size,
+                              'sender': {'uri': this.state.accountId},
+                              'receiver': {'uri': uri},
+                              'transfer_id': id,
+                              'direction': 'outgoing'
+                              };
+
+        if (fileObject.preview) {
+            file_transfer.preview = fileObject.preview;
+        }
+
+        if (fileObject.filetype) {
+            file_transfer.filetype = fileObject.filetype;
+        }
+
+        let text = utils.beautyFileNameForBubble(file_transfer);
+
+        let msg = {
+            _id: id,
+            key: id,
+            text: text,
+            metadata: file_transfer,
+            createdAt: new Date(),
+            direction: 'outgoing',
+            user: {}
+            }
+
+        if (utils.isImage(basename)) {
+            msg.image = filepath;
+        } else if (utils.isAudio(basename)) {
+            msg.audio = filepath;
+        } else if (utils.isVideo(basename)) {
+            msg.video = filepath;
+        }
+
+        return msg;
+    }
+
     matchContact(contact, filter='', tags=[]) {
         if (!contact) {
             return false;
@@ -588,16 +1247,92 @@ class ContactsListBox extends Component {
         return null;
     }
 
+    onMessagePress(context, message) {
+        if (message.metadata && message.metadata.filename) {
+            let file_transfer = message.metadata;
+            if (!file_transfer.local_url) {
+                console.log('We have no local_url in metadata');
+                this.props.downloadFunc(message.metadata);
+                return;
+            }
+
+            RNFS.exists(file_transfer.local_url).then((exists) => {
+                if (exists) {
+                    if (file_transfer.local_url.endsWith('.asc')) {
+                        if (file_transfer.decryption_failed) {
+                            this.onLongMessagePress(context, message);
+                        } else {
+                            this.props.decryptFunc(message.metadata);
+                        }
+                    } else {
+                        this.onLongMessagePress(context, message);
+                        //this.openFile(message)
+                    }
+                } else {
+                    console.log(file_transfer.local_url, 'does not exist localy');
+                    this.props.downloadFunc(message.metadata);
+                }
+            });
+        } else {
+            this.onLongMessagePress(context, message);
+        }
+    }
+
+    openFile(message) {
+        let file_transfer = message.metadata;
+        let file_path = file_transfer.local_url;
+        if (!file_path) {
+            console.log('Cannot open empty path');
+            return;
+        }
+
+        if (file_path.endsWith('.asc')) {
+            file_path = file_path.slice(0, -4);
+            console.log('Open decrypted file', file_path)
+        } else {
+            console.log('Open file', file_path)
+        }
+
+        if (utils.isAudio(file_transfer.filename)) {
+//            this.startPlaying(file_path);
+            return;
+        }
+
+        RNFS.exists(file_path).then((exists) => {
+            if (exists) {
+                FileViewer.open(file_path, { showOpenWithDialog: true })
+                .then(() => {
+                    // success
+                })
+                .catch(error => {
+                    // error
+                });
+            } else {
+                console.log(file_path, 'does not exist');
+                return;
+            }
+        });
+    }
+
     onLongMessagePress(context, currentMessage) {
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
-            options.push('Copy');
+            if (currentMessage.metadata && currentMessage.metadata.local_url) {
+                options.push('Open')
+            //
+            } else {
+                options.push('Copy')
+            }
+
             if (!isSsiMessage) {
                 options.push('Delete');
             }
 
-            const showResend = currentMessage.failed;
+            let showResend = currentMessage.failed;
+            if (currentMessage.metadata && currentMessage.metadata.decryption_failed) {
+                showResend = false;
+            }
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
@@ -615,9 +1350,12 @@ class ContactsListBox extends Component {
                 }
             }
 
-            options.push('Info');
+            //options.push('Info');
             if (!isSsiMessage) {
-                options.push('Share');
+                if (currentMessage.metadata && currentMessage.metadata.decryption_failed) {
+                } else {
+                    options.push('Share');
+                }
             }
             if (currentMessage.local_url) {
                 if (utils.isImage(currentMessage.local_url)) {
@@ -625,6 +1363,15 @@ class ContactsListBox extends Component {
                 }
                 options.push('Open');
             }
+
+            if (currentMessage.metadata && currentMessage.metadata.filename) {
+                if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.decryption_failed) {
+                    options.push('Download again');
+                } else {
+                    options.push('Download');
+                }
+            }
+
             options.push('Cancel');
 
             let l = options.length - 1;
@@ -634,7 +1381,7 @@ class ContactsListBox extends Component {
                 if (action === 'Copy') {
                     Clipboard.setString(currentMessage.text);
                 } else if (action === 'Delete') {
-                    this.props.deleteMessage(currentMessage._id, this.state.targetUri);
+                    this.setState({showDeleteMessageModal: true, currentMessage: currentMessage});
                 } else if (action === 'Pin') {
                     this.props.pinMessage(currentMessage._id);
                 } else if (action === 'Unpin') {
@@ -647,18 +1394,24 @@ class ContactsListBox extends Component {
                     this.props.reSendMessage(currentMessage, this.state.targetUri);
                 } else if (action === 'Save') {
                     this.savePicture(currentMessage.local_url);
+                } else if (action.startsWith('Download')) {
+                    this.props.downloadFunc(currentMessage.metadata, true);
                 } else if (action === 'Open') {
-                    FileViewer.open(currentMessage.local_url, { showOpenWithDialog: true })
+                    FileViewer.open(currentMessage.metadata.local_url, { showOpenWithDialog: true })
                     .then(() => {
                         // success
                     })
                     .catch(error => {
-                        // error
+                        console.log('Failed to open', currentMessage, error.message);
                     });
                 }
             });
         }
     };
+
+    closeDeleteMessageModal() {
+        this.setState({showDeleteMessageModal: false});
+    }
 
     async hasAndroidPermission() {
       const permission = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
@@ -693,19 +1446,51 @@ class ContactsListBox extends Component {
 
     renderMessageVideo(props){
         const { currentMessage } = props;
-        return (null);
 
         return (
-        <View style={{ padding: 20 }}>
-           <Video source={{uri: currentMessage.video}}   // Can be a URL or a local file.
-               ref={(ref) => {
-                 this.player = ref
-               }}                                      // Store reference
-               onBuffer={this.onBuffer}                // Callback when remote video is buffering
-               onError={this.videoError}               // Callback when video cannot be loaded
-               style={styles.backgroundVideo} />
+        <View style={styles.videoContainer}>
+            <VideoPlayer
+                video={{ uri: currentMessage.video}}
+                autoplay={false}
+                pauseOnPress={true}
+                showDuration={true}
+                controlsTimeout={2}
+                fullScreenOnLongPress={true}
+                customStyles={styles.videoPlayer}
+            />
         </View>
         );
+    };
+
+    renderMessageAudio(props){
+        const { currentMessage } = props;
+        if (currentMessage.metadata.playing === true) {
+            return (
+                <View style={styles.audioContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
+                    <IconButton
+                        size={32}
+                        onPress={() => this.stopPlaying(currentMessage)}
+                        style={styles.playAudioButton}
+                        icon="pause"
+                    />
+                </TouchableHighlight>
+            </View>
+            );
+        } else {
+            return (
+                <View style={styles.audioContainer}>
+                  <TouchableHighlight style={styles.roundshape}>
+                    <IconButton
+                        size={32}
+                        onPress={() => this.startPlaying(currentMessage)}
+                        style={styles.playAudioButton}
+                        icon="play"
+                    />
+                </TouchableHighlight>
+            </View>
+            );
+        }
     };
 
     videoError() {
@@ -716,72 +1501,85 @@ class ContactsListBox extends Component {
         console.log('Video buffer error');
     }
 
+    // https://github.com/FaridSafi/react-native-gifted-chat/issues/571
+    // add view after bubble
+
     renderMessageText(props) {
-        const {currentMessage} = props;
-        const { text: currText } = currentMessage;
-
-        let status = '';
-        let label = 'Uploading...';
-
-        if (!currentMessage.metadata) {
+        const { currentMessage } = props;
+        if (currentMessage.video || currentMessage.image || currentMessage.audio) {
             return (
-                 <MessageText {...props}
-                      currentMessage={{
-                        ...currentMessage
-                      }}/>
+                <View>
+                    <MessageText
+                        {...props}
+                        customTextStyle={{fontSize: 9}}
+                    />
+
+                </View>
             );
-        }
-
-        if (currentMessage.direction === 'incoming') {
-            label = 'Downloading...';
-            status = currentMessage.url;
         } else {
-            status = currentMessage.url;
-        }
+            return (
+                <View>
+                    <MessageText
+                        {...props}
+                        customTextStyle={{fontSize: 14}}
+                    />
 
-        return (
-             <MessageText {...props}
-                  currentMessage={{
-                    ...currentMessage,
-                    text: currText.replace(label, status).trim(),
-                  }}/>
-        );
+                </View>
+            );
+  		}
     };
 
-    renderMessageText(props) {
-        return (
-              <MessageText {...props}/>
-          );
-    };
+    renderTime = (props) => {
+        const { currentMessage } = props;
 
-    renderMessageBubble (props) {
-        let rightColor = '#0084ff';
-        let leftColor = '#f0f0f0';
-
-        if (props.currentMessage.failed) {
-            rightColor = 'red';
-            leftColor = 'red';
-        } else {
-            if (props.currentMessage.pinned) {
-                rightColor = '#2ecc71';
-                leftColor = '#2ecc71';
-            }
+        if (currentMessage.metadata && currentMessage.metadata.preview) {
+            return null;
         }
 
-        return (
-          <Bubble
-            {...props}
-            wrapperStyle={{
-              right: {
-                backgroundColor: rightColor
-              },
-              left: {
-                backgroundColor: leftColor
-              }
-            }}
-          />
-        )
-    }
+        if (currentMessage.video) {
+            return (
+              <Time
+              {...props}
+                timeTextStyle={{
+                  left: {
+                    color: 'white',
+                  },
+                  right: {
+                    color: 'white',
+                  }
+                }}
+              />
+            )
+        } else if (currentMessage.audio) {
+            return (
+              <Time
+              {...props}
+                timeTextStyle={{
+                  left: {
+                    color: 'white',
+                  },
+                  right: {
+                    color: 'white',
+                  }
+                }}
+              />
+            )
+        } else {
+            return (
+              <Time
+              {...props}
+                timeTextStyle={{
+                  left: {
+                    color: 'white',
+                  },
+                  right: {
+                    color: 'black',
+                  }
+                }}
+              />
+            )
+        }
+      }
 
     scrollToMessage(id) {
         //console.log('scrollToMessage', id);
@@ -929,6 +1727,7 @@ class ContactsListBox extends Component {
 
         //console.log('--- Render contacts with filter', this.state.filter);
         //console.log('--- Render contacts', this.state.selectedContact);
+        //console.log(this.state.renderMessages);
 
         if (this.state.filter === 'ssi') {
             contacts = this.getSsiContacts();
@@ -938,7 +1737,7 @@ class ContactsListBox extends Component {
             });
         }
 
-        let chatInputClass;
+        let chatInputClass = this.customInputToolbar;
 
         if (this.state.selectedContact) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
@@ -1164,30 +1963,12 @@ class ContactsListBox extends Component {
             columns = this.props.orientation === 'landscape' ? 2 : 1;
         }
 
-
         const chatContainer = this.props.orientation === 'landscape' ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
         const container = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
         const contactsContainer = this.props.orientation === 'landscape' ? styles.contactsLandscapeContainer : styles.contactsPortraitContainer;
         const borderClass = (messages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
 
-        let filteredMessages = [];
-        messages.forEach((m) => {
-            if (!m.image && m.url && !m.local_url) {
-                //return;
-            }
-
-            if (m.url || m.local_url || m.image) {
-                //console.log('----');
-                //console.log('Render message local_url', m.failed);
-            }
-
-            filteredMessages.push(m);
-            //console.log(m);
-        });
-
-        messages = filteredMessages;
-
-        let pinned_messages = []
+        let pinned_messages = [];
         if (this.state.pinned) {
             messages.forEach((m) => {
                 if (m.pinned) {
@@ -1206,6 +1987,9 @@ class ContactsListBox extends Component {
         }
 
         let showLoadEarlier = (this.state.myContacts && this.state.selectedContact && this.state.selectedContact.uri in this.state.myContacts && this.state.myContacts[this.state.selectedContact.uri].totalMessages && this.state.myContacts[this.state.selectedContact.uri].totalMessages > messages.length) ? true: false;
+
+        messages.forEach((m) => {
+        });
 
         return (
             <SafeAreaView style={container}>
@@ -1228,46 +2012,52 @@ class ContactsListBox extends Component {
 
              {this.showChat && !this.state.inviteContacts?
              <View style={[chatContainer, borderClass]}>
-                <GiftedChat ref={this.chatListRef}
+                <GiftedChat innerRef={this.chatListRef}
                   messages={messages}
                   onSend={this.onSendMessage}
                   alwaysShowSend={true}
                   onLongPress={this.onLongMessagePress}
-                  onPress={this.onLongMessagePress}
+                  onPress={this.onMessagePress}
                   renderInputToolbar={chatInputClass}
-                  renderBubble={this.renderMessageBubble}
+                  renderBubble={renderBubble}
                   renderMessageVideo={this.renderMessageVideo}
+                  renderMessageAudio={this.renderMessageAudio}
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   renderMessageText={this.renderMessageText}
+                  renderActions={this.renderCustomActions}
+                  renderMessageImage={this.renderMessageImage}
+                  renderTime={this.renderTime}
+                  placeholder={this.state.placeholder}
                   lockStyle={styles.lock}
+                  renderSend={this.renderSend}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
                   maxInputLength={16000}
-                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                  tickStyle={{ color: 'green' }}
                   infiniteScroll
                   loadEarlier={showLoadEarlier}
                   isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
                   isTyping={this.state.isTyping}
+                  onInputTextChanged={text => this.chatInputChanged(text)}
                 />
               </View>
               : (items.length === 1) ?
               <View style={[chatContainer, borderClass]}>
-                <GiftedChat ref={this.chatListRef}
+                <GiftedChat innerRef={this.chatListRef}
                   messages={messages}
                   renderInputToolbar={() => { return null }}
-                  renderBubble={this.renderMessageBubble}
+                  renderBubble={renderBubble}
                   renderMessageVideo={this.renderMessageVideo}
                   renderMessageText={this.renderMessageText}
                   onSend={this.onSendMessage}
-                  renderActions={this.renderCustomActions}
                   lockStyle={styles.lock}
                   onLongPress={this.onLongMessagePress}
                   shouldUpdateMessage={this.shouldUpdateMessage}
-                  onPress={this.onLongMessagePress}
+                  onPress={this.onMessagePress}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
-                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'yellow' } }}
+                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'black' } }}
                   infiniteScroll
                   loadEarlier={showLoadEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
@@ -1275,6 +2065,14 @@ class ContactsListBox extends Component {
               </View>
               : null
               }
+
+            <DeleteMessageModal
+                show={this.state.showDeleteMessageModal}
+                close={this.closeDeleteMessageModal}
+                contact={this.state.selectedContact}
+                deleteMessage={this.props.deleteMessage}
+                message={this.state.currentMessage}
+            />
 
             <MessageInfoModal
                 show={this.state.showMessageModal}
@@ -1322,7 +2120,6 @@ ContactsListBox.propTypes = {
     myContacts      : PropTypes.object,
     messages        : PropTypes.object,
     getMessages     : PropTypes.func,
-    confirmRead     : PropTypes.func,
     sendMessage     : PropTypes.func,
     reSendMessage   : PropTypes.func,
     deleteMessage   : PropTypes.func,
@@ -1341,9 +2138,14 @@ ContactsListBox.propTypes = {
     isTyping        : PropTypes.bool,
     fontScale       : PropTypes.number,
     call            : PropTypes.object,
-    ssiCredentials:  PropTypes.array,
-    ssiConnections:  PropTypes.array
+    ssiCredentials  : PropTypes.array,
+    ssiConnections  : PropTypes.array,
+    keys            : PropTypes.object,
+    downloadFunc    : PropTypes.func,
+    decryptFunc     : PropTypes.func,
+    messagesCategoryFilter: PropTypes.string
 };
 
 
 export default ContactsListBox;
+exports.renderBubble = renderBubble;

@@ -13,6 +13,7 @@ const configOptions = {
     serverCallHistoryUrl    : 'https://blink.sipthor.net/settings-webrtc.phtml',
     serverSettingsUrl       : 'https://mdns.sipthor.net/sip_settings.phtml',
     fileSharingUrl          : 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
+    fileTransferUrl         : 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filetransfer',
     iceServers              : [{urls: 'stun:stun.sipthor.net:3478'}],
     useServerCallHistory    : true,
     intercomDomains         : []

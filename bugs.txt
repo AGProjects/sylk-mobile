@@ -43,3 +43,28 @@ After installing QR code scanner, and running pod install Pod.lock has these Per
 +#  pod 'Permission-PhotoLibrary', :path => "#{permissions_path}/PhotoLibrary"
 +#  pod 'Permission-MediaLibrary', :path => "#{permissions_path}/MediaLibrary"
 
+
+Building on Android after Nov 22, 2022 - react native issue
+
+https://github.com/facebook/react-native/issues/35210
+
+
+Install image-picker 4.0.0
+---------------------------
+
+https://github.com/react-native-image-picker/react-native-image-picker/issues/1688
+
+hunk ./android/app/build.gradle 217
++    implementation project(':react-native-image-picker')
+
+
+hunk ./android/settings.gradle 6
++include ':react-native-image-picker'
++project(':react-native-image-picker').projectDir = new File(rootProject.projectDir, '../node_modules/react-native-image-picker/android')
++
+
+
+-- receving intent on android
+
+Attempt to invoke virtual method 'java.lang.String android.content.Intent.getAction()' on a null object reference
+https://github.com/ajith-ab/react-native-receive-sharing-intent/issues/110

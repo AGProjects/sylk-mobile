@@ -24,7 +24,8 @@ class DeleteHistoryModal extends Component {
             remoteDelete: false,
             deleteContact: false,
             confirm: false,
-            hasMessages: this.props.hasMessages
+            hasMessages: this.props.hasMessages,
+            filteredMessageIds: this.props.filteredMessageIds
         }
     }
 
@@ -34,15 +35,16 @@ class DeleteHistoryModal extends Component {
                        uri: nextProps.uri,
                        deleteContact: nextProps.deleteContact,
                        confirm: nextProps.confirm,
-                       hasMessages: nextProps.hasMessages
+                       hasMessages: nextProps.hasMessages,
+                       filteredMessageIds: nextProps.filteredMessageIds
                        });
     }
 
     deleteMessages(event) {
         event.preventDefault();
         if (this.state.confirm) {
-            this.setState({confirm: false});
-            this.props.deleteMessages(this.state.uri, true, this.state.period, this.state.remoteDelete);
+            this.setState({confirm: false, remoteDelete: false, deleteContact:false});
+            this.props.deleteMessages(this.state.uri, this.state.remoteDelete);
             if (this.state.deleteContact) {
                 this.props.deleteContactFunc(this.state.uri);
             }
@@ -65,13 +67,17 @@ class DeleteHistoryModal extends Component {
     }
 
     render() {
-
         let identity = {uri: this.state.uri, displayName: this.state.displayName};
         let canDeleteRemote = this.state.uri && this.state.uri.indexOf('@videoconference') === -1;
-        canDeleteRemote = false;
         let canDeleteByTime = false;
 
         let deleteLabel = this.state.confirm ? 'Confirm': 'Delete';
+
+        let what = 'all messages';
+
+        if (this.state.filteredMessageIds.length > 0) {
+            what = 'the selected messages';
+        }
 
         if (this.state.hasMessages || !this.state.uri) {
             return (
@@ -93,7 +99,7 @@ class DeleteHistoryModal extends Component {
                             { this.state.uri ?
                         <View>
                              <Text style={styles.body}>
-                                 Confirm deletion of all messages with {this.state.uri}.
+                                 Are you sure you want to delete {what} exchanged with {this.state.displayName || this.state.uri}?
                              </Text>
                         </View>
                              :
@@ -124,26 +130,24 @@ class DeleteHistoryModal extends Component {
                         </View>
                         : null}
 
-                        {canDeleteRemote ?
                             <View style={styles.checkBoxRow}>
-                              <Text>Delete from recipient too</Text>
                               {Platform.OS === 'ios' ?
                                <Switch value={this.state.remoteDelete} onValueChange={(value) => this.toggleRemoteDelete()}/>
                                :
                                 <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleRemoteDelete()}}/>
                                 }
+                             <Text> Also delete for {this.state.displayName || this.state.uri}</Text>
                                 </View>
-                        : null}
 
-                            {this.state.uri ?
+                            {this.state.uri && this.state.filteredMessageIds.length === 0 ?
 
                             <View style={styles.checkBoxRow}>
-                              <Text>Delete contact too </Text>
                               {Platform.OS === 'ios' ?
                                <Switch value={this.state.deleteContact} onValueChange={(value) => this.toggleDeleteContact()}/>
                                :
                                 <Checkbox status={this.state.deleteContact ? 'checked' : 'unchecked'} onPress={() => {this.toggleDeleteContact()}}/>
                                 }
+                              <Text> Delete contact</Text>
                                 </View>
                             : null}
 
@@ -181,7 +185,7 @@ class DeleteHistoryModal extends Component {
                         </View>
                         <View>
                              <Text style={styles.body}>
-                                 Confirm deletion of contact {this.state.uri}
+                                 Are you sure you want to delete all message?
                              </Text>
                         </View>
 
@@ -213,7 +217,8 @@ DeleteHistoryModal.propTypes = {
     displayName        : PropTypes.string,
     deleteMessages     : PropTypes.func,
     deleteContactFunc  : PropTypes.func,
-    hasMessages        : PropTypes.bool
+    hasMessages        : PropTypes.bool,
+    filteredMessageIds : PropTypes.array
 };
 
 export default DeleteHistoryModal;
