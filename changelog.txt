@@ -1,3 +1,11 @@
+Android 3.0.0 Sun Jun 18 22:11:00 -03 2023
+
+  * Added end-to-end file transfers
+  * Added sharing between external apps and Sylk
+  * Messaging bugs fixes
+  * Conferencing bug fixes
+  * Skip login screen if account was saved
+
 Android 2.8.2 Fri Nov 26 15:48:32 -03 2021
 
   * Show message id in info panel

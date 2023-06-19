@@ -1,0 +1,15 @@
+File transfers
+--------------
+
+On iOS the home directory path is different for development and release
+modes, the files are not stored in the same location.
+
+
+Messages
+--------
+
+- Update last message when deleted by remote
+- Update read count when last message deleted by remote
+- Update red color when resending a failed message
+- Fix unread msg badge alignment with avatar
+- Incoming audio call ended (canceled) <- but it has duration
