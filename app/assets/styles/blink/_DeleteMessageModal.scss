@@ -1,0 +1,52 @@
+.container {
+    padding: 10px;
+    margin: 00px;
+}
+
+.title {
+    padding: 0px;
+    font-size: 24px;
+    text-align: center;
+}
+
+.body {
+    padding: 10px;
+    font-size: 16px;
+    text-align: center;
+}
+
+.avatar {
+}
+
+.button {
+    margin: 10px;
+}
+
+.buttonRow {
+    flex-direction: row;
+    justify-content: center;
+}
+
+.checkBoxGroupRow {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 10px;
+}
+
+.checkBoxRow {
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.checkButton {
+    margin: 10px;
+    width: 70px;
+}
+
+
+.titleContainer {
+    flex-direction: row;
+}

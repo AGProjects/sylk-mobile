@@ -1,0 +1,10 @@
+diff --git a/node_modules/react-native-audio-recorder-player/index.ts b/node_modules/react-native-audio-recorder-player/index.ts
+index d6a8551..c1e5444 100644
+--- a/node_modules/react-native-audio-recorder-player/index.ts
++++ b/node_modules/react-native-audio-recorder-player/index.ts
+@@ -1,4 +1,4 @@
+-import type {EmitterSubscription} from 'react-native';
++import {EmitterSubscription} from 'react-native';
+ import {
+   DeviceEventEmitter,
+   NativeEventEmitter,

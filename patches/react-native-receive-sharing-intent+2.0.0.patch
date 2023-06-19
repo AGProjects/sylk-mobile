@@ -1,0 +1,51 @@
+diff --git a/node_modules/react-native-receive-sharing-intent/android/src/main/java/com/reactnativereceivesharingintent/ReceiveSharingIntentModule.java b/node_modules/react-native-receive-sharing-intent/android/src/main/java/com/reactnativereceivesharingintent/ReceiveSharingIntentModule.java
+index f752144..b70138e 100644
+--- a/node_modules/react-native-receive-sharing-intent/android/src/main/java/com/reactnativereceivesharingintent/ReceiveSharingIntentModule.java
++++ b/node_modules/react-native-receive-sharing-intent/android/src/main/java/com/reactnativereceivesharingintent/ReceiveSharingIntentModule.java
+@@ -18,6 +18,7 @@ public class ReceiveSharingIntentModule extends ReactContextBaseJavaModule {
+ 
+   private final ReactApplicationContext reactContext;
+   private ReceiveSharingIntentHelper receiveSharingIntentHelper;
++  private Intent oldIntent;  // <-- add this line
+ 
+   public ReceiveSharingIntentModule(ReactApplicationContext reactContext) {
+     super(reactContext);
+@@ -30,6 +31,7 @@ public class ReceiveSharingIntentModule extends ReactContextBaseJavaModule {
+   protected void onNewIntent(Intent intent) {
+     Activity mActivity = getCurrentActivity();
+     if(mActivity == null) { return; }
++    oldIntent = mActivity.getIntent();  // <-- add this line
+     mActivity.setIntent(intent);
+   }
+ 
+@@ -40,7 +42,9 @@ public class ReceiveSharingIntentModule extends ReactContextBaseJavaModule {
+     if(mActivity == null) { return; }
+     Intent intent = mActivity.getIntent();
+     receiveSharingIntentHelper.sendFileNames(reactContext, intent, promise);
+-    mActivity.setIntent(null);
++    if (oldIntent != null) {  // <-- add this line
++      mActivity.setIntent(oldIntent);  // <-- change this line from mActivity.setIntent(null); 
++    }  // <-- add this line
+   }
+ 
+   @ReactMethod
+diff --git a/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts b/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts
+index 735c191..ca6dd7b 100644
+--- a/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts
++++ b/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts
+@@ -1,4 +1,4 @@
+-import type { IReceiveSharingIntent, IUtils } from "./ReceiveSharingIntent.interfaces";
++import { IReceiveSharingIntent, IUtils } from "./ReceiveSharingIntent.interfaces";
+ import { Platform, Linking, AppState, NativeModules } from "react-native";
+ import  Utils from "./utils";
+ 
+diff --git a/node_modules/react-native-receive-sharing-intent/src/utils.ts b/node_modules/react-native-receive-sharing-intent/src/utils.ts
+index 34d3091..d3b3b13 100644
+--- a/node_modules/react-native-receive-sharing-intent/src/utils.ts
++++ b/node_modules/react-native-receive-sharing-intent/src/utils.ts
+@@ -1,4 +1,4 @@
+-import type { IReturnData, IUtils } from "./ReceiveSharingIntent.interfaces";
++import { IReturnData, IUtils } from "./ReceiveSharingIntent.interfaces";
+ import MimeTypes from './mimeTypes';
+ 
+ class Utils implements IUtils{

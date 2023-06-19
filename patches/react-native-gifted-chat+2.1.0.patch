@@ -1,0 +1,25 @@
+diff --git a/node_modules/react-native-gifted-chat/lib/Composer.js b/node_modules/react-native-gifted-chat/lib/Composer.js
+index 7bbf561..c44fa9d 100644
+--- a/node_modules/react-native-gifted-chat/lib/Composer.js
++++ b/node_modules/react-native-gifted-chat/lib/Composer.js
+@@ -23,7 +23,7 @@ const styles = StyleSheet.create({
+             web: 6,
+         }),
+         marginBottom: Platform.select({
+-            ios: 5,
++            ios: 1,
+             android: 3,
+             web: 4,
+         }),
+diff --git a/node_modules/react-native-gifted-chat/lib/Message.js b/node_modules/react-native-gifted-chat/lib/Message.js
+index 6202ad9..d3d446f 100644
+--- a/node_modules/react-native-gifted-chat/lib/Message.js
++++ b/node_modules/react-native-gifted-chat/lib/Message.js
+@@ -41,6 +41,7 @@ export default class Message extends React.Component {
+             next.pending !== current.pending ||
+             next.createdAt !== current.createdAt ||
+             next.text !== current.text ||
++            next.metadata != current.metadata ||
+             next.image !== current.image ||
+             next.video !== current.video ||
+             next.audio !== current.audio ||

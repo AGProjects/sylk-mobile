@@ -1,0 +1,93 @@
+diff --git a/node_modules/react-native-push-notification/android/src/main/java/com/dieam/reactnativepushnotification/modules/RNPushNotificationHelper.java b/node_modules/react-native-push-notification/android/src/main/java/com/dieam/reactnativepushnotification/modules/RNPushNotificationHelper.java
+index 248ff08..51708bc 100644
+--- a/node_modules/react-native-push-notification/android/src/main/java/com/dieam/reactnativepushnotification/modules/RNPushNotificationHelper.java
++++ b/node_modules/react-native-push-notification/android/src/main/java/com/dieam/reactnativepushnotification/modules/RNPushNotificationHelper.java
+@@ -412,7 +412,8 @@ public class RNPushNotificationHelper {
+             notification.setStyle(style);
+ 
+             Intent intent = new Intent(context, intentClass);
+-            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
++            intent.setFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION | Intent.FLAG_ACTIVITY_NEW_TASK);
++            //intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+             bundle.putBoolean("foreground", this.isApplicationInForeground());
+             bundle.putBoolean("userInteraction", true);
+             intent.putExtra("notification", bundle);
+@@ -425,7 +426,7 @@ public class RNPushNotificationHelper {
+ 
+             Uri soundUri = null;
+ 
+-            if (!bundle.containsKey("playSound") || bundle.getBoolean("playSound")) {
++            if (bundle.containsKey("playSound") || bundle.getBoolean("playSound")) {
+                 String soundName = bundle.getString("soundName");
+ 
+                 soundUri = getSoundUri(soundName);
+@@ -462,7 +463,7 @@ public class RNPushNotificationHelper {
+ 
+             long[] vibratePattern = new long[]{0};
+ 
+-            if (!bundle.containsKey("vibrate") || bundle.getBoolean("vibrate")) {
++            if (bundle.containsKey("vibrate") || bundle.getBoolean("vibrate")) {
+                 long vibration = bundle.containsKey("vibration") ? (long) bundle.getDouble("vibration") : DEFAULT_VIBRATION;
+                 if (vibration == 0)
+                     vibration = DEFAULT_VIBRATION;
+@@ -498,6 +499,14 @@ public class RNPushNotificationHelper {
+             notification.setChannelId(channel_id);
+             notification.setContentIntent(pendingIntent);
+ 
++            if (bundle.containsKey("fullScreen") && bundle.getBoolean("fullScreen")) {
++                notification.setFullScreenIntent(pendingIntent, true);
++            }
++
++            if (bundle.containsKey("loopSound") && bundle.getBoolean("loopSound")) {
++                //notification.flags |= Notification.FLAG_INSISTENT;
++            }
++
+             JSONArray actionsArray = null;
+             try {
+                 actionsArray = bundle.getString("actions") != null ? new JSONArray(bundle.getString("actions")) : null;
+@@ -880,7 +889,7 @@ public class RNPushNotificationHelper {
+         manager.deleteNotificationChannel(channel_id);
+     }
+ 
+-    private boolean checkOrCreateChannel(NotificationManager manager, String channel_id, String channel_name, String channel_description, Uri soundUri, int importance, long[] vibratePattern) {
++    private boolean checkOrCreateChannel(NotificationManager manager, String channel_id, String channel_name, String channel_description, Uri soundUri, int importance, long[] vibratePattern, boolean isRingtone) {
+         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
+             return false;
+         if (manager == null)
+@@ -905,10 +914,14 @@ public class RNPushNotificationHelper {
+             channel.enableVibration(vibratePattern != null);
+             channel.setVibrationPattern(vibratePattern);
+ 
++            if (isRingtone) {
++                soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
++            }
++
+             if (soundUri != null) {
+                 AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
++                        .setUsage(isRingtone ? AudioAttributes.USAGE_NOTIFICATION_RINGTONE : AudioAttributes.USAGE_NOTIFICATION)
+                         .build();
+ 
+                 channel.setSound(soundUri, audioAttributes);
+@@ -931,17 +944,18 @@ public class RNPushNotificationHelper {
+         String channelId = channelInfo.getString("channelId");
+         String channelName = channelInfo.getString("channelName");
+         String channelDescription = channelInfo.hasKey("channelDescription") ? channelInfo.getString("channelDescription") : "";
+-        boolean playSound = !channelInfo.hasKey("playSound") || channelInfo.getBoolean("playSound");
++        boolean playSound = channelInfo.hasKey("playSound") || channelInfo.getBoolean("playSound");
+         String soundName = channelInfo.hasKey("soundName") ? channelInfo.getString("soundName") : "default";
+         int importance = channelInfo.hasKey("importance") ? channelInfo.getInt("importance") : 4;
+         boolean vibrate = channelInfo.hasKey("vibrate") && channelInfo.getBoolean("vibrate");
++        boolean isRingtone = channelInfo.hasKey("isRingtone") && channelInfo.getBoolean("isRingtone");
+         long[] vibratePattern = vibrate ? new long[] { 0, DEFAULT_VIBRATION } : null;
+ 
+         NotificationManager manager = notificationManager();
+ 
+         Uri soundUri = playSound ? getSoundUri(soundName) : null;
+ 
+-        return checkOrCreateChannel(manager, channelId, channelName, channelDescription, soundUri, importance, vibratePattern);
++        return checkOrCreateChannel(manager, channelId, channelName, channelDescription, soundUri, importance, vibratePattern, isRingtone);
+     }
+     
+     public boolean isApplicationInForeground() {
