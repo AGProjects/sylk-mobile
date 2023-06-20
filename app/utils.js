@@ -212,7 +212,11 @@ function sql2GiftedChat(item, content, filter={}) {
         if (metadata.local_url) {
             if (!metadata.decryption_failed) {
                 if (isImage(file_name)) {
-                    image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                    if (metadata.b64) {
+                        image = `data:${metadata.filetype};base64,${metadata.b64}`;
+                    } else {
+                        image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                    }
                     if (must_check_category && category && category !== 'image') {
                         return null;
                     }

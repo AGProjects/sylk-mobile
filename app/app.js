@@ -8669,7 +8669,11 @@ class Sylk extends Component {
                     msg.audio = null;
                 } else {
                     if (utils.isImage(metadata.filename)) {
-                        msg.image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                        if (metadata.b64) {
+                            msg.image = `data:${metadata.filetype};base64,${metadata.b64}`;
+                        } else {
+                            msg.image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                        }
                     } else if (utils.isAudio(metadata.filename)) {
                         msg.audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
                     } else if (utils.isVideo(metadata.filename, metadata)) {
