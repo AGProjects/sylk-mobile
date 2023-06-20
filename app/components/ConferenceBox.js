@@ -126,7 +126,7 @@ class ConferenceBox extends Component {
                     direction = 'outgoing';
                 }
 
-                giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
+                giftedChatMessage = utils.sylk2GiftedChat(sylkMessage, null, direction);
 
                 renderMessages.push(giftedChatMessage);
                 this.saveConferenceMessage(this.props.remoteUri, giftedChatMessage);
@@ -425,7 +425,7 @@ class ConferenceBox extends Component {
                         direction = 'outgoing';
                     }
 
-                    giftedChatMessage = utils.sylkToRenderMessage(sylkMessage, null, direction);
+                    giftedChatMessage = utils.sylk2GiftedChat(sylkMessage, null, direction);
                     renderMessages.push(giftedChatMessage);
                     this.saveConferenceMessage(this.props.remoteUri, giftedChatMessage);
                 });
@@ -1295,7 +1295,7 @@ class ConferenceBox extends Component {
             sylkMessage.direction = 'outgoing';
         }
 
-        const giftedChatMessage = utils.sylkToRenderMessage(sylkMessage);
+        const giftedChatMessage = utils.sylk2GiftedChat(sylkMessage);
         if (sylkMessage.type === 'status') {
             return;
         }
@@ -2425,7 +2425,7 @@ class ConferenceBox extends Component {
                               scrollToBottom
                               lockStyle={styles.lock}
                               inverted={true}
-                              timeTextStyle={{ left: { color: 'red' }, right: { color: 'black' } }}
+                              timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
                               infiniteScroll
                             />
                         </View>
@@ -2507,7 +2507,7 @@ class ConferenceBox extends Component {
                               lockStyle={styles.lock}
                               scrollToBottom
                               inverted={true}
-                              timeTextStyle={{ left: { color: 'red' }, right: { color: 'black' } }}
+                              timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
                               infiniteScroll
                             />
                             : null}
@@ -2752,7 +2752,7 @@ class ConferenceBox extends Component {
                           shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
                           scrollToBottom
                           inverted={true}
-                          timeTextStyle={{ left: { color: 'red' }, right: { color: 'black' } }}
+                          timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
                           infiniteScroll
                         />
                     </View>
