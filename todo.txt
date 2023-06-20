@@ -2,7 +2,7 @@ File transfers
 --------------
 
 On iOS the home directory path is different for development and release
-modes, the files are not in the same location 
+modes, the files are not stored in the same location.
 
 
 Messages
