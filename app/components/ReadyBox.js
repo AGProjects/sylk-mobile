@@ -57,7 +57,8 @@ class ReadyBox extends Component {
             ssiConnections: this.props.ssiConnections,
             keys: this.props.keys,
             isTexting: this.props.isTexting,
-            keyboardVisible: this.props.keyboardVisible
+            keyboardVisible: this.props.keyboardVisible,
+            contentTypes: this.props.contentTypes
         };
         this.ended = false;
 
@@ -145,7 +146,8 @@ class ReadyBox extends Component {
                         ssiConnections: nextProps.ssiConnections,
                         keys: nextProps.keys,
                         isTexting: nextProps.isTexting,
-                        keyboardVisible: nextProps.keyboardVisible
+                        keyboardVisible: nextProps.keyboardVisible,
+                        contentTypes: nextProps.contentTypes
                         });
     }
 
@@ -280,7 +282,7 @@ class ReadyBox extends Component {
             if (this.state.isLandscape && !this.state.isTablet) {
                 return false;
             }
-            return true;
+            return false;
         }
 
         return true;
@@ -635,16 +637,41 @@ class ReadyBox extends Component {
         }
 
         if (this.state.selectedContact) {
-//              {key: null, title: 'All', enabled: true, selected: false},
-        return [
-              {key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned},
-              {key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'},
-              {key: 'image', title: 'Images', enabled: true, selected: this.state.messagesCategoryFilter === 'image'},
-              {key: 'movie', title: 'Movies', enabled: true, selected: this.state.messagesCategoryFilter === 'movie'},
-              {key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'},
-              {key: 'paused', title: 'Paused', enabled: true, selected: this.state.messagesCategoryFilter === 'paused'},
-              {key: 'large', title: 'Large', enabled: true, selected: this.state.messagesCategoryFilter === 'large'}
-              ];
+
+            let content_items = [];
+            if ('pinned' in this.state.contentTypes) {
+                content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned});
+            }
+
+            if ('text' in this.state.contentTypes) {
+                content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
+            }
+
+            if ('audio' in this.state.contentTypes) {
+                content_items.push({key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
+            }
+
+            if ('image' in this.state.contentTypes) {
+                content_items.push({key: 'image', title: 'Images', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
+            }
+
+            if ('movie' in this.state.contentTypes) {
+                content_items.push({key: 'movie', title: 'Movies', enabled: true, selected: this.state.messagesCategoryFilter === 'movie'});
+            }
+
+            if ('failed' in this.state.contentTypes) {
+                content_items.push({key: 'failed', title: 'Failed', enabled: true, selected: this.state.messagesCategoryFilter === 'failed'});
+            }
+
+            if ('paused' in this.state.contentTypes) {
+                content_items.push({key: 'paused', title: 'Paused', enabled: true, selected: this.state.messagesCategoryFilter === 'paused'});
+            }
+
+            if ('large' in this.state.contentTypes) {
+                content_items.push({key: 'large', title: 'Large', enabled: true, selected: this.state.messagesCategoryFilter === 'large'});
+            }
+
+            return content_items;
         }
 
         return [
@@ -679,7 +706,7 @@ class ReadyBox extends Component {
 
     get showQRCodeButton() {
         let uri = this.state.targetUri.toLowerCase();
-        return uri.length === 0;
+        return uri.length === 0 && !this.state.shareToContacts && !this.state.inviteContacts;
     }
 
     render() {
@@ -945,7 +972,9 @@ class ReadyBox extends Component {
                               onScrollToIndexFailed={info => {
                                 const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
-                                  this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  if (!this.state.selectedContact) {
+                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  }
                                 });
                               }}
                             data={this.navigationItems}
@@ -1047,7 +1076,8 @@ ReadyBox.propTypes = {
     decryptFunc     : PropTypes.func,
     isTexting       :PropTypes.bool,
     keyboardVisible: PropTypes.bool,
-    filteredMessageIds: PropTypes.array
+    filteredMessageIds: PropTypes.array,
+    contentTypes: PropTypes.object
 };
 
 

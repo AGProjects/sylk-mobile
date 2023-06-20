@@ -387,10 +387,9 @@ class NavigationBar extends Component {
                             />
                         }
                     >
-                        {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit..."/> : null}
 
-                        {canCall && false ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {canCall && false ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {canCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {canCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
 
@@ -418,6 +417,8 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
 
+                        {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit contact..."/> : null}
+
                         {this.state.selectedContact && tags.indexOf('ssi-credential') > -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteSsiCredential')} icon="delete" title="Delete SSI credential..."/>
                         : null}
@@ -426,9 +427,6 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteSsiConnection')} icon="delete" title="Delete SSI connection..."/>
                         : null}
 
-                        {!this.state.inCall ?
-                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
-                        : null}
 
                     </Menu>
                 :

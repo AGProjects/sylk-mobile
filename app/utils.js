@@ -8,6 +8,9 @@ import xss from 'xss';
 const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
+let HUGE_FILE_SIZE = 15 * 1000 * 1000;
+
+
 function log2file(text) {
     // append to logfile
     RNFS.appendFile(logfile, text + '\r\n', 'utf8')
@@ -170,15 +173,22 @@ function sql2GiftedChat(item, content, filter={}) {
         }
     }
 
+    let must_check_category = true;
+
     if (category && category !== 'text' && !metadata.filename) {
         return null;
     }
 
-    let must_check_category = true;
-
     if (metadata && metadata.filename) {
         if (category === 'paused') {
             if (!metadata.paused) {
+                return null;
+            }
+            must_check_category = false;
+        }
+
+        if (category === 'failed') {
+            if (!metadata.failed) {
                 return null;
             }
             must_check_category = false;
@@ -190,7 +200,7 @@ function sql2GiftedChat(item, content, filter={}) {
         }
 
         if (category === 'large') {
-            if (metadata.filesize && metadata.filesize < 3 * 1000 * 1000) {
+            if (metadata.filesize && metadata.filesize < HUGE_FILE_SIZE) {
                 return null;
             }
             must_check_category = false;
@@ -266,6 +276,7 @@ function sql2GiftedChat(item, content, filter={}) {
         pinned: (item.pinned === 1) ? true: false,
         user: item.direction == 'incoming' ? {_id: from_uri, name: from_uri} : {}
         }
+
     return msg;
 }
 
@@ -613,4 +624,5 @@ exports.isVideo = isVideo;
 exports.titleCase = titleCase;
 exports.beautyFileNameForBubble = beautyFileNameForBubble;
 exports.beautySize = beautySize;
+exports.HUGE_FILE_SIZE = HUGE_FILE_SIZE;
 

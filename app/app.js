@@ -305,7 +305,8 @@ class Sylk extends Component {
             ssiConnections: null,
             deletedContacts: {},
             isTexting: false,
-            filteredMessageIds: []
+            filteredMessageIds: [],
+            contentTypes: {}
         };
 
         utils.timestampedLog('Init app');
@@ -2457,7 +2458,8 @@ class Sylk extends Component {
                 if (files.length > 0) {
                     console.log('Will share to contacts', files);
 
-                    this.setState({shareToContacts: true, shareContent: files});
+                    this.setState({shareToContacts: true, shareContent: files, selectedContact: null});
+
                     let item = files[0];
                     let what = 'Share text with contacts';
 
@@ -5644,6 +5646,7 @@ class Sylk extends Component {
         if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
+                //console.log(encryptedMessage);
                 this.saveOutgoingMessage(uri, message, 1);
             }).catch((error) => {
                 this.saveOutgoingMessage(uri, message, 2);
@@ -7083,6 +7086,7 @@ class Sylk extends Component {
             let enc;
             let file_path;
             let file_transfer;
+            let contentTypes = {};
 
             let last_content = null;
 
@@ -7172,18 +7176,44 @@ class Sylk extends Component {
                         continue;
                     }
 
+                    if (msg.audio) {
+                        contentTypes['audio'] = true;
+                    } else if (msg.image) {
+                        contentTypes['image'] = true;
+                    } else if (msg.video) {
+                        contentTypes['movie'] = true;
+                    } else {
+                        contentTypes['text'] = true;
+                    }
+
+                    if (msg.pinned) {
+                        contentTypes['pinned'] = true;
+                    }
+
                     messages[orig_uri].push(msg);
                     if (pinned || category) {
                         filteredMessageIds.push(msg._id);
                     }
 
                     if (msg.metadata && msg.metadata.filename) {
+                        if (msg.metadata.paused) {
+                            contentTypes['paused'] = true;
+                        }
+
+                        if (msg.metadata.filesize && msg.metadata.filesize > utils.HUGE_FILE_SIZE) {
+                            contentTypes['large'] = true;
+                        }
+
+                        if (msg.metadata.failed) {
+                            contentTypes['failed'] = true;
+                        }
+
                         this.checkFileTransfer(msg.metadata);
                     }
                 }
             }
 
-            this.setState({filteredMessageIds: filteredMessageIds});
+            this.setState({filteredMessageIds: filteredMessageIds, contentTypes: contentTypes});
             //console.log('Got', messages[orig_uri].length, 'out of', total, 'messages for', uri);
 
             last_messages = messages[orig_uri];
@@ -8104,7 +8134,7 @@ class Sylk extends Component {
     }
 
     async outgoingMessage(message) {
-        console.log('--- Outgoing message', message.contentType, message.id, 'to', message.receiver);
+        //console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
         this.saveLastSyncId(message.id);
         let gMsg;
 
@@ -9330,7 +9360,7 @@ class Sylk extends Component {
     }
 
     async shareContent() {
-        console.log('shareContent');
+        console.log('Sharing content...');
 
         if (this.state.shareContent.length === 0) {
             return;
@@ -9406,7 +9436,6 @@ class Sylk extends Component {
             if (msg.metadata) {
                 msg.metadata.receiver.uri = uri;
             }
-            console.log('Out msg', msg);
             this.sendMessage(uri, msg, contentType);
         });
 
@@ -9870,6 +9899,7 @@ class Sylk extends Component {
                     decryptFunc = {this.decryptFile}
                     isTexting = {this.state.isTexting}
                     keyboardVisible = {this.state.keyboardVisible}
+                    contentTypes = {this.state.contentTypes}
                 />
 
                 <ImportPrivateKeyModal

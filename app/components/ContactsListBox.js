@@ -90,14 +90,14 @@ function  renderBubble (props) {
                     marginLeft: 0
                   },
                   left: {
-                    backgroundColor: '#000',
+                    backgroundColor: '#fff',
                     alignSelf: 'stretch',
                     marginRight: 0
                   }
                 }}
                 textProps={{
                     style: {
-                      color: props.position === 'left' ? '#fff' : '#000',
+                      color: props.position === 'left' ? '#000' : '#000',
                     },
                   }}
                   textStyle={{
@@ -262,6 +262,7 @@ class ContactsListBox extends Component {
             showShareMessageModal: false,
             inviteContacts: this.props.inviteContacts,
             shareToContacts: this.props.shareToContacts,
+            selectMode: this.props.shareToContacts || this.props.inviteContacts,
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             filter: this.props.filter,
@@ -456,7 +457,8 @@ class ContactsListBox extends Component {
                        targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri,
                        keys: nextProps.keys,
                        isTexting: nextProps.isTexting,
-                       showDeleteMessageModal: nextProps.showDeleteMessageModal
+                       showDeleteMessageModal: nextProps.showDeleteMessageModal,
+                       selectMode: nextProps.shareToContacts || nextProps.inviteContacts
                        });
 
         if (nextProps.isTyping) {
@@ -473,10 +475,10 @@ class ContactsListBox extends Component {
           this.setState({playing: false, placeholder: this.default_placeholder});
         })
         this._onFinishedLoadingSubscription = SoundPlayer.addEventListener('FinishedLoading', ({ success }) => {
-          console.log('finished loading', success)
+          //console.log('finished loading', success)
         })
         this._onFinishedLoadingFileSubscription = SoundPlayer.addEventListener('FinishedLoadingFile', ({ success, name, type }) => {
-          console.log('finished loading file', success, name, type)
+          //console.log('finished loading file', success, name, type)
         })
         this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
           //console.log('finished loading url', success, url)
@@ -865,6 +867,7 @@ class ContactsListBox extends Component {
             unread={item.unread}
             toggleBlocked={this.props.toggleBlocked}
             sendPublicKey={this.props.sendPublicKey}
+            selectMode={this.state.selectMode}
             />);
     }
 
@@ -1290,15 +1293,12 @@ class ContactsListBox extends Component {
 
     onMessagePress(context, message) {
         if (message.metadata && message.metadata.filename) {
-            console.log('File metadata', message.metadata);
+            //console.log('File metadata', message.metadata);
             let file_transfer = message.metadata;
             if (!file_transfer.local_url) {
                 if (!file_transfer.path) {
                     // this was a local created upload, don't download as the file has not yet been uploaded
-                    console.log('We have no path, is not a local upload');
-                    this.props.downloadFunc(message.metadata);
-                } else {
-                    console.log('Skip downloading not yet uploaded file');
+                    this.props.downloadFunc(message.metadata, true);
                 }
                 return;
             }
@@ -1319,10 +1319,8 @@ class ContactsListBox extends Component {
                     if (file_transfer.path) {
                         // this was a local created upload, don't download as the file has not yet been uploaded
                         this.onLongMessagePress(context, message);
-                        console.log('We have a local path, this is a local upload');
                     } else {
-                        console.log(file_transfer.local_url, 'does not exist localy');
-                        this.props.downloadFunc(message.metadata);
+                        this.props.downloadFunc(message.metadata, true);
                     }
                 }
             });
@@ -1368,7 +1366,7 @@ class ContactsListBox extends Component {
     }
 
     onLongMessagePress(context, currentMessage) {
-        console.log('currentMessage metadata', currentMessage.metadata);
+        //console.log('currentMessage metadata', currentMessage.metadata);
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
@@ -1629,7 +1627,7 @@ class ContactsListBox extends Component {
               {...props}
                 timeTextStyle={{
                   left: {
-                    color: 'white',
+                    color: 'black',
                   },
                   right: {
                     color: 'black',
@@ -2049,6 +2047,8 @@ class ContactsListBox extends Component {
 
         messages.forEach((m) => {
         });
+
+        //console.log(messages[0]);
 
         return (
             <SafeAreaView style={container}>

@@ -19,9 +19,9 @@ const UserIcon = (props) => {
     }
 
     const color = utils.generateMaterialColor(props.identity.uri)['300'];
-    let avatarSize = props.large ? 130: 60;
+    let avatarSize = props.large ? 130: 50;
     if (props.carousel === true) {
-        avatarSize = 70;
+        avatarSize = 60;
     }
 
     if (props.small) {

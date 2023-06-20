@@ -67,7 +67,8 @@ class ContactCard extends Component {
             unread: this.props.unread,
             chat: this.props.chat,
             pinned: this.props.pinned,
-            fontScale: this.props.fontScale
+            fontScale: this.props.fontScale,
+            selectMode: this.props.selectMode
         }
 
         this.menuRef = React.createRef();
@@ -87,7 +88,8 @@ class ContactCard extends Component {
             pinned: nextProps.pinned,
             messages: nextProps.messages,
             unread: nextProps.unread,
-            fontScale: nextProps.fontScale
+            fontScale: nextProps.fontScale,
+            selectMode: nextProps.selectMode
         });
     }
 
@@ -328,7 +330,8 @@ class ContactCard extends Component {
             subtitle = subtitle + label;
         }
 
-        let unread = (this.state.contact && this.state.contact.unread) ? this.state.contact.unread.length : 0;
+        let unread = (this.state.contact && this.state.contact.unread && !this.state.selectMode) ? this.state.contact.unread.length : 0;
+        let selectCircle = this.state.contact.selected ? 'check-circle' : 'circle-outline';
 
         return (
             <Fragment>
@@ -376,10 +379,10 @@ class ContactCard extends Component {
                         </View>
                     </Card.Content>
                     <View style={styles.rightContent}>
+                        { this.state.selectMode ?
+                        <Icon style={styles.selectedContact} name={selectCircle} size={20} />
+                        :
                         <Text>{contact_ts}</Text>
-                        { this.state.contact.selected ?
-                        <Icon style={styles.selectedContact} name='check-circle' size={25} />
-                        : null
                         }
                         {unread ?
                         <Badge value={unread} status="error" textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
@@ -421,7 +424,8 @@ ContactCard.propTypes = {
     unread         : PropTypes.array,
     toggleBlocked  : PropTypes.func,
     sendPublicKey  : PropTypes.func,
-    fontScale      : PropTypes.number
+    fontScale      : PropTypes.number,
+    selectMode     : PropTypes.bool
 };
 
 
