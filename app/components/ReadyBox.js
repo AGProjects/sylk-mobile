@@ -84,7 +84,7 @@ class ReadyBox extends Component {
 
         if (nextProps.selectedContact !== this.state.selectedContact) {
            this.setState({'messagesCategoryFilter': null});
-           if (this.navigationRef) {
+           if (this.navigationRef && !this.state.selectedContact) {
                this.navigationRef.scrollToIndex({animated: true, index: 0});
            }
            if (this.state.selectedContact && this.state.pinned) {
@@ -96,9 +96,9 @@ class ReadyBox extends Component {
             this.filterHistory(null);
         }
 
-        if (nextProps.historyFilter === 'ssi' && !nextProps.selectedContact && !this.state.selectedContact) {
+        if (nextProps.historyFilter === 'ssi' && !nextProps.selectedContact) {
             this.setState({'historyCategoryFilter': 'ssi'});
-            if (this.navigationRef) {
+            if (this.navigationRef && !this.state.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
             }
         }
@@ -768,6 +768,7 @@ class ReadyBox extends Component {
         let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
 
         return (
+
             <Fragment>
                 <View style={styles.container}>
                     <View >

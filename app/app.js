@@ -6725,6 +6725,20 @@ class Sylk extends Component {
         }
     }
 
+    resumeTransfers() {
+        if (!this.state.selectedContact) {
+            return;
+        }
+
+        let messages = this.state.messages[this.state.selectedContact.uri]
+        messages.forEach((msg) => {
+            if (msg.metadata && msg.metadata.paused) {
+                console.log('Resume transfer', msg.metadata.transfer_id);
+                this.downloadFile(msg.metadata)
+            }
+        });
+    }
+
     async downloadFile(file_transfer, force=false) {
         const res = await RNFS.getFSInfo();
         console.log('Available space', Math.ceil(res.freeSpace/1024/1024), 'MB');
@@ -9835,6 +9849,8 @@ class Sylk extends Component {
                     deleteSsiCredential = {this.deleteSsiCredential}
                     deleteSsiConnection = {this.deleteSsiConnection}
                     filteredMessageIds = {this.state.filteredMessageIds}
+                    resumeTransfers = {this.resumeTransfers}
+                    contentTypes = {this.state.contentTypes}
                 />
 
                 <ReadyBox

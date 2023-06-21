@@ -61,7 +61,8 @@ class NavigationBar extends Component {
             userClosed: false,
             blockedUris: this.props.blockedUris,
             ssiRequired: this.props.ssiRequired,
-            filteredMessageIds: this.props.filteredMessageIds
+            filteredMessageIds: this.props.filteredMessageIds,
+            contentTypes: this.props.contentTypes
         }
 
         this.menuRef = React.createRef();
@@ -98,8 +99,14 @@ class NavigationBar extends Component {
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
                        blockedUris: nextProps.blockedUris,
                        ssiRequired: nextProps.ssiRequired,
-                       filteredMessageIds: nextProps.filteredMessageIds
+                       filteredMessageIds: nextProps.filteredMessageIds,
+                       contentTypes: nextProps.contentTypes
                        });
+
+                    if (nextProps.menuVisible) {
+                        this.setState({menuVisible: nextProps.menuVisible});
+                        console.log('Next menu visible', nextProps.menuVisible);
+                    }
     }
 
     handleMenu(event) {
@@ -149,6 +156,9 @@ class NavigationBar extends Component {
                 break;
             case 'video':
                 this.videoCall();
+                break;
+            case 'resumeTransfers':
+                this.resumeTransfers();
                 break;
             case 'conference':
                 this.conferenceCall();
@@ -239,6 +249,10 @@ class NavigationBar extends Component {
     videoCall() {
         let uri = this.state.selectedContact.uri;
         this.props.startCall(uri, {audio: true, video: true});
+    }
+
+    resumeTransfers() {
+        this.props.resumeTransfers();
     }
 
     conferenceCall() {
@@ -394,6 +408,11 @@ class NavigationBar extends Component {
 
                         { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
+                        : null
+                        }
+
+                        { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 && 'paused' in this.state.contentTypes ?
+                        <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
                         : null
                         }
 
@@ -610,8 +629,10 @@ NavigationBar.propTypes = {
     blockedUris: PropTypes.array,
     myuuid: PropTypes.string,
     deleteSsiCredential: PropTypes.func,
+    resumeTransfers: PropTypes.func,
     deleteSsiConnection: PropTypes.func,
-    filteredMessageIds: PropTypes.array
+    filteredMessageIds: PropTypes.array,
+    contentTypes: PropTypes.object
 };
 
 export default NavigationBar;
