@@ -5764,10 +5764,12 @@ class Sylk extends Component {
             delete this.uploadRequests[remote_url]
         };
 
+        let source = encrypted_file || local_url;
+
         xhr.open('POST', remote_url);
         xhr.setRequestHeader('content-type', file_transfer.filetype);
         this.updateRenderFileTransferBubble(file_transfer, 'Uploading file...');
-        xhr.send({ uri: 'file://'+ local_url });
+        xhr.send({ uri: 'file://'+ source });
         if (xhr.upload) {
             xhr.upload.onprogress = (event) => {
                 if (event.lengthComputable) {
@@ -6753,14 +6755,12 @@ class Sylk extends Component {
         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
 
         if (force) {
-            RNFS.unlink(dir_path)
-              .then(() => {
+            try {
+                await RNFS.unlink(dir_path);
                 utils.timestampedLog('File transfer directory deleted', dir_path);
-              })
-              // `unlink` will throw an error, if the item to unlink does not exist
-              .catch((err) => {
-                console.log(err.message);
-              });
+            } catch (err) {
+                console.log('Error removing directory', err.message);
+            };
 
             file_transfer.local_url = null;
             file_transfer.decryption_failed = false;
@@ -6771,24 +6771,32 @@ class Sylk extends Component {
             this.updateFileTransferMessageMetadata(file_transfer, 0);
         }
 
+        await RNFS.mkdir(dir_path);
+
+        //console.log('Made directory', dir_path);
+
         let file_path = dir_path + "/" + file_transfer.filename;
         let tmp_file_path = file_path + '.tmp';
 
         if (id in this.downloadRequests) {
             this.downloadRequests[id].stop();
-            console.log('File transfer stopped', id);
+            console.log('File transfer was in progress, stopped it now', id);
             file_transfer.paused = true;
+            file_transfer.progress = null;
             this.updateFileTransferMessageMetadata(file_transfer, 0);
             delete this.downloadRequests[id];
             return;
         }
 
-        console.log('Downloading file', file_transfer);
+        console.log('Downloading file', file_transfer.url);
         // add a timer to cancel the download
+        //console.log('To local storage:', tmp_file_path);
 
         file_transfer.paused = false;
-        this.updateRenderFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
+        file_transfer.progress = 0;
 
+        //console.log('Adding request id', id, file_transfer.url);
+        this.updateRenderFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
         this.downloadRequests[id] = RNBackgroundDownloader.download({
             id: id,
             url: file_transfer.url,
@@ -6798,14 +6806,18 @@ class Sylk extends Component {
             this.updateRenderFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
         }).progress((percent) => {
             const progress = Math.ceil(percent * 100);
-            //console.log('File', file_transfer.filename, 'download', progress, '%');
-            this.updateRenderFileTransferBubble(file_transfer, 'Downloaded ' + progress + '%, press to cancel');
+            console.log('File', file_transfer.filename, 'download', progress, '%');
+            file_transfer.progress = progress;
+            this.updateRenderFileTransferBubble(file_transfer, 'Downloaded ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
         }).done(() => {
             console.log('File', file_transfer.filename, 'downloaded');
             delete this.downloadRequests[id];
             RNFS.moveFile(tmp_file_path, file_path).then((success) => {
                 this.updateRenderFileTransferBubble(file_transfer, 'Download finished');
                 this.saveDownloadTask(id, file_transfer.url, file_path);
+                if (this.state.callContact) {
+                    this.getMessages(this.state.callContact.uri);
+                }
             })
             .catch((err) => {
                 console.log("Error moving temp file: " + err.message);
