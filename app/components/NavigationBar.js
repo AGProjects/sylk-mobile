@@ -90,7 +90,6 @@ class NavigationBar extends Component {
                        proximity: nextProps.proximity,
                        account: nextProps.account,
                        userClosed: true,
-                       menuVisible: nextProps.menuVisible,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
                        showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
