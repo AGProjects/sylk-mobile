@@ -8590,6 +8590,32 @@ class Sylk extends Component {
             this.ExecuteQuery(query, all_values).then((result) => {
                 console.log('SQL inserted', pendingNewSQLMessages.length, 'messages');
                 this.newSyncMessagesCount = this.newSyncMessagesCount + pendingNewSQLMessages.length;
+                // todo process file transfers
+
+                pendingNewSQLMessages.forEach((values) => {
+                    id = values[2];
+                    if (values[6] === 'application/sylk-file-transfer') {
+                        content = values[5];
+                        state = values[14];
+                        if (state == 'pending') {
+                            pending = 1;
+                        } else if (state == 'accepted') {
+                            pending = 0;
+                        } else if (state == 'delivered') {
+                            sent = 1;
+                        } else if (state == 'received') {
+                            received = 1;
+                        } else if (state == 'displayed') {
+                            received = 1;
+                            sent = 1;
+                        } else if (failed_states.indexOf(state) > -1) {
+                            sent = 1;
+                            received = 0;
+                        }
+                        this.updateSqlFileTransferMessage(id, content, pending, sent, received, state);
+                    }
+                });
+
             }).catch((error) => {
                 console.log('SQL error inserting bulk messages:', error.message);
                 pendingNewSQLMessages.forEach((values) => {
