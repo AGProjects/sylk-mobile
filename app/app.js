@@ -6813,9 +6813,8 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Decrypt file', file_transfer.local_url);
-
         let file_path = file_transfer.local_url;
+        let file_path_binary = file_path + '.bin';
         let file_path_decrypted = file_path.slice(0, -4);
 
         const exists = await RNFS.exists(file_path_decrypted);
@@ -6825,39 +6824,47 @@ class Sylk extends Component {
         }
 
         this.updateRenderFileTransferBubble(file_transfer, 'Decrypting...');
+        let content = await RNFS.readFile(file_path, 'utf8');
 
-        await OpenPGP.decryptFile(file_path, file_path_decrypted, this.state.keys.private, null).then((content) => {
-            console.log('Decrypted file saved', file_path_decrypted);
+        let base64_content = '';
+        let lines = content.split("\n");
+        lines.forEach((line) => {
+            if (line === '-----BEGIN PGP MESSAGE-----'){
+                return;
+            }
+            if (line === ''){
+                return;
+            }
+            if (line === '-----END PGP MESSAGE-----'){
+                return;
+            }
+            if (line.startsWith('=')) {
+                return;
+            }
+            base64_content = base64_content + line;
+        });
+
+        await RNFS.writeFile(file_path_binary, base64_content, 'base64');
+
+        await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
+            console.log('File decrypted', file_path_decrypted);
             file_transfer.local_url = file_path_decrypted;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
+            try {
+                RNFS.unlink(file_path_binary);
+            } catch (e) {
+                //
+            }
+
+            try {
+                RNFS.unlink(file_path);
+            } catch (e) {
+                //
+            }
             this.updateFileTransferMessageMetadata(file_transfer, 2);
         }).catch((error) => {
-            console.log('Decrypting file', file_transfer.filename, 'failed:', error.message);
-            if (file_transfer.filetype.startsWith('text/')) {
-                RNFS.readFile(file_path, 'utf8').then((content) => {
-                    console.log('Decrypting data', content.substring(0, 80), content.slice(-80));
-                    OpenPGP.decrypt(content, this.state.keys.private).then((dcontent) => {
-                       console.log('Decrypted', typeof(dcontent), dcontent.length, 'bytes');
-                       RNFS.writeFile(file_path_decrypted, dcontent, 'utf8').then((success) => {
-                            console.log('Decrypted envelope of', dcontent.length, 'bytes saved to', file_path_decrypted);
-                            file_transfer.local_url = file_path_decrypted;
-                            file_transfer.filename = file_transfer.filename.slice(0, -4);
-                            this.updateFileTransferMessageMetadata(file_transfer, 2);
-                       }).catch((err) => {
-                            console.log('Failed to save decrypted data for', file_transfer.filename, ':', err.message);
-                            this.updateFileTransferMessageMetadata(file_transfer, 3);
-                       });
-                    }).catch((error) => {
-                        console.log('Decrypting data for', file_transfer.filename, 'error:', error.message);
-                        this.updateFileTransferMessageMetadata(file_transfer, 3);
-                    });
-                }).catch((error) => {
-                    this.updateFileTransferMessageMetadata(file_transfer, 3);
-                    console.log('Reading encrypted data for', file_transfer.filename, 'error:', error);
-                });
-            } else {
-                this.updateFileTransferMessageMetadata(file_transfer, 3);
-            }
+            console.log('Decrypting file', file_path_binary, 'failed:', error.message);
+            this.updateFileTransferMessageMetadata(file_transfer, 3);
         });
     }
 
@@ -8314,7 +8321,7 @@ class Sylk extends Component {
                     this.handleReplicateContactSync(decryptedBody, message.id, message.timestamp);
                     this.remove_sync_pending_item(message.id);
                 }).catch((error) => {
-                    console.log('Failed to decrypt my own message in sync:', error);
+                    console.log('Failed to decrypt my own message in sync:', error.message);
                     this.remove_sync_pending_item(message.id);
                     return;
                 });
