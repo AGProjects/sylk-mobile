@@ -558,7 +558,7 @@ class ContactsListBox extends Component {
 
     renderCustomActions = props =>
     (
-      <CustomChatActions {...props} audioRecorded={this.audioRecorded} stopPlaying={this.stopPlaying} onRecording={this.onRecording} texting={this.state.texting} audioSendFinished={this.state.audioSendFinished} playing={this.state.playing} sendingImage={this.state.cameraAsset}/>
+      <CustomChatActions {...props} audioRecorded={this.audioRecorded} stopPlaying={this.stopPlaying} onRecording={this.onRecording} texting={this.state.texting} audioSendFinished={this.state.audioSendFinished} playing={this.state.playing} sendingImage={this.state.cameraAsset !==null}/>
     )
 
     customInputToolbar = props => {
