@@ -376,6 +376,8 @@ class ContactsListBox extends Component {
 
             if (uri in nextProps.messages) {
                 renderMessages = nextProps.messages[uri];
+                // remove duplicate messages no mater what
+                renderMessages = renderMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
                 if (this.state.renderMessages.length < renderMessages.length) {
                     //console.log('Number of messages changed', this.state.renderMessages.length, '->', renderMessages.length);
                     this.setState({isLoadingEarlier: false});
