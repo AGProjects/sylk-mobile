@@ -9,6 +9,7 @@ const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
+let polycrc = require('polycrc')
 
 
 function log2file(text) {
@@ -195,7 +196,6 @@ function sql2GiftedChat(item, content, filter={}) {
         }
 
         if (category === 'text') {
-            console.log('Return because we have metadata with text only');
             return null;
         }
 
@@ -288,6 +288,9 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
     let file_name = metadata.filename;
     let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
+    if (metadata.progress !== null) {
+        prefix = 'Downloading';
+    }
     let encrypted = metadata.filename.endsWith('.asc');
     let decrypted_file_name = encrypted ? file_name.slice(0, -4) : file_name;
 
@@ -606,6 +609,92 @@ function beautySize(fsize) {
     return size;
 }
 
+
+/* OpenPGP radix-64/base64 string encoding/decoding
+ * Copyright 2005 Herbert Hanewinkel, www.haneWIN.de
+ * version 1.0, check www.haneWIN.de for the latest version
+ *
+ * This software is provided as-is, without express or implied warranty.
+ * Permission to use, copy, modify, distribute or sell this software, with or
+ * without fee, for any purpose and by any individual or organization, is hereby
+ * granted, provided that the above copyright notice and this paragraph appear
+ * in all copies. Distribution as a part of an application or binary must
+ * include the above copyright notice in the documentation and/or other materials
+ * provided with the application or distribution.
+ */
+
+var b64s = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function radix64(t) {
+	var a, c, n;
+	var r = '', l = 0, s = 0;
+	var tl = t.length;
+
+	for (n = 0; n < tl; n++) {
+		c = t.charCodeAt(n);
+		if (s == 0) {
+			r += b64s.charAt((c >> 2) & 63);
+			a = (c & 3) << 4;
+		} else if (s == 1) {
+			r += b64s.charAt((a | (c >> 4) & 15));
+			a = (c & 15) << 2;
+		} else if (s == 2) {
+			r += b64s.charAt(a | ((c >> 6) & 3));
+			l += 1;
+			if ((l % 60) == 0)
+				r += "\n";
+			r += b64s.charAt(c & 63);
+		}
+		l += 1;
+		if ((l % 60) == 0)
+			r += "\n";
+
+		s += 1;
+		if (s == 3)
+			s = 0;
+	}
+	if (s > 0) {
+		r += b64s.charAt(a);
+		l += 1;
+		if ((l % 60) == 0)
+			r += "\n";
+		r += '=';
+		l += 1;
+	}
+	if (s == 1) {
+		if ((l % 60) == 0)
+			r += "\n";
+		r += '=';
+	}
+
+	return r;
+}
+
+function base64ToArrayBuffer(base64) {
+    var binaryString = atob(base64);
+    var bytes = new Uint8Array(binaryString.length);
+    for (var i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+/**
+ * Calculates a checksum over the given data and returns it base64 encoded
+ * @param data [String] data to create a CRC-24 checksum for
+ * @return [String] base64 encoded checksum
+ */
+
+function getPGPCheckSum(base64_content) {
+    let crc24 = polycrc.crc24;
+    let buffer = base64ToArrayBuffer(base64_content);
+
+	var str = "" + String.fromCharCode(buffer >> 16)+
+				   String.fromCharCode((buffer >> 8) & 0xFF)+
+				   String.fromCharCode(buffer & 0xFF);
+	return radix64(str);
+}
+
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
 exports.generateSillyName = generateSillyName;
@@ -629,4 +718,5 @@ exports.titleCase = titleCase;
 exports.beautyFileNameForBubble = beautyFileNameForBubble;
 exports.beautySize = beautySize;
 exports.HUGE_FILE_SIZE = HUGE_FILE_SIZE;
+exports.getPGPCheckSum = getPGPCheckSum;
 

@@ -103,7 +103,7 @@ const logger = new Logger("App");
 
 function checkIosPermissions() {
     return new Promise(resolve => PushNotificationIOS.checkPermissions(resolve));
-  }
+}
 
 const KeyOptions = {
   cipher: "aes256",
@@ -5682,7 +5682,7 @@ class Sylk extends Component {
         let remote_url = file_transfer.url;
         let uri = file_transfer.receiver.uri;
         let outputFile;
-        let must_encrypt = false;
+        let must_encrypt = true;
 
         if (!file_transfer.filetype) {
             file_transfer.filetype = 'application/octet-stream';
@@ -5718,31 +5718,35 @@ class Sylk extends Component {
 
         if (must_encrypt) {
             if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
-                let encrypted_file = file_transfer.local_url + ".asc";
-                console.log('Encrypting file for', uri);
+                encrypted_file = local_url + ".asc";
                 let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
-                let original_content = await RNFS.readFile(local_url, 'base64');
-                console.log('Base64 file read', local_url, original_content.length, 'bytes');
-                let encryptedMessage = await OpenPGP.encrypt(original_content, public_keys);
+                try {
+                    this.updateRenderFileTransferBubble(file_transfer, 'Encrypting file...');
 
-                await RNFS.writeFile(encrypted_file, encryptedMessage, 'utf8');
-                let check_file = await RNFS.readFile(encrypted_file, 'utf8');
-                console.log('Content encrypted', check_file.substring(0, 80), check_file.slice(-80));
+                    await OpenPGP.encryptFile(local_url, encrypted_file, public_keys);
+                    let base64_content = await RNFS.readFile(encrypted_file, 'base64');
+                    let checksum = utils.getPGPCheckSum(base64_content);
 
-                /*
-                let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
-                outputFile = await OpenPGP.encryptFile(file_transfer.local_url, encrypted_file, public_keys);
-                if (outputFile) {
-                    local_url = encrypted_file;
-                    RNFS.readFile(encrypted_file, 'base64').then((content) => {
-                        console.log('Encrypted data', content);
-                    }).catch((error) => {
-                        console.log('Reading data for', file_transfer.filename, 'error:', error);
+                    const lines = base64_content.match(/.{1,60}/g) ?? [];
+                    let content = "";
+                    lines.forEach((line) => {
+                        content = content + line + "\n";
                     });
+
+                    content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
+                    await RNFS.writeFile(encrypted_file, content, 'utf8');
+                } catch (e) {
+                    console.log('Error encrypting file', local_url, e)
+                    this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+                    this.updateRenderFileTransferBubble(file_transfer);
+                } finally {
+                    this.updateRenderFileTransferBubble(file_transfer, 'File encrypted OK');
+                    file_transfer.filetype = file_transfer.filetype + "+b64";
+                    local_url = local_url + ".asc";
                     remote_url = remote_url + '.asc';
                 }
-                */
 
+                this.updateRenderFileTransferBubble(file_transfer);
             } else {
                 console.log('No public key available for', uri);
             }
@@ -5952,7 +5956,11 @@ class Sylk extends Component {
                 this.ExecuteQuery("UPDATE messages set metadata = ? where msg_id = ?", [JSON.stringify(file_transfer), id]).then((results) => {
                     console.log('File transfer updated', id);
                     if (local_url.endsWith('.asc')) {
-                        this.decryptFile(file_transfer);
+                        try {
+                            this.decryptFile(file_transfer);
+                        } catch (e) {
+                            console.log('Failed to decrypt file', e.message)
+                        }
                     } else {
                         this.updateRenderFileTransferBubble(file_transfer);
                     }
@@ -6691,7 +6699,7 @@ class Sylk extends Component {
             return;
         }
 
-        //console.log('checkFileTransfer', file_transfer);
+        console.log('checkFileTransfer', file_transfer);
 
         let difference;
         let now = new Date();
@@ -6806,7 +6814,7 @@ class Sylk extends Component {
             this.updateRenderFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
         }).progress((percent) => {
             const progress = Math.ceil(percent * 100);
-            console.log('File', file_transfer.filename, 'download', progress, '%');
+            //console.log('File', file_transfer.filename, 'download', progress, '%');
             file_transfer.progress = progress;
             this.updateRenderFileTransferBubble(file_transfer, 'Downloaded ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
         }).done(() => {
@@ -6870,7 +6878,13 @@ class Sylk extends Component {
             base64_content = base64_content + line;
         });
 
-        await RNFS.writeFile(file_path_binary, base64_content, 'base64');
+        try {
+            await RNFS.writeFile(file_path_binary, base64_content, 'base64');
+        } catch (e) {
+            console.log('Error extracting file from envelope', e.message);
+            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            return;
+        }
 
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
             console.log('File decrypted', file_path_decrypted);
