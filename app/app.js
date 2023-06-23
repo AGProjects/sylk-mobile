@@ -31,8 +31,6 @@ import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from 'react-native-background-downloader';
 import {check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 
-import cloneDeep from 'lodash/cloneDeep';
-
 registerGlobals();
 
 import * as sylkrtc from 'react-native-sylkrtc';
