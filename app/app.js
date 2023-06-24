@@ -5680,7 +5680,6 @@ class Sylk extends Component {
         let remote_url = file_transfer.url;
         let uri = file_transfer.receiver.uri;
         let outputFile;
-        let must_encrypt = true;
 
         if (!file_transfer.filetype) {
             file_transfer.filetype = 'application/octet-stream';
@@ -5714,7 +5713,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (must_encrypt) {
+        if (utils.isFileEncryptable(file_transfer)) {
             if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
                 encrypted_file = local_url + ".asc";
                 let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
@@ -5722,6 +5721,8 @@ class Sylk extends Component {
                     this.updateRenderFileTransferBubble(file_transfer, 'Encrypting file...');
 
                     await OpenPGP.encryptFile(local_url, encrypted_file, public_keys);
+
+                    this.updateRenderFileTransferBubble(file_transfer, 'Calculating checksum...');
                     let base64_content = await RNFS.readFile(encrypted_file, 'base64');
                     let checksum = utils.getPGPCheckSum(base64_content);
 
@@ -5738,8 +5739,8 @@ class Sylk extends Component {
                     this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
                     this.updateRenderFileTransferBubble(file_transfer);
                 } finally {
-                    this.updateRenderFileTransferBubble(file_transfer, 'File encrypted OK');
-                    file_transfer.filetype = file_transfer.filetype + "+b64";
+                    this.updateRenderFileTransferBubble(file_transfer, 'File encrypted');
+                    file_transfer.filetype = file_transfer.filetype;
                     local_url = local_url + ".asc";
                     remote_url = remote_url + '.asc';
                 }

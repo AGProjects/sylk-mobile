@@ -9,8 +9,10 @@ const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
-let polycrc = require('polycrc')
+let ENCRYPTABLE_FILE_SIZE = 10 * 1000 * 1000;
 
+
+let polycrc = require('polycrc');
 
 function log2file(text) {
     // append to logfile
@@ -573,6 +575,10 @@ function isVideo(filename, metadata=null) {
         }
     }
 
+    if (filename.toLowerCase().startsWith('sylk-audio-recording')) {
+        return false
+    }
+
     if (filename.toLowerCase().endsWith('.mpeg')) {
         return true;
     } else if (filename.toLowerCase().endsWith('.mp4')) {
@@ -670,6 +676,20 @@ function radix64(t) {
 	return r;
 }
 
+function isFileEncryptable(file_transfer) {
+
+    if (file_transfer.filesize > ENCRYPTABLE_FILE_SIZE) {
+        return false;
+    }
+
+    if (isVideo(file_transfer)) {
+        return false;
+    }
+
+    return true;
+}
+
+
 function base64ToArrayBuffer(base64) {
     var binaryString = atob(base64);
     var bytes = new Uint8Array(binaryString.length);
@@ -683,16 +703,18 @@ function base64ToArrayBuffer(base64) {
  * Calculates a checksum over the given data and returns it base64 encoded
  * @param data [String] data to create a CRC-24 checksum for
  * @return [String] base64 encoded checksum
+ * http://www.faqs.org/rfcs/rfc4880.html
  */
 
 function getPGPCheckSum(base64_content) {
-    let crc24 = polycrc.crc24;
-    let buffer = base64ToArrayBuffer(base64_content);
+        let buffer = base64ToArrayBuffer(base64_content);
+        let crc24 = polycrc.crc24;
+        let checksum = crc24(buffer);
 
-	var str = "" + String.fromCharCode(buffer >> 16)+
-				   String.fromCharCode((buffer >> 8) & 0xFF)+
-				   String.fromCharCode(buffer & 0xFF);
-	return radix64(str);
+        var str = "" + String.fromCharCode(checksum >> 16)+
+                                   String.fromCharCode((checksum >> 8) & 0xFF)+
+                                   String.fromCharCode(checksum & 0xFF);
+        return radix64(str);
 }
 
 exports.copyToClipboard = copyToClipboard;
@@ -719,4 +741,4 @@ exports.beautyFileNameForBubble = beautyFileNameForBubble;
 exports.beautySize = beautySize;
 exports.HUGE_FILE_SIZE = HUGE_FILE_SIZE;
 exports.getPGPCheckSum = getPGPCheckSum;
-
+exports.isFileEncryptable = isFileEncryptable;
