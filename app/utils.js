@@ -4,6 +4,7 @@ import MaterialColors from './MaterialColors';
 import { Clipboard, Dimensions } from 'react-native';
 import Contacts from 'react-native-contacts';
 import xss from 'xss';
+import {decode as atob, encode as btoa} from 'base-64';
 
 const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
@@ -291,8 +292,9 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let file_name = metadata.filename;
     let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
     if (metadata.progress !== null) {
-        prefix = 'Downloading';
+        prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
     }
+
     let encrypted = metadata.filename.endsWith('.asc');
     let decrypted_file_name = encrypted ? file_name.slice(0, -4) : file_name;
 
