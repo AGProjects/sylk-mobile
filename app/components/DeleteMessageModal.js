@@ -17,6 +17,7 @@ class DeleteMessageModal extends Component {
 
         this.state = {
             uri: this.props.contact ? this.props.contact.uri : null,
+            username: this.props.contact && this.props.contact.uri ? this.props.contact.uri.split('@')[0] : null,
             displayName: this.props.contact ? this.props.contact.name : null,
             contact: this.props.contact,
             show: this.props.show,
@@ -29,6 +30,7 @@ class DeleteMessageModal extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({show: nextProps.show,
                        uri: nextProps.contact ? nextProps.contact.uri : null,
+                       username: nextProps.contact && nextProps.contact.uri ? nextProps.contact.uri.split('@')[0] : null,
                        displayName: nextProps.contact ? nextProps.contact.name : null,
                        confirm: nextProps.confirm,
                        contact: nextProps.contact,
@@ -56,6 +58,7 @@ class DeleteMessageModal extends Component {
 
         let identity = {uri: this.state.uri, displayName: this.state.displayName};
         let deleteLabel = this.state.confirm || true ? 'Confirm': 'Delete';
+        let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
 
         return (
         <Portal>
@@ -80,7 +83,7 @@ class DeleteMessageModal extends Component {
                            :
                             <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleRemoteDelete()}}/>
                             }
-                            <Text> Also delete for {this.state.displayName || this.state.uri}</Text>
+                            <Text> Also delete for {remote_label}</Text>
                             </View>
 
                     <View style={styles.buttonRow}>

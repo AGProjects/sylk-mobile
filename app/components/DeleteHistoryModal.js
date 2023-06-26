@@ -20,6 +20,7 @@ class DeleteHistoryModal extends Component {
             displayName: this.props.displayName,
             show: this.props.show,
             uri: this.props.uri,
+            username: this.props.uri && this.props.uri ? this.props.uri.split('@')[0] : null,
             period: "0",
             remoteDelete: false,
             deleteContact: false,
@@ -32,6 +33,7 @@ class DeleteHistoryModal extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({show: nextProps.show,
                        displayName: nextProps.displayName,
+                       username: nextProps.uri && nextProps.uri ? nextProps.uri.split('@')[0] : null,
                        uri: nextProps.uri,
                        deleteContact: nextProps.deleteContact,
                        confirm: nextProps.confirm,
@@ -72,11 +74,12 @@ class DeleteHistoryModal extends Component {
         let canDeleteByTime = false;
 
         let deleteLabel = this.state.confirm ? 'Confirm': 'Delete';
+        let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
 
         let what = 'all messages';
 
         if (this.state.filteredMessageIds.length > 0) {
-            what = 'the selected messages';
+            what = this.state.filteredMessageIds.length + ' selected messages';
         }
 
         if (this.state.hasMessages || !this.state.uri) {
@@ -99,7 +102,7 @@ class DeleteHistoryModal extends Component {
                             { this.state.uri ?
                         <View>
                              <Text style={styles.body}>
-                                 Are you sure you want to delete {what} exchanged with {this.state.displayName || this.state.uri}?
+                                 Are you sure you want to delete {what} exchanged with {remote_label}?
                              </Text>
                         </View>
                              :
@@ -130,14 +133,17 @@ class DeleteHistoryModal extends Component {
                         </View>
                         : null}
 
+                            {this.state.uri ?
                             <View style={styles.checkBoxRow}>
                               {Platform.OS === 'ios' ?
                                <Switch value={this.state.remoteDelete} onValueChange={(value) => this.toggleRemoteDelete()}/>
                                :
                                 <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleRemoteDelete()}}/>
                                 }
-                             <Text> Also delete for {this.state.displayName || this.state.uri}</Text>
+                             <Text> Also delete for {remote_label}</Text>
                                 </View>
+                            : null
+                            }
 
                             {this.state.uri && this.state.filteredMessageIds.length === 0 ?
 
