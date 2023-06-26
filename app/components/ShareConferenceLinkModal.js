@@ -101,7 +101,7 @@ class ShareConferenceLinkModal extends Component {
 
 ShareConferenceLinkModal.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
-    show: PropTypes.bool.isRequired,
+    show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     room: PropTypes.string
 };

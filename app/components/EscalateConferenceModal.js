@@ -75,7 +75,7 @@ class EscalateConferenceModal extends React.Component {
 }
 
 EscalateConferenceModal.propTypes = {
-    show: PropTypes.bool.isRequired,
+    show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     call: PropTypes.object,
     selectedContacts: PropTypes.array,

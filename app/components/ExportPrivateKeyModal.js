@@ -100,7 +100,7 @@ class ExportPrivateKeyModal extends Component {
 
 
 ExportPrivateKeyModal.propTypes = {
-    show               : PropTypes.bool.isRequired,
+    show               : PropTypes.bool,
     close              : PropTypes.func.isRequired,
     password           : PropTypes.string,
     saveFunc           : PropTypes.func.isRequired,

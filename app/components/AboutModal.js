@@ -42,7 +42,7 @@ const AboutModal = (props) => {
 }
 
 AboutModal.propTypes = {
-    show: PropTypes.bool.isRequired,
+    show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     currentVersion: PropTypes.string,
     appStoreVersion: PropTypes.object

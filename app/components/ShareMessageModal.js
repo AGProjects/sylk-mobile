@@ -146,7 +146,7 @@ class ShareMessageModal extends Component {
 }
 
 ShareMessageModal.propTypes = {
-    show: PropTypes.bool.isRequired,
+    show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     message: PropTypes.object
 };

@@ -30,18 +30,12 @@ class NavigationBar extends Component {
         let organization = this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization;
 
         this.state = {
-            showAboutModal: false,
             syncConversations: this.props.syncConversations,
             inCall: this.props.inCall,
             showCallMeMaybeModal: this.props.showCallMeMaybeModal,
             contactsLoaded: this.props.contactsLoaded,
             appStoreVersion: this.props.appStoreVersion,
-            showEditContactModal: false,
-            showEditConferenceModal: false,
             showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
-            showDeleteHistoryModal: false,
-            showAddContactModal: false,
-            showConferenceLinkModal: false,
             privateKeyPassword: null,
             registrationState: this.props.registrationState,
             connection: this.props.connection,

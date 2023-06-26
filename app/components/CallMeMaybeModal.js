@@ -116,7 +116,7 @@ class CallMeMaybeModal extends Component {
 }
 
 CallMeMaybeModal.propTypes = {
-    show               : PropTypes.bool.isRequired,
+    show               : PropTypes.bool,
     close              : PropTypes.func.isRequired,
     callUrl            : PropTypes.string.isRequired,
     notificationCenter : PropTypes.func.isRequired

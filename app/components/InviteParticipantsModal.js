@@ -282,7 +282,7 @@ class InviteParticipantsModal extends Component {
 
 InviteParticipantsModal.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
-    show: PropTypes.bool.isRequired,
+    show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     inviteParticipants: PropTypes.func,
     currentParticipants: PropTypes.array,

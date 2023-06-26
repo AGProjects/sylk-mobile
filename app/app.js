@@ -6100,7 +6100,18 @@ class Sylk extends Component {
         }
     }
 
-    async refetchMessages(days=1) {
+    async refetchMessagesForContact(contact) {
+        if (!contact) {
+            return;
+        }
+        let uri =  contact.uri;
+        this.syncRequested = false;
+        console.log('refetchMessages with', uri);
+        this.setState({nextSyncUriFilter: uri});
+        this.requestSyncConversations(null);
+    }
+
+    async refetchMessages(days=30) {
         let timestamp = new Date();
         let params;
         let unix_timestamp = Math.floor(timestamp / 1000);
@@ -7693,7 +7704,7 @@ class Sylk extends Component {
             this.newSyncMessagesCount = 0;
         }
 
-        this.setState({syncConversations: false});
+        this.setState({syncConversations: false, nextSyncUriFilter: null});
         this.sync_pending_items = [];
         let myContacts = this.state.myContacts;
         let updateContactUris = this.state.updateContactUris;
@@ -7873,7 +7884,12 @@ class Sylk extends Component {
                 }
             }
 
-            //console.log('Process journal', i, 'of', messages.length, message.contentType, uri, message.timestamp);
+            if (this.state.nextSyncUriFilter && this.state.nextSyncUriFilter !== uri) {
+                //console.log('Skip journal entry not belonging to', this.state.nextSyncUriFilter);
+                return;
+            }
+
+            console.log('Process journal', i, 'of', messages.length, message.contentType, uri, message.timestamp);
 
             let d = new Date(2019);
 
@@ -9937,7 +9953,7 @@ class Sylk extends Component {
                     showExportPrivateKeyModal = {this.state.showExportPrivateKeyModal}
                     showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
                     hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
-                    refetchMessages = {this.refetchMessages}
+                    refetchMessages = {this.refetchMessagesForContact}
                     blockedUris = {this.state.blockedUris}
                     toggleSSIFunc = {this.toggleSSI}
                     ssiRequired = {this.state.ssiRequired}

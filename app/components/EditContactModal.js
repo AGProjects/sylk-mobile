@@ -241,7 +241,7 @@ class EditContactModal extends Component {
 
 
 EditContactModal.propTypes = {
-    show               : PropTypes.bool.isRequired,
+    show               : PropTypes.bool,
     close              : PropTypes.func.isRequired,
     uri                : PropTypes.string,
     displayName        : PropTypes.string,

@@ -195,7 +195,7 @@ class ImportPrivateKeyModal extends Component {
 
 
 ImportPrivateKeyModal.propTypes = {
-    show                : PropTypes.bool.isRequired,
+    show                : PropTypes.bool,
     close               : PropTypes.func.isRequired,
     privateKey          : PropTypes.string,
     saveFunc            : PropTypes.func.isRequired,

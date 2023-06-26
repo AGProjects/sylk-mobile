@@ -146,7 +146,7 @@ class EditConferenceModal extends Component {
 EditConferenceModal.propTypes = {
     room               : PropTypes.string,
     displayName        : PropTypes.string,
-    show               : PropTypes.bool.isRequired,
+    show               : PropTypes.bool,
     close              : PropTypes.func.isRequired,
     saveConference     : PropTypes.func,
     invitedParties     : PropTypes.array,

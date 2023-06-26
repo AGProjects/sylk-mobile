@@ -118,7 +118,7 @@ class AddContactModal extends Component {
 
 
 AddContactModal.propTypes = {
-    show       : PropTypes.bool.isRequired,
+    show       : PropTypes.bool,
     close      : PropTypes.func.isRequired,
     saveContact: PropTypes.func,
     defaultDomain: PropTypes.string
