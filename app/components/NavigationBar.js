@@ -134,7 +134,7 @@ class NavigationBar extends Component {
                 this.props.showLogs();
                 break;
             case 'refetchMessages':
-                this.props.refetchMessages();
+                this.props.refetchMessages(this.state.selectedContact);
                 break;
             case 'deleteSsiCredential':
                 this.props.deleteSsiCredential(this.state.selectedContact);
@@ -431,7 +431,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
 
-                        {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit contact..."/> : null}
+                        {!this.state.inCall && false? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="delete" title="Fetch wiped messages"/> :null}
 
                         {this.state.selectedContact && tags.indexOf('ssi-credential') > -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteSsiCredential')} icon="delete" title="Delete SSI credential..."/>
