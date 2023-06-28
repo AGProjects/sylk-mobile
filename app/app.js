@@ -416,8 +416,8 @@ class Sylk extends Component {
             if (account) {
                 console.log('Account is verified');
                 this.setState({accountVerified: account.verified});
-                this.changeRoute('/ready', 'start_up')
                 this.handleRegistration(account.accountId, account.password);
+                this.changeRoute('/ready', 'start_up')
             } else {
                 this.changeRoute('/login', 'start_up');
             }
@@ -5576,40 +5576,30 @@ class Sylk extends Component {
 
     _sendMessage(uri, text, id, contentType, timestamp) {
         // Send outgoing messages
-        if (this.state.account) {
-            //console.log('Send', contentType, 'message', id, 'to', uri);
-            let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp}, (error) => {
-                if (error) {
-                    console.log('Message', id, 'sending error:', error);
-                    this.outgoingMessageStateChanged(id, 'failed');
-                    let status = error.toString();
-                    if (status.indexOf('DNS lookup error') > -1) {
-                        status = 'Domain not found';
-                    }
+        if (!this.canSend()) {
+            return;
+        }
+
+        //console.log('Send', contentType, 'message', id, 'to', uri);
+        let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp}, (error) => {
+            if (error) {
+                console.log('Message', id, 'sending error:', error);
+                this.outgoingMessageStateChanged(id, 'failed');
+                let status = error.toString();
+                if (status.indexOf('DNS lookup error') > -1) {
+                    status = 'Domain not found';
                     this.renderSystemMessage(uri, status, 'incoming');
                 }
-            });
-            //console.log(message);
-            //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
-        }
-    }
-
-    textToGiftedMessage(text) {
-        return {
-            _id: uuid.v4(),
-            text: text,
-            createdAt: new Date(),
-            received: false,
-            direction: 'outgoing',
-            user: {}
-        };
+            }
+        });
+        //console.log(message);
+        //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
     }
 
     async sendMessage(uri, message, contentType='text/plain') {
+        message.pending = true;
         message.sent = false;
         message.received = false;
-        message.pending = true;
-
         message.direction = 'outgoing';
 
         //console.log('----sendMessage', uri, message);
@@ -5643,12 +5633,12 @@ class Sylk extends Component {
 
         if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
+                this.saveOutgoingMessage(uri, message, 1);
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
                 //console.log(encryptedMessage);
-                this.saveOutgoingMessage(uri, message, 1);
             }).catch((error) => {
-                this.saveOutgoingMessage(uri, message, 2);
                 console.log('Failed to encrypt message:', error);
+                this.saveOutgoingMessage(uri, message, 2);
                 this.outgoingMessageStateChanged(message._id, 'failed');
             });
 
@@ -5674,6 +5664,29 @@ class Sylk extends Component {
         this.setState({messages: renderMessages});
     }
 
+    canSend() {
+        if (!this.state.account) {
+            //console.log('Wait for account...');
+            return false;
+        }
+
+        if (!this.state.connection) {
+            //console.log('Wait for Internet connection...');
+            return false;
+        }
+
+        if (this.state.connection.state !== 'ready') {
+            //console.log('Wait for Internet connection...');
+            return;
+        }
+
+        if (this.mustLogout) {
+            return;
+        }
+
+        return true;
+    }
+
     async uploadFile(file_transfer){
         let encrypted_file;
         let local_url = file_transfer.local_url;
@@ -5691,13 +5704,7 @@ class Sylk extends Component {
             }
         }
 
-        if (!this.state.connection) {
-            console.log('Wait for Internet connection...');
-            return;
-        }
-
-        if (this.state.connection.state !== 'ready') {
-            console.log('Wait for Internet connection...');
+        if (!this.canSend()) {
             return;
         }
 
@@ -5806,25 +5813,6 @@ class Sylk extends Component {
         });
     }
 
-    async saveOutgoingMessage(uri, message, encrypted=0, content_type="text/plain") {
-        //console.log('saveOutgoingMessage',  message._id, content_type, message.metadata);
-        if (content_type !== 'application/sylk-file-transfer') {
-            this.saveOutgoingChatUri(uri, message);
-        }
-
-        let ts =  message.createdAt;
-
-        let unix_timestamp = Math.floor(ts / 1000);
-        let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(message.metadata), this.state.accountId, uri, "outgoing", "1", encrypted];
-        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-
-        }).catch((error) => {
-            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
-                console.log('saveOutgoingMessage SQL error:', error);
-            }
-        });
-    }
-
     async saveConferenceMessage(room, message) {
         let messages = this.state.messages;
         let ts = message.createdAt;
@@ -5852,7 +5840,7 @@ class Sylk extends Component {
             this.setState({messages: messages});
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
-                console.log('SQL error:', error.message);
+                console.log('saveConferenceMessage SQL error:', error.message);
             }
         });
     }
@@ -5899,7 +5887,6 @@ class Sylk extends Component {
 
         var params = [message._id];
         await this.ExecuteQuery("delete from messages where msg_id = ?", params).then((result) => {
-            console.log('SQL delete conference message', message._id);
             let renderMessages = messages[room];
             let newRenderMessages = [];
             renderMessages.forEach((msg) => {
@@ -5911,7 +5898,32 @@ class Sylk extends Component {
             this.setState({messages: messages});
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
-                console.log('SQL error:', error);
+                console.log('deleteConferenceMessage SQL error:', error);
+            }
+        });
+    }
+
+    async saveOutgoingMessage(uri, message, encrypted=0, content_type="text/plain") {
+        //console.log('saveOutgoingMessage',  message._id, content_type, message.metadata);
+
+        // sent -> null
+        // pending -> 1
+        // received -> null
+        // failed -> null
+
+        if (content_type !== 'application/sylk-file-transfer') {
+            this.saveOutgoingChatUri(uri, message);
+        }
+
+        let ts =  message.createdAt;
+
+        let unix_timestamp = Math.floor(ts / 1000);
+        let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(message.metadata), this.state.accountId, uri, "outgoing", "1", encrypted];
+        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+
+        }).catch((error) => {
+            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+                console.log('saveOutgoingMessage SQL error:', error);
             }
         });
     }
@@ -5925,27 +5937,35 @@ class Sylk extends Component {
         utils.timestampedLog('Outgoing message', id, 'is', state);
 
         if (state === 'accepted') {
-            query = "UPDATE messages set pending = 0 where msg_id = '" + id + "'";
+            // pending 1 -> 0
+            query = "UPDATE messages set pending = 0 where msg_id = ?";
         } else if (state === 'failed') {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            // pending -> 0
+            // sent -> 1
+            // received -> 0
+            if (this.canSend()) {
+                // message has failed while giving it to the server, it will not be resent
+                // we should never end up here, unless the connection was down
+                // in which case we should not have attempted yet to send the message, so is a very narrow window to end up be here
+                query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = ?";
+            }
         }
 
         //console.log(query);
         if (query) {
-            await this.ExecuteQuery(query).then((results) => {
+            await this.ExecuteQuery(query, [id]).then((results) => {
                 this.updateRenderMessageState(id, state);
                 // console.log('SQL update OK');
             }).catch((error) => {
-                console.log('SQL query:', query);
-                console.log('SQL error:', error);
+                console.log('outgoingMessageStateChanged, SQL error:', error);
             });
         }
     }
 
     async saveDownloadTask(id, url, local_url) {
         //console.log('saveDownloadTask', url, local_url);
-        let query = "SELECT * from messages where msg_id = '" + id + "';";
-        this.ExecuteQuery(query,[]).then((results) => {
+        let query = "SELECT * from messages where msg_id = ?";
+        this.ExecuteQuery(query,[id]).then((results) => {
             let rows = results.rows;
             let file_transfer = {};
             if (rows.length === 1) {
@@ -5984,7 +6004,7 @@ class Sylk extends Component {
     }
 
     async messageStateChanged(id, state, data) {
-        // valid API states: pending -> accepted -> delivered -> displayed,
+        // valid API states: pending -> accepted -> delivered -> displayed
         // error, failed or forbidden
         // valid UI render states: pending, read, received
 
@@ -6004,25 +6024,23 @@ class Sylk extends Component {
         const failed_states = ['failed', 'error', 'forbidden'];
 
         if (state == 'accepted') {
-            query = "UPDATE messages set pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set pending = 0, state = ? where msg_id = ?";
         } else if (state == 'delivered') {
-            query = "UPDATE messages set pending = 0, sent = 1 where msg_id = '" + id + "'";
+            query = "UPDATE messages set pending = 0, sent = 1, state = ? where msg_id = ?";
         } else if (state == 'displayed') {
-            query = "UPDATE messages set received = 1, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set received = 1, sent = 1, pending = 0, state = ? where msg_id = ?";
         } else if (failed_states.indexOf(state) > -1) {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set received = 0, sent = 1, pending = 0, state = ? where msg_id = ?";
         } else {
             console.log('Invalid message state', id, state);
             return;
         }
 
-        //console.log(query);
-        await this.ExecuteQuery(query).then((results) => {
+        await this.ExecuteQuery(query, [state, id]).then((results) => {
             this.updateRenderMessageState(id, state);
             // console.log('SQL update OK');
         }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
+            console.log('messageStateChanged SQL error:', error);
         });
     }
 
@@ -6035,21 +6053,20 @@ class Sylk extends Component {
         const failed_states = ['failed', 'error', 'forbidden'];
 
         if (state == 'accepted') {
-            query = "UPDATE messages set metadata = ?, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set metadata = ?, pending = 0, state = ? where msg_id = ?";
         } else if (state == 'delivered') {
-            query = "UPDATE messages set metadata = ?, pending = 0, sent = 1 where msg_id = '" + id + "'";
+            query = "UPDATE messages set metadata = ?, pending = 0, sent = 1, state = ? where msg_id = ?";
         } else if (state == 'displayed') {
-            query = "UPDATE messages set metadata = ?, received = 1, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set metadata = ?, received = 1, sent = 1, pending = 0, state = ? where msg_id = ?";
         } else if (failed_states.indexOf(state) > -1) {
             file_transfer.failed = true;
-            query = "UPDATE messages set metadata = ?, received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set metadata = ?, received = 0, sent = 1, pending = 0, state = ? where msg_id = ?";
         } else {
             console.log('Invalid file transfer state', id, state);
             return;
         }
 
-        //console.log(query);
-        await this.ExecuteQuery(query, [JSON.stringify(file_transfer)]).then((results) => {
+        await this.ExecuteQuery(query, [JSON.stringify(file_transfer), state, id]).then((results) => {
             this.updateRenderFileTransferBubble(file_transfer);
         }).catch((error) => {
             console.log('fileTransferStateChanged SQL error:', error);
@@ -6057,7 +6074,7 @@ class Sylk extends Component {
     }
 
     messageStateChangedSync(obj) {
-        // valid API states: pending -> accepted -> delivered -> displayed,
+        // valid API states: pending -> accepted -> delivered -> displayed
         // error, failed or forbidden
         // valid UI render states: pending, read, received
 
@@ -6071,21 +6088,19 @@ class Sylk extends Component {
         const failed_states = ['failed', 'error', 'forbidden'];
 
         if (state == 'accepted') {
-            query = "UPDATE messages set pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set pending = 0, state = ? where msg_id = ?";
         } else if (state == 'delivered') {
-            query = "UPDATE messages set pending = 0, sent = 1 where msg_id = '" + id + "'";
+            query = "UPDATE messages set pending = 0, sent = 1, state = ? where msg_id = ?";
         } else if (state == 'displayed') {
-            query = "UPDATE messages set received = 1, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set received = 1, sent = 1, pending = 0, state = ? where msg_id = ?";
         } else if (failed_states.indexOf(state) > -1) {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0 where msg_id = '" + id + "'";
+            query = "UPDATE messages set received = 0, sent = 1, pending = 0, state = ? where msg_id = ?";
         }
 
-        //console.log(query);
-        this.ExecuteQuery(query).then((results) => {
+        this.ExecuteQuery(query, [state, id]).then((results) => {
             //console.log('SQL update OK');
         }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
+            console.log('messageStateChangedSync SQL error:', error);
         });
     }
 
@@ -6140,8 +6155,8 @@ class Sylk extends Component {
     }
 
     removeFilesForMessage(id, uri) {
-        let query = "SELECT * from messages where msg_id = '" + id + "';";
-        this.ExecuteQuery(query,[]).then((results) => {
+        let query = "SELECT * from messages where msg_id = ?";
+        this.ExecuteQuery(query,[id]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
@@ -6156,19 +6171,17 @@ class Sylk extends Component {
                     });
                 }
 
-                query = "DELETE from messages where msg_id = '" + id + "'";
-                this.ExecuteQuery(query).then((results) => {
+                query = "DELETE from messages where msg_id = ?";
+                this.ExecuteQuery(query, [id]).then((results) => {
                     this.deleteRenderMessage(id, uri);
                     //console.log('SQL deleted', results.rowsAffected, 'messages');
                 }).catch((error) => {
-                    console.log('SQL query:', query);
-                    console.log('SQL error:', error);
+                    console.log('removeFilesForMessage SQL error:', error);
                 });
             }
 
         }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
+            console.log('removeFilesForMessage SQL error:', error);
         });
     }
 
@@ -6176,13 +6189,12 @@ class Sylk extends Component {
         //console.log('Sync message', id, 'is deleted');
         let query;
         this.removeFilesForMessage(id, uri);
-        query = "DELETE from messages where msg_id = '" + id + "'";
-        this.ExecuteQuery(query).then((results) => {
+        query = "DELETE from messages where msg_id = ?";
+        this.ExecuteQuery(query, [id]).then((results) => {
             this.deleteRenderMessageSync(id, uri);
             // console.log('SQL update OK');
         }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
+            console.log('deleteMessageSync SQL error:', error);
         });
     }
 
@@ -6260,7 +6272,7 @@ class Sylk extends Component {
             }).catch((error) => {
                 console.log('Failed to encrypt message:', error);
                 this.outgoingMessageStateChanged(id, 'failed');
-                //this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
+                this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
             });
         } else {
             //console.log('Outgoing non-encrypted message to', uri);
@@ -6287,12 +6299,12 @@ class Sylk extends Component {
 
                 var item = rows.item(i);
                 if (item.to_uri.indexOf('@conference.') > -1) {
-                    console.log('Skip outgoing conference conference messages');
+                    //console.log('Skip outgoing conference conference messages');
                     continue;
                 }
 
                 if (item.to_uri.indexOf('@videoconference') > -1) {
-                    console.log('Skip outgoing videoconference conference messages');
+                    //console.log('Skip outgoing videoconference conference messages');
                     continue;
                 }
 
@@ -6317,7 +6329,7 @@ class Sylk extends Component {
             }
 
         }).catch((error) => {
-            console.log('SQL error:', error);
+            console.log('sendPendingMessages SQL error:', error);
         });
 
         await this.ExecuteQuery("SELECT * FROM messages where direction = 'incoming' and system is null and received = 0 and from_uri = ?", [this.state.accountId]).then((results) => {
@@ -6326,25 +6338,20 @@ class Sylk extends Component {
             let rows = results.rows;
             let imdn_msg;
             for (let i = 0; i < rows.length; i++) {
-               if (this.mustLogout) {
-                   return;
-               }
-               var item = rows.item(i);
+                var item = rows.item(i);
                 let timestamp = JSON.parse(item.timestamp, _parseSQLDate);
                 imdn_msg = {id: item.msg_id, timestamp: timestamp, from_uri: item.from_uri}
                 if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
-                    query = "UPDATE messages set received = 1 where msg_id = " + item.msg_id;
-                    //console.log(query);
-                    this.ExecuteQuery(query).then((results) => {
+                    query = "UPDATE messages set received = 1 where msg_id = ?";
+                    this.ExecuteQuery(query, [item.msg_id]).then((results) => {
                     }).catch((error) => {
-                        console.log('SQL error:', error);
+                        console.log('sendPendingMessages SQL error:', error);
                     });
                 }
             }
 
         }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
+            console.log('sendPendingMessages SQL error:', error);
         });
     }
 
@@ -6355,9 +6362,9 @@ class Sylk extends Component {
 
         //console.log('updateMessage', id, state);
 
-        query = "SELECT * from messages where msg_id = '" + id + "';";
+        query = "SELECT * from messages where msg_id = ?";
         //console.log(query);
-        await this.ExecuteQuery(query,[]).then((results) => {
+        await this.ExecuteQuery(query,[id]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
@@ -6461,9 +6468,9 @@ class Sylk extends Component {
 
      pinMessage(id) {
         let query;
-        query = "UPDATE messages set pinned = 1 where msg_id ='" + id + "'";
+        query = "UPDATE messages set pinned = 1 where msg_id = ?";
         //console.log(query);
-        this.ExecuteQuery(query).then((results) => {
+        this.ExecuteQuery(query, [id]).then((results) => {
             console.log('Message', id, 'pinned');
             this.updateRenderMessageState(id, 'pinned')
             this.addJournal(id, 'pinMessage');
@@ -6475,9 +6482,9 @@ class Sylk extends Component {
 
      unpinMessage(id) {
         let query;
-        query = "UPDATE messages set pinned = 0 where msg_id ='" + id + "'";
+        query = "UPDATE messages set pinned = 0 where msg_id = ?";
         //console.log(query);
-        this.ExecuteQuery(query).then((results) => {
+        this.ExecuteQuery(query, [id]).then((results) => {
             this.updateRenderMessageState(id, 'unpinned')
             this.addJournal(id, 'unPinMessage');
             console.log('Message', id, 'unpinned');
@@ -6660,7 +6667,7 @@ class Sylk extends Component {
     }
 
     async sendDispositionNotification(message, state='displayed') {
-        if (!this.state.account) {
+        if (!this.canSend()) {
             return false;
         }
 
@@ -8689,7 +8696,7 @@ class Sylk extends Component {
                 });
 
             }).catch((error) => {
-                console.log('SQL error inserting bulk messages:', error.message);
+                //console.log('SQL error inserting bulk messages:', error.message);
                 pendingNewSQLMessages.forEach((values) => {
                     this.ExecuteQuery(query, values).then((result) => {
                         this.newSyncMessagesCount = this.newSyncMessagesCount + 1;
@@ -8720,7 +8727,7 @@ class Sylk extends Component {
 
                         } else {
                             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
-                                console.log('SQL error inserting message', id, error.message);
+                                console.log('insertPendingMessages SQL error', id, error.message);
                             }
                         }
                     });
@@ -8740,7 +8747,7 @@ class Sylk extends Component {
 
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
-                console.log('SQL error:', error);
+                console.log('saveSystemMessage SQL error:', error);
             }
         });
     }
@@ -9963,6 +9970,7 @@ class Sylk extends Component {
                     filteredMessageIds = {this.state.filteredMessageIds}
                     resumeTransfers = {this.resumeTransfers}
                     contentTypes = {this.state.contentTypes}
+                    canSend = {this.canSend}
                 />
 
                 <ReadyBox
@@ -10039,6 +10047,7 @@ class Sylk extends Component {
                     isTexting = {this.state.isTexting}
                     keyboardVisible = {this.state.keyboardVisible}
                     contentTypes = {this.state.contentTypes}
+                    canSend = {this.canSend}
                 />
 
                 <ImportPrivateKeyModal

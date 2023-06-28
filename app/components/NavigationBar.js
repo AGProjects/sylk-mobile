@@ -352,7 +352,7 @@ class NavigationBar extends Component {
         let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
         let isAnonymous = this.state.selectedContact && (this.state.selectedContact.uri.indexOf('@guest.') > -1 || this.state.selectedContact.uri.indexOf('anonymous@') > -1);
-        let canCall = !isConference && !this.state.inCall && !isAnonymous && tags.indexOf('ssi') === -1;
+        let isCallableUri = !isConference && !this.state.inCall && !isAnonymous && tags.indexOf('ssi') === -1;
 
         let blockedTitle = (this.state.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
         if (isAnonymous && this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
@@ -397,9 +397,9 @@ class NavigationBar extends Component {
 
                         {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit contact..."/> : null}
 
-                        {canCall ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {canCall ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
 
                         { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 ?
@@ -464,7 +464,7 @@ class NavigationBar extends Component {
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
 
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
+                        {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
                         {false ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
                         <Divider/>
@@ -627,7 +627,8 @@ NavigationBar.propTypes = {
     resumeTransfers: PropTypes.func,
     deleteSsiConnection: PropTypes.func,
     filteredMessageIds: PropTypes.array,
-    contentTypes: PropTypes.object
+    contentTypes: PropTypes.object,
+    canSend: PropTypes.func
 };
 
 export default NavigationBar;

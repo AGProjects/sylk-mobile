@@ -541,6 +541,10 @@ class ReadyBox extends Component {
     }
 
     get conferenceButtonDisabled() {
+        if (!this.props.canSend()) {
+            return true;
+        }
+
         let uri = this.state.targetUri.trim();
 
         if (uri.indexOf(' ') > -1) {
@@ -705,6 +709,9 @@ class ReadyBox extends Component {
     }
 
     get showQRCodeButton() {
+        if (!this.props.canSend()) {
+            return false;
+        }
         let uri = this.state.targetUri.toLowerCase();
         return uri.length === 0 && !this.state.shareToContacts && !this.state.inviteContacts;
     }
@@ -1078,7 +1085,8 @@ ReadyBox.propTypes = {
     isTexting       :PropTypes.bool,
     keyboardVisible: PropTypes.bool,
     filteredMessageIds: PropTypes.array,
-    contentTypes: PropTypes.object
+    contentTypes: PropTypes.object,
+    canSend: PropTypes.func
 };
 
 
