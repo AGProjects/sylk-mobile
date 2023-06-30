@@ -6162,17 +6162,6 @@ class Sylk extends Component {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
-                if (item.metadata) {
-                    let file_transfer = JSON.parse(item.metadata);
-                    let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
-                    let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
-                    RNFS.unlink(dir_path).then((success) => {
-                        console.log('Removed directory', dir_path);
-                    }).catch((err) => {
-                        console.log('Error deleting directory', dir_path, err.message);
-                    });
-                }
-
                 query = "DELETE from messages where msg_id = ?";
                 this.ExecuteQuery(query, [id]).then((results) => {
                     this.deleteRenderMessage(id, uri);
@@ -6180,6 +6169,19 @@ class Sylk extends Component {
                 }).catch((error) => {
                     console.log('removeFilesForMessage SQL error:', error);
                 });
+
+                if (item.metadata) {
+                    let file_transfer = JSON.parse(item.metadata);
+                    if (file_transfer.receiver && file_transfer.sender) {
+                        let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
+                        let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
+                        RNFS.unlink(dir_path).then((success) => {
+                            console.log('Removed directory', dir_path);
+                        }).catch((err) => {
+                            console.log('Error deleting directory', dir_path, err.message);
+                        });
+                    }
+                }
             }
 
         }).catch((error) => {
