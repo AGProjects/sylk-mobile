@@ -5450,7 +5450,7 @@ class Sylk extends Component {
         }
     }
 
-    requestSyncConversations(lastId=null) {
+    requestSyncConversations(lastId=null, options={}) {
         if (!this.state.account) {
             return;
         }
@@ -5473,7 +5473,7 @@ class Sylk extends Component {
         this.syncRequested = true;
         console.log('Request messages from server after id', lastId);
 
-        this.state.account.syncConversations(lastId);
+        this.state.account.syncConversations(lastId, options);
     }
 
     async savePublicKey(uri, key) {
@@ -6115,15 +6115,17 @@ class Sylk extends Component {
         }
     }
 
-    async refetchMessagesForContact(contact) {
+    async refetchMessagesForContact(contact, days=30) {
         if (!contact) {
             return;
         }
         let uri =  contact.uri;
         this.syncRequested = false;
-        console.log('refetchMessages with', uri);
+        console.log('refetchMessages with', uri, 'since', days, 'days ago');
+        var since = moment().subtract(days, 'days');
         this.setState({nextSyncUriFilter: uri});
-        this.requestSyncConversations(null);
+        let options = {since: since};
+        this.requestSyncConversations(null, options);
     }
 
     async refetchMessages(days=30) {

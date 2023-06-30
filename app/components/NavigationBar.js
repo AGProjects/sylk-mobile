@@ -406,6 +406,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
+                        {<Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="delete" title="Refetch messages"/> }
 
                         { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 && 'paused' in this.state.contentTypes ?
                         <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
@@ -430,8 +431,6 @@ class NavigationBar extends Component {
                         {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1 && tags.indexOf('ssi') === -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
-
-                        {!this.state.inCall && false? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="delete" title="Fetch wiped messages"/> :null}
 
                         {this.state.selectedContact && tags.indexOf('ssi-credential') > -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteSsiCredential')} icon="delete" title="Delete SSI credential..."/>
