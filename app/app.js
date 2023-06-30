@@ -6518,42 +6518,37 @@ class Sylk extends Component {
         let executed_ops = [];
 
         Object.keys(this.mySyncJournal).forEach((key) => {
-            if (this.mustLogout) {
+            if (!this.canSend()) {
                 return;
             }
-            executed_ops.push(key);
+
             op = this.mySyncJournal[key];
-            utils.timestampedLog('Sync journal', op.action, op.id);
+            utils.timestampedLog('Sync journal', op.action, op.id, 'data');
             if (op.action === 'removeConversation') {
                 this.state.account.removeConversation(op.id, (error) => {
                     // TODO: add period and delete remote flags
-                    if (!error) {
-                        //utils.timestampedLog(op.action, op.id, 'journal operation was completed');
-                        executed_ops.push(key);
-                    } else {
+                    if (error) {
                         utils.timestampedLog(op.action, op.id, 'journal operation failed:', error);
                     }
                 });
 
             } else if (op.action === 'readConversation') {
                 this.state.account.markConversationRead(op.id, (error) => {
-                    if (!error) {
-                        //utils.timestampedLog(op.action, op.id, 'journal operation completed');
-                        executed_ops.push(key);
-                    } else {
+                    if (error) {
                         utils.timestampedLog(op.action, op.id, 'journal operation failed:', error);
                     }
                 });
 
             } else if (op.action === 'removeMessage') {
                 this.state.account.removeMessage({id: op.id, receiver: op.data.uri}, (error) => {
-                    if (!error) {
-                        //utils.timestampedLog(op.action, op.id, 'journal operation completed');
-                        executed_ops.push(key);
-                    } else {
+                    if (error) {
                         utils.timestampedLog(op.action, op.id, 'journal operation failed:', error);
                     }
                 });
+            }
+
+            if (this.canSend()) {
+                executed_ops.push(key);
             }
         });
 
