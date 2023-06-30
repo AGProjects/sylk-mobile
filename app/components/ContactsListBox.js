@@ -504,7 +504,17 @@ class ContactsListBox extends Component {
                         mediaType: 'mixed',
                         formatAsMp4: true
                        }
-        await launchImageLibrary(options, this.cameraCallback);
+        await launchImageLibrary(options, this.libraryCallback);
+    }
+
+    async libraryCallback(result) {
+        if (!result.assets || result.assets.length === 0) {
+            return;
+        }
+
+        result.assets.forEach((asset) => {
+            this.cameraCallback([asset]);
+        });
     }
 
     async cameraCallback(result) {
