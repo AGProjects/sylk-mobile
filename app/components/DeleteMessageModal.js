@@ -55,10 +55,13 @@ class DeleteMessageModal extends Component {
     }
 
     render() {
-
         let identity = {uri: this.state.uri, displayName: this.state.displayName};
         let deleteLabel = this.state.confirm || true ? 'Confirm': 'Delete';
         let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
+        let canDeleteRemote = (this.state.message && this.state.message.direction === 'outgoing' && this.state.uri.indexOf('@videoconference') === -1);
+        if (this.state.uri && this.state.uri.indexOf('@videoconference') >- -1) {
+            canDeleteRemote = false;
+        }
 
         return (
         <Portal>
@@ -78,12 +81,19 @@ class DeleteMessageModal extends Component {
                              Are you sure you want to delete this message?
                          </Text>
                         <View style={styles.checkBoxRow}>
-                          {Platform.OS === 'ios' ?
+                          {Platform.OS === 'ios' && canDeleteRemote ?
                            <Switch value={this.state.remoteDelete} onValueChange={(value) => this.toggleRemoteDelete()}/>
-                           :
+                           : null
+                           }
+                            {Platform.OS === 'android' && canDeleteRemote ?
                             <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleRemoteDelete()}}/>
+                            : null
                             }
+
+                            {canDeleteRemote ?
                             <Text> Also delete for {remote_label}</Text>
+                            : null}
+
                             </View>
 
                     <View style={styles.buttonRow}>
