@@ -1,7 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   package="com.agprojects.sylk">
 
-
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW" />
@@ -61,6 +60,7 @@
 
       <service android:name="io.wazo.callkeep.VoiceConnectionService"
         android:label="@string/app_name"
+        android:exported="true"
         android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
         <intent-filter>
             <action android:name="android.telecom.ConnectionService" />
@@ -71,6 +71,7 @@
         android:name=".SplashActivity"
         android:theme="@style/SplashTheme"
         android:label="@string/app_name"
+        android:exported="true"
         android:launchMode="singleTask">
         <intent-filter>
             <action android:name="android.intent.action.DOWNLOAD_COMPLETE"/>
@@ -175,9 +176,8 @@
                    
       </activity>
 
-      <activity android:name="com.facebook.react.devsupport.DevSettingsActivity" />
-
-      <service android:name="io.wazo.callkeep.RNCallKeepBackgroundMessagingService" />
+      <activity android:name="com.facebook.react.devsupport.DevSettingsActivity"/>
+      <service android:name="io.wazo.callkeep.RNCallKeepBackgroundMessagingService"/>
       <receiver android:name=".RingerBroadcastReceiver" android:exported="true" />
 
     </application>
