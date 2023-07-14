@@ -522,6 +522,8 @@ class ContactsListBox extends Component {
             return;
         }
 
+        this.setState({scrollToBottom: true});
+
         let asset = result.assets[0];
         asset.preview = true;
 
