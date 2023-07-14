@@ -348,6 +348,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
         }
     }
     return text;
+    // + '\n' + RNFS.DocumentDirectoryPath + '\n' + metadata.local_url;
 }
 
 function html2text(content) {
