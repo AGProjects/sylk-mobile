@@ -6954,6 +6954,7 @@ class Sylk extends Component {
             await RNFS.writeFile(file_path_binary, base64_content, 'base64');
         } catch (e) {
             utils.timestampedLog('Error writing file', e.message);
+            file_transfer.status = 'Error writing file';
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
         }
@@ -6974,6 +6975,7 @@ class Sylk extends Component {
             }
             this.updateFileTransferMessageMetadata(file_transfer, 2);
         }).catch((error) => {
+            file_transfer.status = 'Error decrypting base64 file ' + file_path_binary;
             utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
         });
