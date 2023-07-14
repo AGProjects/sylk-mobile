@@ -488,8 +488,8 @@ class ContactsListBox extends Component {
     }
 
     async _launchCamera() {
-        let options = {maxWidth: 1000,
-                        maxHeight: 1000,
+        let options = {maxWidth: 2000,
+                        maxHeight: 2000,
                         mediaType: 'mixed',
                         quality:0.8,
                         cameraType: 'front',
@@ -499,8 +499,8 @@ class ContactsListBox extends Component {
     }
 
     async _launchImageLibrary() {
-        let options = {maxWidth: 1000,
-                        maxHeight: 1000,
+        let options = {maxWidth: 2000,
+                        maxHeight: 2000,
                         mediaType: 'mixed',
                         formatAsMp4: true
                        }
@@ -513,7 +513,7 @@ class ContactsListBox extends Component {
         }
 
         result.assets.forEach((asset) => {
-            this.cameraCallback([asset]);
+            this.cameraCallback({assets: [asset]});
         });
     }
 

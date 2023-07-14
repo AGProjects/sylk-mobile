@@ -96,7 +96,7 @@ class CustomActions extends React.Component {
             color = "red"
         }
 
-        if (this.state.texting || this.state.sendingImage || this.state.playing) {
+        if (this.state.texting || this.state.sendingImage || this.state.playing || (this.props.selectedContact && this.props.selectedContact.tags.indexOf('test') > -1)) {
             return (<View></View>)
         }
 
@@ -199,7 +199,8 @@ CustomActions.propTypes = {
     options: PropTypes.object,
     texting: PropTypes.bool,
     sendingImage: PropTypes.bool,
-    audioSendFinished: PropTypes.bool
+    audioSendFinished: PropTypes.bool,
+    selectedContact: PropTypes.object
 }
 
 export default CustomActions;

@@ -6830,6 +6830,11 @@ class Sylk extends Component {
         file_transfer.paused = false;
         file_transfer.progress = 0;
 
+        try {
+            await RNFS.unlink(file_path);
+        } catch (err) {
+        };
+
         //console.log('Adding request id', id, file_transfer.url);
         this.updateRenderFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
         this.downloadRequests[id] = RNBackgroundDownloader.download({
@@ -6847,6 +6852,7 @@ class Sylk extends Component {
         }).done(() => {
             console.log('File', file_transfer.filename, 'downloaded');
             delete this.downloadRequests[id];
+
             RNFS.moveFile(tmp_file_path, file_path).then((success) => {
                 this.updateRenderFileTransferBubble(file_transfer, 'Download finished');
                 this.saveDownloadTask(id, file_transfer.url, file_path);
@@ -6892,7 +6898,8 @@ class Sylk extends Component {
         try {
             content = await RNFS.readFile(file_path, 'utf8');
         } catch (e) {
-            console.log('Error reading file from PGP envelope', e.message);
+            console.log('Error reading file from PGP envelope', e.message, file_path);
+            file_transfer.status = 'Error reading .asc file';
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
         }
@@ -6938,7 +6945,7 @@ class Sylk extends Component {
                 base64_content = base64_content + line;
             });
         } catch (e) {
-            console.log('Error breaking PGP envelope', e.message);
+            utils.timestampedLog('Error parsing PGP envelope', e.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
         }
@@ -6946,13 +6953,12 @@ class Sylk extends Component {
         try {
             await RNFS.writeFile(file_path_binary, base64_content, 'base64');
         } catch (e) {
-            console.log('Error extracting file from envelope', e.message);
+            utils.timestampedLog('Error writing file', e.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
         }
 
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
-            console.log('File decrypted', file_path_decrypted);
             file_transfer.local_url = file_path_decrypted;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
             try {
@@ -6968,7 +6974,7 @@ class Sylk extends Component {
             }
             this.updateFileTransferMessageMetadata(file_transfer, 2);
         }).catch((error) => {
-            console.log('Decrypting file', file_path_binary, 'failed:', error.message);
+            utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
         });
     }
@@ -8627,7 +8633,7 @@ class Sylk extends Component {
         let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state) VALUES "
 
         //if (this.pendingNewSQLMessages.length > 0) {
-        console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
+        //console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
         //}
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
@@ -8799,7 +8805,11 @@ class Sylk extends Component {
             if (msg._id === id) {
                 msg.text = text || utils.beautyFileNameForBubble(metadata);
                 if (metadata.decryption_failed) {
-                    msg.text = msg.text + ' (decryption failed)';
+                    msg.text = msg.text + ' decryption failed';
+                    if (metadata.status) {
+                        msg.text = msg.text + ': ' +  metadata.status;
+                        msg.text = msg.text + '\n\n' +  metadata.url;
+                    }
                     msg.failed = true;
                 }
                 msg.metadata = metadata;
