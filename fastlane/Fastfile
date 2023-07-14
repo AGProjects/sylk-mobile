@@ -40,7 +40,8 @@ platform :android do
     gradle(task: 'clean', project_dir: "android/") # <- Fixes it
 
     next_version_code = increment_version_code(
-      app_project_dir: '**/app'
+      app_project_dir: '**/app',
+      version_code: File.read("../android/VERSION_CODE")
     )
     UI.message(next_version_code)
     set_value_in_build(
@@ -50,7 +51,8 @@ platform :android do
 
     next_version_name = increment_version_name(
       app_project_dir: '**/app',
-      bump_type: 'patch'
+      bump_type: 'major',
+      version_name: File.read("../android/VERSION_NAME")
     )
     UI.message(next_version_name)
     set_value_in_build(
