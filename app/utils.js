@@ -212,6 +212,11 @@ function sql2GiftedChat(item, content, filter={}) {
         let file_name = metadata.filename;
         text = beautyFileNameForBubble(metadata);
 
+        if (metadata.local_url && !metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
+            metadata.local_url = null;
+            metadata.decryption_failed = false;
+        }
+
         if (metadata.local_url) {
             if (!metadata.decryption_failed) {
                 if (isImage(file_name)) {
@@ -291,7 +296,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
     let file_name = metadata.filename;
     let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
-    if (metadata.progress !== null) {
+    if (metadata.progress && metadata.progress !== null) {
         prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
     }
 
