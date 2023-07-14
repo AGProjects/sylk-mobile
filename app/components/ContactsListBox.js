@@ -791,7 +791,7 @@ class ContactsListBox extends Component {
                         {this.state.texting ?
                         null
                         :
-                      <TouchableOpacity onPress={this._launchCamera} onLongPress={this._launchImageLibrary}>
+                      <TouchableOpacity onPress={this._launchCamera}>
                         <Icon
                           style={chatRightActionsContainer}
                           type="font-awesome"
