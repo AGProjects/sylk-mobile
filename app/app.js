@@ -6711,13 +6711,13 @@ class Sylk extends Component {
     }
 
     async checkFileTransfer(file_transfer) {
+        let uri = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         if (file_transfer.local_url) {
             const exists = await RNFS.exists(file_transfer.local_url);
             if (exists) {
                 const { size } = await RNFetchBlob.fs.stat(file_transfer.local_url);
                 //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
                 if (size === 0) {
-                    let uri = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
                     this.deleteMessage(file_transfer.transfer_id, uri);
                 }
             }
@@ -6733,6 +6733,7 @@ class Sylk extends Component {
 
         if (now.getTime() > until.getTime()) {
             console.log('File transfer expired:', file_transfer.transfer_id, file_transfer.filetype);
+            this.deleteMessage(file_transfer.transfer_id, uri, false);
             return;
         }
 
