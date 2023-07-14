@@ -8598,8 +8598,8 @@ react-native-swipe-list-view@^3.2.3:
   integrity sha512-f0B92eZiO0mCk7ZFtn8tbLz4lb+mR8xzcfjFqCVSDeXnuNw7GenUMsccGnclIOhnxnip5BHvUHavlD41peGqig==
 
 react-native-sylkrtc@AGProjects/react-native-sylkrtc.js:
-  version "1.6.0"
-  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/1662c7a4e4b7e5d6fb879645f7aa5b2cb2c37126"
+  version "1.6.1"
+  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/80abe01b0204ab9c621cffb9d9b2ff99c7cd9440"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"
