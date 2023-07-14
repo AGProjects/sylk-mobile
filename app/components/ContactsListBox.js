@@ -572,7 +572,7 @@ class ContactsListBox extends Component {
 
     renderCustomActions = props =>
     (
-      <CustomChatActions {...props} audioRecorded={this.audioRecorded} stopPlaying={this.stopPlaying} onRecording={this.onRecording} texting={this.state.texting} audioSendFinished={this.state.audioSendFinished} playing={this.state.playing} sendingImage={this.state.cameraAsset !==null}/>
+      <CustomChatActions {...props} audioRecorded={this.audioRecorded} stopPlaying={this.stopPlaying} onRecording={this.onRecording} texting={this.state.texting} audioSendFinished={this.state.audioSendFinished} playing={this.state.playing} sendingImage={this.state.cameraAsset !==null} selectedContact={this.state.selectedContact}/>
     )
 
     customInputToolbar = props => {
@@ -591,6 +591,7 @@ class ContactsListBox extends Component {
 
     resetContact() {
         this.stopRecordingTimer()
+        this.outgoingPendMessages = {};
         this.setState({
             recording: false,
             texting: false,
@@ -781,7 +782,7 @@ class ContactsListBox extends Component {
             );
             } else {
 
-            if (this.state.playing) {
+            if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.tags.indexOf('test') > -1)) {
                 return <View></View>;
             } else {
                 return (
@@ -1814,6 +1815,10 @@ class ContactsListBox extends Component {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                chatInputClass = this.noChatInputToolbar;
            }
+           if (this.state.selectedContact.tags.indexOf('test') > -1) {
+               chatInputClass = this.noChatInputToolbar;
+           }
+
         } else if (!this.state.chat) {
             chatInputClass = this.noChatInputToolbar;
         }
