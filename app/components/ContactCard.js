@@ -345,7 +345,7 @@ class ContactCard extends Component {
                             { this.state.contact.photo || ! this.state.contact.email ?
                             <UserIcon style={styles.userIcon} identity={this.state.contact} unread={unread}/>
                             :
-                             <Gravatar options={{email: this.state.contact.email, parameters: { "size": "70", "d": "mm" }, secure: true}} style={styles.gravatar} />
+                             <Gravatar options={{email: this.state.contact.email, parameters: { "size": "50", "d": "mm" }, secure: true}} style={styles.gravatar} />
                              }
 
                         </View>
