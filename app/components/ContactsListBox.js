@@ -9,6 +9,7 @@ import uuid from 'react-native-uuid';
 import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time} from 'react-native-gifted-chat'
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
 import MessageInfoModal from './MessageInfoModal';
+import EditMessageModal from './EditMessageModal';
 import ShareMessageModal from './ShareMessageModal';
 import DeleteMessageModal from './DeleteMessageModal';
 import CustomChatActions from './ChatActions';
@@ -257,7 +258,6 @@ class ContactsListBox extends Component {
             renderMessages: GiftedChat.append(renderMessages, []),
             chat: this.props.chat,
             pinned: false,
-            showMessageModal: false,
             message: null,
             showShareMessageModal: false,
             inviteContacts: this.props.inviteContacts,
@@ -445,7 +445,6 @@ class ContactsListBox extends Component {
                        filter: nextProps.filter,
                        call: nextProps.call,
                        password: nextProps.password,
-                       showMessageModal: nextProps.showMessageModal,
                        messages: nextProps.messages,
                        inviteContacts: nextProps.inviteContacts,
                        shareToContacts: nextProps.shareToContacts,
@@ -899,10 +898,27 @@ class ContactsListBox extends Component {
         this.setState({showMessageModal: false, message: null});
     }
 
+    closeEditMessageModal() {
+        this.setState({showEditMessageModal: false, message: null});
+    }
+
     loadEarlierMessages() {
         //console.log('Load earlier messages...');
         this.setState({scrollToBottom: false, isLoadingEarlier: true});
         this.props.loadEarlierMessages();
+    }
+
+    sendEditedMessage(message, text) {
+        if (!this.state.selectedContact.uri) {
+           return;
+        }
+
+        this.props.deleteMessage(message._id, this.state.selectedContact.uri);
+        message._id = uuid.v4();
+        message.key = message._id;
+        message.text = text;
+
+        this.props.sendMessage(this.state.selectedContact.uri, message);
     }
 
     onSendMessage(messages) {
@@ -1385,6 +1401,9 @@ class ContactsListBox extends Component {
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
+            if (!isSsiMessage && this.isMessageEditable(currentMessage)) {
+                options.push('Edit');
+            }
             if (currentMessage.metadata && currentMessage.metadata.local_url) {
                 options.push('Open')
             //
@@ -1457,6 +1476,8 @@ class ContactsListBox extends Component {
                     this.props.unpinMessage(currentMessage._id);
                 } else if (action === 'Info') {
                     this.setState({message: currentMessage, showMessageModal: true});
+                } else if (action === 'Edit') {
+                    this.setState({message: currentMessage, showEditMessageModal: true});
                 } else if (action === 'Share') {
                     this.setState({message: currentMessage, showShareMessageModal: true});
                 } else if (action === 'Resend') {
@@ -1478,6 +1499,22 @@ class ContactsListBox extends Component {
             });
         }
     };
+
+    isMessageEditable(message) {
+        if (message.direction === 'incoming') {
+            return false;
+        }
+
+        if (message.image || message.audio || message.video) {
+            return false;
+        }
+
+        if (message.metadata && message.metadata.filename) {
+            return false;
+        }
+
+        return true;
+    }
 
     closeDeleteMessageModal() {
         this.setState({showDeleteMessageModal: false});
@@ -2158,6 +2195,13 @@ class ContactsListBox extends Component {
                 show={this.state.showMessageModal}
                 message={this.state.message}
                 close={this.closeMessageModal}
+            />
+
+            <EditMessageModal
+                show={this.state.showEditMessageModal}
+                message={this.state.message}
+                close={this.closeEditMessageModal}
+                sendEditedMessage={this.sendEditedMessage}
             />
 
             <ShareMessageModal
