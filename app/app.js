@@ -6839,11 +6839,13 @@ class Sylk extends Component {
 
         //console.log('Adding request id', id, file_transfer.url);
         this.updateRenderFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
+        let filesize;
         this.downloadRequests[id] = RNBackgroundDownloader.download({
             id: id,
             url: file_transfer.url,
             destination: tmp_file_path,
         }).begin((size) => {
+            filesize = size;
             console.log('File', file_transfer.filename, 'has', size, 'bytes');
             this.updateRenderFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
         }).progress((percent) => {
@@ -6854,6 +6856,12 @@ class Sylk extends Component {
         }).done(() => {
             console.log('File', file_transfer.filename, 'downloaded');
             delete this.downloadRequests[id];
+
+            if (file_transfer.filesize !== filesize) {
+                console.log('File', file_transfer.filename, 'size is wrong', filesize, file_transfer.filesize);
+                this.deleteMessage(id, remote_party, false);
+                return;
+            }
 
             RNFS.moveFile(tmp_file_path, file_path).then((success) => {
                 this.updateRenderFileTransferBubble(file_transfer, 'Download finished');
