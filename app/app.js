@@ -6798,8 +6798,9 @@ class Sylk extends Component {
             };
 
             file_transfer.local_url = null;
-            file_transfer.decryption_failed = false;
             file_transfer.failed = false;
+            file_transfer.error = null;
+
             if (file_transfer.url.endsWith('.asc') && !file_transfer.filename.endsWith('.asc')) {
                 file_transfer.filename = file_transfer.filename + ('.asc');
             }
@@ -6818,6 +6819,7 @@ class Sylk extends Component {
             console.log('File transfer was in progress, stopped it now', id);
             file_transfer.paused = true;
             file_transfer.progress = null;
+            file_transfer.error = null;
             this.updateFileTransferMessageMetadata(file_transfer, 0);
             delete this.downloadRequests[id];
             return;
@@ -6869,7 +6871,8 @@ class Sylk extends Component {
             });
 
         }).error((error) => {
-            console.log('File', file_transfer.filename, 'download failed', error);
+            console.log('File', file_transfer.filename, 'download failed:', error);
+            file_transfer.error = error;
             this.fileTransferStateChanged(id, 'failed', file_transfer);
             delete this.downloadRequests[id];
         });
@@ -8533,9 +8536,7 @@ class Sylk extends Component {
             let rows = results.rows;
             if (rows.length === 1) {
                 if (encryption === 3) {
-                    metadata.decryption_failed = true;
-                } else {
-                    metadata.decryption_failed = false;
+                    metadata.error = 'decryption failed';
                 }
                 var item = rows.item(0);
                 let params = [JSON.stringify(metadata), encryption, metadata.transfer_id]
@@ -8806,16 +8807,13 @@ class Sylk extends Component {
         existingMessages.forEach((msg) => {
             if (msg._id === id) {
                 msg.text = text || utils.beautyFileNameForBubble(metadata);
-                if (metadata.decryption_failed) {
-                    msg.text = msg.text + ' decryption failed';
-                    if (metadata.status) {
-                        msg.text = msg.text + ': ' +  metadata.status;
-                        msg.text = msg.text + '\n\n' +  metadata.url;
-                    }
+                if (metadata.error) {
+                    msg.text = msg.text + ' - ' + metadata.error;
                     msg.failed = true;
                 }
+
                 msg.metadata = metadata;
-                if (!metadata.local_url || metadata.decryption_failed || metadata.local_url.endsWith('.asc')) {
+                if (!metadata.local_url || metadata.error || metadata.local_url.endsWith('.asc')) {
                     msg.image = null;
                     msg.video = null;
                     msg.audio = null;
@@ -9584,6 +9582,8 @@ class Sylk extends Component {
             } else {
                 content = utils.beautyFileNameForBubble(file_transfer);
             }
+
+            msg.text = content;
         }
 
         ReceiveSharingIntent.clearReceivedFiles();

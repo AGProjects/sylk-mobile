@@ -258,9 +258,9 @@ function sql2GiftedChat(item, content, filter={}) {
             }
         }
 
-        if (metadata.decryption_failed) {
+        if (metadata.error) {
             failed = true;
-            text = text + ' (decryption failed)';
+            text = text + ' - ' + metadata.error;
         }
     } else {
         if (item.image) {
@@ -296,7 +296,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
     let file_name = metadata.filename;
     let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
-    if (metadata.progress && metadata.progress !== null) {
+    if (metadata.progress && metadata.progress !== null && metadata.progress !== 100) {
         prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
     }
 
@@ -347,7 +347,9 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
             }
         }
     }
+
     return text;
+
     // + '\n' + RNFS.DocumentDirectoryPath + '\n' + metadata.local_url;
 }
 
