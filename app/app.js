@@ -1793,8 +1793,8 @@ class Sylk extends Component {
             }
 
             if (reason === 'start_up') {
-                this.fetchSharedItems();
-             }
+//                this.fetchSharedItems();
+            }
         }
 
         this.currentRoute = route;
@@ -1927,6 +1927,7 @@ class Sylk extends Component {
         this._loaded = true;
 
         this.checkVersion();
+        this.fetchSharedItems();
     }
 
     _keyboardDidShow(e) {
@@ -5983,7 +5984,7 @@ class Sylk extends Component {
                 file_transfer.paused = false;
 
                 this.ExecuteQuery("UPDATE messages set metadata = ? where msg_id = ?", [JSON.stringify(file_transfer), id]).then((results) => {
-                    console.log('File transfer updated', id);
+                    //console.log('File transfer updated', id);
                     if (local_url.endsWith('.asc')) {
                         try {
                             this.decryptFile(file_transfer);
@@ -6721,7 +6722,6 @@ class Sylk extends Component {
                     this.deleteMessage(file_transfer.transfer_id, uri);
                 }
             }
-
             return;
         }
 
@@ -6970,9 +6970,12 @@ class Sylk extends Component {
             return;
         }
 
+        //console.log('Wrote', file_path_binary);
+
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
             file_transfer.local_url = file_path_decrypted;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
+
             try {
                 RNFS.unlink(file_path_binary);
             } catch (e) {
