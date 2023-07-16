@@ -7939,29 +7939,29 @@ class Sylk extends Component {
                 return;
             }
 
-            console.log('Process journal', i, 'of', messages.length, message.contentType, uri, message.timestamp);
+            //console.log('Process journal', i, 'of', messages.length, message.contentType, uri, message.timestamp);
 
             let d = new Date(2019);
 
             if (message.timestamp < d) {
-                console.log('Skip broken journal with broken date', message.id);
+                //console.log('Skip broken journal with broken date', message.id);
                 purgeMessages.push(message.id);
                 return;
             }
 
             if (!message.content) {
-                console.log('Skip broken journal with empty body', message.id);
+                //console.log('Skip broken journal with empty body', message.id);
                 purgeMessages.push(message.id);
                 return;
             }
 
             if (message.contentType !== 'application/sylk-conversation-remove' && message.contentType !== 'application/sylk-message-remove' && uri && Object.keys(myContacts).indexOf(uri) === -1) {
                 if (uri.indexOf('@') > -1 && !utils.isEmailAddress(uri)) {
-                    console.log('Skip bad uri', uri);
+                    //console.log('Skip bad uri', uri);
                     return;
                 }
 
-                console.log('Will add a new contact', uri);
+                //console.log('Will add a new contact', uri);
                 myContacts[uri] = this.newContact(uri);
                 myContacts[uri].timestamp = message.timestamp;
                 //this.setState({myContacts: myContacts});
