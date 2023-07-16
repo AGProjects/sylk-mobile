@@ -58,7 +58,8 @@ class ReadyBox extends Component {
             keys: this.props.keys,
             isTexting: this.props.isTexting,
             keyboardVisible: this.props.keyboardVisible,
-            contentTypes: this.props.contentTypes
+            contentTypes: this.props.contentTypes,
+            sourceContact: this.props.sourceContact
         };
         this.ended = false;
 
@@ -119,8 +120,14 @@ class ReadyBox extends Component {
             this.bounceNavigation();
         }
 
+        let newMyContacts = nextProps.myContacts;
+        if (nextProps.sourceContact && nextProps.sourceContact.uri in newMyContacts) {
+            console.log('Discard contact', nextProps.sourceContact.uri);
+            delete newMyContacts[nextProps.sourceContact.uri];
+        }
+
         this.setState({myInvitedParties: nextProps.myInvitedParties,
-                        myContacts: nextProps.myContacts,
+                        myContacts: newMyContacts,
                         messages: nextProps.messages,
                         historyFilter: nextProps.historyFilter,
                         myDisplayName: nextProps.myDisplayName,
@@ -147,7 +154,8 @@ class ReadyBox extends Component {
                         keys: nextProps.keys,
                         isTexting: nextProps.isTexting,
                         keyboardVisible: nextProps.keyboardVisible,
-                        contentTypes: nextProps.contentTypes
+                        contentTypes: nextProps.contentTypes,
+                        sourceContact: nextProps.sourceContact
                         });
     }
 
@@ -967,6 +975,7 @@ class ReadyBox extends Component {
                             decryptFunc = {this.props.decryptFunc}
                             messagesCategoryFilter = {this.state.messagesCategoryFilter}
                             isTexting = {this.state.isTexting}
+                            forwardMessageFunc = {this.props.forwardMessageFunc}
                         />
                         }
 
@@ -1086,7 +1095,9 @@ ReadyBox.propTypes = {
     keyboardVisible: PropTypes.bool,
     filteredMessageIds: PropTypes.array,
     contentTypes: PropTypes.object,
-    canSend: PropTypes.func
+    canSend: PropTypes.func,
+    forwardMessageFunc: PropTypes.func,
+    sourceContact: PropTypes.object
 };
 
 

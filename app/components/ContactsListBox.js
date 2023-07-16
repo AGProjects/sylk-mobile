@@ -259,7 +259,6 @@ class ContactsListBox extends Component {
             chat: this.props.chat,
             pinned: false,
             message: null,
-            showShareMessageModal: false,
             inviteContacts: this.props.inviteContacts,
             shareToContacts: this.props.shareToContacts,
             selectMode: this.props.shareToContacts || this.props.inviteContacts,
@@ -913,7 +912,12 @@ class ContactsListBox extends Component {
            return;
         }
 
+        if (message.text === text) {
+            return;
+        }
+
         this.props.deleteMessage(message._id, this.state.selectedContact.uri);
+
         message._id = uuid.v4();
         message.key = message._id;
         message.text = text;
@@ -1438,11 +1442,13 @@ class ContactsListBox extends Component {
 
             //options.push('Info');
             if (!isSsiMessage) {
-                if (currentMessage.metadata && currentMessage.metadata.decryption_failed) {
-                } else {
-                    options.push('Share');
-                }
+                options.push('Forward');
             }
+
+            if (!isSsiMessage) {
+                options.push('Share');
+            }
+
             if (currentMessage.local_url) {
                 if (utils.isImage(currentMessage.local_url)) {
                     options.push('Save');
@@ -1478,8 +1484,10 @@ class ContactsListBox extends Component {
                     this.setState({message: currentMessage, showMessageModal: true});
                 } else if (action === 'Edit') {
                     this.setState({message: currentMessage, showEditMessageModal: true});
-                } else if (action === 'Share') {
+                } else if (action.startsWith('Share')) {
                     this.setState({message: currentMessage, showShareMessageModal: true});
+                } else if (action.startsWith('Forward')) {
+                    this.props.forwardMessageFunc(currentMessage, this.state.targetUri);
                 } else if (action === 'Resend') {
                     this.props.reSendMessage(currentMessage, this.state.targetUri);
                 } else if (action === 'Save') {
@@ -2267,6 +2275,7 @@ ContactsListBox.propTypes = {
     keys            : PropTypes.object,
     downloadFunc    : PropTypes.func,
     decryptFunc     : PropTypes.func,
+    forwardMessageFunc: PropTypes.func,
     messagesCategoryFilter: PropTypes.string
 };
 

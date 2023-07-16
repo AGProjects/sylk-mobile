@@ -5606,8 +5606,10 @@ class Sylk extends Component {
         //console.log('----sendMessage', uri, message);
 
         let renderMessages = this.state.messages;
-        if (Object.keys(renderMessages).indexOf(uri) === -1) {
-            renderMessages[uri] = [];
+        if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+            if (Object.keys(renderMessages).indexOf(uri) === -1) {
+                renderMessages[uri] = [];
+            }
         }
 
         let public_keys;
@@ -5622,10 +5624,27 @@ class Sylk extends Component {
 
         if (contentType === 'application/sylk-file-transfer') {
             let file_transfer = message.metadata;
+            if (!file_transfer.path){
+                console.log('Error: missing local path for file transfer');
+                return;
+            }
             const localPath = RNFS.DocumentDirectoryPath + "/" + file_transfer.sender.uri + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
             const dirname = path.dirname(localPath);
-            await RNFS.mkdir(dirname);
-            await RNFS.copyFile(file_transfer.path, localPath);
+
+            try {
+                await RNFS.mkdir(dirname);
+            } catch (e) {
+                console.log('Error making directory', dirname, ':', e);
+                return;
+            }
+
+            try {
+                await RNFS.copyFile(file_transfer.path, localPath);
+            } catch (e) {
+                console.log('Error copying file from', file_transfer.path, 'to', localPath, ':', e);
+                return;
+            }
+
             file_transfer.local_url = localPath;
             file_transfer.url = this.state.fileTransferUrl + '/' + file_transfer.sender.uri + '/' + file_transfer.receiver.uri + '/' + file_transfer.transfer_id + '/' + file_transfer.filename;
             message.metadata = file_transfer;
@@ -5651,18 +5670,18 @@ class Sylk extends Component {
             }
         }
 
-        if (this.state.selectedContact) {
+        if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+            //console.log('Added render message', message._id, message.contentType);
+            renderMessages[uri].push(message);
             let selectedContact = this.state.selectedContact;
             selectedContact.lastMessage = this.buildLastMessage(message)
             selectedContact.timestamp = message.createdAt;
             selectedContact.direction = 'outgoing';
             selectedContact.lastCallDuration = null;
-            this.setState({selectedContact: selectedContact});
-        }
 
-        console.log('Added render message', message._id, message.contentType);
-        renderMessages[uri].push(message);
-        this.setState({messages: renderMessages});
+            this.setState({messages: renderMessages,
+                           selectedContact: selectedContact});
+        }
     }
 
     canSend() {
@@ -6397,7 +6416,9 @@ class Sylk extends Component {
                                 m.sent = true;
                                 m.pending = false;
                                 changes = true;
-                                this.playMessageSound('outgoing');
+                                if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                                    this.playMessageSound('outgoing');
+                                }
                             }
 
                             if (state === 'failed') {
@@ -9524,33 +9545,15 @@ class Sylk extends Component {
         this.saveConference(room, uris);
     }
 
+    forwardMessage(message, uri) {
+        // this will show the main interface to select one or more contacts
+        this.setState({shareToContacts: true, forwardContent: message, selectedContact: null, sourceContact: this.state.selectedContact});
+    }
+
     async shareContent() {
-        console.log('Sharing content...');
-
-        if (this.state.shareContent.length === 0) {
-            return;
-        }
-
-        if (this.state.selectedContacts.length === 0) {
-            this._notificationCenter.postSystemNotification('Sharing canceled');
-        }
-
-        let item = this.state.shareContent[0];
-        let content = '';
-
-        if (item.subject) {
-            content = content + '\n\n' + item.subject;
-        }
-
-        if (item.text) {
-            content = content + '\n\n' + item.text;
-        }
-
-        if (item.weblink) {
-            content = content + '\n\n' + item.weblink;
-        }
-
         var id = uuid.v4();
+        let content = '';
+        let contentType = 'text/plain';
 
         let msg = {
             _id: id,
@@ -9561,54 +9564,101 @@ class Sylk extends Component {
             user: {}
             }
 
-        content = content.trim();
-        let contentType = 'text/plain';
 
-        if (item.filePath) {
-            contentType = 'application/sylk-file-transfer';
-            const { size } = await RNFetchBlob.fs.stat(item.filePath);
+        if (this.state.forwardContent) {
+            let message = this.state.forwardContent;
+            msg.text = message.text;
+            if (message.metadata && message.metadata.filename) {
+                contentType = 'application/sylk-file-transfer';
+                msg.metadata = message.metadata;
+                msg.metadata.sender.uri = this.state.accountId;
+                msg.metadata.path = msg.metadata.local_url;
+                msg.metadata.receiver.uri = null;
+                msg.metadata.transfer_id = id;
+                msg.metadata.progress = null;
+                msg.metadata.error = null;
+                msg.metadata.local_url = null;
+                msg.metadata.url = null;
+                msg.metadata.paused = false;
+                msg.metadata.failed = false;
+                msg.metadata.until = null;
+            }
+            console.log('Forwarding content...', msg);
 
-            let file_transfer = { 'path': item.filePath,
-                                  'filename': item.fileName,
-                                  'filetype' : item.mimeType,
-                                  'filesize': size,
-                                  'sender': {'uri': this.state.accountId},
-                                  'receiver': {'uri': null},
-                                  'transfer_id': id,
-                                  'direction': 'outgoing'
-                                  };
+        } else {
+            console.log('Sharing content...');
 
-            msg.metadata = file_transfer;
-
-            if (utils.isImage(item.fileName)) {
-                msg.image = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
-            } else if (utils.isAudio(item.fileName)) {
-                msg.audio = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
-            } else if (utils.isVideo(item.fileName)) {
-                msg.video = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+            if (this.state.shareContent.length === 0) {
+                return;
             }
 
-            if (content.length > 0) {
-                content = content + ' + ' + utils.beautyFileNameForBubble(file_transfer);
-            } else {
-                content = utils.beautyFileNameForBubble(file_transfer);
+            if (this.state.selectedContacts.length === 0) {
+                this._notificationCenter.postSystemNotification('Sharing canceled');
             }
 
-            msg.text = content;
+            let item = this.state.shareContent[0];
+
+            if (item.subject) {
+                content = content + '\n\n' + item.subject;
+            }
+
+            if (item.text) {
+                content = content + '\n\n' + item.text;
+            }
+
+            if (item.weblink) {
+                content = content + '\n\n' + item.weblink;
+            }
+
+            if (item.filePath) {
+                contentType = 'application/sylk-file-transfer';
+                const { size } = await RNFetchBlob.fs.stat(item.filePath);
+
+                let file_transfer = { 'path': item.filePath,
+                                      'filename': item.fileName,
+                                      'filetype' : item.mimeType,
+                                      'filesize': size,
+                                      'sender': {'uri': this.state.accountId},
+                                      'receiver': {'uri': null},
+                                      'transfer_id': id,
+                                      'direction': 'outgoing'
+                                      };
+
+                msg.metadata = file_transfer;
+
+                if (utils.isImage(item.fileName)) {
+                    msg.image = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+                } else if (utils.isAudio(item.fileName)) {
+                    msg.audio = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+                } else if (utils.isVideo(item.fileName)) {
+                    msg.video = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+                }
+
+                if (content.length > 0) {
+                    content = content + ' + ' + utils.beautyFileNameForBubble(file_transfer);
+                } else {
+                    content = utils.beautyFileNameForBubble(file_transfer);
+                }
+
+                content = content.trim();
+                msg.text = content;
+            }
+
+            ReceiveSharingIntent.clearReceivedFiles();
         }
 
-        ReceiveSharingIntent.clearReceivedFiles();
-
         this.state.selectedContacts.forEach((uri) => {
-            if (msg.metadata) {
+            if (msg.metadata && msg.metadata.receiver) {
                 msg.metadata.receiver.uri = uri;
             }
             this.sendMessage(uri, msg, contentType);
         });
 
-
         this.setState({shareContent: [],
                        selectedContacts: [],
+                       selectedContact: this.state.sourceContact,
+                       forwardContent: null,
+                       sourceContact: null,
                        shareToContacts: false});
     }
 
@@ -10071,6 +10121,8 @@ class Sylk extends Component {
                     keyboardVisible = {this.state.keyboardVisible}
                     contentTypes = {this.state.contentTypes}
                     canSend = {this.canSend}
+                    forwardMessageFunc = {this.forwardMessage}
+                    sourceContact = {this.state.sourceContact}
                 />
 
                 <ImportPrivateKeyModal
