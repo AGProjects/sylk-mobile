@@ -15,6 +15,7 @@ import CallMeMaybeModal from './CallMeMaybeModal';
 import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
+import GenerateKeysModal from './GenerateKeysModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
 import VersionNumber from 'react-native-version-number';
@@ -88,6 +89,7 @@ class NavigationBar extends Component {
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
                        showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
+                       showGenerateKeysModal: nextProps.showGenerateKeysModal,
                        selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
@@ -169,6 +171,9 @@ class NavigationBar extends Component {
                 break;
             case 'deleteMessages':
                 this.setState({showDeleteHistoryModal: true});
+                break;
+            case 'generatePrivateKey':
+                this.setState({showGenerateKeysModal: true});
                 break;
             case 'toggleFavorite':
                 this.props.toggleFavorite(this.state.selectedContact.uri);
@@ -259,6 +264,10 @@ class NavigationBar extends Component {
 
     closeDeleteHistoryModal() {
         this.setState({showDeleteHistoryModal: false});
+    }
+
+    hideGenerateKeysModal() {
+        this.setState({showGenerateKeysModal: false});
     }
 
     showEditContactModal() {
@@ -464,6 +473,7 @@ class NavigationBar extends Component {
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
 
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Change private key..."/> :null}
                         {false ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
                         <Divider/>
@@ -562,6 +572,12 @@ class NavigationBar extends Component {
                     publicKeyHash={this.state.publicKeyHash}
                     publicKey={this.state.publicKey}
                 />
+
+                <GenerateKeysModal
+                    show={this.state.showGenerateKeysModal}
+                    close={this.hideGenerateKeysModal}
+                    generateKeysFunc={this.props.generateKeysFunc}
+                />
             </Appbar.Header>
         );
     }
@@ -624,6 +640,7 @@ NavigationBar.propTypes = {
     myuuid: PropTypes.string,
     deleteSsiCredential: PropTypes.func,
     resumeTransfers: PropTypes.func,
+    generateKeysFunc: PropTypes.func,
     deleteSsiConnection: PropTypes.func,
     filteredMessageIds: PropTypes.array,
     contentTypes: PropTypes.object,

@@ -5663,11 +5663,12 @@ class Sylk extends Component {
 
         if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
+                console.log('Message encrypted');
                 this.saveOutgoingMessage(uri, message, 1);
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
                 //console.log(encryptedMessage);
             }).catch((error) => {
-                console.log('Failed to encrypt:', error);
+                console.log('Failed to encrypt message:', error);
                 let error_message = error.message.startsWith('stringResponse') ? error.message.slice(43, error.message.length - 1): error.message;
                 //this.renderSystemMessage(uri, error_message, 'outgoing');
                 this.saveOutgoingMessage(uri, message, 0);
@@ -10080,6 +10081,7 @@ class Sylk extends Component {
                     showExportPrivateKeyModal = {this.state.showExportPrivateKeyModal}
                     showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
                     hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
+                    generateKeysFunc={this.generateKeys}
                     refetchMessages = {this.refetchMessagesForContact}
                     blockedUris = {this.state.blockedUris}
                     toggleSSIFunc = {this.toggleSSI}
