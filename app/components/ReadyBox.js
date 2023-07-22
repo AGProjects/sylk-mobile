@@ -976,6 +976,7 @@ class ReadyBox extends Component {
                             messagesCategoryFilter = {this.state.messagesCategoryFilter}
                             isTexting = {this.state.isTexting}
                             forwardMessageFunc = {this.props.forwardMessageFunc}
+                            requestCameraPermission = {this.props.requestCameraPermission}
                         />
                         }
 
@@ -1097,7 +1098,8 @@ ReadyBox.propTypes = {
     contentTypes: PropTypes.object,
     canSend: PropTypes.func,
     forwardMessageFunc: PropTypes.func,
-    sourceContact: PropTypes.object
+    sourceContact: PropTypes.object,
+    requestCameraPermission: PropTypes.func
 };
 
 

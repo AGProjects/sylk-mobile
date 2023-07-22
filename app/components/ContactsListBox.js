@@ -493,7 +493,10 @@ class ContactsListBox extends Component {
                         cameraType: 'front',
                         formatAsMp4: true
                        }
-        await launchCamera(options, this.cameraCallback);
+        const cameraAllowed = await this.props.requestCameraPermission();
+        if (cameraAllowed) {
+            await launchCamera(options, this.cameraCallback);
+        }
     }
 
     async _launchImageLibrary() {
@@ -2283,7 +2286,8 @@ ContactsListBox.propTypes = {
     downloadFunc    : PropTypes.func,
     decryptFunc     : PropTypes.func,
     forwardMessageFunc: PropTypes.func,
-    messagesCategoryFilter: PropTypes.string
+    messagesCategoryFilter: PropTypes.string,
+    requestCameraPermission: PropTypes.func
 };
 
 

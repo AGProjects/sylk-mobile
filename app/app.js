@@ -681,6 +681,7 @@ class Sylk extends Component {
 
     async saveMyKey(keys) {
         let keyStatus = this.state.keyStatus;
+        let myContacts = this.state.myContacts;
 
         keyStatus['existsLocal'] = true;
 
@@ -5668,9 +5669,9 @@ class Sylk extends Component {
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
                 //console.log(encryptedMessage);
             }).catch((error) => {
-                console.log('Failed to encrypt message:', error);
+                console.log('Failed to encrypt:', error);
                 let error_message = error.message.startsWith('stringResponse') ? error.message.slice(43, error.message.length - 1): error.message;
-                this.renderSystemMessage(uri, error_message, 'outgoing');
+                //this.renderSystemMessage(uri, error_message, 'outgoing');
                 this.saveOutgoingMessage(uri, message, 0);
                 //this.outgoingMessageStateChanged(message._id, 'failed');
                 this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
@@ -5780,11 +5781,11 @@ class Sylk extends Component {
                     local_url = local_url + ".asc";
                     remote_url = remote_url + '.asc';
                 } catch (error) {
-                    console.log('Error encrypting file', local_url, error)
+                    console.log('Failed to encrypt:', error)
                     //file_transfer.error = 'Cannot encrypt file';
                     //this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
                     let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
-                    this.renderSystemMessage(uri, error_message, 'outgoing');
+                    //this.renderSystemMessage(uri, error_message, 'outgoing');
                 } finally {
                     this.updateRenderFileTransferBubble(file_transfer);
                 }
@@ -10171,6 +10172,7 @@ class Sylk extends Component {
                     canSend = {this.canSend}
                     forwardMessageFunc = {this.forwardMessage}
                     sourceContact = {this.state.sourceContact}
+                    requestCameraPermission = {this.requestCameraPermission}
                 />
 
                 <ImportPrivateKeyModal
