@@ -5722,7 +5722,7 @@ class Sylk extends Component {
     }
 
     async uploadFile(file_transfer) {
-        //console.log('uploadFile', file_transfer);
+        console.log('uploadFile', file_transfer);
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
@@ -5761,7 +5761,10 @@ class Sylk extends Component {
                 this.updateRenderFileTransferBubble(file_transfer, 'Encrypting file...');
 
                 try {
+                    let encrypted_file = local_url + '.asc';
+                    //console.log('Will encrypt file', local_url, 'to', encrypted_file);
                     await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
+                    console.log('File encrypted');
                     this.updateRenderFileTransferBubble(file_transfer, 'Calculating checksum...');
                     let base64_content = await RNFS.readFile(encrypted_file, 'base64');
                     let checksum = utils.getPGPCheckSum(base64_content);
@@ -5780,7 +5783,7 @@ class Sylk extends Component {
                     local_url = local_url + ".asc";
                     remote_url = remote_url + '.asc';
                 } catch (error) {
-                    console.log('Failed to encrypt:', error)
+                    console.log('Failed to encrypt file:', error)
                     //file_transfer.error = 'Cannot encrypt file';
                     //this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
                     let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
@@ -6294,7 +6297,7 @@ class Sylk extends Component {
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
             let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
             await OpenPGP.encrypt(text, public_keys).then((encryptedMessage) => {
-                //console.log('Outgoing encrypted message to', uri);
+                console.log('Outgoing encrypted message to', uri);
                 this._sendMessage(uri, encryptedMessage, id, contentType, timestamp);
             }).catch((error) => {
                 let error_message = error.message.startsWith('stringResponse') ? error.message.slice(42, error.message.length - 1): error.message;
@@ -6923,7 +6926,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('decryptFile', file_transfer);
+        //console.log('decryptFile', file_transfer);
 
         let content;
         let lines = [];
@@ -7027,6 +7030,7 @@ class Sylk extends Component {
         }
 
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
+            console.log('File decrypted');
             file_transfer.local_url = file_path_decrypted;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
 
@@ -7072,7 +7076,7 @@ class Sylk extends Component {
         let idx;
 
         await OpenPGP.decrypt(message.content, this.state.keys.private).then((content) => {
-            //console.log('Message', id, message.content_type, 'to', message.to_uri, 'was decrypted');
+            console.log('Message', id, message.content_type, 'to', message.to_uri, 'was decrypted');
             let messages = this.state.messages;
             let uri = message.direction === 'incoming' ? message.from_uri : message.to_uri;
             if (uri in decryptingMessages) {
@@ -7147,7 +7151,7 @@ class Sylk extends Component {
     }
 
     lookupPublicKey(contact) {
-        //console.log('lookupPublicKey', contact.uri);
+        console.log('lookupPublicKey', contact.uri);
 
         if (contact.uri.indexOf('@guest') > -1) {
             return;
@@ -8218,7 +8222,7 @@ class Sylk extends Component {
                 this.saveSystemMessage(message.sender.uri, 'Cannot decrypt message, no private key', 'incoming');
             } else {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                    //console.log('Incoming message', message.id, 'decrypted');
+                    console.log('Incoming message', message.id, 'decrypted');
                     this.handleIncomingMessage(message, decryptedBody);
                 }).catch((error) => {
                     console.log('Failed to decrypt message', message.id, error);
