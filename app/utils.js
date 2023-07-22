@@ -100,7 +100,7 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
             let decrypted_file_name = encrypted ? file_name.slice(0, -4) : file_name;
             text = beautyFileNameForBubble(metadata);
 
-            if (metadata.local_url && !metadata.decryption_failed) {
+            if (metadata.local_url && metadata.error != 'decryption failed') {
                 if (isImage(decrypted_file_name)) {
                     image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
                 } else if (isAudio(decrypted_file_name)) {
@@ -214,11 +214,10 @@ function sql2GiftedChat(item, content, filter={}) {
 
         if (metadata.local_url && !metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
             metadata.local_url = null;
-            metadata.decryption_failed = false;
         }
 
         if (metadata.local_url) {
-            if (!metadata.decryption_failed) {
+            if (metadata.error != 'decryption_failed') {
                 if (isImage(file_name)) {
                     if (metadata.b64) {
                         image = `data:${metadata.filetype};base64,${metadata.b64}`;
@@ -295,8 +294,10 @@ function sql2GiftedChat(item, content, filter={}) {
 function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
     let file_name = metadata.filename;
+    //console.log('beautyFileNameForBubble', metadata.progress, metadata.error);
+
     let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
-    if (metadata.progress && metadata.progress !== null && metadata.progress !== 100) {
+    if (metadata.progress !== null && metadata.progress !== 100) {
         prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
     }
 
@@ -330,16 +331,20 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
         }
     } else {
         if (lastMessage) {
-            text = file_name;
+            text = decrypted_file_name;
         } else {
             if (metadata.local_url) {
                 if (encrypted) {
-                    text = 'Decrypt ' + file_name;
+                    if (metadata.local_url && !metadata.local_url.endsWith('.asc')) {
+                        text = decrypted_file_name;
+                    } else {
+                        text = 'Decrypt ' + decrypted_file_name;
+                    }
                 } else {
                     if (metadata.failed && metadata.direction === "outgoing") {
                         text = 'Upload ' + file_name;
                     } else {
-                        text = 'Open ' + file_name;
+                        text = file_name;
                     }
                 }
             } else {
@@ -348,6 +353,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
         }
     }
 
+    //console.log(text);
     return text;
 
     // + '\n' + RNFS.DocumentDirectoryPath + '\n' + metadata.local_url;

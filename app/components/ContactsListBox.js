@@ -1341,7 +1341,7 @@ class ContactsListBox extends Component {
             RNFS.exists(file_transfer.local_url).then((exists) => {
                 if (exists) {
                     if (file_transfer.local_url.endsWith('.asc')) {
-                        if (file_transfer.decryption_failed) {
+                        if (file_transfer.error === 'decryption failed') {
                             this.onLongMessagePress(context, message);
                         } else {
                             this.props.decryptFunc(message.metadata);
@@ -1405,14 +1405,16 @@ class ContactsListBox extends Component {
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
-            if (!isSsiMessage && this.isMessageEditable(currentMessage)) {
-                options.push('Edit');
-            }
-            if (currentMessage.metadata && currentMessage.metadata.local_url) {
-                options.push('Open')
-            //
-            } else {
-                options.push('Copy')
+            if (!currentMessage.metadata.error) {
+                if (!isSsiMessage && this.isMessageEditable(currentMessage)) {
+                    options.push('Edit');
+                }
+                if (currentMessage.metadata && currentMessage.metadata.local_url) {
+                    options.push('Open')
+                //
+                } else {
+                    options.push('Copy');
+                }
             }
 
             if (!isSsiMessage) {
@@ -1420,7 +1422,7 @@ class ContactsListBox extends Component {
             }
 
             let showResend = currentMessage.failed;
-            if (currentMessage.metadata && currentMessage.metadata.decryption_failed) {
+            if (currentMessage.metadata && currentMessage.metadata.error === 'decryption failed') {
                 showResend = false;
             }
 
@@ -1435,17 +1437,17 @@ class ContactsListBox extends Component {
             if (currentMessage.pinned) {
                 options.push('Unpin');
             } else {
-                if (!isSsiMessage) {
+                if (!isSsiMessage && !currentMessage.metadata.error) {
                     options.push('Pin');
                 }
             }
 
             //options.push('Info');
-            if (!isSsiMessage) {
+            if (!isSsiMessage && !currentMessage.metadata.error) {
                 options.push('Forward');
             }
 
-            if (!isSsiMessage) {
+            if (!isSsiMessage && !currentMessage.metadata.error) {
                 options.push('Share');
             }
 
@@ -1457,7 +1459,7 @@ class ContactsListBox extends Component {
             }
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {
-                if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.decryption_failed) {
+                if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error === 'decryption failed') {
                     if (currentMessage.metadata.direction !== 'outgoing') {
                         options.push('Download again');
                     }
@@ -1841,6 +1843,7 @@ class ContactsListBox extends Component {
         let ssiContacts = [];
         let messages = this.state.renderMessages;
         let contacts = [];
+        //console.log('----');
 
         //console.log('--- Render contacts with filter', this.state.filter);
         //console.log('--- Render contacts', this.state.selectedContact);
@@ -1853,6 +1856,8 @@ class ContactsListBox extends Component {
                 contacts.push(this.state.myContacts[uri]);
             });
         }
+
+        //console.log(contacts);
 
         let chatInputClass = this.customInputToolbar;
 
@@ -1896,29 +1901,32 @@ class ContactsListBox extends Component {
 
         const known = [];
         items = items.filter((elem) => {
+            //console.log(elem.uri);
             if (this.state.shareToContacts && elem.tags.indexOf('test') > -1) {
+                //console.log('Remove', elem.uri, 'test');
                 return;
             }
 
             if (this.state.inviteContacts && elem.tags.indexOf('conference') > -1 ) {
-                return;
-            }
-
-            if (this.state.shareToContacts && elem.tags.indexOf('chat') === -1) {
+                //console.log('Remove', elem.uri, 'conf');
                 return;
             }
 
             if (this.state.shareToContacts && elem.uri === this.state.accountId) {
+                //console.log('Remove', elem.uri, 'myself');
                 return;
             }
 
             if (this.state.accountId === elem.uri && elem.tags.length === 0) {
+                //console.log('Remove', elem.uri, 'no tags');
                 return;
             }
 
             if (this.state.shareToContacts && elem.uri.indexOf('@') === -1) {
+                //console.log('Remove', elem.uri, 'no @');
                 return;
             }
+
             if (known.indexOf(elem.uri) <= -1) {
                 known.push(elem.uri);
                 return elem;
@@ -1983,7 +1991,8 @@ class ContactsListBox extends Component {
             } else if (this.state.blockedUris.indexOf(item.uri) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
                 filteredItems.push(item);
             }
-            //console.log(item.timestamp, item.type, item.uri);
+
+            //console.log(item.uri, item.tags);
 
         });
 
@@ -2111,8 +2120,6 @@ class ContactsListBox extends Component {
 
         messages.forEach((m) => {
         });
-
-        //console.log(messages[0]);
 
         return (
             <SafeAreaView style={container}>

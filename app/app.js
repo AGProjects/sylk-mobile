@@ -690,8 +690,6 @@ class Sylk extends Component {
                               keyStatus: keyStatus
                               }});
 
-        let myContacts = this.state.myContacts;
-
         if (this.state.account) {
             this.requestSyncConversations();
 
@@ -988,6 +986,13 @@ class Sylk extends Component {
                         }
                     }
 
+                    if (myContacts[item.uri].lastMessageId || myContacts[item.uri].publicKey) {
+                        if (myContacts[item.uri].tags.indexOf('chat') === -1) {
+                            myContacts[item.uri].tags.push('chat');
+                            updated = 'tags';
+                        }
+                    }
+
                     if (!myContacts[item.uri].photo) {
                         var name_idx = myContacts[item.uri].name.trim().toLowerCase();
                         if (name_idx in this.state.avatarPhotos) {
@@ -1026,7 +1031,7 @@ class Sylk extends Component {
                     }
 
                     formatted_date = myContacts[item.uri].timestamp.getFullYear() + "-" + utils.appendLeadingZeroes(myContacts[item.uri].timestamp.getMonth() + 1) + "-" + utils.appendLeadingZeroes(myContacts[item.uri].timestamp.getDate()) + " " + utils.appendLeadingZeroes(myContacts[item.uri].timestamp.getHours()) + ":" + utils.appendLeadingZeroes(myContacts[item.uri].timestamp.getMinutes()) + ":" + utils.appendLeadingZeroes(myContacts[item.uri].timestamp.getSeconds());
-                    //console.log('Loaded contact', formatted_date, item.uri, item.name);
+                    //console.log('Loaded contact', item.uri, item.tags);
 
                     if(item.participants) {
                         myInvitedParties[item.uri.split('@')[0]] = myContacts[item.uri].participants;
@@ -1850,6 +1855,8 @@ class Sylk extends Component {
                 this.goBackToHome();
             } else if (this.state.historyFilter) {
                 this.filterHistory(null);
+            } else if (this.state.forwardContent || this.state.shareContent.length > 0) {
+                this.cancelShareContent();
             } else {
                 BackHandler.exitApp();
             }
@@ -5145,6 +5152,7 @@ class Sylk extends Component {
     }
 
     async saveSylkContact(uri, contact, origin=null) {
+        //console.log('saveSylkContact', uri, 'by', origin);
 
         if (!contact) {
             contact = this.newContact(uri);
@@ -5155,8 +5163,6 @@ class Sylk extends Component {
         if (!contact) {
             return;
         }
-
-        //console.log('Save Sylk Contact', uri, contact.name, 'by', origin);
 
         if (this.sql_contacts_keys.indexOf(uri) > -1) {
             this.updateSylkContact(uri, contact, origin);
@@ -5478,6 +5484,7 @@ class Sylk extends Component {
     }
 
     async savePublicKey(uri, key) {
+        //console.log('savePublicKey');
         if (uri === this.state.accountId) {
             return;
         }
@@ -5502,19 +5509,21 @@ class Sylk extends Component {
         let myContacts = this.state.myContacts;
 
         if (uri in myContacts) {
+            //console.log(myContacts[uri]);
             //
         } else {
             myContacts[uri] = {};
+            //console.log('Init contact')
         }
 
         if (myContacts[uri].publicKey === key) {
-            console.log('Public key of', uri, 'did not change');
+            //console.log('Public key of', uri, 'did not change');
             return;
         }
 
         utils.timestampedLog('Public key of', uri, 'saved');
 
-        this.saveSystemMessage(uri, 'Public key received', 'incoming');
+        //this.saveSystemMessage(uri, 'Public key received', 'incoming');
 
         myContacts[uri].publicKey = key;
         this.saveSylkContact(uri, myContacts[uri], 'savePublicKey');
@@ -5624,7 +5633,7 @@ class Sylk extends Component {
 
         if (contentType === 'application/sylk-file-transfer') {
             let file_transfer = message.metadata;
-            if (!file_transfer.path){
+            if (!file_transfer.path) {
                 console.log('Error: missing local path for file transfer');
                 return;
             }
@@ -5635,12 +5644,14 @@ class Sylk extends Component {
                 await RNFS.mkdir(dirname);
             } catch (e) {
                 console.log('Error making directory', dirname, ':', e);
+                this.renderSystemMessage(uri, e.message, 'outgoing', new Date());
                 return;
             }
 
             try {
                 await RNFS.copyFile(file_transfer.path, localPath);
             } catch (e) {
+                this.renderSystemMessage(uri, e.message, 'outgoing', new Date());
                 console.log('Error copying file from', file_transfer.path, 'to', localPath, ':', e);
                 return;
             }
@@ -5658,8 +5669,11 @@ class Sylk extends Component {
                 //console.log(encryptedMessage);
             }).catch((error) => {
                 console.log('Failed to encrypt message:', error);
-                this.saveOutgoingMessage(uri, message, 2);
-                this.outgoingMessageStateChanged(message._id, 'failed');
+                let error_message = error.message.startsWith('stringResponse') ? error.message.slice(43, error.message.length - 1): error.message;
+                this.renderSystemMessage(uri, error_message, 'outgoing');
+                this.saveOutgoingMessage(uri, message, 0);
+                //this.outgoingMessageStateChanged(message._id, 'failed');
+                this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
             });
 
         } else {
@@ -5707,12 +5721,13 @@ class Sylk extends Component {
         return true;
     }
 
-    async uploadFile(file_transfer){
+    async uploadFile(file_transfer) {
+        //console.log('uploadFile', file_transfer);
         let encrypted_file;
+        let outputFile;
         let local_url = file_transfer.local_url;
         let remote_url = file_transfer.url;
         let uri = file_transfer.receiver.uri;
-        let outputFile;
 
         if (!file_transfer.filetype) {
             file_transfer.filetype = 'application/octet-stream';
@@ -5742,22 +5757,12 @@ class Sylk extends Component {
 
         if (utils.isFileEncryptable(file_transfer)) {
             if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
-                encrypted_file = local_url + ".asc";
                 let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
                 this.updateRenderFileTransferBubble(file_transfer, 'Encrypting file...');
 
                 try {
                     await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
-                } catch (e) {
-                    console.log('Error encrypting file', local_url, e)
-                    this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
-                    this.updateRenderFileTransferBubble(file_transfer);
-                    return;
-                }
-
-                this.updateRenderFileTransferBubble(file_transfer, 'Calculating checksum...');
-
-                try {
+                    this.updateRenderFileTransferBubble(file_transfer, 'Calculating checksum...');
                     let base64_content = await RNFS.readFile(encrypted_file, 'base64');
                     let checksum = utils.getPGPCheckSum(base64_content);
 
@@ -5770,25 +5775,25 @@ class Sylk extends Component {
 
                     content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
                     await RNFS.writeFile(encrypted_file, content, 'utf8');
-                } catch (e) {
-                    console.log('Error generating armored PGP envelope', local_url, e)
-                    this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+                    this.updateRenderFileTransferBubble(file_transfer, 'File encrypted');
+                    file_transfer.filetype = file_transfer.filetype;
+                    local_url = local_url + ".asc";
+                    remote_url = remote_url + '.asc';
+                } catch (error) {
+                    console.log('Error encrypting file', local_url, error)
+                    //file_transfer.error = 'Cannot encrypt file';
+                    //this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+                    let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
+                    this.renderSystemMessage(uri, error_message, 'outgoing');
+                } finally {
                     this.updateRenderFileTransferBubble(file_transfer);
-                    return;
                 }
-
-                this.updateRenderFileTransferBubble(file_transfer, 'File encrypted');
-                file_transfer.filetype = file_transfer.filetype;
-                local_url = local_url + ".asc";
-                remote_url = remote_url + '.asc';
-
-                this.updateRenderFileTransferBubble(file_transfer);
             } else {
                 console.log('No public key available for', uri);
             }
         }
 
-        console.log('--- Uploading file', local_url);
+        console.log('--- Uploading file', local_url, 'to', remote_url);
         const xhr = new XMLHttpRequest();
 
         xhr.onload = () => {
@@ -5804,19 +5809,17 @@ class Sylk extends Component {
             delete this.uploadRequests[remote_url]
         };
 
-        let source = encrypted_file || local_url;
-
         xhr.open('POST', remote_url);
         xhr.setRequestHeader('content-type', file_transfer.filetype);
         this.updateRenderFileTransferBubble(file_transfer, 'Uploading file...');
-        xhr.send({ uri: 'file://'+ source });
+        xhr.send({ uri: 'file://'+ local_url });
         if (xhr.upload) {
             xhr.upload.onprogress = (event) => {
                 if (event.lengthComputable) {
                     // evt.loaded the bytes the browser received
                     // evt.total the total bytes set by the header
                     var progress = Math.floor((event.loaded/event.total) * 100);
-                    //console.log('Upload ' + progress + '%!');
+                    console.log('Upload ' + progress + '%!');
                     file_transfer.progress = progress;
                     this.updateRenderFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
                 }
@@ -6294,9 +6297,12 @@ class Sylk extends Component {
                 //console.log('Outgoing encrypted message to', uri);
                 this._sendMessage(uri, encryptedMessage, id, contentType, timestamp);
             }).catch((error) => {
-                console.log('Failed to encrypt message:', error);
-                this.outgoingMessageStateChanged(id, 'failed');
-                this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
+                let error_message = error.message.startsWith('stringResponse') ? error.message.slice(42, error.message.length - 1): error.message;
+                this.renderSystemMessage(uri, error_message, 'outgoing');
+                this._sendMessage(uri, text, id, contentType, timestamp);
+                //console.log('Failed to encrypt message:', error);
+                //this.outgoingMessageStateChanged(id, 'failed');
+                //this.saveSystemMessage(uri, 'Failed to encrypt message', 'outgoing');
             });
         } else {
             //console.log('Outgoing non-encrypted message to', uri);
@@ -6402,23 +6408,26 @@ class Sylk extends Component {
                         if (m._id === id) {
                             if (state === 'accepted') {
                                 m.pending = false;
+                                m.failed = false;
                                 changes = true;
                             }
 
                             if (state === 'delivered') {
                                 m.sent = true;
                                 m.pending = false;
+                                m.failed = false;
                                 changes = true;
                             }
 
                             if (state === 'displayed') {
+                                if (this.state.selectedContact && this.state.selectedContact.uri === uri && !m.received) {
+                                    this.playMessageSound('outgoing');
+                                }
                                 m.received = true;
                                 m.sent = true;
                                 m.pending = false;
+                                m.failed = false;
                                 changes = true;
-                                if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
-                                    this.playMessageSound('outgoing');
-                                }
                             }
 
                             if (state === 'failed') {
@@ -6811,6 +6820,8 @@ class Sylk extends Component {
         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
 
         if (force) {
+            this.updateRenderMessageState(id, 'displayed');
+
             try {
                 await RNFS.unlink(dir_path);
                 utils.timestampedLog('File transfer directory deleted', dir_path);
@@ -6825,7 +6836,7 @@ class Sylk extends Component {
             if (file_transfer.url.endsWith('.asc') && !file_transfer.filename.endsWith('.asc')) {
                 file_transfer.filename = file_transfer.filename + ('.asc');
             }
-            this.updateFileTransferMessageMetadata(file_transfer, 0);
+            this.updateFileTransferMessageMetadata(file_transfer, 0, true);
         }
 
         await RNFS.mkdir(dir_path);
@@ -6912,17 +6923,38 @@ class Sylk extends Component {
             return;
         }
 
+        console.log('decryptFile', file_transfer);
+
         let content;
         let lines = [];
         let base64_content = '';
         let file_path = file_transfer.local_url;
         let file_path_binary = file_path + '.bin';
         let file_path_decrypted = file_path.slice(0, -4);
+        let uri = this.state.accountId === file_transfer.receiver.uri ? file_transfer.sender.uri : file_transfer.receiver.uri;
 
-        const exists = await RNFS.exists(file_path_decrypted);
+        let exists = await RNFS.exists(file_path_decrypted);
 
         if (exists) {
             console.log('File', file_transfer.filename.slice(0, -4), 'is already decrypted');
+        }
+
+        exists = await RNFS.exists(file_path);
+
+        if (!exists) {
+            console.log('Encrypted file', file_path, 'does not exist');
+            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            return;
+        } else {
+            const { size } = await RNFetchBlob.fs.stat(file_path);
+            console.log('Reading encrypted content', size, file_path);
+
+            if (size !== file_transfer.filesize) {
+                file_transfer.error = 'Wrong file size';
+                this.updateFileTransferMessageMetadata(file_transfer, 3);
+                this.renderSystemMessage(uri, 'Wrong file size ' + size + ', on server is ' + file_transfer.filesize, 'outgoing', new Date());
+                return;
+            }
         }
 
         this.updateRenderFileTransferBubble(file_transfer, 'Decrypting...');
@@ -6931,7 +6963,8 @@ class Sylk extends Component {
             content = await RNFS.readFile(file_path, 'utf8');
         } catch (e) {
             console.log('Error reading file from PGP envelope', e.message, file_path);
-            file_transfer.status = 'Error reading .asc file';
+            file_transfer.error = 'Error reading .asc file';
+            this.renderSystemMessage(uri, e.message, 'outgoing', new Date());
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
         }
@@ -6986,12 +7019,12 @@ class Sylk extends Component {
             await RNFS.writeFile(file_path_binary, base64_content, 'base64');
         } catch (e) {
             utils.timestampedLog('Error writing file', e.message);
-            file_transfer.status = 'Error writing file';
+            file_transfer.error = 'Error writing file';
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
+        } finally {
+            console.log('Wrote', file_path_binary);
         }
-
-        //console.log('Wrote', file_path_binary);
 
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
             file_transfer.local_url = file_path_decrypted;
@@ -7010,9 +7043,12 @@ class Sylk extends Component {
             }
             this.updateFileTransferMessageMetadata(file_transfer, 2);
         }).catch((error) => {
-            file_transfer.status = 'Error decrypting base64 file ' + file_path_binary;
+            file_transfer.error = 'Error decrypting base64 file ' + file_path_binary;
+            file_transfer.progress = null;
+            this.renderSystemMessage(uri, error.message, 'outgoing', new Date());
             utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
+            //console.log(content);
         });
     }
 
@@ -7111,6 +7147,7 @@ class Sylk extends Component {
     }
 
     lookupPublicKey(contact) {
+        //console.log('lookupPublicKey', contact.uri);
 
         if (contact.uri.indexOf('@guest') > -1) {
             return;
@@ -7120,7 +7157,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (!contact.publicKey && !contact.conference && this.state.connection) {
+        if (!contact.conference && this.state.connection) {
             this.state.connection.lookupPublicKey(contact.uri);
         }
     }
@@ -7590,6 +7627,8 @@ class Sylk extends Component {
     }
 
     async removeMessage(message, uri=null) {
+        //console.log('removeMessage');
+
         if (uri === null) {
             uri = message.sender.uri;
         }
@@ -8240,7 +8279,7 @@ class Sylk extends Component {
     buildLastMessage(message, content=null) {
         let new_content = '';
         let filename = 'File';
-        //console.log('buildLastMessage');
+        //console.log('buildLastMessage', message.contentType);
 
         if (message.contentType === 'application/sylk-file-transfer') {
             new_content = utils.beautyFileNameForBubble(message.metadata, true);
@@ -8562,17 +8601,18 @@ class Sylk extends Component {
         });
     }
 
-    async updateFileTransferMessageMetadata(metadata, encryption=0) {
+    async updateFileTransferMessageMetadata(metadata, encryption=0, reset=false) {
         let query = "SELECT * from messages where msg_id = ?";
         await this.ExecuteQuery(query, [metadata.transfer_id]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
-                if (encryption === 3) {
+                if (encryption === 3 && !metadata.error) {
                     metadata.error = 'decryption failed';
                 }
                 var item = rows.item(0);
-                let params = [JSON.stringify(metadata), encryption, metadata.transfer_id]
-                query = "update messages set metadata = ?, encrypted = ? where msg_id = ?"
+                let received = reset ? '1' : item.received;
+                let params = [JSON.stringify(metadata), received, encryption, metadata.transfer_id]
+                query = "update messages set metadata = ?, received = ?, encrypted = ? where msg_id = ?"
                 this.ExecuteQuery(query, params).then((results) => {
                     //console.log('SQL updated file transfer metadata', metadata);
                     this.updateRenderFileTransferBubble(metadata);
@@ -9567,6 +9607,7 @@ class Sylk extends Component {
 
         if (this.state.forwardContent) {
             let message = this.state.forwardContent;
+            //console.log('Forwarding content...');
             msg.text = message.text;
             if (message.metadata && message.metadata.filename) {
                 contentType = 'application/sylk-file-transfer';
@@ -9582,8 +9623,11 @@ class Sylk extends Component {
                 msg.metadata.paused = false;
                 msg.metadata.failed = false;
                 msg.metadata.until = null;
+                if (message.metadata.filename.endsWith('.asc')) {
+                    msg.metadata.filename = message.metadata.filename.slice(0, -4);
+                }
             }
-            console.log('Forwarding content...', msg);
+            //console.log('Forwarding content result...', msg);
 
         } else {
             console.log('Sharing content...');
@@ -9654,12 +9698,16 @@ class Sylk extends Component {
             this.sendMessage(uri, msg, contentType);
         });
 
+        this.cancelShareContent();
+    }
+
+    cancelShareContent() {
         this.setState({shareContent: [],
-                       selectedContacts: [],
-                       selectedContact: this.state.sourceContact,
-                       forwardContent: null,
-                       sourceContact: null,
-                       shareToContacts: false});
+                   selectedContacts: [],
+                   selectedContact: this.state.sourceContact,
+                   forwardContent: null,
+                   sourceContact: null,
+                   shareToContacts: false});
     }
 
     filterHistory(filter) {
