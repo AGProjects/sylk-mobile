@@ -31,7 +31,6 @@ class GenerateKeysModal extends Component {
     }
 
     render() {
-
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>

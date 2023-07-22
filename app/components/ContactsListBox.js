@@ -1404,11 +1404,14 @@ class ContactsListBox extends Component {
     }
 
     onLongMessagePress(context, currentMessage) {
+        if (!currentMessage.metadata) {
+            currentMessage.metadata = {};
+        }
         //console.log('currentMessage metadata', currentMessage.metadata);
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
-            if (!currentMessage.metadata.error) {
+            if (currentMessage.metadata && !currentMessage.metadata.error) {
                 if (!isSsiMessage && this.isMessageEditable(currentMessage)) {
                     options.push('Edit');
                 }
