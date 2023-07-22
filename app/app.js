@@ -106,10 +106,8 @@ function checkIosPermissions() {
 
 const KeyOptions = {
   cipher: "aes256",
-  compression: "zlib",
   hash: "sha512",
   RSABits: 4096,
-  compressionLevel: 5
 }
 
 const incomingCallLabel = 'Incoming call...';
