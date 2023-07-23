@@ -393,14 +393,14 @@ class ContactsListBox extends Component {
             let delete_ids = [];
             Object.keys(this.outgoingPendMessages).forEach((_id) => {
                 if (renderMessages.some((obj) => obj._id === _id)) {
-                    console.log('Remove pending message id', _id);
+                    //console.log('Remove pending message id', _id);
                     delete_ids.push(_id);
                     // message exists
                 } else {
                     if (this.state.renderMessages.some((obj) => obj._id === _id)) {
-                        console.log('Pending message id', _id, 'already exists');
+                        //console.log('Pending message id', _id, 'already exists');
                     } else {
-                        console.log('Adding pending message id', _id);
+                        //console.log('Adding pending message id', _id);
                         renderMessages.push(this.outgoingPendMessages[_id]);
                     }
                 }

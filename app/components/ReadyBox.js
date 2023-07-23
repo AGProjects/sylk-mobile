@@ -176,7 +176,7 @@ class ReadyBox extends Component {
             return;
        }
 
-       console.log('filterHistory', filter);
+       //console.log('filterHistory', filter);
 
        if (this.state.selectedContact) {
            if (!filter && this.state.pinned) {
@@ -742,7 +742,7 @@ class ReadyBox extends Component {
             }
         }
 
-        //console.log('RB', this.state.isTablet);
+        //console.log('RB', this.state.myContacts);
 
         if (this.state.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;

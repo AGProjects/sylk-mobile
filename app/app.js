@@ -899,7 +899,7 @@ class Sylk extends Component {
     }
 
     loadSylkContacts() {
-        console.log('Loading contacts...')
+        console.log('Loading contacts...');
         let myContacts = {};
         let blockedUris = [];
         let favoriteUris = [];
@@ -2264,7 +2264,7 @@ class Sylk extends Component {
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
         } else if (event === 'message') {
-            console.log('Push notification: new messages on Sylk server from', from);
+            //console.log('Push notification: new messages on Sylk server from', from);
         }
     }
 
@@ -5663,19 +5663,17 @@ class Sylk extends Component {
 
         if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
-                console.log('Message encrypted');
+                utils.timestampedLog('Outgoing message', message._id, 'encrypted');
                 this.saveOutgoingMessage(uri, message, 1);
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
-                //console.log(encryptedMessage);
             }).catch((error) => {
                 console.log('Failed to encrypt message:', error);
                 let error_message = error.message.startsWith('stringResponse') ? error.message.slice(43, error.message.length - 1): error.message;
-                //this.renderSystemMessage(uri, error_message, 'outgoing');
+                this.renderSystemMessage(uri, error_message, 'outgoing');
                 this.saveOutgoingMessage(uri, message, 0);
                 //this.outgoingMessageStateChanged(message._id, 'failed');
                 this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
             });
-
         } else {
             console.log('Outgoing non-encrypted message to', uri);
             this.saveOutgoingMessage(uri, message, 0, message.contentType);
@@ -5722,7 +5720,7 @@ class Sylk extends Component {
     }
 
     async uploadFile(file_transfer) {
-        console.log('uploadFile', file_transfer);
+        //console.log('uploadFile', file_transfer.local_url);
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
@@ -5764,7 +5762,7 @@ class Sylk extends Component {
                     let encrypted_file = local_url + '.asc';
                     //console.log('Will encrypt file', local_url, 'to', encrypted_file);
                     await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
-                    console.log('File encrypted');
+                    utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted');
                     this.updateRenderFileTransferBubble(file_transfer, 'Calculating checksum...');
                     let base64_content = await RNFS.readFile(encrypted_file, 'base64');
                     let checksum = utils.getPGPCheckSum(base64_content);
@@ -5822,7 +5820,7 @@ class Sylk extends Component {
                     // evt.loaded the bytes the browser received
                     // evt.total the total bytes set by the header
                     var progress = Math.floor((event.loaded/event.total) * 100);
-                    console.log('Upload ' + progress + '%!');
+                    //console.log('Upload ' + progress + '%!');
                     file_transfer.progress = progress;
                     this.updateRenderFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
                 }
@@ -6297,7 +6295,7 @@ class Sylk extends Component {
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
             let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
             await OpenPGP.encrypt(text, public_keys).then((encryptedMessage) => {
-                console.log('Outgoing encrypted message to', uri);
+                utils.timestampedLog('Outgoing message', id, 'encrypted');
                 this._sendMessage(uri, encryptedMessage, id, contentType, timestamp);
             }).catch((error) => {
                 let error_message = error.message.startsWith('stringResponse') ? error.message.slice(42, error.message.length - 1): error.message;
@@ -6403,7 +6401,7 @@ class Sylk extends Component {
                 var item = rows.item(0);
                 //console.log(item);
                 uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
-                console.log('Message', id, 'new state is', state);
+                //console.log('Message', id, 'new state is', state);
                 if (uri in this.state.messages) {
                     let renderedMessages = this.state.messages;
 
@@ -6788,10 +6786,14 @@ class Sylk extends Component {
             if (utils.isImage(file_transfer.filename)) {
                 this.downloadFile(file_transfer);
             } else {
-                if (file_transfer.filesize < 1000 * 1000) {
+                if (file_transfer.filesize < 1000 * 10000) {
                     this.downloadFile(file_transfer);
+                } else {
+                    console.log('File transfer is too large');
                 }
             }
+        } else {
+            console.log('File transfer is too old');
         }
     }
 
@@ -6950,7 +6952,7 @@ class Sylk extends Component {
             return;
         } else {
             const { size } = await RNFetchBlob.fs.stat(file_path);
-            console.log('Reading encrypted content', size, file_path);
+            //console.log('Reading encrypted content', size, file_path);
 
             if (size !== file_transfer.filesize) {
                 file_transfer.error = 'Wrong file size';
@@ -7025,12 +7027,11 @@ class Sylk extends Component {
             file_transfer.error = 'Error writing file';
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
-        } finally {
-            console.log('Wrote', file_path_binary);
         }
 
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
-            console.log('File decrypted');
+            utils.timestampedLog('File', file_transfer.transfer_id, 'decrypted');
+
             file_transfer.local_url = file_path_decrypted;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
 
@@ -7076,7 +7077,7 @@ class Sylk extends Component {
         let idx;
 
         await OpenPGP.decrypt(message.content, this.state.keys.private).then((content) => {
-            console.log('Message', id, message.content_type, 'to', message.to_uri, 'was decrypted');
+            utils.timestampedLog('Message', id, 'decrypted');
             let messages = this.state.messages;
             let uri = message.direction === 'incoming' ? message.from_uri : message.to_uri;
             if (uri in decryptingMessages) {
@@ -7151,7 +7152,7 @@ class Sylk extends Component {
     }
 
     lookupPublicKey(contact) {
-        console.log('lookupPublicKey', contact.uri);
+        //console.log('lookupPublicKey', contact.uri);
 
         if (contact.uri.indexOf('@guest') > -1) {
             return;
@@ -8183,7 +8184,7 @@ class Sylk extends Component {
     }
 
     async incomingMessage(message) {
-        console.log('Message', message.id, message.contentType, 'was received');
+        utils.timestampedLog('Incoming message', message.id, message.contentType, 'received');
         // Handle incoming messages
         this.saveLastSyncId(message.id);
 
@@ -8222,13 +8223,13 @@ class Sylk extends Component {
                 this.saveSystemMessage(message.sender.uri, 'Cannot decrypt message, no private key', 'incoming');
             } else {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                    console.log('Incoming message', message.id, 'decrypted');
+                    utils.timestampedLog('Incoming message', message.id, 'decrypted');
                     this.handleIncomingMessage(message, decryptedBody);
                 }).catch((error) => {
                     console.log('Failed to decrypt message', message.id, error);
-                    this.sendPublicKey(message.sender.uri);
-                    this.sendDispositionNotification(message, 'error');
                     this.saveSystemMessage(message.sender.uri, 'Cannot decrypt last message, wrong key', 'incoming');
+                    this.sendDispositionNotification(message, 'error');
+                    this.sendPublicKey(message.sender.uri);
                 });
             }
         } else {
@@ -8373,7 +8374,8 @@ class Sylk extends Component {
 
         if (is_encrypted) {
             await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                //console.log('Outgoing message', message.id, 'decrypted to', message.receiver, message.contentType);
+                utils.timestampedLog('Outgoing message', message.id, 'decrypted');
+
                 content = decryptedBody;
                 if (message.contentType === 'application/sylk-contact-update') {
                     this.handleReplicateContact(content);
@@ -8508,7 +8510,7 @@ class Sylk extends Component {
         if (is_encrypted) {
             if (message.contentType === 'application/sylk-contact-update') {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                    //console.log('Sync outgoing message', message.id, message.contentType, 'decrypted to', message.receiver);
+                    console.log('Sync outgoing message', message.id, message.contentType, 'decrypted to', message.receiver);
                     this.handleReplicateContactSync(decryptedBody, message.id, message.timestamp);
                     this.remove_sync_pending_item(message.id);
                 }).catch((error) => {
