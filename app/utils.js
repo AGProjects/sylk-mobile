@@ -294,10 +294,10 @@ function sql2GiftedChat(item, content, filter={}) {
 function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
     let file_name = metadata.filename;
-    //console.log('beautyFileNameForBubble', metadata.progress, metadata.error);
+    //console.log('beautyFileNameForBubble', metadata);
 
     let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
-    if (metadata.progress !== null && metadata.progress !== 100) {
+    if ('progress' in metadata && metadata.progress !== null && metadata.progress !== 100) {
         prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
     }
 

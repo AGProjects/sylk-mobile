@@ -369,6 +369,7 @@ class NavigationBar extends Component {
         }
 
         let ssiTitle = this.state.ssiRequired ? 'Disable SSI' : 'Enable SSI';
+        let enableSsi = false;
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
@@ -472,7 +473,7 @@ class NavigationBar extends Component {
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
 
-                        {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="key" title={importKeyLabel} />:null}
+                        {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Change private key..."/> :null}
                         {false ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
@@ -484,7 +485,9 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                         </View>
                         : null}
+                        {enableSsi?
                         <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
+                        : null}
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Logs" />
 
                         {!this.state.inCall ?

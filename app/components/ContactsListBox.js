@@ -540,7 +540,7 @@ class ContactsListBox extends Component {
         this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
                         cameraAsset: msg,
-                        placeholder: 'Delete/send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
+                        placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
                         });
     }
 
