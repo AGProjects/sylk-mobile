@@ -1572,6 +1572,7 @@ class Sylk extends Component {
             // contacts returned in Array
             let contact_cards = [];
             let name;
+            let contact;
             let photo;
             let avatarPhotos = {};
             let avatarEmails = {};
