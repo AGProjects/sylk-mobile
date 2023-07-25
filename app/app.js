@@ -1909,7 +1909,7 @@ class Sylk extends Component {
 
     async componentDidMount() {
         utils.timestampedLog('App did mount');
-        //this.requestStoragePermission();
+        this.requestPermissions();
 
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
@@ -4217,7 +4217,7 @@ class Sylk extends Component {
 
         const micAllowed = await this.requestMicPermission();
         if (!micAllowed) {
-            console.log('Cannot start call without access to microphone');
+            this._notificationCenter.postSystemNotification('Microphone permission denied');
             return;
         }
 
@@ -4293,7 +4293,7 @@ class Sylk extends Component {
         const micAllowed = await this.requestMicPermission();
 
         if (!micAllowed) {
-            console.log('Cannot start call without access to microphone');
+            this._notificationCenter.postSystemNotification('Microphone permission denied');
             return;
         }
 
