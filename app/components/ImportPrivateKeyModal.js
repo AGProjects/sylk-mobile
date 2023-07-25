@@ -51,6 +51,7 @@ class ImportPrivateKeyModal extends Component {
     generateKeys(event) {
         event.preventDefault();
         if (this.state.confirm) {
+            this.setState({password: ''});
             this.props.generateKeysFunc();
             this.props.close();
         } else {
@@ -60,6 +61,7 @@ class ImportPrivateKeyModal extends Component {
 
     useExistingKeys(event) {
         event.preventDefault();
+        this.setState({password: ''});
         this.props.useExistingKeysFunc();
         this.props.close();
     }

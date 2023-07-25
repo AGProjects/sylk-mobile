@@ -713,7 +713,7 @@ class Sylk extends Component {
         let keyStatus = this.state.keyStatus;
         let myContacts = this.state.myContacts;
 
-        keyStatus['existsLocal'] = true;
+        keyStatus.existsLocal = true;
 
         this.setState({keys: {private: keys.private,
                               public: keys.public,
@@ -827,16 +827,20 @@ class Sylk extends Component {
                 //console.log('My local public key:', item.public_key);
                 keys.public = item.public_key;
                 if (item.public_key) {
-                    keyStatus['existsLocal'] = true;
-                    if (keyStatus['serverPublicKey'] !== item.public_key) {
-                        console.log('My PGP key on server is different than local');
-                        this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
+                    keyStatus.existsLocal = true;
+                    if ('existsOnServer' in Object.keys(keyStatus)) {
+                        if (keyStatus.serverPublicKey !== item.public_key) {
+                            console.log('My PGP key on server is different than local');
+                            this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
+                        } else {
+                            console.log('My PGP key on server is the same as local');
+                            this.setState({showImportPrivateKeyModal: false});
+                        }
                     } else {
-                        console.log('My PGP key on server is the same as local');
-                        this.setState({showImportPrivateKeyModal: false});
+                        console.log('PGP key was not yet checked on server');
                     }
                 } else {
-                    keyStatus['existsLocal'] = false;
+                    keyStatus.existsLocal = false;
                 }
 
                 let my_uuid = item.my_uuid;
@@ -871,7 +875,7 @@ class Sylk extends Component {
 
             } else {
                 console.log('SQL has no keys');
-                keyStatus['existsLocal'] = false;
+                keyStatus.existsLocal = false;
                 if (this.state.account) {
                     this.generateKeysIfNecessary(this.state.account);
                 } else {
@@ -4008,11 +4012,11 @@ class Sylk extends Component {
             console.log('PGP key server was already queried');
             // server was queried
 
-            if (keyStatus['existsOnServer']) {
+            if (keyStatus.existsOnServer) {
                 this.setState({keyExistsOnServer: true})
-                if (keyStatus['existsLocal']) {
+                if (keyStatus.existsLocal) {
                     // key exists in both places
-                    if (this.state.keys && keyStatus['serverPublicKey'] !== this.state.keys.public) {
+                    if (this.state.keys && keyStatus.serverPublicKey !== this.state.keys.public) {
                         console.log('PGP key is different than the one on server');
                         this.setState({keyDifferentOnServer: true});
                         setTimeout(() => {
@@ -4028,7 +4032,7 @@ class Sylk extends Component {
                     }, 10);
                 }
             } else {
-                if (!keyStatus['existsLocal']) {
+                if (!keyStatus.existsLocal) {
                     console.log('We have no PGP key here nor on server');
                     this.generateKeys();
                 } else {
@@ -4038,11 +4042,11 @@ class Sylk extends Component {
         } else {
             console.log('PGP key server was not yet queried');
             account.checkIfKeyExists((key) => {
-                keyStatus['serverPublicKey'] = key;
+                keyStatus.serverPublicKey = key;
 
                 if (key) {
-                    //console.log('Server public key:', key);
-                    keyStatus['existsOnServer'] = true;
+                    //console.log('My server public key:', key);
+                    keyStatus.existsOnServer = true;
                     this.setState({keyExistsOnServer: true})
                     console.log('PGP key does exist on server');
                     if (this.state.keys) {
@@ -4052,7 +4056,7 @@ class Sylk extends Component {
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
                             console.log('My PGP key exists on server and we have a local copy');
-                            keyStatus['existsLocal'] = true;
+                            keyStatus.existsLocal = true;
                         }
                     } else {
                         console.log('My PGP keys have not yet been loaded');
@@ -4066,7 +4070,7 @@ class Sylk extends Component {
                         }
                     }
                 } else {
-                    keyStatus['existsOnServer'] = false;
+                    keyStatus.existsOnServer = false;
                     console.log('My PGP key does not exist on server');
                     if (this.state.contactsLoaded) {
                         if (this.state.keys && this.state.keys.private) {
@@ -4528,7 +4532,7 @@ class Sylk extends Component {
         } else {
             if ('existsOnServer' in keyStatus) {
                 if ('existsLocal' in keyStatus) {
-                    if (!keyStatus['existsLocal']) {
+                    if (!keyStatus.existsLocal) {
                         this.setState({showImportPrivateKeyModal: true});
                     } else {
                         console.log('PGP key exists locally');
@@ -5384,7 +5388,7 @@ class Sylk extends Component {
 
         if (public_key && this.state.keys && this.state.keys.public === public_key) {
             console.log('Private key is the same');
-            //return;
+            return;
         }
 
         this.setState({showImportPrivateKeyModal: true,
@@ -7457,6 +7461,7 @@ class Sylk extends Component {
                     if (pinned || category) {
                         filteredMessageIds.push(msg._id);
                     }
+
 
                     if (msg.metadata && msg.metadata.filename) {
                         if (msg.metadata.paused) {
