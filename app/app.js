@@ -303,7 +303,8 @@ class Sylk extends Component {
             deletedContacts: {},
             isTexting: false,
             filteredMessageIds: [],
-            contentTypes: {}
+            contentTypes: {},
+            androidPermissions: {}
         };
 
         utils.timestampedLog('Init app');
@@ -537,16 +538,32 @@ class Sylk extends Component {
 
     }
 
-    async requestStoragePermission() {
+    async requestPermissions() {
         if (Platform.OS !== 'android') {
             return;
         }
 
-        console.log('Request storage permission');
+        // Android 13
+        const OsVer = Platform.constants['Release'];
+        console.log('Android version', OsVer);
+        let granted;
+
+        let androidPermissions = this.state.androidPermissions;
+
+        let granted_READ_PHONE_NUMBERS = await PermissionsAndroid.request('android.permission.READ_PHONE_NUMBERS');
+        console.log('READ_PHONE_NUMBERS', granted_READ_PHONE_NUMBERS);
+        androidPermissions['POST_NOTIFICATIONS'] = granted_READ_PHONE_NUMBERS;
+        this.setState({androidPermissions: androidPermissions});
+
+        let granted_POST_NOTIFICATIONS = await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
+        androidPermissions['POST_NOTIFICATIONS'] = granted_POST_NOTIFICATIONS;
+        this.setState({androidPermissions: androidPermissions});
 
         try {
           const permission = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
-          await PermissionsAndroid.request(permission);
+          let granted_WRITE_EXTERNAL_STORAGE = await PermissionsAndroid.request(permission);
+          androidPermissions['WRITE_EXTERNAL_STORAGE'] = granted_WRITE_EXTERNAL_STORAGE;
+          this.setState({androidPermissions: androidPermissions});
           Promise.resolve();
         } catch (error) {
           Promise.reject(error);
@@ -555,6 +572,8 @@ class Sylk extends Component {
 
     async requestCameraPermission() {
         console.log('Request camera permission');
+
+        let androidPermissions = this.state.androidPermissions;
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.CAMERA).then((result) => {
@@ -584,7 +603,7 @@ class Sylk extends Component {
 
         if (Platform.OS === 'android') {
             try {
-                const granted = await PermissionsAndroid.request(
+                let granted = await PermissionsAndroid.request(
                 PermissionsAndroid.PERMISSIONS.CAMERA,
                     {
                     title: "Sylk camera permission",
@@ -596,13 +615,17 @@ class Sylk extends Component {
                     buttonPositive: "OK"
                     }
                 );
-                if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                    console.log("You can use the camera");
-                    return true;
-                } else {
+
+                androidPermissions['CAMERA'] = granted;
+                this.setState({androidPermissions: androidPermissions});
+                console.log('CAMERA', granted);
+
+                if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
                     console.log("Camera permission denied");
                     return false;
                 }
+
+                return true;
             } catch (err) {
                 console.warn(err);
                 return false;
@@ -611,7 +634,8 @@ class Sylk extends Component {
     }
 
     async requestMicPermission() {
-       console.log('Request mic permission');
+        console.log('Request mic permission');
+        let androidPermissions = this.state.androidPermissions;
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.MICROPHONE).then((result) => {
@@ -642,6 +666,11 @@ class Sylk extends Component {
 
         if (Platform.OS === 'android') {
             try {
+                let granted_BLUETOOTH_CONNECT = await PermissionsAndroid.request(PERMISSIONS.ANDROID.BLUETOOTH_CONNECT);
+                console.log('BLUETOOTH_CONNECT', granted_BLUETOOTH_CONNECT);
+                androidPermissions['BLUETOOTH_CONNECT'] = granted_BLUETOOTH_CONNECT;
+                this.setState({androidPermissions: androidPermissions});
+
                 const granted = await PermissionsAndroid.request(
                   PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
                   {
@@ -655,13 +684,16 @@ class Sylk extends Component {
                   }
                 );
 
-                if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                    console.log("You can now use the microphone");
-                    return true;
-                } else {
-                    console.log("Microphone permission denied");
+                console.log('RECORD_AUDIO', granted);
+                androidPermissions['RECORD_AUDIO'] = granted;
+                this.setState({androidPermissions: androidPermissions});
+
+                if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
                     return false;
                 }
+
+                return true;
+
             } catch (err) {
                 console.warn(err);
                 return false;
