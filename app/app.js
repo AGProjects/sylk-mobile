@@ -281,7 +281,6 @@ class Sylk extends Component {
             avatarEmails: {},
             showConferenceModal: false,
             keyDifferentOnServer: false,
-            keyExistsOnServer: false,
             serverPublicKey: null,
             generatingKey: false,
             appStoreVersion: null,
@@ -825,15 +824,17 @@ class Sylk extends Component {
             if (rows.length === 1) {
                 var item = rows.item(0);
                 //console.log('My local public key:', item.public_key);
+                //console.log('Key status:', keyStatus);
+
                 keys.public = item.public_key;
                 if (item.public_key) {
                     keyStatus.existsLocal = true;
-                    if ('existsOnServer' in Object.keys(keyStatus)) {
+                    if ('existsOnServer' in keyStatus) {
                         if (keyStatus.serverPublicKey !== item.public_key) {
-                            console.log('My PGP key on server is different than local');
+                            console.log('My PGP key on server is different than local, existsOnServer = ', keyStatus.existsOnServer);
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            console.log('My PGP key on server is the same as local');
+                            console.log('My PGP keys are the same');
                             this.setState({showImportPrivateKeyModal: false});
                         }
                     } else {
@@ -4013,7 +4014,6 @@ class Sylk extends Component {
             // server was queried
 
             if (keyStatus.existsOnServer) {
-                this.setState({keyExistsOnServer: true})
                 if (keyStatus.existsLocal) {
                     // key exists in both places
                     if (this.state.keys && keyStatus.serverPublicKey !== this.state.keys.public) {
@@ -4046,18 +4046,20 @@ class Sylk extends Component {
 
                 if (key) {
                     //console.log('My server public key:', key);
+                    //console.log('Key status:', keyStatus);
+
                     keyStatus.existsOnServer = true;
-                    this.setState({keyExistsOnServer: true})
                     console.log('PGP key does exist on server');
                     if (this.state.keys) {
-                        console.log('My PGP keys have already been loaded');
                         if (this.state.keys && this.state.keys.public !== key) {
                             console.log('My PGP key on server is different than local');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            console.log('My PGP key exists on server and we have a local copy');
+                            console.log('My PGP keys are the same');
                             keyStatus.existsLocal = true;
                         }
+                    this.setState({keyStatus: keyStatus});
+
                     } else {
                         console.log('My PGP keys have not yet been loaded');
                         if (!this.state.contactsLoaded) {
@@ -4071,6 +4073,7 @@ class Sylk extends Component {
                     }
                 } else {
                     keyStatus.existsOnServer = false;
+                    this.setState({keyStatus: keyStatus});
                     console.log('My PGP key does not exist on server');
                     if (this.state.contactsLoaded) {
                         if (this.state.keys && this.state.keys.private) {
@@ -4083,7 +4086,6 @@ class Sylk extends Component {
                         console.log('Wait for PGP key until contacts are loaded');
                     }
                 }
-                this.setState({keyStatus: keyStatus});
             });
         }
     }
@@ -10266,7 +10268,7 @@ class Sylk extends Component {
                     useExistingKeysFunc={this.useExistingKeys}
                     privateKey={this.state.privateKey}
                     keyDifferentOnServer={this.state.keyDifferentOnServer}
-                    keyExistsOnServer={this.state.keyExistsOnServer}
+                    keyExistsOnServer={this.state.keyStatus.existsOnServer}
                     keyStatus={this.state.keyStatus}
                     status={this.state.privateKeyImportStatus}
                     success={this.state.privateKeyImportSuccess}
@@ -10618,7 +10620,6 @@ class Sylk extends Component {
                        contactsLoaded: false,
                        registrationState: null,
                        registrationKeepalive: false,
-                       keyExistsOnServer: false,
                        keyDifferentOnServer: false,
                        status: null,
                        keys: null,
