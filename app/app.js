@@ -5689,14 +5689,14 @@ class Sylk extends Component {
                 await RNFS.mkdir(dirname);
             } catch (e) {
                 console.log('Error making directory', dirname, ':', e);
-                this.renderSystemMessage(uri, e.message, 'outgoing', new Date());
+                this.renderSystemMessage(uri, e.message);
                 return;
             }
 
             try {
                 await RNFS.copyFile(file_transfer.path, localPath);
             } catch (e) {
-                this.renderSystemMessage(uri, e.message, 'outgoing', new Date());
+                this.renderSystemMessage(uri, e.message);
                 console.log('Error copying file from', file_transfer.path, 'to', localPath, ':', e);
                 return;
             }
@@ -6034,8 +6034,8 @@ class Sylk extends Component {
 
     async saveDownloadTask(id, url, local_url) {
         //console.log('saveDownloadTask', url, local_url);
-        let query = "SELECT * from messages where msg_id = ?";
-        this.ExecuteQuery(query,[id]).then((results) => {
+        let query = "SELECT * from messages where msg_id = ? and account = ?";
+        this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             let file_transfer = {};
             if (rows.length === 1) {
@@ -6227,8 +6227,8 @@ class Sylk extends Component {
     }
 
     removeFilesForMessage(id, uri) {
-        let query = "SELECT * from messages where msg_id = ?";
-        this.ExecuteQuery(query,[id]).then((results) => {
+        let query = "SELECT * from messages where msg_id = ? and account = ?";
+        this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
@@ -6439,9 +6439,9 @@ class Sylk extends Component {
 
         //console.log('updateMessage', id, state);
 
-        query = "SELECT * from messages where msg_id = ?";
+        query = "SELECT * from messages where msg_id = ? and account = ?";
         //console.log(query);
-        await this.ExecuteQuery(query,[id]).then((results) => {
+        await this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
@@ -7015,7 +7015,7 @@ class Sylk extends Component {
         } catch (e) {
             console.log('Error reading file from PGP envelope', e.message, file_path);
             file_transfer.error = 'Error reading .asc file';
-            this.renderSystemMessage(uri, e.message, 'outgoing', new Date());
+            this.renderSystemMessage(uri, e.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             return;
         }
@@ -7094,9 +7094,12 @@ class Sylk extends Component {
             }
             this.updateFileTransferMessageMetadata(file_transfer, 2);
         }).catch((error) => {
-            file_transfer.error = 'Error decrypting base64 file ' + file_path_binary;
+            let error_message = error.message;
+            if (error.message.indexOf('incorrect key') > -1) {
+                error_message = 'Incorrect encryption key, the sender must resent the file';
+            }
+            file_transfer.error = 'Error decrypting file: ' + error_message;
             file_transfer.progress = null;
-            this.renderSystemMessage(uri, error.message, 'outgoing', new Date());
             utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
             this.updateFileTransferMessageMetadata(file_transfer, 3);
             //console.log(content);
@@ -7121,11 +7124,14 @@ class Sylk extends Component {
         let msg;
         let pending_messages = [];
         let idx;
+        let uri = message.direction === 'incoming' ? message.from_uri : message.to_uri;
+        let messages = this.state.messages;
+        let render_messages = messages[uri];
+
+        //console.log('decryptMessage', id);
 
         await OpenPGP.decrypt(message.content, this.state.keys.private).then((content) => {
             utils.timestampedLog('Message', id, 'decrypted');
-            let messages = this.state.messages;
-            let uri = message.direction === 'incoming' ? message.from_uri : message.to_uri;
             if (uri in decryptingMessages) {
                 pending_messages = decryptingMessages[uri];
                 idx = pending_messages.indexOf(id);
@@ -7162,7 +7168,6 @@ class Sylk extends Component {
             }
 
             if (uri in messages) {
-                let render_messages = messages[uri];
                 if (message.content_type === 'text/html') {
                     content = utils.html2text(content);
                 } else if (message.content_type === 'text/plain') {
@@ -7180,25 +7185,41 @@ class Sylk extends Component {
                 }
             }
 
-            let params = [content, id];
-            this.ExecuteQuery("update messages set encrypted = 2, content = ? where msg_id = ?", params).then((result) => {
-                //console.log('SQL updated message decrypted', id);
+            let params = [content, id, this.state.accountId];
+            this.ExecuteQuery("update messages set encrypted = 2, content = ? where msg_id = ? and account = ?", params).then((result) => {
             }).catch((error) => {
                 console.log('SQL message update error:', error);
             });
 
         }).catch((error) => {
-            let params = [id];
-            this.ExecuteQuery("update messages set encrypted = 3 where msg_id = ?", params).then((result) => {
-                console.log('SQL failed to decrypt message', id);
+            console.log('Error decrypting message', id, error.message);
+            let params = [id, this.state.accountId];
+            this.ExecuteQuery("update messages set encrypted = 3 where msg_id = ? and account = ?", params).then((result) => {
+
             }).catch((error) => {
                 console.log('SQL message update error:', error);
             });
+
+
+            let error_message = error.message;
+            if (error.message.indexOf('incorrect key') > -1) {
+                error_message = error_message + ', the sender must resent the message';
+            }
+
+            if (message.from_uri !== this.state.accountId) {
+                console.log('Broken', message.direction, message.from_uri);
+                msg = utils.sql2GiftedChat(message, error_message);
+                msg.received = 0;
+                msg.encrypted = 3;
+                render_messages.push(msg);
+                messages[uri] = render_messages;
+            this.setState({message: messages});
+            }
         });
     }
 
     lookupPublicKey(contact) {
-        //console.log('lookupPublicKey', contact.uri);
+        //console.log('lookupPublicKey', contact);
 
         if (contact.uri.indexOf('@guest') > -1) {
             return;
@@ -7360,8 +7381,9 @@ class Sylk extends Component {
                 }
 
                 const is_encrypted =  content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+                enc = parseInt(item.encrypted);
 
-                if (is_encrypted) {
+                if (is_encrypted && enc && enc !== 3) {
                     myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                     if (item.encrypted === null) {
                         item.encrypted = 1;
@@ -7374,17 +7396,16 @@ class Sylk extends Component {
                      3 = failed to decrypt message
                     */
 
-                    enc = parseInt(item.encrypted);
-                    if (enc && enc !== 3 ) {
-                        if (uri in decryptingMessages) {
-                        } else {
-                            decryptingMessages[orig_uri] = [];
-                        }
-                        decryptingMessages[orig_uri].push(item.msg_id);
-                        messages_to_decrypt.push(item);
+                    if (uri in decryptingMessages) {
+                    } else {
+                        decryptingMessages[orig_uri] = [];
                     }
+                    decryptingMessages[orig_uri].push(item.msg_id);
+                    messages_to_decrypt.push(item);
                 } else {
-                    if (item.content_type === 'text/html') {
+                    if (enc === 3) {
+                        content = 'Encrypted message';
+                    } else if (item.content_type === 'text/html') {
                         content = utils.html2text(content);
                     } else if (item.content_type === 'text/plain') {
                         content = content;
@@ -8654,8 +8675,8 @@ class Sylk extends Component {
     }
 
     async updateFileTransferMessageMetadata(metadata, encryption=0, reset=false) {
-        let query = "SELECT * from messages where msg_id = ?";
-        await this.ExecuteQuery(query, [metadata.transfer_id]).then((results) => {
+        let query = "SELECT * from messages where msg_id = ? and account = ?";
+        await this.ExecuteQuery(query, [metadata.transfer_id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 if (encryption === 3 && !metadata.error) {
@@ -8679,8 +8700,8 @@ class Sylk extends Component {
     }
 
     async updateSqlFileTransferMessage(id, content, pending, sent, received, state) {
-        let query = "SELECT * from messages where msg_id = ?";
-        await this.ExecuteQuery(query, [id]).then((results) => {
+        let query = "SELECT * from messages where msg_id = ? and account = ? ";
+        await this.ExecuteQuery(query, [id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
@@ -8978,7 +8999,7 @@ class Sylk extends Component {
                 _id: uuid.v4(),
                 text: content,
                 createdAt: timestamp || new Date(),
-                direction: direction,
+                direction: direction || 'outgoing',
                 sent: true,
                 pending: false,
                 system: true,

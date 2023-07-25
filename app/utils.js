@@ -159,7 +159,7 @@ function sql2GiftedChat(item, content, filter={}) {
     let timestamp = new Date(item.unix_timestamp * 1000);
     let text = content || item.content
 
-    let failed = (item.received === 0) ? true: false;
+    let failed = (item.received === 0 || item.encrypted === 3) ? true: false;
     let received = item.received === 1 ? true : false;
     let sent = item.sent === 1 ? true : false;
     let pending = item.pending === 1 ? true : false;
@@ -217,7 +217,7 @@ function sql2GiftedChat(item, content, filter={}) {
         }
 
         if (metadata.local_url) {
-            if (metadata.error != 'decryption_failed') {
+            if (!metadata.error) {
                 if (isImage(file_name)) {
                     if (metadata.b64) {
                         image = `data:${metadata.filetype};base64,${metadata.b64}`;
@@ -264,6 +264,10 @@ function sql2GiftedChat(item, content, filter={}) {
     } else {
         if (item.image) {
             image = item.image;
+        }
+
+        if (item.encrypted === 3) {
+            text = text + ' - decryption failed';
         }
     }
 
