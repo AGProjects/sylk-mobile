@@ -36,11 +36,15 @@ class EnrollmentModal extends Component {
     handleFormFieldChange(value, name) {
         if (name === 'username') {
             value = value.replace(/[^\w|\.\-]/g, '').trim().toLowerCase();
+        } else if (name === 'email') {
+            value = value.trim().toLowerCase();
+        } else {
+            value = value.trim();
         }
+
         this.setState({
             [name]: value
         });
-
     }
 
     get validInput() {
