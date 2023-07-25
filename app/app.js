@@ -7229,6 +7229,10 @@ class Sylk extends Component {
             return;
         }
 
+        if (contact.tags.indexOf('test') > -1) {
+            return;
+        }
+
         if (!contact.conference && this.state.connection) {
             this.state.connection.lookupPublicKey(contact.uri);
         }
