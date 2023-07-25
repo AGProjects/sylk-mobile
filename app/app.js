@@ -2868,6 +2868,7 @@ class Sylk extends Component {
             if (this.state.enrollment) {
                 let myContacts = this.state.myContacts;
                 myContacts[this.state.account.id] = this.newContact(this.state.account.id, this.state.displayName);
+                myContacts[this.state.account.id].email = this.state.email;
                 this.saveSylkContact(this.state.account.id, myContacts[this.state.account.id], 'enrollment');
             }
 
