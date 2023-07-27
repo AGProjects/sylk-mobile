@@ -70,17 +70,15 @@ class ReadyBox extends Component {
             return;
         }
 
-        if (this.state.selectedContact) {
-            this.setState({targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : '', chat: false});
-        }
-
         if (!this.state.inviteContacts && nextProps.inviteContacts) {
             this.handleTargetChange('');
             this.setState({chat: false});
         }
 
-        if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
-            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
+        if (nextProps.selectedContact) {
+            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri), targetUri: nextProps.selectedContact.uri});
+        } else {
+            this.setState({chat: false, targetUri: ''});
         }
 
         if (nextProps.selectedContact !== this.state.selectedContact) {
@@ -688,12 +686,12 @@ class ReadyBox extends Component {
 
         return [
               {key: null, title: 'All', enabled: true, selected: false},
+              {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
               {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
               {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
               {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
               {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
               {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
-              {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
               {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
               {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
@@ -977,6 +975,7 @@ class ReadyBox extends Component {
                             isTexting = {this.state.isTexting}
                             forwardMessageFunc = {this.props.forwardMessageFunc}
                             requestCameraPermission = {this.props.requestCameraPermission}
+                            startCall = {this.props.startCall}
                         />
                         }
 

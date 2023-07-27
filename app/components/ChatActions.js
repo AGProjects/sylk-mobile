@@ -149,8 +149,6 @@ class CustomActions extends React.Component {
         this.audioRecorderPlayer.removeRecordBackListener();
         this.setState({recordSecs: 0});
         */
-
-        this.props.audioRecorded(result);
     };
 
     async onStartPlay () {

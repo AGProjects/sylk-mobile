@@ -33,6 +33,7 @@ import Video from 'react-native-video';
 const RNFS = require('react-native-fs');
 import CameraRoll from "@react-native-community/cameraroll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
+import AudioRecord from 'react-native-audio-record';
 
 import styles from '../assets/styles/blink/_ContactsListBox.scss';
 
@@ -64,6 +65,16 @@ String.prototype.toDate = function(format)
 };
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
+
+const options = {
+    sampleRate: 16000,  // default 44100
+    channels: 1,        // 1 or 2, default 1
+    bitsPerSample: 16,  // 8 or 16, default 16
+    audioSource: 6,     // android only (see below)
+    wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
+};
+
+AudioRecord.init(options);
 
 // Note: copy and paste all styles in App.js from my repository
 function  renderBubble (props) {
@@ -590,6 +601,54 @@ class ContactsListBox extends Component {
        this.setState({texting: (text.length > 0)})
     }
 
+    recordAudio() {
+        if (!this.state.recording) {
+            if (this.state.audioRecording) {
+                this.deleteAudio();
+            } else {
+                this.onStartRecord();
+            }
+        } else {
+            this.onStopRecord();
+        }
+    }
+
+    deleteAudio() {
+        console.log('Delete audio');
+        this.setState({audioRecording: null, recording: false});
+        if (this.recordingStopTimer !== null) {
+            clearTimeout(this.recordingStopTimer);
+            this.recordingStopTimer = null;
+        }
+    }
+
+    async onStartRecord () {
+        console.log('Start recording...');
+        this.setState({recording: true});
+        this.recordingStopTimer = setTimeout(() => {
+            this.stopRecording();
+        }, 20000);
+        AudioRecord.start();
+    };
+
+    stopRecording() {
+        console.log('Stop recording...');
+        this.setState({recording: false});
+        if (this.recordingStopTimer !== null) {
+            clearTimeout(this.recordingStopTimer);
+            this.recordingStopTimer = null;
+        }
+        this.onRecording(false);
+        this.onStopRecord();
+    }
+
+    async onStopRecord () {
+        console.log('Stop recording...');
+        const result = await AudioRecord.stop();
+        this.audioRecorded(result);
+        this.setState({audioRecording: result});
+    };
+
     resetContact() {
         this.stopRecordingTimer()
         this.outgoingPendMessages = {};
@@ -884,6 +943,12 @@ class ContactsListBox extends Component {
             toggleBlocked={this.props.toggleBlocked}
             sendPublicKey={this.props.sendPublicKey}
             selectMode={this.state.selectMode}
+            startCall={this.props.startCall}
+            recordAudio={this.recordAudio}
+            sendAudio={this.sendAudioFile}
+            deleteAudio={this.deleteAudio}
+            recording={this.state.recording}
+            audioRecording = {this.state.audioRecording}
             />);
     }
 
@@ -1216,7 +1281,7 @@ class ContactsListBox extends Component {
                  let contacts = this.searchedContact(this.state.targetUri);
                  if (contacts.length !== 1) {
                      return;
-                }
+                 }
                  uri = contacts[0].uri;
             } else {
                 return;
@@ -2161,7 +2226,6 @@ class ContactsListBox extends Component {
                   renderMessageAudio={this.renderMessageAudio}
                   renderMessageVideo={this.renderMessageVideo}
                   shouldUpdateMessage={this.shouldUpdateMessage}
-                  renderActions={this.renderCustomActions}
                   renderTime={this.renderTime}
                   placeholder={this.state.placeholder}
                   lockStyle={styles.lock}
@@ -2290,7 +2354,8 @@ ContactsListBox.propTypes = {
     decryptFunc     : PropTypes.func,
     forwardMessageFunc: PropTypes.func,
     messagesCategoryFilter: PropTypes.string,
-    requestCameraPermission: PropTypes.func
+    requestCameraPermission: PropTypes.func,
+    startCall: PropTypes.func
 };
 
 

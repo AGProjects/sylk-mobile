@@ -12,6 +12,7 @@ import styles from '../assets/styles/blink/_ContactCard.scss';
 import UserIcon from './UserIcon';
 import { GiftedChat } from 'react-native-gifted-chat'
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
+import {Keyboard} from 'react-native';
 
 import utils from '../utils';
 
@@ -85,6 +86,8 @@ class ContactCard extends Component {
             favorite: (nextProps.contact.tags.indexOf('favorite') > -1)? true : false,
             blocked: (nextProps.contact.tags.indexOf('blocked') > -1)? true : false,
             chat: nextProps.chat,
+            recording: nextProps.recording,
+            audioRecording: nextProps.audioRecording,
             pinned: nextProps.pinned,
             messages: nextProps.messages,
             unread: nextProps.unread,
@@ -105,15 +108,6 @@ class ContactCard extends Component {
             }
         }
         return null;
-    }
-
-    toggleBlocked() {
-        this.props.toggleBlocked(this.state.contact.uri);
-    }
-
-    setBlockedDomain() {
-        let newBlockedState = this.props.toggleBlocked('@' + this.state.contact.uri.split('@')[1]);
-        this.setState({blocked: newBlockedState});
     }
 
     undo() {
@@ -137,6 +131,36 @@ class ContactCard extends Component {
         return null;
     }
 
+    startCall(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.startCall(this.state.contact.uri, {audio: true, video: false});
+    }
+
+    recordAudio(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.recordAudio();
+    }
+
+    sendAudio(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.sendAudio();
+    }
+
+    deleteAudio(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.deleteAudio();
+    }
+
+    startVideoCall(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.startCall(this.state.contact.uri, {audio: true, video: true});
+    }
+
     render () {
         let showActions = this.state.contact.showActions &&
                           this.state.contact.tags.indexOf('test') === -1 &&
@@ -154,31 +178,9 @@ class ContactCard extends Component {
             name = name + ' - ' + this.state.contact.organization;
         }
 
-        let showBlockButton = !this.state.contact.conference && !this.state.chat;
-        let showBlockDomainButton = false;
-        let blockTextbutton = 'Block';
-        let blockDomainTextbutton = 'Block domain';
         let contact_ts = '';
 
         let participantsData = [];
-
-        if (this.state.favorite) {
-            if (!this.state.blocked) {
-                showBlockButton = false;
-            }
-        }
-
-        if (tags.indexOf('test') > -1) {
-            showBlockButton = false;
-        }
-
-        if (name === 'Myself') {
-            showBlockButton = false;
-        }
-
-        if (this.state.blocked) {
-            blockTextbutton = 'Unblock';
-        }
 
         let color = {};
 
@@ -206,7 +208,6 @@ class ContactCard extends Component {
         if (isPhoneNumber && isIp(domain)) {
            title = 'Tel ' + username;
            subtitle = 'From @' + domain;
-           showBlockDomainButton = true;
         }
 
         if (utils.isAnonymous(uri)) {
@@ -216,11 +217,6 @@ class ContactCard extends Component {
             } else {
                 name = 'Anonymous';
             }
-            showBlockDomainButton = true;
-            if (!this.state.blocked) {
-                showBlockButton = false;
-            }
-            blockDomainTextbutton = 'Block Web callers';
         }
 
         if (!username || username.length === 0) {
@@ -234,6 +230,7 @@ class ContactCard extends Component {
         }
 
         let cardContainerClass = styles.portraitContainer;
+        let callButtonsEnabled = this.state.chat;
 
         if (this.state.isTablet) {
             cardContainerClass = (this.state.orientation === 'landscape') ? styles.cardLandscapeTabletContainer : styles.cardPortraitTabletContainer;
@@ -318,6 +315,8 @@ class ContactCard extends Component {
             description = description + ' (' + media + ' ' + duration + ')';
         }
 
+        let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
+
         const container = this.state.isLandscape ? styles.containerLandscape : styles.containerPortrait;
         const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
 
@@ -332,6 +331,22 @@ class ContactCard extends Component {
 
         let unread = (this.state.contact && this.state.contact.unread && !this.state.selectMode) ? this.state.contact.unread.length : 0;
         let selectCircle = this.state.contact.selected ? 'check-circle' : 'circle-outline';
+
+        let recordIcon = this.state.recording ? 'pause' : 'microphone';
+        let recordStyle = this.state.recording ? styles.greenButton : styles.greenButton;
+
+        if (this.state.audioRecording) {
+            recordIcon = 'delete';
+            recordStyle = styles.redButton;
+        }
+
+        let titlePadding = styles.titlePadding;
+
+        if (this.state.fontScale < 1) {
+            titlePadding = styles.titlePaddingBig;
+        } else if (this.state.fontScale > 1.2) {
+            titlePadding = styles.titlePaddingSmall;
+        }
 
         return (
             <Fragment>
@@ -351,9 +366,61 @@ class ContactCard extends Component {
                         </View>
 
                         <View style={styles.mainContent}>
-                            <Title noWrap style={styles.title}>{title}</Title>
-                            <Subheading style={styles.subtitle}>{subtitle}</Subheading>
-                            {this.state.fontScale <= 1 ?
+                            <Title noWrap style={[styles.title, titlePadding]}>{title}</Title>
+                        {callButtonsEnabled ?
+                            <View style={styles.callButtons}>
+                                <View style={styles.greenButtonContainer}>
+                                    <IconButton
+                                        style={recordStyle}
+                                        size={18}
+                                        onPress={this.recordAudio}
+                                        icon={recordIcon}
+                                    />
+                                </View>
+                                {!this.state.recording && !this.state.audioRecording ?
+                                <View style={styles.greenButtonContainer}>
+                                    <IconButton
+                                        style={styles.greenButton}
+                                        size={18}
+                                        onPress={this.startCall}
+                                        icon="phone"
+                                    />
+                                </View>
+                                : null
+                                }
+
+                                { this.state.recording && !this.state.audioRecording ?
+                                <Text style={styles.recordingLabel}>Recording audio...</Text>
+                                : null
+                                }
+
+                                {!this.state.recording && !this.state.audioRecording ?
+                                <View style={styles.greenButtonContainer}>
+                                    <IconButton
+                                        style={styles.greenButton}
+                                        size={18}
+                                        onPress={this.startVideoCall}
+                                        icon="video"
+                                    />
+                                </View>
+                                : null}
+
+                                {!this.state.recording && this.state.audioRecording ?
+                                <View style={styles.greenButtonContainer}>
+                                    <IconButton
+                                        style={styles.greenButton}
+                                        size={18}
+                                        onPress={this.sendAudio}
+                                        icon="send"
+                                    />
+                                </View>
+                                : null
+                                }
+
+                            </View>
+                           : <Subheading style={styles.subtitle}>{subtitle}</Subheading>}
+
+                            {this.state.fontScale <= 1 && !callButtonsEnabled ?
                             <Caption style={styles.description}>
                                 {this.state.contact.direction ?
                                 <Icon name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
@@ -378,28 +445,22 @@ class ContactCard extends Component {
                             : null}
                         </View>
                     </Card.Content>
+
                     <View style={styles.rightContent}>
                         { this.state.selectMode ?
                         <Icon style={styles.selectedContact} name={selectCircle} size={20} />
                         :
-                        <Text>{contact_ts}</Text>
+                        <Text style={styles.timestamp}>{contact_ts}</Text>
                         }
+
                         {unread ?
                         <Badge value={unread} status="error" textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
                         : null
                         }
+
                     </View>
 
                 </View>
-
-                    {showActions && false ?
-                            <View style={styles.buttonContainer}>
-                            <Card.Actions>
-                               {showBlockButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.toggleBlocked()}}>{blockTextbutton}</Button>: null}
-                               {showBlockDomainButton? <Button mode={buttonMode} style={styles.button} onPress={() => {this.setBlockedDomain()}}>{blockDomainTextbutton}</Button>: null}
-                            </Card.Actions>
-                            </View>
-                        : null}
                 </Card>
 
             </Fragment>
@@ -422,10 +483,15 @@ ContactCard.propTypes = {
     messages       : PropTypes.array,
     pinned         : PropTypes.bool,
     unread         : PropTypes.array,
-    toggleBlocked  : PropTypes.func,
     sendPublicKey  : PropTypes.func,
     fontScale      : PropTypes.number,
-    selectMode     : PropTypes.bool
+    selectMode     : PropTypes.bool,
+    startCall      : PropTypes.func,
+    recordAudio    : PropTypes.func,
+    sendAudio      : PropTypes.func,
+    deleteAudio    : PropTypes.func,
+    recording      : PropTypes.bool,
+    audioRecording : PropTypes.string
 };
 
 

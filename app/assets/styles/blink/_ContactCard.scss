@@ -39,10 +39,21 @@
 }
 
 .title {
-    padding-top:7px;
     font-size: 18px;
     line-height: 20px;
     flex: 1;
+}
+
+.titlePaddingSmall {
+    padding-top:0px;
+}
+
+.titlePadding {
+    padding-top:7px;
+}
+
+.titlePaddingBig {
+    padding-top:14px;
 }
 
 .subtitle {
@@ -57,7 +68,7 @@
 }
 
 .avatarContent {
-    margin-top: 5px;
+    margin-top: 10px;
 }
 
 .gravatar {
@@ -95,6 +106,10 @@
     margin-top: 15px;
 }
 
+.timestamp {
+    margin-top: -5px;
+}
+
 .participants {
     margin-top: 10px;
 }
@@ -112,4 +127,29 @@
     border-radius: 2px;
     padding-left: 30px;
     padding-right: 30px;
+}
+
+.greenButtonContainer {
+    padding-right: 15px;
+}
+
+.recordingLabel {
+    margin-top: 7px;
+}
+
+.greenButton {
+    background-color: rgba(#6DAA63, .8);
+    margin-left: 0px;
+}
+
+.audioButton {
+    background-color: white;
+}
+
+.redButton {
+    background-color: red;
+}
+
+.callButtons {
+    flex-direction: row;
 }
