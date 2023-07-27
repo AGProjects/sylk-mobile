@@ -5095,14 +5095,10 @@ class Sylk extends Component {
 
         let skipNativePanel = false;
 
-        if (this.state.currentCall && this.state.currentCall.direction === 'outgoing') {
-            if (Platform.OS === 'android') {
-                this.showAlertPanel(call);
-                skipNativePanel = true;
-            }
+        if (Platform.OS === 'android' && this.callKeeper.selfManaged) {
+            this.showAlertPanel(call);
+            skipNativePanel = true;
         }
-
-        console.log('Incoming call extra headers', call.headers);
 
         this.callKeeper.incomingCallFromWebSocket(call, autoAccept, skipNativePanel);
     }
