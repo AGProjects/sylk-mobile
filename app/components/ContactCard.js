@@ -124,6 +124,9 @@ class ContactCard extends Component {
     }
 
     setTargetUri(uri, contact) {
+        if (this.state.chat) {
+            return;
+        }
         this.props.setTargetUri(uri, this.state.contact);
     }
 
