@@ -367,7 +367,24 @@ class ContactCard extends Component {
             description = description + ' (' + media + ' ' + duration + ')';
         }
 
-        let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
+        let greenButtonClass = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
+        let fileTransfersEnabled = true;
+
+        if (this.state.contact.tags.indexOf('test') > -1) {
+            fileTransfersEnabled = false;
+        }
+
+        if (uri.indexOf('@videoconference') > -1) {
+            fileTransfersEnabled = false;
+        }
+
+        if (uri.indexOf('@conference') > -1) {
+            fileTransfersEnabled = false;
+        }
+
+        if (isPhoneNumber) {
+            fileTransfersEnabled = false;
+        }
 
         const container = this.state.isLandscape ? styles.containerLandscape : styles.containerPortrait;
         const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
@@ -423,6 +440,7 @@ class ContactCard extends Component {
                             <Title noWrap style={[styles.title, titlePadding]}>{title}</Title>
                         {this.state.callButtonsEnabled ?
                             <View style={styles.callButtons}>
+                                {fileTransfersEnabled ?
                                 <View style={styles.greenButtonContainer}>
                                     <IconButton
                                         style={recordStyle}
@@ -431,6 +449,7 @@ class ContactCard extends Component {
                                         icon={recordIcon}
                                     />
                                 </View>
+                                : null}
                                 {!this.state.recording && !this.state.audioRecording ?
                                 <View style={styles.greenButtonContainer}>
                                     <IconButton

@@ -1410,8 +1410,9 @@ class ContactsListBox extends Component {
             RNFS.exists(file_transfer.local_url).then((exists) => {
                 if (exists) {
                     if (file_transfer.local_url.endsWith('.asc')) {
-                        if (file_transfer.error === 'decryption failed') {
+                        if (file_transfer.error) {
                             this.onLongMessagePress(context, message);
+
                         } else {
                             this.props.decryptFunc(message.metadata);
                         }
@@ -1494,7 +1495,7 @@ class ContactsListBox extends Component {
             }
 
             let showResend = currentMessage.failed;
-            if (currentMessage.metadata && currentMessage.metadata.error === 'decryption failed') {
+            if (currentMessage.metadata && currentMessage.metadata.error) {
                 showResend = false;
             }
 
@@ -1531,7 +1532,7 @@ class ContactsListBox extends Component {
             }
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {
-                if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error === 'decryption failed') {
+                if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
                     if (currentMessage.metadata.direction !== 'outgoing') {
                         options.push('Download again');
                     }
