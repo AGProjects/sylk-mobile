@@ -9250,7 +9250,6 @@ class Sylk extends Component {
        } else {
             ShortcutBadge.setCount(total_unread);
        }
-
     }
 
     saveContact(uri, displayName='', organization='', email='') {

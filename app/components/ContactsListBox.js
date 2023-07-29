@@ -927,6 +927,7 @@ class ContactsListBox extends Component {
         return(
             <ContactCard
             contact={item}
+            selectedContact={this.state.selectedContact}
             setTargetUri={this.setTargetUri}
             chat={this.state.chat}
             fontScale={this.state.fontScale}

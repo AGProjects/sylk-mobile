@@ -70,15 +70,17 @@ class ReadyBox extends Component {
             return;
         }
 
+        if (this.state.selectedContact) {
+            this.setState({targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : '', chat: false});
+        }
+
         if (!this.state.inviteContacts && nextProps.inviteContacts) {
             this.handleTargetChange('');
             this.setState({chat: false});
         }
 
-        if (nextProps.selectedContact) {
-            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri), targetUri: nextProps.selectedContact.uri});
-        } else {
-            this.setState({chat: false, targetUri: ''});
+        if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
+            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
         }
 
         if (nextProps.selectedContact !== this.state.selectedContact) {

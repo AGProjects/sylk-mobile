@@ -53,9 +53,17 @@ class ContactCard extends Component {
         super(props);
         autoBind(this);
 
+        let callButtonsEnabled = true;
+        if (this.props.selectedContact && this.props.contact && this.props.selectedContact.uri === this.props.contact.uri) {
+            callButtonsEnabled = this.buttonsEnabledForContact(this.props.selectedContact);
+        } else {
+            callButtonsEnabled = false;
+        }
+
         this.state = {
             id: this.props.contact.id,
             contact: this.props.contact,
+            selectedContact: this.props.selectedContact,
             invitedParties: this.props.invitedParties,
             orientation: this.props.orientation,
             isTablet: this.props.isTablet,
@@ -67,6 +75,7 @@ class ContactCard extends Component {
             messages: this.props.messages,
             unread: this.props.unread,
             chat: this.props.chat,
+            callButtonsEnabled: callButtonsEnabled,
             pinned: this.props.pinned,
             fontScale: this.props.fontScale,
             selectMode: this.props.selectMode
@@ -76,16 +85,24 @@ class ContactCard extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        let callButtonsEnabled = true;
+        if (nextProps.selectedContact && nextProps.contact && nextProps.selectedContact.uri === nextProps.contact.uri) {
+            callButtonsEnabled = this.buttonsEnabledForContact(nextProps.selectedContact);
+        } else {
+            callButtonsEnabled = false;
+        }
 
         this.setState({
             id: nextProps.contact.id,
             contact: nextProps.contact,
+            selectedContact: nextProps.selectedContact,
             invitedParties: nextProps.invitedParties,
             isLandscape: nextProps.isLandscape,
             orientation: nextProps.orientation,
             favorite: (nextProps.contact.tags.indexOf('favorite') > -1)? true : false,
             blocked: (nextProps.contact.tags.indexOf('blocked') > -1)? true : false,
             chat: nextProps.chat,
+            callButtonsEnabled: callButtonsEnabled,
             recording: nextProps.recording,
             audioRecording: nextProps.audioRecording,
             pinned: nextProps.pinned,
@@ -94,7 +111,40 @@ class ContactCard extends Component {
             fontScale: nextProps.fontScale,
             selectMode: nextProps.selectMode
         });
+
     }
+
+    buttonsEnabledForContact(contact) {
+       if (contact.tags && contact.tags.indexOf('blocked') > -1) {
+           return false
+       }
+
+       if (contact.tags && contact.tags.indexOf('@conference') > -1) {
+           return false
+       }
+
+       if (contact.uri.indexOf('@guest.') > -1) {
+            return false
+       }
+
+       if (contact.uri.indexOf('anonymous@') > -1) {
+            return false
+       }
+
+       if (contact.uri.indexOf('@videoconference') > -1) {
+            return false
+       }
+
+       let username = contact.uri.split('@')[0];
+       let isPhoneNumber = username ? username.match(/^(\+|0)(\d+)$/) : false;
+
+       if (isPhoneNumber) {
+           return false
+       }
+
+       return true;
+    }
+
 
     shouldComponentUpdate(nextProps) {
         //https://medium.com/sanjagh/how-to-optimize-your-react-native-flatlist-946490c8c49b
@@ -233,7 +283,6 @@ class ContactCard extends Component {
         }
 
         let cardContainerClass = styles.portraitContainer;
-        let callButtonsEnabled = this.state.chat;
 
         if (this.state.isTablet) {
             cardContainerClass = (this.state.orientation === 'landscape') ? styles.cardLandscapeTabletContainer : styles.cardPortraitTabletContainer;
@@ -351,6 +400,8 @@ class ContactCard extends Component {
             titlePadding = styles.titlePaddingSmall;
         }
 
+        //console.log('selectedContact', this.state.selectedContact);
+
         return (
             <Fragment>
                 <Card style={[cardContainerClass, {height: cardHeight}]}
@@ -370,7 +421,7 @@ class ContactCard extends Component {
 
                         <View style={styles.mainContent}>
                             <Title noWrap style={[styles.title, titlePadding]}>{title}</Title>
-                        {callButtonsEnabled ?
+                        {this.state.callButtonsEnabled ?
                             <View style={styles.callButtons}>
                                 <View style={styles.greenButtonContainer}>
                                     <IconButton
@@ -423,7 +474,7 @@ class ContactCard extends Component {
                             </View>
                            : <Subheading style={styles.subtitle}>{subtitle}</Subheading>}
 
-                            {this.state.fontScale <= 1 && !callButtonsEnabled ?
+                            {this.state.fontScale <= 1 && !this.state.callButtonsEnabled ?
                             <Caption style={styles.description}>
                                 {this.state.contact.direction ?
                                 <Icon name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
@@ -474,6 +525,7 @@ class ContactCard extends Component {
 ContactCard.propTypes = {
     id             : PropTypes.string,
     contact        : PropTypes.object,
+    selectedContact: PropTypes.object,
     setTargetUri   : PropTypes.func,
     chat           : PropTypes.bool,
     orientation    : PropTypes.string,
