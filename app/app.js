@@ -5810,14 +5810,14 @@ class Sylk extends Component {
         if (utils.isFileEncryptable(file_transfer)) {
             if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
                 let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
-                this.updateRenderFileTransferBubble(file_transfer, 'Encrypting file...');
+                this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
 
                 try {
                     let encrypted_file = local_url + '.asc';
                     //console.log('Will encrypt file', local_url, 'to', encrypted_file);
                     await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
                     utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted');
-                    this.updateRenderFileTransferBubble(file_transfer, 'Calculating checksum...');
+                    this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
                     let base64_content = await RNFS.readFile(encrypted_file, 'base64');
                     let checksum = utils.getPGPCheckSum(base64_content);
 
@@ -5830,7 +5830,7 @@ class Sylk extends Component {
 
                     content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
                     await RNFS.writeFile(encrypted_file, content, 'utf8');
-                    this.updateRenderFileTransferBubble(file_transfer, 'File encrypted');
+                    this.updateFileTransferBubble(file_transfer, 'File encrypted');
                     file_transfer.filetype = file_transfer.filetype;
                     local_url = local_url + ".asc";
                     remote_url = remote_url + '.asc';
@@ -5841,7 +5841,7 @@ class Sylk extends Component {
                     let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
                     //this.renderSystemMessage(uri, error_message, 'outgoing');
                 } finally {
-                    this.updateRenderFileTransferBubble(file_transfer);
+                    this.updateFileTransferBubble(file_transfer);
                 }
             } else {
                 console.log('No public key available for', uri);
@@ -5860,13 +5860,13 @@ class Sylk extends Component {
                 console.log(error);
                 this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
             }
-            this.updateRenderFileTransferBubble(file_transfer);
+            this.updateFileTransferBubble(file_transfer);
             delete this.uploadRequests[remote_url]
         };
 
         xhr.open('POST', remote_url);
         xhr.setRequestHeader('content-type', file_transfer.filetype);
-        this.updateRenderFileTransferBubble(file_transfer, 'Uploading file...');
+        this.updateFileTransferBubble(file_transfer, 'Uploading file...');
         xhr.send({ uri: 'file://'+ local_url });
         if (xhr.upload) {
             xhr.upload.onprogress = (event) => {
@@ -5876,7 +5876,7 @@ class Sylk extends Component {
                     var progress = Math.floor((event.loaded/event.total) * 100);
                     //console.log('Upload ' + progress + '%!');
                     file_transfer.progress = progress;
-                    this.updateRenderFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
+                    this.updateFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
                 }
             };
         }
@@ -6069,7 +6069,7 @@ class Sylk extends Component {
                             console.log('Failed to decrypt file', e.message)
                         }
                     } else {
-                        this.updateRenderFileTransferBubble(file_transfer);
+                        this.updateFileTransferBubble(file_transfer);
                     }
                 }).catch((error) => {
                     console.log('saveDownloadTask update SQL error:', error);
@@ -6145,7 +6145,7 @@ class Sylk extends Component {
         }
 
         await this.ExecuteQuery(query, [JSON.stringify(file_transfer), state, id]).then((results) => {
-            this.updateRenderFileTransferBubble(file_transfer);
+            this.updateFileTransferBubble(file_transfer);
         }).catch((error) => {
             console.log('fileTransferStateChanged SQL error:', error);
         });
@@ -6895,7 +6895,7 @@ class Sylk extends Component {
             if (file_transfer.url.endsWith('.asc') && !file_transfer.filename.endsWith('.asc')) {
                 file_transfer.filename = file_transfer.filename + ('.asc');
             }
-            this.updateFileTransferMessageMetadata(file_transfer, 0, true);
+            this.updateFileTransferSql(file_transfer, encrypted, true);
         }
 
         await RNFS.mkdir(dir_path);
@@ -6911,7 +6911,7 @@ class Sylk extends Component {
             file_transfer.paused = true;
             file_transfer.progress = null;
             file_transfer.error = null;
-            this.updateFileTransferMessageMetadata(file_transfer, 0);
+            this.updateFileTransferSql(file_transfer, encrypted);
             delete this.downloadRequests[id];
             return;
         }
@@ -6929,7 +6929,7 @@ class Sylk extends Component {
         };
 
         //console.log('Adding request id', id, file_transfer.url);
-        this.updateRenderFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
+        this.updateFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
         let filesize;
         this.downloadRequests[id] = RNBackgroundDownloader.download({
             id: id,
@@ -6938,12 +6938,12 @@ class Sylk extends Component {
         }).begin((size) => {
             filesize = size;
             console.log('File', file_transfer.filename, 'has', size, 'bytes');
-            this.updateRenderFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
+            this.updateFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
         }).progress((percent) => {
             const progress = Math.ceil(percent * 100);
             //console.log('File', file_transfer.filename, 'download', progress, '%');
             file_transfer.progress = progress;
-            this.updateRenderFileTransferBubble(file_transfer, 'Downloaded ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
+            this.updateFileTransferBubble(file_transfer, 'Downloaded ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
         }).done(() => {
             console.log('File', file_transfer.filename, 'downloaded');
             delete this.downloadRequests[id];
@@ -6955,7 +6955,7 @@ class Sylk extends Component {
             }
 
             RNFS.moveFile(tmp_file_path, file_path).then((success) => {
-                this.updateRenderFileTransferBubble(file_transfer, 'Download finished');
+                this.updateFileTransferBubble(file_transfer, 'Download finished');
                 this.saveDownloadTask(id, file_transfer.url, file_path);
                 if (this.state.callContact) {
                     this.getMessages(this.state.callContact.uri);
@@ -7002,7 +7002,7 @@ class Sylk extends Component {
 
         if (!exists) {
             console.log('Encrypted file', file_path, 'does not exist');
-            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            this.updateFileTransferSql(file_transfer, 3);
             return;
         } else {
             const { size } = await RNFetchBlob.fs.stat(file_path);
@@ -7010,13 +7010,13 @@ class Sylk extends Component {
 
             if (size !== file_transfer.filesize) {
                 file_transfer.error = 'Wrong file size';
-                this.updateFileTransferMessageMetadata(file_transfer, 3);
+                this.updateFileTransferSql(file_transfer, 3);
                 this.renderSystemMessage(uri, 'Wrong file size ' + size + ', on server is ' + file_transfer.filesize, 'outgoing', new Date());
                 return;
             }
         }
 
-        this.updateRenderFileTransferBubble(file_transfer, 'Decrypting...');
+        this.updateFileTransferBubble(file_transfer, 'Decrypting...');
 
         try {
             content = await RNFS.readFile(file_path, 'utf8');
@@ -7024,7 +7024,7 @@ class Sylk extends Component {
             console.log('Error reading file from PGP envelope', e.message, file_path);
             file_transfer.error = 'Error reading .asc file';
             this.renderSystemMessage(uri, e.message);
-            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            this.updateFileTransferSql(file_transfer, 3);
             return;
         }
 
@@ -7070,7 +7070,7 @@ class Sylk extends Component {
             });
         } catch (e) {
             utils.timestampedLog('Error parsing PGP envelope', e.message);
-            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            this.updateFileTransferSql(file_transfer, 3);
             return;
         }
 
@@ -7079,7 +7079,7 @@ class Sylk extends Component {
         } catch (e) {
             utils.timestampedLog('Error writing file', e.message);
             file_transfer.error = 'Error writing file';
-            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            this.updateFileTransferSql(file_transfer, 3);
             return;
         }
 
@@ -7100,7 +7100,9 @@ class Sylk extends Component {
             } catch (e) {
                 //
             }
-            this.updateFileTransferMessageMetadata(file_transfer, 2);
+
+            this.updateFileTransferSql(file_transfer, 2);
+
         }).catch((error) => {
             let error_message = error.message;
             if (error.message.indexOf('incorrect key') > -1) {
@@ -7109,7 +7111,7 @@ class Sylk extends Component {
             file_transfer.error = 'Error decrypting file: ' + error_message;
             file_transfer.progress = null;
             utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
-            this.updateFileTransferMessageMetadata(file_transfer, 3);
+            this.updateFileTransferSql(file_transfer, 3);
             //console.log(content);
         });
     }
@@ -8670,7 +8672,7 @@ class Sylk extends Component {
 
             if (message.contentType === 'application/sylk-file-transfer') {
                 if (metadata) {
-                    this.updateRenderFileTransferBubble(metadata);
+                    this.updateFileTransferBubble(metadata);
                     this.checkFileTransfer(metadata);
                 }
             }
@@ -8680,39 +8682,53 @@ class Sylk extends Component {
                 console.log('saveOutgoingMessageSql SQL error:', error);
             } else {
                 if (message.contentType === 'application/sylk-file-transfer') {
-                    this.updateSqlFileTransferMessage(message.id, content, pending, sent, received, message.state);
+                    this.updateFileTransferMessageSql(message.id, content, pending, sent, received, message.state);
                 }
             }
             this.remove_sync_pending_item(message.id);
         });
     }
 
-    async updateFileTransferMessageMetadata(metadata, encryption=0, reset=false) {
+    async updateFileTransferSql(file_transfer, encrypted=0, reset=false) {
         let query = "SELECT * from messages where msg_id = ? and account = ?";
-        await this.ExecuteQuery(query, [metadata.transfer_id, this.state.accountId]).then((results) => {
+        await this.ExecuteQuery(query, [file_transfer.transfer_id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
-                if (encryption === 3 && !metadata.error) {
-                    metadata.error = 'decryption failed';
+                if (encrypted === 3 && !file_transfer.error) {
+                    file_transfer.error = 'decryption failed';
                 }
                 var item = rows.item(0);
                 let received = reset ? '1' : item.received;
-                let params = [JSON.stringify(metadata), received, encryption, metadata.transfer_id]
-                query = "update messages set metadata = ?, received = ?, encrypted = ? where msg_id = ?"
+
+                if (this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
+                    if (encrypted === 2 || encrypted === 0) {
+                        if (this.sendDispositionNotification(file_transfer, 'displayed')) {
+                            received = 2;
+                        }
+                    } else if (encrypted === 3) {
+                        if (this.sendDispositionNotification(file_transfer, 'error')) {
+                            received = 2;
+                        }
+                    }
+                }
+
+                let params = [JSON.stringify(file_transfer), received, encrypted, file_transfer.transfer_id, this.state.accountId];
+                query = "update messages set metadata = ?, received = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
-                    //console.log('SQL updated file transfer metadata', metadata);
-                    this.updateRenderFileTransferBubble(metadata);
+                    console.log('SQL updated file transfer file_transfer', 'received =', received, 'encrypted =', encrypted);
+                    this.updateFileTransferBubble(file_transfer);
                 }).catch((error) => {
-                    console.log('updateFileTransferMessageMetadata SQL error:', error);
+                    console.log('updateFileTransferSql SQL error:', error);
                 });
             }
 
         }).catch((error) => {
-            console.log('updateFileTransferMessageMetadata SQL error:', error);
+            console.log('updateFileTransferSql SQL error:', error);
         });
     }
 
-    async updateSqlFileTransferMessage(id, content, pending, sent, received, state) {
+    async updateFileTransferMessageSql(id, content, pending, sent, received, state) {
+        console.log('updateFileTransferMessageSql');
         let query = "SELECT * from messages where msg_id = ? and account = ? ";
         await this.ExecuteQuery(query, [id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -8725,7 +8741,7 @@ class Sylk extends Component {
                 let params = [content, JSON.stringify(new_metadata), pending, sent, received, id]
                 query = "update messages set content = ?, metadata = ?, pending = ?, sent = ?, received = ? where msg_id = ?"
                 this.ExecuteQuery(query, params).then((results) => {
-                    //console.log('SQL updated file transfer', id);
+                    console.log('SQL updated file transfer', id, 'received =', received);
                     this.checkFileTransfer(new_metadata);
                     // to do, skip query done below
                     this.updateRenderMessageState(id, state);
@@ -8858,7 +8874,7 @@ class Sylk extends Component {
                             sent = 1;
                             received = 0;
                         }
-                        this.updateSqlFileTransferMessage(id, content, pending, sent, received, state);
+                        this.updateFileTransferMessageSql(id, content, pending, sent, received, state);
                     }
                 });
 
@@ -8889,7 +8905,7 @@ class Sylk extends Component {
                                     sent = 1;
                                     received = 0;
                                 }
-                                this.updateSqlFileTransferMessage(id, content, pending, sent, received, state);
+                                this.updateFileTransferMessageSql(id, content, pending, sent, received, state);
                             }
 
                         } else {
@@ -8947,7 +8963,7 @@ class Sylk extends Component {
         }
     }
 
-    updateRenderFileTransferBubble(metadata, text=null) {
+    updateFileTransferBubble(metadata, text=null) {
         if (!this.state.selectedContact) {
             return;
         }
@@ -8988,7 +9004,7 @@ class Sylk extends Component {
                         msg.video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
                     }
                 }
-                //console.log('updateRenderFileTransferBubble', msg.text);
+                //console.log('updateFileTransferBubble', msg.text);
             }
             newMessages.push(msg);
         });
@@ -9076,7 +9092,7 @@ class Sylk extends Component {
                 content = 'Photo';
             } else if (message.contentType === 'application/sylk-file-transfer') {
                 try {
-                    this.checkFileTransfer(JSON.parse(metadata));
+                    this.checkFileTransfer(file_transfer);
                 } catch (e) {
                     console.log("Error decoding incoming file transfer json sql: ", e);
                 }
