@@ -120,14 +120,8 @@ class ReadyBox extends Component {
             this.bounceNavigation();
         }
 
-        let newMyContacts = nextProps.myContacts;
-        if (nextProps.sourceContact && nextProps.sourceContact.uri in newMyContacts) {
-            console.log('Discard contact', nextProps.sourceContact.uri);
-            delete newMyContacts[nextProps.sourceContact.uri];
-        }
-
         this.setState({myInvitedParties: nextProps.myInvitedParties,
-                        myContacts: newMyContacts,
+                        myContacts: nextProps.myContacts,
                         messages: nextProps.messages,
                         historyFilter: nextProps.historyFilter,
                         myDisplayName: nextProps.myDisplayName,
@@ -978,6 +972,7 @@ class ReadyBox extends Component {
                             forwardMessageFunc = {this.props.forwardMessageFunc}
                             requestCameraPermission = {this.props.requestCameraPermission}
                             startCall = {this.props.startCall}
+                            sourceContact = {this.state.sourceContact}
                         />
                         }
 

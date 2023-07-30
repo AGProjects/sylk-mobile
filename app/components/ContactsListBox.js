@@ -296,7 +296,8 @@ class ContactsListBox extends Component {
             audioSendFinished: false,
             messagesCategoryFilter: this.props.messagesCategoryFilter,
             isTexting: this.props.isTexting,
-            showDeleteMessageModal: false
+            showDeleteMessageModal: false,
+            sourceContact: this.props.sourceContact
         }
 
         this.ended = false;
@@ -467,6 +468,7 @@ class ContactsListBox extends Component {
                        messagesCategoryFilter: nextProps.messagesCategoryFilter,
                        targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri,
                        keys: nextProps.keys,
+                       sourceContact: nextProps.sourceContact,
                        isTexting: nextProps.isTexting,
                        showDeleteMessageModal: nextProps.showDeleteMessageModal,
                        selectMode: nextProps.shareToContacts || nextProps.inviteContacts
@@ -1930,8 +1932,6 @@ class ContactsListBox extends Component {
             });
         }
 
-        //console.log(contacts);
-
         let chatInputClass = this.customInputToolbar;
 
         if (this.state.selectedContact) {
@@ -1971,32 +1971,29 @@ class ContactsListBox extends Component {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
         }
 
-
         const known = [];
         items = items.filter((elem) => {
-            //console.log(elem.uri);
             if (this.state.shareToContacts && elem.tags.indexOf('test') > -1) {
-                //console.log('Remove', elem.uri, 'test');
+                return;
+            }
+
+            if (this.state.sourceContact && this.state.sourceContact.uri === elem.uri) {
                 return;
             }
 
             if (this.state.inviteContacts && elem.tags.indexOf('conference') > -1 ) {
-                //console.log('Remove', elem.uri, 'conf');
                 return;
             }
 
             if (this.state.shareToContacts && elem.uri === this.state.accountId) {
-                //console.log('Remove', elem.uri, 'myself');
                 return;
             }
 
             if (this.state.accountId === elem.uri && elem.tags.length === 0) {
-                //console.log('Remove', elem.uri, 'no tags');
                 return;
             }
 
             if (this.state.shareToContacts && elem.uri.indexOf('@') === -1) {
-                //console.log('Remove', elem.uri, 'no @');
                 return;
             }
 
@@ -2357,7 +2354,8 @@ ContactsListBox.propTypes = {
     forwardMessageFunc: PropTypes.func,
     messagesCategoryFilter: PropTypes.string,
     requestCameraPermission: PropTypes.func,
-    startCall: PropTypes.func
+    startCall: PropTypes.func,
+    sourceContact:   PropTypes.object
 };
 
 

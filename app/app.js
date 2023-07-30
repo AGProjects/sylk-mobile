@@ -1786,6 +1786,7 @@ class Sylk extends Component {
                             inviteContacts: false,
                             shareToContacts: false,
                             selectedContacts: [],
+                            sourceContact: null,
                             incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
                             reconnectingCall: false,
                             muted: false
@@ -1900,10 +1901,13 @@ class Sylk extends Component {
         } else if (this.currentRoute === '/ready') {
             if (this.state.selectedContact) {
                 this.goBackToHome();
+                if (this.state.forwardContent || this.state.shareContent.length > 0) {
+                    this.endShareContent();
+                }
             } else if (this.state.historyFilter) {
                 this.filterHistory(null);
             } else if (this.state.forwardContent || this.state.shareContent.length > 0) {
-                this.cancelShareContent();
+                this.endShareContent();
             } else {
                 BackHandler.exitApp();
             }
@@ -2512,7 +2516,9 @@ class Sylk extends Component {
                 if (files.length > 0) {
                     console.log('Will share to contacts', files);
 
-                    this.setState({shareToContacts: true, shareContent: files, selectedContact: null});
+                    this.setState({shareToContacts: true,
+                                   shareContent: files,
+                                   selectedContact: null});
 
                     let item = files[0];
                     let what = 'Share text with contacts';
@@ -9667,7 +9673,10 @@ class Sylk extends Component {
 
     forwardMessage(message, uri) {
         // this will show the main interface to select one or more contacts
-        this.setState({shareToContacts: true, forwardContent: message, selectedContact: null, sourceContact: this.state.selectedContact});
+        this.setState({shareToContacts: true,
+                       forwardContent: message,
+                       selectedContact: null,
+                       sourceContact: this.state.selectedContact});
     }
 
     async shareContent() {
@@ -9687,7 +9696,7 @@ class Sylk extends Component {
 
         if (this.state.forwardContent) {
             let message = this.state.forwardContent;
-            //console.log('Forwarding content...');
+            console.log('Forwarding content...');
             msg.text = message.text;
             if (message.metadata && message.metadata.filename) {
                 contentType = 'application/sylk-file-transfer';
@@ -9778,16 +9787,17 @@ class Sylk extends Component {
             this.sendMessage(uri, msg, contentType);
         });
 
-        this.cancelShareContent();
+        this.endShareContent();
     }
 
-    cancelShareContent() {
+    endShareContent() {
+        console.log('endShareContent');
         this.setState({shareContent: [],
-                   selectedContacts: [],
-                   selectedContact: this.state.sourceContact,
-                   forwardContent: null,
-                   sourceContact: null,
-                   shareToContacts: false});
+                       selectedContacts: [],
+                       selectedContact: this.state.sourceContact,
+                       forwardContent: null,
+                       sourceContact: null,
+                       shareToContacts: false});
     }
 
     filterHistory(filter) {
