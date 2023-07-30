@@ -6666,15 +6666,20 @@ class Sylk extends Component {
         //console.log('Confirm read messages for', uri);
         let displayed = [];
 
-        await this.ExecuteQuery("SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and encrypted not in (1, 3) and system is NULL and to_uri = ?", [this.state.accountId]).then((results) => {
+        await this.ExecuteQuery("SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and encrypted not in (1) and system is NULL and to_uri = ?", [this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length > 0) {
                //console.log('We must confirm read of', rows.length, 'messages');
             }
+
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
-                if (this.sendDispositionNotification(item)) {
-                    displayed.push(item.msg_id);
+                if (item.encrypted === 3) {
+                    this.sendDispositionNotification(item, 'error');
+                } else {
+                    if (this.sendDispositionNotification(item, 'displayed')) {
+                        displayed.push(item.msg_id);
+                    }
                 }
             }
 
@@ -6752,20 +6757,22 @@ class Sylk extends Component {
     }
 
     async sendDispositionNotification(message, state='displayed') {
+        let id = message.msg_id || message.id || message.transfer_id;
+
         if (!this.canSend()) {
+            console.log('sendDispositionNotification', id, state, 'will be sent later');
             return false;
         }
 
         let query;
         let result = {};
-        let id = message.msg_id || message.id;
         let uri =  message.sender ? message.sender.uri : message.from_uri;
         this.state.account.sendDispositionNotification(uri, id, message.timestamp, state,(error) => {
             if (!error) {
-                utils.timestampedLog('Message', id, 'was', state, 'now');
+                utils.timestampedLog('Message', id, state, 'state sent to server');
                 return true;
             } else {
-                utils.timestampedLog(state, 'notification for message', id, 'send failed:', error);
+                utils.timestampedLog('Message', id, state, 'state failed to be sent to server');
                 return false;
             }
         });
@@ -6877,6 +6884,7 @@ class Sylk extends Component {
         let id = file_transfer.transfer_id;
         let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
+        let encrypted = file_transfer.url.endsWith('.asc') ? 1 : 0;
 
         if (force) {
             this.updateRenderMessageState(id, 'displayed');
@@ -9063,6 +9071,18 @@ class Sylk extends Component {
         let unix_timestamp = Math.floor(message.timestamp / 1000);
         let encrypted = decryptedBody === null ? 0 : 2;
         let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : '';
+        let file_transfer = {};
+
+        if (message.contentType === 'application/sylk-file-transfer') {
+            try {
+                file_transfer = JSON.parse(metadata);
+                if (file_transfer.url.endsWith('.asc')) {
+                    encrypted = 1;
+                }
+            } catch (e) {
+                console.log("Error decoding incoming file transfer json sql: ", e);
+            }
+        }
 
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received];
         await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
