@@ -1239,8 +1239,6 @@ class ContactsListBox extends Component {
           }
         ];
 
-        let context = GiftedChatContext;
-
 /*
           <TouchableOpacity
             onPress={() => console.log('single press')}
