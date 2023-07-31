@@ -34,6 +34,7 @@ const RNFS = require('react-native-fs');
 import CameraRoll from "@react-native-community/cameraroll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import AudioRecord from 'react-native-audio-record';
+import FastImage from 'react-native-fast-image';
 
 import styles from '../assets/styles/blink/_ContactsListBox.scss';
 
@@ -555,33 +556,6 @@ class ContactsListBox extends Component {
                         cameraAsset: msg,
                         placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
                         });
-    }
-
-    renderMessageImage =(props) => {
-    /*
-        return(
-          <TouchableOpacity onPress={() => this.onMessagePress(context, props.currentMessage)}>
-            <Image
-              source={{ uri: props.currentMessage.image }}
-              style = {{
-              width: '98%',
-              height: Dimensions.get('window').width,
-              resizeMode: 'cover'
-            }}
-            />
-          </TouchableOpacity>
-        );
-*/
-        return (
-          <MessageImage
-            {...props}
-            imageStyle={{
-              width: '98%',
-              height: Dimensions.get('window').width,
-              resizeMode: 'cover'
-            }}
-          />
-    )
     }
 
     renderCustomActions = props =>
@@ -1230,6 +1204,72 @@ class ContactsListBox extends Component {
           }
     };
 
+    renderMessageImageOld =(props) => {
+    /*
+        return(
+          <TouchableOpacity onPress={() => this.onMessagePress(context, props.currentMessage)}>
+            <Image
+              source={{ uri: props.currentMessage.image }}
+              style = {{
+              width: '98%',
+              height: Dimensions.get('window').width,
+              resizeMode: 'cover'
+            }}
+            />
+          </TouchableOpacity>
+        );
+*/
+        return (
+          <MessageImage
+            {...props}
+            imageStyle={{
+              width: '98%',
+              height: Dimensions.get('window').width,
+              resizeMode: 'cover'
+            }}
+          />
+    )
+    }
+
+    renderMessageImage = (props: any) => {
+        // https://github.com/FaridSafi/react-native-gifted-chat/issues/1950
+        const images = [
+          {
+            url: props.currentMessage.image
+          }
+        ];
+
+        let context = GiftedChatContext;
+
+/*
+          <TouchableOpacity
+            onPress={() => console.log('single press')}
+            onLongPress={() =>  console.log('longpress')}
+            style={{ backgroundColor: "transparent" }}
+          >
+          </TouchableOpacity>
+
+*/
+
+        return (
+            <FastImage
+              style={{
+                  width: '100%',
+                  height: Dimensions.get('window').width,
+                  marginBottom: -5
+              }}
+
+              source={{
+                // @ts-ignore
+                uri: props.currentMessage.image,
+                priority: FastImage.priority.normal
+              }}
+              resizeMode={FastImage.resizeMode.cover}
+            />
+        );
+      };
+
+
     postChatSystemMessage(text, imagePath=null) {
         var id = uuid.v4();
         let giftedChatMessage;
@@ -1700,13 +1740,39 @@ class ContactsListBox extends Component {
 
     renderMessageText(props) {
         const { currentMessage } = props;
-        if (currentMessage.video || currentMessage.image || currentMessage.audio) {
+        if (currentMessage.video || currentMessage.audio) {
             return (
-                <View>
+                <View style={styles.photoMenuContainer}>
+                    <IconButton
+                        style={styles.photoMenu}
+                        size={20}
+                        icon="menu"
+                    />
+
+                    <View style={styles.photoMenuText}>
                     <MessageText
                         {...props}
-                        customTextStyle={{fontSize: 9}}
+                        customTextStyle={{fontSize: 12}}
                     />
+                    </View>
+
+                </View>
+            );
+        } else if (currentMessage.image) {
+            return (
+                <View style={styles.photoMenuContainer}>
+                    <IconButton
+                        style={styles.photoMenu}
+                        size={20}
+                        icon="menu"
+                    />
+
+                    <View style={styles.photoMenuText}>
+                    <MessageText
+                        {...props}
+                        customTextStyle={{fontSize: 12}}
+                    />
+                    </View>
 
                 </View>
             );

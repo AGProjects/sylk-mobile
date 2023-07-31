@@ -45,6 +45,7 @@
     "react-native-dtmf": "nimbleape/react-native-dtmf#de31f8e0bbca4a33da0a887aab735fd0d7749cc9",
     "react-native-elements": "^3.4.2",
     "react-native-email-link": "1.7.5",
+    "react-native-fast-image": "^8.6.3",
     "react-native-fast-openpgp": "^2.6.0",
     "react-native-file-type": "^1.0.0",
     "react-native-file-viewer": "^2.1.4",
