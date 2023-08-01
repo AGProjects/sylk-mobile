@@ -1882,21 +1882,12 @@ class Sylk extends Component {
 
         if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
             this.goBackToHome();
-            /*
-            let call = this.state.currentCall || this.state.incomingCall;
-            if (call && call.id) {
-                this.hangupCall(call.id, 'user_hangup_call');
-            }
-            */
         } else if (this.currentRoute === '/ready') {
             if (this.state.selectedContact) {
                 this.goBackToHome();
-                if (this.state.forwardContent || this.state.shareContent.length > 0) {
-                    this.endShareContent();
-                }
             } else if (this.state.historyFilter) {
                 this.filterHistory(null);
-            } else if (this.state.forwardContent || this.state.shareContent.length > 0) {
+            } else if (this.sharingAction) {
                 this.endShareContent();
             } else {
                 BackHandler.exitApp();
@@ -1904,6 +1895,10 @@ class Sylk extends Component {
         }
 
         return true;
+    }
+
+    get sharingAction() {
+        return this.state.forwardContent || this.state.shareContent.length > 0;
     }
 
     async componentDidMount() {
