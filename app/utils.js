@@ -10,7 +10,7 @@ const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
-let ENCRYPTABLE_FILE_SIZE = 10 * 1000 * 1000;
+let ENCRYPTABLE_FILE_SIZE = 20 * 1000 * 1000;
 
 
 let polycrc = require('polycrc');
