@@ -1564,18 +1564,9 @@ class ContactsListBox extends Component {
                 options.push('Share');
             }
 
-            if (currentMessage.local_url) {
-                if (utils.isImage(currentMessage.local_url)) {
-                    options.push('Save');
-                }
-                options.push('Open');
-            }
-
             if (currentMessage.metadata && currentMessage.metadata.filename) {
                 if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
-                    if (currentMessage.metadata.direction !== 'outgoing') {
-                        options.push('Download again');
-                    }
+                    options.push('Download again');
                 } else {
                     options.push('Download');
                 }
