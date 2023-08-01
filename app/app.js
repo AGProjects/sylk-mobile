@@ -9751,6 +9751,7 @@ class Sylk extends Component {
             }
 
             let item = this.state.shareContent[0];
+            console.log('Sharing item', item);
 
             if (item.subject) {
                 content = content + '\n\n' + item.subject;

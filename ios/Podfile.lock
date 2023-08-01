@@ -136,6 +136,18 @@ PODS:
   - indy-sdk-react-native (0.3.1):
     - Indy
     - React
+  - libwebp (1.3.1):
+    - libwebp/demux (= 1.3.1)
+    - libwebp/mux (= 1.3.1)
+    - libwebp/sharpyuv (= 1.3.1)
+    - libwebp/webp (= 1.3.1)
+  - libwebp/demux (1.3.1):
+    - libwebp/webp
+  - libwebp/mux (1.3.1):
+    - libwebp/demux
+  - libwebp/sharpyuv (1.3.1)
+  - libwebp/webp (1.3.1):
+    - libwebp/sharpyuv
   - nanopb (2.30909.0):
     - nanopb/decode (= 2.30909.0)
     - nanopb/encode (= 2.30909.0)
@@ -413,6 +425,10 @@ PODS:
     - React-Core
   - RNDtmf (1.0.0):
     - React
+  - RNFastImage (8.6.3):
+    - React-Core
+    - SDWebImage (~> 5.11.1)
+    - SDWebImageWebPCoder (~> 0.8.4)
   - RNFBApp (15.0.0):
     - Firebase/CoreOnly (= 9.1.0)
     - React-Core
@@ -443,6 +459,12 @@ PODS:
     - React
   - RNVoipPushNotification (2.1.0):
     - React-Core
+  - SDWebImage (5.11.1):
+    - SDWebImage/Core (= 5.11.1)
+  - SDWebImage/Core (5.11.1)
+  - SDWebImageWebPCoder (0.8.5):
+    - libwebp (~> 1.0)
+    - SDWebImage/Core (~> 5.10)
   - Yoga (1.14.0)
 
 DEPENDENCIES:
@@ -511,6 +533,7 @@ DEPENDENCIES:
   - "RNCPushNotificationIOS (from `../node_modules/@react-native-community/push-notification-ios`)"
   - RNDeviceInfo (from `../node_modules/react-native-device-info`)
   - RNDtmf (from `../node_modules/react-native-dtmf/ios`)
+  - RNFastImage (from `../node_modules/react-native-fast-image`)
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
   - RNFileViewer (from `../node_modules/react-native-file-viewer`)
@@ -540,8 +563,11 @@ SPEC REPOS:
     - GoogleAppMeasurement
     - GoogleDataTransport
     - GoogleUtilities
+    - libwebp
     - nanopb
     - PromisesObjC
+    - SDWebImage
+    - SDWebImageWebPCoder
 
 EXTERNAL SOURCES:
   BVLinearGradient:
@@ -660,6 +686,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-device-info"
   RNDtmf:
     :path: "../node_modules/react-native-dtmf/ios"
+  RNFastImage:
+    :path: "../node_modules/react-native-fast-image"
   RNFBApp:
     :path: "../node_modules/@react-native-firebase/app"
   RNFBMessaging:
@@ -707,6 +735,7 @@ SPEC CHECKSUMS:
   GoogleUtilities: 9aa0ad5a7bc171f8bae016300bfcfa3fb8425749
   Indy: d9976ce47c0308bd1fea6f90e3ad3db59a3b49b9
   indy-sdk-react-native: d98862d0fffa42cc427d5ceffb6589e7c7ce8c46
+  libwebp: 33dc822fbbf4503668d09f7885bbfedc76c45e96
   nanopb: b552cce312b6c8484180ef47159bc0f65a1f0431
   Permission-Camera: 0db4fd6e1c556c1cf47f38b989a8084cea3ec3dd
   Permission-Contacts: c9c3306280576546619fc9ae7489012ed9fe091f
@@ -760,6 +789,7 @@ SPEC CHECKSUMS:
   RNCPushNotificationIOS: 4d9ffd08f00ef6c1029ebbf4d72fc711eca3ff01
   RNDeviceInfo: 8a06046616c6b5c03787b04f265fa3b52b37c80b
   RNDtmf: 3d027df415fd00b707061864e2ce270f04d22f3d
+  RNFastImage: 5c9c9fed9c076e521b3f509fe79e790418a544e8
   RNFBApp: 3f5e4825054a65d6b5ea82548501738b857b088e
   RNFBMessaging: 7524360930b68b8b028c317aea578dda3e7f0136
   RNFileViewer: 83cc066ad795b1f986791d03b56fe0ee14b6a69f
@@ -772,6 +802,8 @@ SPEC CHECKSUMS:
   RNSVG: ce9d996113475209013317e48b05c21ee988d42e
   RNVectorIcons: 0bb4def82230be1333ddaeee9fcba45f0b288ed4
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36
+  SDWebImage: a7f831e1a65eb5e285e3fb046a23fcfbf08e696d
+  SDWebImageWebPCoder: 908b83b6adda48effe7667cd2b7f78c897e5111d
   Yoga: f2a7cd4280bfe2cca5a7aed98ba0eb3d1310f18b
 
 PODFILE CHECKSUM: 2d287753cb385f4cc1552b784784b3c65230e8db
