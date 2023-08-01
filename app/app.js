@@ -1670,15 +1670,6 @@ class Sylk extends Component {
         return this.__notificationCenter;
     }
 
-    findObjectByKey(array, key, value) {
-        for (var i = 0; i < array.length; i++) {
-            if (array[i][key] === value) {
-                return array[i];
-            }
-        }
-        return null;
-    }
-
     _detectOrientation() {
         //console.log('_detectOrientation', this.state.Width_Layout, this.state.Height_Layout);
         let H = this.state.Height_Layout + this.state.keyboardHeight;
@@ -1808,7 +1799,6 @@ class Sylk extends Component {
                         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
                     }
                 } else if (reason === 'escalate_to_conference') {
-
                     let conf_uri = [];
                     conf_uri.push(this.state.accountId.split('@')[0]);
                     this.participantsToInvite.forEach((p) => {
