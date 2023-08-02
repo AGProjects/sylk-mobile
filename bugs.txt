@@ -73,3 +73,6 @@ https://github.com/ajith-ab/react-native-receive-sharing-intent/issues/110
 handle download negative codes on iOS downloads
 https://github.com/EkoLabs/react-native-background-downloader/pull/82/commits/6da2343e93c18dcbfadf9fc9b5ca331a02d236e9
 
+-- receving intent stuck when runnign multiple times
+
+https://github.com/ajith-ab/react-native-receive-sharing-intent/issues/149

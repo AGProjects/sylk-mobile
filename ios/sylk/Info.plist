@@ -30,6 +30,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>sylk</string>
+				<string>com.agprojects.sylk</string>
 			</array>
 		</dict>
 		<dict>

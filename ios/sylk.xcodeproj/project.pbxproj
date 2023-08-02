@@ -22,6 +22,9 @@
 		1F31872126495CFF0096C518 /* message_sent.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871B26495CFF0096C518 /* message_sent.wav */; };
 		1F31872226495CFF0096C518 /* participant_left.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871C26495CFF0096C518 /* participant_left.wav */; };
 		1F5DAB98285FA8DE001F479D /* Indy.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F5DAB97285FA8DE001F479D /* Indy.framework */; };
+		1FC06CBE2A793D9300F8D5A3 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */; };
+		1FC06CC12A793D9300F8D5A3 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */; };
+		1FC06CC52A793D9300F8D5A3 /* sylk-share.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1FFA53D22A364B8900EF7194 /* LinkPresentation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1FFA53D12A364B8900EF7194 /* LinkPresentation.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
 		2D02E4BC1E0B4A80006451C7 /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.m */; };
 		2D02E4BD1E0B4A84006451C7 /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
@@ -43,6 +46,13 @@
 			remoteGlobalIDString = 13B07F861A680F5B00A75B9A;
 			remoteInfo = sylk;
 		};
+		1FC06CC32A793D9300F8D5A3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1FC06CBA2A793D9300F8D5A3;
+			remoteInfo = "sylk-share";
+		};
 		2D02E4911E0B4A5D006451C7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
@@ -61,6 +71,17 @@
 			files = (
 			);
 			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1FC06CB32A793D2200F8D5A3 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				1FC06CC52A793D9300F8D5A3 /* sylk-share.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -91,6 +112,14 @@
 		1F31871C26495CFF0096C518 /* participant_left.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_left.wav; path = ../app/assets/sounds/participant_left.wav; sourceTree = "<group>"; };
 		1F5DAB96285FA8CE001F479D /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ios; sourceTree = "<group>"; };
 		1F5DAB97285FA8DE001F479D /* Indy.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Indy.framework; path = Pods/Indy/IndySdk/Indy.framework; sourceTree = "<group>"; };
+		1FC06CAA2A793D2200F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		1FC06CAD2A793D2200F8D5A3 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
+		1FC06CAF2A793D2200F8D5A3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "sylk-share.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		1FC06CC02A793D9300F8D5A3 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
+		1FC06CC22A793D9300F8D5A3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1FC06CC92A793F9600F8D5A3 /* sylk-share.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "sylk-share.entitlements"; sourceTree = "<group>"; };
 		1FFA53D12A364B8900EF7194 /* LinkPresentation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = LinkPresentation.framework; path = System/Library/Frameworks/LinkPresentation.framework; sourceTree = SDKROOT; };
 		2D02E47B1E0B4A5D006451C7 /* sylk-tvOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "sylk-tvOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D02E4901E0B4A5D006451C7 /* sylk-tvOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "sylk-tvOSTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -142,6 +171,13 @@
 				1FFA53D22A364B8900EF7194 /* LinkPresentation.framework in Frameworks */,
 				1F5DAB98285FA8DE001F479D /* Indy.framework in Frameworks */,
 				4A9D65378E71AE47B52D5E28 /* libPods-sylk.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1FC06CB82A793D9300F8D5A3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -237,6 +273,27 @@
 			name = Fonts;
 			sourceTree = "<group>";
 		};
+		1FC06CA92A793D2200F8D5A3 /* Sylk Share */ = {
+			isa = PBXGroup;
+			children = (
+				1FC06CAA2A793D2200F8D5A3 /* ShareViewController.swift */,
+				1FC06CAC2A793D2200F8D5A3 /* MainInterface.storyboard */,
+				1FC06CAF2A793D2200F8D5A3 /* Info.plist */,
+			);
+			path = "Sylk Share";
+			sourceTree = "<group>";
+		};
+		1FC06CBC2A793D9300F8D5A3 /* sylk-share */ = {
+			isa = PBXGroup;
+			children = (
+				1FC06CC92A793F9600F8D5A3 /* sylk-share.entitlements */,
+				1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */,
+				1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */,
+				1FC06CC22A793D9300F8D5A3 /* Info.plist */,
+			);
+			path = "sylk-share";
+			sourceTree = "<group>";
+		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -290,6 +347,8 @@
 				13B07FAE1A68108700A75B9A /* sylk */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				00E356EF1AD99517003FC87E /* sylkTests */,
+				1FC06CA92A793D2200F8D5A3 /* Sylk Share */,
+				1FC06CBC2A793D9300F8D5A3 /* sylk-share */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				7F8D61712125CE276D8F5B51 /* Pods */,
@@ -307,6 +366,7 @@
 				00E356EE1AD99517003FC87E /* sylkTests.xctest */,
 				2D02E47B1E0B4A5D006451C7 /* sylk-tvOS.app */,
 				2D02E4901E0B4A5D006451C7 /* sylk-tvOSTests.xctest */,
+				1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -348,15 +408,34 @@
 				957F2ED2E8D3001F985FFB2B /* [CP] Embed Pods Frameworks */,
 				3D409A7680C227342EBC0A1F /* [CP] Copy Pods Resources */,
 				1A05AFED7BF36CE47E72EA0C /* [CP-User] [RNFB] Core Configuration */,
+				1FC06CB32A793D2200F8D5A3 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				1FC06CC42A793D9300F8D5A3 /* PBXTargetDependency */,
 			);
 			name = sylk;
 			productName = sylk;
 			productReference = 13B07F961A680F5B00A75B9A /* sylk.app */;
 			productType = "com.apple.product-type.application";
+		};
+		1FC06CBA2A793D9300F8D5A3 /* sylk-share */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1FC06CC62A793D9300F8D5A3 /* Build configuration list for PBXNativeTarget "sylk-share" */;
+			buildPhases = (
+				1FC06CB72A793D9300F8D5A3 /* Sources */,
+				1FC06CB82A793D9300F8D5A3 /* Frameworks */,
+				1FC06CB92A793D9300F8D5A3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "sylk-share";
+			productName = "sylk-share";
+			productReference = 1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		2D02E47A1E0B4A5D006451C7 /* sylk-tvOS */ = {
 			isa = PBXNativeTarget;
@@ -403,6 +482,7 @@
 		83CBB9F71A601CBA00E9B192 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
+				LastSwiftUpdateCheck = 1430;
 				LastUpgradeCheck = 940;
 				ORGANIZATIONNAME = Facebook;
 				TargetAttributes = {
@@ -412,6 +492,11 @@
 					};
 					13B07F861A680F5B00A75B9A = {
 						DevelopmentTeam = 4DFEFUDLKZ;
+					};
+					1FC06CBA2A793D9300F8D5A3 = {
+						CreatedOnToolsVersion = 14.3.1;
+						DevelopmentTeam = 4DFEFUDLKZ;
+						ProvisioningStyle = Automatic;
 					};
 					2D02E47A1E0B4A5D006451C7 = {
 						CreatedOnToolsVersion = 8.2.1;
@@ -443,6 +528,7 @@
 				00E356ED1AD99517003FC87E /* sylkTests */,
 				2D02E47A1E0B4A5D006451C7 /* sylk-tvOS */,
 				2D02E48F1E0B4A5D006451C7 /* sylk-tvOSTests */,
+				1FC06CBA2A793D9300F8D5A3 /* sylk-share */,
 			);
 		};
 /* End PBXProject section */
@@ -472,6 +558,14 @@
 				13B07FBD1A68108700A75B9A /* LaunchScreen.xib in Resources */,
 				1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */,
 				1F207F1527F35DF9000C83CA /* beluga_in.wav in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1FC06CB92A793D9300F8D5A3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1FC06CC12A793D9300F8D5A3 /* MainInterface.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -766,6 +860,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1FC06CB72A793D9300F8D5A3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1FC06CBE2A793D9300F8D5A3 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		2D02E4771E0B4A5D006451C7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -791,6 +893,11 @@
 			target = 13B07F861A680F5B00A75B9A /* sylk */;
 			targetProxy = 00E356F41AD99517003FC87E /* PBXContainerItemProxy */;
 		};
+		1FC06CC42A793D9300F8D5A3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1FC06CBA2A793D9300F8D5A3 /* sylk-share */;
+			targetProxy = 1FC06CC32A793D9300F8D5A3 /* PBXContainerItemProxy */;
+		};
 		2D02E4921E0B4A5D006451C7 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 2D02E47A1E0B4A5D006451C7 /* sylk-tvOS */;
@@ -806,6 +913,22 @@
 			);
 			name = LaunchScreen.xib;
 			path = sylk;
+			sourceTree = "<group>";
+		};
+		1FC06CAC2A793D2200F8D5A3 /* MainInterface.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				1FC06CAD2A793D2200F8D5A3 /* Base */,
+			);
+			name = MainInterface.storyboard;
+			sourceTree = "<group>";
+		};
+		1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				1FC06CC02A793D9300F8D5A3 /* Base */,
+			);
+			name = MainInterface.storyboard;
 			sourceTree = "<group>";
 		};
 /* End PBXVariantGroup section */
@@ -858,6 +981,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = DA31B39832F5224A7B4B4695 /* Pods-sylk.debug.xcconfig */;
 			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
 				CURRENT_PROJECT_VERSION = 155;
@@ -888,6 +1012,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = F90FBC0C67DA3EBA1B6FA8DE /* Pods-sylk.release.xcconfig */;
 			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
 				CURRENT_PROJECT_VERSION = 155;
@@ -910,6 +1035,77 @@
 				PRODUCT_NAME = sylk;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+		1FC06CC72A793D9300F8D5A3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CODE_SIGN_ENTITLEMENTS = "sylk-share/sylk-share.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "sylk-share/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "sylk-share";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2023 Facebook. All rights reserved.";
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios.sylk-share";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1FC06CC82A793D9300F8D5A3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CODE_SIGN_ENTITLEMENTS = "sylk-share/sylk-share.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "sylk-share/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "sylk-share";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2023 Facebook. All rights reserved.";
+				IPHONEOS_DEPLOYMENT_TARGET = 11.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 1.0;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios.sylk-share";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -1145,6 +1341,15 @@
 			buildConfigurations = (
 				13B07F941A680F5B00A75B9A /* Debug */,
 				13B07F951A680F5B00A75B9A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1FC06CC62A793D9300F8D5A3 /* Build configuration list for PBXNativeTarget "sylk-share" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1FC06CC72A793D9300F8D5A3 /* Debug */,
+				1FC06CC82A793D9300F8D5A3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

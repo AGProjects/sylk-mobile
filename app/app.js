@@ -1836,7 +1836,7 @@ class Sylk extends Component {
             }
 
             if (reason === 'start_up') {
-//                this.fetchSharedItems();
+                this.fetchSharedItems();
             }
         }
 
@@ -2481,51 +2481,14 @@ class Sylk extends Component {
     }
 
     _handleAndroidFocus = nextFocus => {
-        //utils.timestampedLog('----- APP in focus');
-        if (Platform.OS === 'ios') {
-            PushNotificationIOS.cancelLocalNotifications();
-        } else {
-            PushNotification.cancelAllLocalNotifications();
-        }
+        //utils.timestampedLog('----- Android APP in focus');
+        PushNotification.cancelAllLocalNotifications();
 
         this.setState({inFocus: true});
         this.refreshNavigationItems();
         this.fetchSharedItems();
         this.respawnConnection();
      }
-
-     fetchSharedItems() {
-        ReceiveSharingIntent.getReceivedFiles(files => {
-            // files returns as JSON Array example
-            //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
-                if (files.length > 0) {
-                    console.log('Will share to contacts', files);
-
-                    this.setState({shareToContacts: true,
-                                   shareContent: files,
-                                   selectedContact: null});
-
-                    let item = files[0];
-                    let what = 'Share text with contacts';
-
-                    if (item.weblink) {
-                        what = 'Share web link with contacts';
-                    }
-
-                    if (item.filePath) {
-                        what = 'Share file with contacts';
-                    }
-
-                    this._notificationCenter.postSystemNotification(what);
-                } else {
-                    console.log('Nothing to share');
-                }
-            }, (error) =>{
-                console.log('Error receiving sharing intent', error.message);
-            },
-            'com.agprojects.sylk' // share url protocol (must be unique to your app, suggest using your apple bundle id)
-        );
-    }
 
     refreshNavigationItems() {
 
@@ -2565,7 +2528,7 @@ class Sylk extends Component {
     }
 
     _handleAppStateChange = nextAppState => {
-        //utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
+        // utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
 
         if (nextAppState === this.state.appState) {
             return;
@@ -2599,6 +2562,7 @@ class Sylk extends Component {
 
         if (this.state.appState === 'background' && nextAppState === 'active') {
             this.respawnConnection(nextAppState);
+            this.fetchSharedItems();
         }
 
         this.setState({appState: nextAppState});
@@ -5650,7 +5614,7 @@ class Sylk extends Component {
         message.received = false;
         message.direction = 'outgoing';
 
-        //console.log('----sendMessage', uri, message);
+        //console.log('--- sendMessage', uri, message);
 
         let renderMessages = this.state.messages;
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
@@ -5675,23 +5639,27 @@ class Sylk extends Component {
                 console.log('Error: missing local path for file transfer');
                 return;
             }
+
             const localPath = RNFS.DocumentDirectoryPath + "/" + file_transfer.sender.uri + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
-            const dirname = path.dirname(localPath);
+            if (file_transfer.path !== localPath) {
+                // the file may have already been copied
+                const dirname = path.dirname(localPath);
 
-            try {
-                await RNFS.mkdir(dirname);
-            } catch (e) {
-                console.log('Error making directory', dirname, ':', e);
-                this.renderSystemMessage(uri, e.message);
-                return;
-            }
+                try {
+                    await RNFS.mkdir(dirname);
+                } catch (e) {
+                    console.log('Error making directory', dirname, ':', e);
+                    this.renderSystemMessage(uri, e.message);
+                    return;
+                }
 
-            try {
-                await RNFS.copyFile(file_transfer.path, localPath);
-            } catch (e) {
-                this.renderSystemMessage(uri, e.message);
-                console.log('Error copying file from', file_transfer.path, 'to', localPath, ':', e);
-                return;
+                try {
+                    await RNFS.copyFile(file_transfer.path, localPath);
+                } catch (e) {
+                    this.renderSystemMessage(uri, e.message);
+                    console.log('Error copying file from', file_transfer.path, 'to', localPath, ':', e);
+                    return;
+                }
             }
 
             file_transfer.local_url = localPath;
@@ -6789,11 +6757,17 @@ class Sylk extends Component {
     }
 
     async checkFileTransfer(file_transfer) {
+        return;
         let uri = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         if (file_transfer.local_url) {
             const exists = await RNFS.exists(file_transfer.local_url);
             if (exists) {
-                const { size } = await RNFetchBlob.fs.stat(file_transfer.local_url);
+                try {
+                    const { size } = await RNFetchBlob.fs.stat(file_transfer.local_url);
+                } catch (e) {
+                    consolo.log('Error stat file:', e.message);
+                    return;
+                }
                 //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
                 if (size === 0) {
                     this.deleteMessage(file_transfer.transfer_id, uri);
@@ -6802,7 +6776,7 @@ class Sylk extends Component {
             return;
         }
 
-        //console.log('checkFileTransfer', file_transfer);
+        console.log('checkFileTransfer', file_transfer);
 
         let difference;
         let now = new Date();
@@ -6839,7 +6813,7 @@ class Sylk extends Component {
                 }
             }
         } else {
-            console.log('File transfer is too old');
+            console.log('File transfer', file_transfer.transfer_id, 'is too old');
         }
     }
 
@@ -6975,7 +6949,7 @@ class Sylk extends Component {
             return;
         }
 
-        //console.log('decryptFile', file_transfer);
+        console.log('decryptFile', file_transfer);
 
         let content;
         let lines = [];
@@ -6998,13 +6972,18 @@ class Sylk extends Component {
             this.updateFileTransferSql(file_transfer, 3);
             return;
         } else {
-            const { size } = await RNFetchBlob.fs.stat(file_path);
-            //console.log('Reading encrypted content', size, file_path);
-
-            if (size !== file_transfer.filesize) {
-                file_transfer.error = 'Wrong file size';
+            try {
+                const { size } = await RNFetchBlob.fs.stat(file_path);
+                if (size !== file_transfer.filesize) {
+                    file_transfer.error = 'Wrong file size';
+                    this.updateFileTransferSql(file_transfer, 3);
+                    this.renderSystemMessage(uri, 'Wrong file size ' + size + ', on server is ' + file_transfer.filesize, 'outgoing', new Date());
+                    return;
+                }
+            } catch (e) {
+                consolo.log('Error stat file:', e.message);
+                file_transfer.error = 'Cannot stat local file';
                 this.updateFileTransferSql(file_transfer, 3);
-                this.renderSystemMessage(uri, 'Wrong file size ' + size + ', on server is ' + file_transfer.filesize, 'outgoing', new Date());
                 return;
             }
         }
@@ -8708,7 +8687,7 @@ class Sylk extends Component {
                 let params = [JSON.stringify(file_transfer), received, encrypted, file_transfer.transfer_id, this.state.accountId];
                 query = "update messages set metadata = ?, received = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
-                    console.log('SQL updated file transfer file_transfer', 'received =', received, 'encrypted =', encrypted);
+                    console.log('SQL updated file transfer', file_transfer.transfer_id, 'received =', received, 'encrypted =', encrypted);
                     this.updateFileTransferBubble(file_transfer);
                 }).catch((error) => {
                     console.log('updateFileTransferSql SQL error:', error);
@@ -8721,7 +8700,7 @@ class Sylk extends Component {
     }
 
     async updateFileTransferMessageSql(id, content, pending, sent, received, state) {
-        console.log('updateFileTransferMessageSql');
+        //console.log('updateFileTransferMessageSql');
         let query = "SELECT * from messages where msg_id = ? and account = ? ";
         await this.ExecuteQuery(query, [id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -9700,32 +9679,71 @@ class Sylk extends Component {
                        sourceContact: this.state.selectedContact});
     }
 
+     fetchSharedItems() {
+        //console.log('fetchSharedItems ---');
+        ReceiveSharingIntent.getReceivedFiles(files => {
+            // files returns as JSON Array example
+            //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
+                if (files.length > 0) {
+                    //console.log('Will share to contacts');
+
+                    this.setState({shareToContacts: true,
+                                   shareContent: files,
+                                   selectedContact: null});
+
+                    let item = files[0];
+                    let what = 'Share text with contacts';
+
+                    if (item.weblink) {
+                        what = 'Share web link with contacts';
+                    }
+
+                    if (item.filePath) {
+                        what = 'Share file with contacts';
+                    }
+
+                    this._notificationCenter.postSystemNotification(what);
+                } else {
+                    console.log('Nothing to share');
+                }
+            }, (error) => {
+                console.log('Error receiving sharing intent', error.message);
+            },
+            'com.agprojects.sylk'
+        );
+    }
+
     async shareContent() {
-        var id = uuid.v4();
+        let id;
+        let i = 0;
+        let j = 0;
+        let uri;
         let content = '';
         let contentType = 'text/plain';
 
+        let shareContent = this.state.shareContent;
+        let selectedContacts = this.state.selectedContacts;
+        let message = this.state.forwardContent;
+
+        this.endShareContent();
+
         let msg = {
-            _id: id,
-            key: id,
             text: content,
             createdAt: new Date(),
             direction: 'outgoing',
             user: {}
             }
 
-
         if (this.state.forwardContent) {
-            let message = this.state.forwardContent;
             console.log('Forwarding content...');
             msg.text = message.text;
+
             if (message.metadata && message.metadata.filename) {
                 contentType = 'application/sylk-file-transfer';
                 msg.metadata = message.metadata;
                 msg.metadata.sender.uri = this.state.accountId;
                 msg.metadata.path = msg.metadata.local_url;
                 msg.metadata.receiver.uri = null;
-                msg.metadata.transfer_id = id;
                 msg.metadata.progress = null;
                 msg.metadata.error = null;
                 msg.metadata.local_url = null;
@@ -9737,83 +9755,126 @@ class Sylk extends Component {
                     msg.metadata.filename = message.metadata.filename.slice(0, -4);
                 }
             }
-            //console.log('Forwarding content result...', msg);
+
+            i = 0;
+            while (i < selectedContacts.length) {
+                uri = selectedContacts[i];
+                i++;
+
+                id = uuid.v4();
+                msg._id = id;
+                msg.key = id;
+                if (msg.metadata && msg.metadata.receiver) {
+                    msg.metadata.receiver.uri = uri;
+                    msg.metadata.transfer_id = id;
+                }
+                await this.sendMessage(uri, msg, contentType);
+            }
 
         } else {
             console.log('Sharing content...');
 
-            if (this.state.shareContent.length === 0) {
+            if (shareContent.length === 0) {
                 return;
             }
 
-            if (this.state.selectedContacts.length === 0) {
+            if (selectedContacts.length === 0) {
                 this._notificationCenter.postSystemNotification('Sharing canceled');
             }
 
-            let item = this.state.shareContent[0];
-            console.log('Sharing item', item);
+            let item;
+            let basename;
+            let localPath;
+            let dirname;
+            let file_transfer;
 
-            if (item.subject) {
-                content = content + '\n\n' + item.subject;
-            }
+            while (j < shareContent.length) {
+                item = shareContent[j];
+                j++;
 
-            if (item.text) {
-                content = content + '\n\n' + item.text;
-            }
+                //console.log('Sharing item', item);
 
-            if (item.weblink) {
-                content = content + '\n\n' + item.weblink;
-            }
+                if (item.subject) {
+                    content = content + '\n\n' + item.subject;
+                }
 
-            if (item.filePath) {
-                contentType = 'application/sylk-file-transfer';
-                const { size } = await RNFetchBlob.fs.stat(item.filePath);
+                if (item.text) {
+                    content = content + '\n\n' + item.text;
+                }
 
-                let file_transfer = { 'path': item.filePath,
+                if (item.weblink) {
+                    content = content + '\n\n' + item.weblink;
+                }
+
+                if (item.filePath) {
+                    contentType = 'application/sylk-file-transfer';
+                    file_transfer = { 'path': item.filePath,
                                       'filename': item.fileName,
                                       'filetype' : item.mimeType,
-                                      'filesize': size,
                                       'sender': {'uri': this.state.accountId},
                                       'receiver': {'uri': null},
-                                      'transfer_id': id,
                                       'direction': 'outgoing'
                                       };
 
-                msg.metadata = file_transfer;
+                    msg.metadata = file_transfer;
 
-                if (utils.isImage(item.fileName)) {
-                    msg.image = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
-                } else if (utils.isAudio(item.fileName)) {
-                    msg.audio = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
-                } else if (utils.isVideo(item.fileName)) {
-                    msg.video = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
-                }
+                    if (utils.isImage(item.fileName)) {
+                        msg.image = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+                    } else if (utils.isAudio(item.fileName)) {
+                        msg.audio = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+                    } else if (utils.isVideo(item.fileName)) {
+                        msg.video = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
+                    }
 
-                if (content.length > 0) {
-                    content = content + ' + ' + utils.beautyFileNameForBubble(file_transfer);
-                } else {
-                    content = utils.beautyFileNameForBubble(file_transfer);
+                    if (content.length > 0) {
+                        content = content + ' + ' + utils.beautyFileNameForBubble(file_transfer);
+                    } else {
+                        content = utils.beautyFileNameForBubble(file_transfer);
+                    }
                 }
 
                 content = content.trim();
                 msg.text = content;
-            }
 
-            ReceiveSharingIntent.clearReceivedFiles();
+                i = 0;
+                while (i < selectedContacts.length) {
+                    uri = selectedContacts[i];
+                    i++;
+
+                    id = uuid.v4();
+                    msg._id = id;
+                    msg.key = id;
+                    if (msg.metadata && msg.metadata.receiver) {
+                        msg.metadata.receiver.uri = uri;
+                        msg.metadata.transfer_id = id;
+
+                        if (Platform.OS === 'ios') {
+                            basename = file_transfer.path.split('\\').pop().split('/').pop();
+                            localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri + "/" + id + "/" + basename;
+                            dirname = path.dirname(localPath);
+                            await RNFS.mkdir(dirname);
+                            console.log('Copy', file_transfer.path, localPath);
+                            await RNFS.copyFile(file_transfer.path, localPath);
+                            file_transfer.path = localPath;
+                        }
+
+                        try {
+                            const { size } = await RNFetchBlob.fs.stat(file_transfer.path);
+                            file_transfer.size = size;
+                        } catch (e) {
+                            console.log('Error stat file', file_transfer.path, e.message);
+                            this._notificationCenter.postSystemNotification('Cannot access file', file_transfer.path);
+                            continue;
+                        }
+                    }
+                    await this.sendMessage(uri, msg, contentType);
+                }
+            }
         }
-
-        this.state.selectedContacts.forEach((uri) => {
-            if (msg.metadata && msg.metadata.receiver) {
-                msg.metadata.receiver.uri = uri;
-            }
-            this.sendMessage(uri, msg, contentType);
-        });
-
-        this.endShareContent();
     }
 
     endShareContent() {
-        console.log('endShareContent');
+        //console.log('endShareContent');
         this.setState({shareContent: [],
                        selectedContacts: [],
                        selectedContact: this.state.sourceContact,
