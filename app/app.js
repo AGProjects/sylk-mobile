@@ -1681,7 +1681,7 @@ class Sylk extends Component {
      }
 
     changeRoute(route, reason) {
-        console.log('Route', route, reason);
+        //console.log('Route', route, 'with reason', reason);
         utils.timestampedLog('Change route', this.currentRoute, '->', route, 'with reason:', reason);
         let messages = this.state.messages;
 
@@ -6776,7 +6776,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('checkFileTransfer', file_transfer);
+        //console.log('checkFileTransfer', file_transfer);
 
         let difference;
         let now = new Date();
@@ -6949,7 +6949,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('decryptFile', file_transfer);
+        //console.log('decryptFile', file_transfer);
 
         let content;
         let lines = [];
