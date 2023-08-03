@@ -57,7 +57,8 @@ class NavigationBar extends Component {
             blockedUris: this.props.blockedUris,
             ssiRequired: this.props.ssiRequired,
             filteredMessageIds: this.props.filteredMessageIds,
-            contentTypes: this.props.contentTypes
+            contentTypes: this.props.contentTypes,
+            sharingAction: this.props.sharingAction
         }
 
         this.menuRef = React.createRef();
@@ -96,7 +97,8 @@ class NavigationBar extends Component {
                        blockedUris: nextProps.blockedUris,
                        ssiRequired: nextProps.ssiRequired,
                        filteredMessageIds: nextProps.filteredMessageIds,
-                       contentTypes: nextProps.contentTypes
+                       contentTypes: nextProps.contentTypes,
+                       sharingAction: nextProps.sharingAction
                        });
 
                     if (nextProps.menuVisible) {
@@ -357,6 +359,8 @@ class NavigationBar extends Component {
                                  || false;
         }
 
+        let showBackButton = this.state.selectedContact || this.state.sharingAction;
+
         let hasUpdate = this.state.appStoreVersion && this.state.appStoreVersion.version > VersionNumber.appVersion;
         let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
@@ -373,7 +377,7 @@ class NavigationBar extends Component {
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
-                {this.state.selectedContact?
+                {showBackButton ?
                 <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                 : <Image source={blinkLogo} style={styles.logo}/>}
 
@@ -647,7 +651,8 @@ NavigationBar.propTypes = {
     deleteSsiConnection: PropTypes.func,
     filteredMessageIds: PropTypes.array,
     contentTypes: PropTypes.object,
-    canSend: PropTypes.func
+    canSend: PropTypes.func,
+    sharingAction: PropTypes.bool
 };
 
 export default NavigationBar;

@@ -1707,6 +1707,7 @@ class Sylk extends Component {
                                 messages: {},
                                 messageZoomFactor: 1
                                 });
+                    this.endShareContent();
                 }
             }
             return;
@@ -6209,7 +6210,9 @@ class Sylk extends Component {
                         RNFS.unlink(dir_path).then((success) => {
                             console.log('Removed directory', dir_path);
                         }).catch((err) => {
-                            console.log('Error deleting directory', dir_path, err.message);
+                            if (err.message.indexOf('File does not exist') === -1) {
+                                console.log('Error deleting directory', dir_path, err.message);
+                            }
                         });
                     }
                 }
@@ -6628,7 +6631,15 @@ class Sylk extends Component {
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
                 if (item.encrypted === 3) {
+                    console.log('Message could not be decrypted', item.msg_id, item.content_type);
                     this.sendDispositionNotification(item, 'error');
+                    let query = "UPDATE messages set received = 2 where msg_id = ? ";
+                    this.ExecuteQuery(query, [item.msg_id]).then((results) => {
+                        console.log('Sent disposition saved for', item.msg_id);
+                    }).catch((error) => {
+                        console.log('SQL confirmRead error:', error);
+                    });
+
                 } else {
                     if (this.sendDispositionNotification(item, 'displayed')) {
                         displayed.push(item.msg_id);
@@ -6652,8 +6663,7 @@ class Sylk extends Component {
                 this.ExecuteQuery(query).then((results) => {
                     //console.log('Sent disposition saved for', displayed.length, 'messages');
                 }).catch((error) => {
-                    console.log('SQL query:', query);
-                    console.log('SQL error:', error);
+                    console.log('SQL confirmRead error:', error);
                 });
             }
 
@@ -6710,6 +6720,7 @@ class Sylk extends Component {
     }
 
     async sendDispositionNotification(message, state='displayed') {
+        //console.log('sendDispositionNotification', state);
         let id = message.msg_id || message.id || message.transfer_id;
 
         if (!this.canSend()) {
@@ -6722,10 +6733,10 @@ class Sylk extends Component {
         let uri =  message.sender ? message.sender.uri : message.from_uri;
         this.state.account.sendDispositionNotification(uri, id, message.timestamp, state,(error) => {
             if (!error) {
-                utils.timestampedLog('Message', id, state, 'state sent to server');
+                utils.timestampedLog('sendDispositionNotification', id, state, 'state sent to server');
                 return true;
             } else {
-                utils.timestampedLog('Message', id, state, 'state failed to be sent to server');
+                utils.timestampedLog('sendDispositionNotification', id, state, 'state failed to be sent to server');
                 return false;
             }
         });
@@ -6757,20 +6768,19 @@ class Sylk extends Component {
     }
 
     async checkFileTransfer(file_transfer) {
-        return;
         let uri = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         if (file_transfer.local_url) {
             const exists = await RNFS.exists(file_transfer.local_url);
             if (exists) {
                 try {
                     const { size } = await RNFetchBlob.fs.stat(file_transfer.local_url);
+                    //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
+                    if (size === 0) {
+                        this.deleteMessage(file_transfer.transfer_id, uri);
+                    }
                 } catch (e) {
                     consolo.log('Error stat file:', e.message);
                     return;
-                }
-                //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
-                if (size === 0) {
-                    this.deleteMessage(file_transfer.transfer_id, uri);
                 }
             }
             return;
@@ -7692,6 +7702,10 @@ class Sylk extends Component {
             uri = message.sender.uri;
         }
 
+        if (uri === this.state.accountId) {
+            uri = message.receiver;
+        }
+
         await this.deleteMessage(message.id, uri, false).then((result) => {
             console.log('Message', message.id, 'to', uri, 'is removed');
         }).catch((error) => {
@@ -8281,7 +8295,7 @@ class Sylk extends Component {
                     this.handleIncomingMessage(message, decryptedBody);
                 }).catch((error) => {
                     console.log('Failed to decrypt message', message.id, error);
-                    this.saveSystemMessage(message.sender.uri, 'Cannot decrypt last message, wrong key', 'incoming');
+                    this.saveSystemMessage(message.sender.uri, 'Received message encrypted with wrong key', 'incoming');
                     this.sendDispositionNotification(message, 'error');
                     this.sendPublicKey(message.sender.uri);
                 });
@@ -8387,7 +8401,8 @@ class Sylk extends Component {
     }
 
     async outgoingMessage(message) {
-        //console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
+        console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
+
         this.saveLastSyncId(message.id);
         let gMsg;
 
@@ -8588,7 +8603,7 @@ class Sylk extends Component {
     }
 
     saveOutgoingMessageSql(message, decryptedBody=null, is_encrypted=false) {
-        //console.log('saveOutgoingMessageSql');
+        console.log('saveOutgoingMessageSql', message.contentType);
 
         let pending = 0;
         let sent = null;
@@ -8636,17 +8651,17 @@ class Sylk extends Component {
 
         let ts = message.timestamp;
 
+        console.log('--- metadata', metadata);
+
         let unix_timestamp = Math.floor(ts / 1000);
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received];
         this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            //console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
+            console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
             this.remove_sync_pending_item(message.id);
 
             if (message.contentType === 'application/sylk-file-transfer') {
-                if (metadata) {
-                    this.updateFileTransferBubble(metadata);
-                    this.checkFileTransfer(metadata);
-                }
+                this.updateFileTransferBubble(metadata);
+                this.checkFileTransfer(metadata);
             }
 
         }).catch((error) => {
@@ -10266,6 +10281,7 @@ class Sylk extends Component {
                     resumeTransfers = {this.resumeTransfers}
                     contentTypes = {this.state.contentTypes}
                     canSend = {this.canSend}
+                    sharingAction = {this.sharingAction}
                 />
 
                 <ReadyBox
