@@ -2296,12 +2296,18 @@ class Sylk extends Component {
             if (!from || !to) {
                 return;
             }
+            if (to !== this.state.accountId) {
+                return
+            }
             this.postAndroidIncomingCallNotification(notification.data);
             this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
         } else if (event === 'incoming_session') {
             utils.timestampedLog('Push notification: incoming call', callUUID);
             if (!from) {
                 return;
+            }
+            if (to !== this.state.accountId) {
+                return
             }
             this.postAndroidIncomingCallNotification(notification.data);
             this.incomingCallFromPush(callUUID, from, displayName, mediaType);
