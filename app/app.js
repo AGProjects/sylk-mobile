@@ -1198,8 +1198,6 @@ class Sylk extends Component {
 
             this.refreshNavigationItems();
 
-            //this.fetchSharedItems();
-
             setTimeout(() => {
                 if (this.initialChatContact) {
                     console.log('Starting chat with', this.initialChatContact);
@@ -1852,10 +1850,6 @@ class Sylk extends Component {
                 this.updateLoading(null, 'incoming_call');
                 this.setState({incomingCallUUID: null});
             }
-
-            if (reason === 'start_up') {
-                //this.fetchSharedItems();
-            }
         }
 
         this.currentRoute = route;
@@ -2226,6 +2220,7 @@ class Sylk extends Component {
             this._boundOnLocalNotificationReceivedBackground = this._onLocalNotificationReceivedBackground.bind(this);
             VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
             VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
+            this.fetchSharedItems('ios');
         } else if (Platform.OS === 'android') {
             this.handleFirebasePushInForeground(this);
 
@@ -2500,7 +2495,6 @@ class Sylk extends Component {
 
         this.setState({inFocus: true});
         this.refreshNavigationItems();
-        //this.fetchSharedItems('android_focus');
         this.respawnConnection();
      }
 
@@ -2542,7 +2536,7 @@ class Sylk extends Component {
     }
 
     _handleAppStateChange = nextAppState => {
-        // utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
+        //utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
 
         if (nextAppState === this.state.appState) {
             return;
@@ -8082,7 +8076,7 @@ class Sylk extends Component {
             this.add_sync_pending_item('sync_in_progress');
         } else {
             this.setState({firstSyncDone: true});
-            utils.timestampedLog('Sync messages ended');
+            utils.timestampedLog('Sync messages ended', this.state.appState);
             setTimeout(() => {
                 this.addTestContacts();
                 this.refreshNavigationItems();
@@ -9785,7 +9779,7 @@ class Sylk extends Component {
     }
 
      fetchSharedItems(source) {
-        console.log('fetchSharedItems ---', source);
+        console.log('Fetch shared items');
         ReceiveSharingIntent.getReceivedFiles(files => {
             // files returns as JSON Array example
             //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
