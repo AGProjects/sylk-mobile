@@ -1188,6 +1188,8 @@ class Sylk extends Component {
 
             this.refreshNavigationItems();
 
+            //this.fetchSharedItems();
+
             setTimeout(() => {
                 if (this.initialChatContact) {
                     console.log('Starting chat with', this.initialChatContact);
@@ -1310,7 +1312,6 @@ class Sylk extends Component {
 
             }
         });
-
     }
 
     async initSQL() {
@@ -1843,7 +1844,7 @@ class Sylk extends Component {
             }
 
             if (reason === 'start_up') {
-                this.fetchSharedItems();
+                //this.fetchSharedItems();
             }
         }
 
@@ -1977,7 +1978,6 @@ class Sylk extends Component {
         this._loaded = true;
 
         this.checkVersion();
-        this.fetchSharedItems();
     }
 
     _keyboardDidShow(e) {
@@ -2494,7 +2494,7 @@ class Sylk extends Component {
 
         this.setState({inFocus: true});
         this.refreshNavigationItems();
-        this.fetchSharedItems();
+        //this.fetchSharedItems('android_focus');
         this.respawnConnection();
      }
 
@@ -2568,9 +2568,9 @@ class Sylk extends Component {
 
         }
 
-        if (this.state.appState === 'background' && nextAppState === 'active') {
+        if (this.state.appState !== 'active' && nextAppState === 'active') {
             this.respawnConnection(nextAppState);
-            this.fetchSharedItems();
+            this.fetchSharedItems('app_active');
         }
 
         this.setState({appState: nextAppState});
@@ -5780,6 +5780,18 @@ class Sylk extends Component {
         if (!local_url && file_transfer.transfer_id) {
             this.deleteMessage(file_transfer.transfer_id, uri);
             return;
+        }
+
+        if (uri in this.state.myContacts) {
+            if (!this.state.myContacts[uri].publicKey) {
+             console.log('No public key available for', uri);
+           }
+        } else {
+            console.log('No contact for', uri);
+        }
+
+        if (!this.state.keys.public) {
+            console.log('No public key loaded for myself');
         }
 
         if (utils.isFileEncryptable(file_transfer)) {
@@ -9719,13 +9731,13 @@ class Sylk extends Component {
                        sourceContact: this.state.selectedContact});
     }
 
-     fetchSharedItems() {
-        //console.log('fetchSharedItems ---');
+     fetchSharedItems(source) {
+        console.log('fetchSharedItems ---', source);
         ReceiveSharingIntent.getReceivedFiles(files => {
             // files returns as JSON Array example
             //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
                 if (files.length > 0) {
-                    //console.log('Will share to contacts');
+                    console.log('Will share to contacts', files.length, 'items');
 
                     this.setState({shareToContacts: true,
                                    shareContent: files,
@@ -9753,19 +9765,38 @@ class Sylk extends Component {
         );
     }
 
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     async shareContent() {
-        let id;
-        let i = 0;
-        let j = 0;
-        let uri;
-        let content = '';
-        let contentType = 'text/plain';
 
         let shareContent = this.state.shareContent;
         let selectedContacts = this.state.selectedContacts;
         let message = this.state.forwardContent;
 
         this.endShareContent();
+
+        let waitCounter = 0;
+        let waitInterval = 30;
+
+        while (waitCounter < waitInterval) {
+            if (!this.state.contactsLoaded) {
+                console.log('Wait until contacts are loaded');
+                await this._sleep(1000);
+            } else {
+                break;
+            }
+
+            waitCounter++;
+        }
+
+        let id;
+        let i = 0;
+        let j = 0;
+        let uri;
+        let content = '';
+        let contentType = 'text/plain';
 
         let msg = {
             text: content,
@@ -9820,6 +9851,7 @@ class Sylk extends Component {
 
             if (selectedContacts.length === 0) {
                 this._notificationCenter.postSystemNotification('Sharing canceled');
+                return;
             }
 
             let item;
@@ -9914,7 +9946,7 @@ class Sylk extends Component {
     }
 
     endShareContent() {
-        //console.log('endShareContent');
+        console.log('endShareContent');
         this.setState({shareContent: [],
                        selectedContacts: [],
                        selectedContact: this.state.sourceContact,
@@ -10370,7 +10402,6 @@ class Sylk extends Component {
                     hideConferenceModalFunc = {this.hideConferenceModal}
                     showConferenceModalFunc = {this.showConferenceModal}
                     shareContent = {this.shareContent}
-                    fetchSharedItems = {this.fetchSharedItems}
                     filterHistoryFunc = {this.filterHistory}
                     historyFilter = {this.state.historyFilter}
                     inviteToConferenceFunc = {this.inviteToConference}

@@ -1075,7 +1075,6 @@ ReadyBox.propTypes = {
     showConferenceModalFunc: PropTypes.func,
     hideConferenceModalFunc: PropTypes.func,
     shareContent:  PropTypes.func,
-    fetchSharedItems: PropTypes.func,
     filterHistoryFunc:  PropTypes.func,
     historyFilter: PropTypes.string,
     fontScale: PropTypes.number,
