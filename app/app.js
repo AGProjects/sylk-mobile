@@ -2279,7 +2279,7 @@ class Sylk extends Component {
 
     handleFirebasePush(notification) {
         let event = notification.data.event;
-        //console.log("handleFirebasePush", event);
+        //console.log("handleFirebasePush", notification);
         const callUUID = notification.data['session-id'];
         const from = notification.data['from_uri'];
         const to = notification.data['to_uri'];
@@ -2969,7 +2969,7 @@ class Sylk extends Component {
             from = data.from_display_name + ' (' + data.from_uri + ')';
         }
 
-        console.log('Show Android incoming call notification', from, media);
+        //console.log('Show Android incoming call notification', from, media);
 
         let actions = ['Audio'];
         if (media.video) {
