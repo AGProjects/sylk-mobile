@@ -1,8 +1,8 @@
 import React, { Component } from 'react';
-import { Linking, Image, Platform, View } from 'react-native';
+import { Linking, Image, Platform, View , TouchableHighlight} from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Appbar, Menu, Divider, Text } from 'react-native-paper';
+import { Appbar, Menu, Divider, Text, IconButton } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
 import config from '../config';
@@ -58,7 +58,8 @@ class NavigationBar extends Component {
             ssiRequired: this.props.ssiRequired,
             filteredMessageIds: this.props.filteredMessageIds,
             contentTypes: this.props.contentTypes,
-            sharingAction: this.props.sharingAction
+            sharingAction: this.props.sharingAction,
+            dnd: this.props.dnd
         }
 
         this.menuRef = React.createRef();
@@ -98,7 +99,8 @@ class NavigationBar extends Component {
                        ssiRequired: nextProps.ssiRequired,
                        filteredMessageIds: nextProps.filteredMessageIds,
                        contentTypes: nextProps.contentTypes,
-                       sharingAction: nextProps.sharingAction
+                       sharingAction: nextProps.sharingAction,
+                       dnd: nextProps.dnd
                        });
 
                     if (nextProps.menuVisible) {
@@ -283,6 +285,9 @@ class NavigationBar extends Component {
                        userClosed: true});
     }
 
+    handleDnd () {
+    }
+
     saveConference(room, participants, displayName=null) {
         this.props.saveConference(room, participants, displayName);
         this.setState({showEditConferenceModal: false});
@@ -322,6 +327,20 @@ class NavigationBar extends Component {
         let tags = [];
 
         statusIcon = 'check-circle';
+        let bellStyle = styles.whiteButton;
+
+        if (this.state.connection && this.state.connection.state === 'ready') {
+            bellStyle = styles.greenButton;
+        } else if (this.state.connection && this.state.connection.state === 'connecting') {
+            bellStyle = styles.whiteButton;
+        } else if (this.state.connection && this.state.connection.state === 'disconnected') {
+            bellStyle = styles.whiteButton;
+        } else if (this.state.connection && this.state.registrationState !== 'registered') {
+            bellStyle = styles.redButton;
+        } else {
+            bellStyle = styles.whiteButton;
+        }
+
         if (!this.state.connection || this.state.connection.state !== 'ready') {
             statusIcon = 'alert-circle';
             statusColor = 'red';
@@ -392,7 +411,15 @@ class NavigationBar extends Component {
                 <Text style={subtitleStyle}>{subtitle}</Text>
                 : null}
 
-                {statusColor == 'green' ?
+                <IconButton
+                    style={bellStyle}
+                    size={18}
+                    disabled={false}
+                    onPress={this.props.toggleDnd}
+                    icon={bellIcon}
+                />
+
+                {statusColor == 'greenXXX' ?
                     <Icon name={statusIcon} size={20} color={statusColor} />
                 : null }
 
@@ -653,7 +680,9 @@ NavigationBar.propTypes = {
     filteredMessageIds: PropTypes.array,
     contentTypes: PropTypes.object,
     canSend: PropTypes.func,
-    sharingAction: PropTypes.bool
+    sharingAction: PropTypes.bool,
+    dnd: PropTypes.bool,
+    toggleDnd: PropTypes.func
 };
 
 export default NavigationBar;

@@ -302,7 +302,8 @@ class Sylk extends Component {
             isTexting: false,
             filteredMessageIds: [],
             contentTypes: {},
-            androidPermissions: {}
+            androidPermissions: {},
+            dnd: false
         };
 
         utils.timestampedLog('Init app');
@@ -941,6 +942,12 @@ class Sylk extends Component {
         this.ExecuteQuery('delete from contacts');
         this.ExecuteQuery('delete from messages');
         this.saveLastSyncId(null);
+    }
+
+    toggleDnd () {
+        console.log('Toggle DND to', !this.state.dnd);
+        this.setState({dnd: !this.state.dnd})
+        this._sendPushToken(this.state.account, !this.state.dnd);
     }
 
     loadSylkContacts() {
@@ -2463,21 +2470,22 @@ class Sylk extends Component {
         this.pushtoken = token;
     }
 
-    _sendPushToken(account) {
-        if ((this.pushtoken && !this.tokenSent)) {
-            let token = null;
-
-            //console.log('_sendPushToken this.pushtoken', this.pushtoken);
-
-            if (Platform.OS === 'ios') {
-                token = `${this.pushkittoken}-${this.pushtoken}`;
-            } else if (Platform.OS === 'android') {
-                token = this.pushtoken;
-            }
-            utils.timestampedLog('Push token for app', bundleId, 'sent');
-            account.setDeviceToken(token, Platform.OS, deviceId, true, bundleId);
-            this.tokenSent = true;
+    _sendPushToken(account, silent=false) {
+        if (!this.pushtoken) {
+            return;
         }
+
+        let token = null;
+
+        console.log('Push Token:', this.pushtoken, 'silent =', silent);
+
+        if (Platform.OS === 'ios') {
+            token = `${this.pushkittoken}-${this.pushtoken}`;
+        } else if (Platform.OS === 'android') {
+            token = this.pushtoken;
+        }
+        utils.timestampedLog('Push token for app', bundleId, 'sent');
+        account.setDeviceToken(token, Platform.OS, deviceId, silent, bundleId);
     }
 
     _handleAndroidFocus = nextFocus => {
@@ -2914,6 +2922,12 @@ class Sylk extends Component {
             }
         } else {
             console.log('Missing contact data for Alert panel');
+            return;
+        }
+
+        if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+            console.log('Do not disturb is enabled');
+            this._notificationCenter.postSystemNotification('Missed call from ' + from);
             return;
         }
 
@@ -3625,7 +3639,6 @@ class Sylk extends Component {
         console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
-            console.log('ret here');
             return;
         }
 
@@ -3643,8 +3656,6 @@ class Sylk extends Component {
         }
 
         if (this.state.connection === null) {
-            utils.timestampedLog('Web socket handle registration for', accountId);
-
             const userAgent = 'Sylk Mobile';
 
             let connection = sylkrtc.createConnection({server: config.wsServer});
@@ -3654,7 +3665,6 @@ class Sylk extends Component {
             this.setState({connection: connection});
 
         } else {
-            console.log('we have a connection');
             if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password);
@@ -3666,8 +3676,6 @@ class Sylk extends Component {
                 if (this.currentRoute === '/login' && this.state.accountVerified) {
                     this.changeRoute('/ready', 'start_up');
                 }
-            } else {
-                console.log('unknown state');
             }
         }
     }
@@ -3729,9 +3737,9 @@ class Sylk extends Component {
                 account.on('messageStateChanged', this.messageStateChanged);
                 account.on('missedCall', this.missedCall);
                 account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
-                //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
+                utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
 
-                this._sendPushToken(account);
+                this._sendPushToken(account, this.state.dnd);
                 this.setState({account: account});
 
                 this.generateKeysIfNecessary(account);
@@ -7667,6 +7675,10 @@ class Sylk extends Component {
     playMessageSound(direction='incoming') {
         let must_play_sound = true;
 
+        if (this.state.dnd) {
+            return;
+        }
+
         if (direction === 'incoming') {
             if (this.incoming_sound_ts) {
                 let diff = (Date.now() - this.incoming_sound_ts)/ 1000;
@@ -10295,6 +10307,8 @@ class Sylk extends Component {
                     contentTypes = {this.state.contentTypes}
                     canSend = {this.canSend}
                     sharingAction = {this.sharingAction}
+                    toggleDnd = {this.toggleDnd}
+                    dnd = {this.state.dnd}
                 />
 
                 <ReadyBox

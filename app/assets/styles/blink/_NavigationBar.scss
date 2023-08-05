@@ -34,3 +34,22 @@
 .menuContentStyle {
     font-size: 10;
 }
+
+.roundshape {
+    height: 24; //any of height
+    width: 24; //any of width
+    justifyContent: center;
+    borderRadius: 12px;
+}
+
+.redButton {
+    background-color: red;
+}
+
+.greenButton {
+    background-color: rgba(#21AB63, .9);
+}
+
+.whiteButton {
+    background-color: white;
+}
