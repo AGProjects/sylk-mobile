@@ -55,9 +55,6 @@ class RegisterForm extends Component {
         storage.get('account').then((account) => {
             if (account) {
                 this.setState(Object.assign({}, account));
-                if (this.props.autoLogin && this.state.password !== '') {
-                    this.props.handleRegistration(this.state.accountId, this.state.password);
-                }
             }
         });
     }
@@ -85,7 +82,7 @@ class RegisterForm extends Component {
         }
 
         Keyboard.dismiss();
-        this.props.handleRegistration(account, this.state.password);
+        this.props.handleSignIn(account, this.state.password);
     }
 
     handleEnrollment(account) {
@@ -196,11 +193,10 @@ class RegisterForm extends Component {
 
 RegisterForm.propTypes = {
     classes                : PropTypes.object,
-    handleRegistration     : PropTypes.func.isRequired,
+    handleSignIn           : PropTypes.func.isRequired,
     handleEnrollment       : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool.isRequired,
     connected              : PropTypes.bool,
-    autoLogin              : PropTypes.bool,
     orientation            : PropTypes.string,
     isTablet               : PropTypes.bool,
     phoneNumber            : PropTypes.string

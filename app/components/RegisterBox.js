@@ -30,9 +30,8 @@ const RegisterBox = (props) => {
             <View>
                 <RegisterForm
                     registrationInProgress={props.registrationInProgress}
-                    handleRegistration={props.handleRegistration}
+                    handleSignIn={props.handleSignIn}
                     handleEnrollment={props.handleEnrollment}
-                    autoLogin={props.autoLogin}
                     orientation={props.orientation}
                     isTablet={props.isTablet}
                     connected={props.connected}
@@ -46,10 +45,9 @@ const RegisterBox = (props) => {
 };
 
 RegisterBox.propTypes = {
-    handleRegistration     : PropTypes.func.isRequired,
+    handleSignIn           : PropTypes.func.isRequired,
     handleEnrollment       : PropTypes.func.isRequired,
     registrationInProgress : PropTypes.bool,
-    autoLogin              : PropTypes.bool,
     showLogo               : PropTypes.bool,
     orientation            : PropTypes.string,
     isTablet               : PropTypes.bool,

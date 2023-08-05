@@ -308,9 +308,10 @@ class NavigationBar extends Component {
 
     render() {
          const muteIcon = this.state.mute ? 'bell-off' : 'bell';
+         const bellIcon = this.state.dnd ? 'bell-off' : 'bell';
 
         if (this.state.menuVisible && !this.state.appStoreVersion) {
-            this.props.checkVersionFunc()
+            //this.props.checkVersionFunc()
         }
 
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;

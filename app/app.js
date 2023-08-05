@@ -192,7 +192,6 @@ class Sylk extends Component {
 
         this._initialState = {
             appState: null,
-            autoLogin: true,
             inFocus: isFocus,
             accountId: '',
             password: '',
@@ -325,8 +324,8 @@ class Sylk extends Component {
         this.lastSyncedMessageId = null;
         this.outgoingMedia = null;
         this.participantsToInvite = [];
-        this.tokenSent = false;
-        this.mustLogout = false;
+        this.signOut = false;
+        this.signIn = false;
         this.currentRoute = null;
         this.pushtoken = null;
         this.pushkittoken = null;
@@ -411,8 +410,8 @@ class Sylk extends Component {
         });
 
         storage.get('account').then((account) => {
-            if (account) {
-                console.log('Account is verified');
+            if (account && account.verified) {
+                console.log('Account is verified, will autologin');
                 this.setState({accountVerified: account.verified});
                 this.handleRegistration(account.accountId, account.password);
                 this.changeRoute('/ready', 'start_up')
@@ -812,7 +811,7 @@ class Sylk extends Component {
         });
     }
 
-    loadMyKeys() {
+    async loadMyKeys() {
         utils.timestampedLog('Loading PGP keys...');
         let keys = {};
         let lastSyncId;
@@ -834,7 +833,7 @@ class Sylk extends Component {
                             console.log('My PGP key on server is different than local, existsOnServer = ', keyStatus.existsOnServer);
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            console.log('My PGP keys are the same');
+                            //console.log('My PGP keys are the same');
                             this.setState({showImportPrivateKeyModal: false});
                         }
                     } else {
@@ -1982,7 +1981,7 @@ class Sylk extends Component {
         this.setState({keyboardVisible: false, keyboardHeight: 0});
     }
 
-    checkVersion() {
+    async checkVersion() {
         if (Platform.OS === 'android') {
             getAppstoreAppMetadata("com.agprojects.sylk") //put any apps packageId here
               .then(metadata => {
@@ -1994,7 +1993,7 @@ class Sylk extends Component {
                 this.setState({appStoreVersion: metadata});
               })
               .catch(err => {
-                console.log("error occurred", err);
+                console.log("error occurred checking app store version", err);
               });
               return;
         } else {
@@ -2695,7 +2694,7 @@ class Sylk extends Component {
             case 'ready':
                 this._notificationCenter.removeNotification();
                 this.updateLoading(null, 'ready');
-                if (this.state.autoLogin) {
+                if (this.state.accountVerified || this.signIn) {
                     this.processRegistration(this.state.accountId, this.state.password);
                     this.callKeeper.setAvailable(true);
                 }
@@ -2760,6 +2759,7 @@ class Sylk extends Component {
     }
 
     registrationStateChanged(oldState, newState, data) {
+        //console.log('registrationStateChanged', oldState, newState);
         if (this.unmounted) {
             return;
         }
@@ -2816,9 +2816,7 @@ class Sylk extends Component {
                 this.registrationFailureTimer = null;
             }
 
-            if (!this.state.accountVerified) {
-                this.loadSylkContacts();
-            }
+            this.loadSylkContacts();
 
             /*
             setTimeout(() => {
@@ -2848,7 +2846,6 @@ class Sylk extends Component {
 
             this.setState({accountVerified: true,
                            enrollment: false,
-                           autoLogin: true,
                            registrationKeepalive: true,
                            registrationState: 'registered'
                            });
@@ -2861,16 +2858,12 @@ class Sylk extends Component {
 
             //if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
             // TODO if the call does not arrive, we never get back to ready
-            if (this.currentRoute === '/login') {
+            if (this.currentRoute === '/login' && !this.signOut) {
                 this.changeRoute('/ready', 'registered');
             }
             return;
         } else {
             this.setState({status: null, registrationState: newState });
-        }
-
-        if (this.mustLogout) {
-            this.logout();
         }
     }
 
@@ -3615,10 +3608,24 @@ class Sylk extends Component {
         this.handleRegistration(account.id, account.password);
     }
 
+    handleSignIn(accountId, password) {
+        console.log('handleSignIn');
+        storage.set('account', {
+            accountId: accountId,
+            password: password
+        });
+
+        this.signOut = false;
+        this.signIn = true;
+
+        this.handleRegistration(accountId, password);
+    }
+
     handleRegistration(accountId, password) {
-        //console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
+        console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
+            console.log('ret here');
             return;
         }
 
@@ -3647,16 +3654,20 @@ class Sylk extends Component {
             this.setState({connection: connection});
 
         } else {
+            console.log('we have a connection');
             if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password);
             } else if (this.state.connection.state !== 'ready') {
+                console.log('connection is not ready');
                 if (this._notificationCenter) {
                     //this._notificationCenter.postSystemNotification('Waiting for Internet connection');
                 }
                 if (this.currentRoute === '/login' && this.state.accountVerified) {
                     this.changeRoute('/ready', 'start_up');
                 }
+            } else {
+                console.log('unknown state');
             }
         }
     }
@@ -3666,12 +3677,15 @@ class Sylk extends Component {
             displayName = this.state.displayName;
         }
 
+        utils.timestampedLog('Process registration for', accountId, '(', displayName, ')');
+
         if (!this.state.connection) {
+            console.log('No connection');
             return;
         }
 
-        utils.timestampedLog('Process registration for', accountId, '(', displayName, ')');
         if (this.state.account && this.state.connection) {
+            console.log('Remove existing account for connection');
             this.state.connection.removeAccount(this.state.account,
                 (error) => {
                     this.setState({registrationState: null, registrationKeepalive: false});
@@ -3687,6 +3701,7 @@ class Sylk extends Component {
         };
 
         if (this.state.connection._accounts.has(options.account)) {
+            console.log('Account already exists for connection');
             return;
         }
 
@@ -3696,6 +3711,8 @@ class Sylk extends Component {
                     this.processRegistration(accountId, password);
             }, 10000);
         }
+
+        console.log('Adding account for connection...', this.state.connection.state);
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
@@ -3723,12 +3740,8 @@ class Sylk extends Component {
 
                 this.initSSIAgent();
 
-                storage.set('account', {
-                    accountId: this.state.accountId,
-                    password: this.state.password
-                });
-
             } else {
+                console.log('Adding account failed');
                 this.showRegisterFailure(408);
             }
         });
@@ -4011,7 +4024,7 @@ class Sylk extends Component {
                             console.log('My PGP key on server is different than local');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            console.log('My PGP keys are the same');
+                            //console.log('My PGP keys are the same');
                             keyStatus.existsLocal = true;
                         }
                     this.setState({keyStatus: keyStatus});
@@ -4684,7 +4697,7 @@ class Sylk extends Component {
             this.callKeeper.backToForeground();
         }
 
-        if (this.state.accountId) {
+        if (this.state.accountId && this.state.accountVerified) {
             this.handleRegistration(this.state.accountId, this.state.password);
         }
 
@@ -5720,7 +5733,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.mustLogout) {
+        if (this.signOut) {
             return;
         }
 
@@ -6324,7 +6337,7 @@ class Sylk extends Component {
     async sendPendingMessages() {
         //console.log('sendPendingMessages');
 
-        if (this.mustLogout) {
+        if (this.signOut) {
            return;
         }
 
@@ -6334,7 +6347,7 @@ class Sylk extends Component {
         await this.ExecuteQuery("SELECT * from messages where pending = 1 and from_uri = ?", [this.state.accountId]).then((results) => {
             let rows = results.rows;
             for (let i = 0; i < rows.length; i++) {
-                if (this.mustLogout) {
+                if (this.signOut) {
                    return;
                 }
 
@@ -6552,7 +6565,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.mustLogout) {
+        if (this.signOut) {
             return;
         }
 
@@ -7974,7 +7987,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.mustLogout || this.currentRoute === '/logout') {
+        if (this.signOut || this.currentRoute === '/logout') {
             return;
         }
 
@@ -8024,7 +8037,7 @@ class Sylk extends Component {
         let purgeMessages = this.state.purgeMessages;
 
         messages.forEach((message) => {
-            if (this.mustLogout) {
+            if (this.signOut) {
                 return;
             }
             last_timestamp = message.timestamp;
@@ -9985,8 +9998,8 @@ class Sylk extends Component {
 
         } else if (this.state.reconnectingCall) {
             loadingLabel = 'Reconnecting call...';
-        } else if (this.mustLogout) {
-            loadingLabel = 'Logging out...';
+        } else if (this.signOut) {
+            loadingLabel = 'Signing out...';
         }
 
         return (
@@ -10645,7 +10658,7 @@ class Sylk extends Component {
     login() {
         let registerBox;
         let statusBox;
-        this.mustLogout = false;
+        this.signOut = false;
 
         if (this.state.status !== null) {
             statusBox = (
@@ -10660,9 +10673,8 @@ class Sylk extends Component {
             registerBox = (
                 <RegisterBox
                     registrationInProgress = {this.state.registrationState !== null && this.state.registrationState !== 'failed'}
-                    handleRegistration = {this.handleRegistration}
+                    handleSignIn = {this.handleSignIn}
                     handleEnrollment = {this.handleEnrollment}
-                    autoLogin={this.state.autoLogin}
                     connected={this.state.connection && this.state.connection.state !== 'ready' ? false : true}
                     showLogo={!this.state.keyboardVisible || this.state.isTablet}
                     orientation = {this.state.orientation}
@@ -10681,44 +10693,20 @@ class Sylk extends Component {
     }
 
     logout() {
+        console.log('Logout');
+        this.signOut = true;
+        this.signIn = false;
+
         this.syncRequested = false;
         this.callKeeper.setAvailable(false);
         this.sql_contacts_keys = [];
-
-        // SSI wallet - cleanup
-
-        if (!this.mustLogout && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
-            // remove token from server
-            this.mustLogout = true;
-            //console.log('Remove push token');
-            this.state.account.setDeviceToken('None', Platform.OS, deviceId, true, bundleId);
-            //console.log('Unregister');
-            this.state.account.register();
-            return;
-        } else if (this.mustLogout && this.state.connection && this.state.account) {
-            //console.log('Unregister');
-            this.state.account.unregister();
-        }
-
-        this.tokenSent = false;
-        if (this.state.connection && this.state.account) {
-            //console.log('Remove account');
-            this.state.connection.removeAccount(this.state.account, (error) => {
-                if (error) {
-                    logger.debug(error);
-                }
-            });
-        }
 
         storage.set('account', {accountId: this.state.accountId,
                                 password: this.state.password,
                                 verified: false
                                 });
 
-        this.setState({account: null,
-                       displayName: '',
-                       ssiAgent: null,
-                       email: '',
+        this.setState({ssiAgent: null,
                        loading: null,
                        keyStatus: {},
                        contactsLoaded: false,
@@ -10729,7 +10717,6 @@ class Sylk extends Component {
                        keys: null,
                        lastSyncId: null,
                        accountVerified: false,
-                       autoLogin: false,
                        myContacts: {},
                        defaultDomain: config.defaultDomain,
                        purgeMessages: [],
@@ -10738,10 +10725,39 @@ class Sylk extends Component {
                        deletedContacts: {}
                        });
 
-        this.mustLogout = false;
-        this.ssiAgent = null;
         this.changeRoute('/login', 'user logout');
 
+        // SSI wallet - cleanup
+
+        if (!this.signOut && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
+            // remove token from server
+            console.log('Remove push token');
+            this.state.account.setDeviceToken('None', Platform.OS, deviceId, true, bundleId);
+            console.log('Unregister');
+            this.state.account.register();
+            return;
+        } else if (this.signOut && this.state.connection && this.state.account) {
+            console.log('Unregister');
+            this.state.account.unregister();
+        }
+
+        if (this.state.connection && this.state.account) {
+            console.log('Remove account');
+            this.state.connection.removeAccount(this.state.account, (error) => {
+                if (error) {
+                    logger.debug(error);
+                }
+            });
+        }
+
+        this.ssiAgent = null;
+
+        this.setState({account: null,
+                       displayName: '',
+                       email: ''
+                       });
+
+        this.signOut = false;
         return null;
     }
 
