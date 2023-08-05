@@ -245,7 +245,6 @@ class Sylk extends Component {
             defaultDomain: config.defaultDomain,
             fileSharingUrl: config.fileSharingUrl,
             fileTransferUrl: config.fileTransferUrl,
-            declineReason: null,
             showLogsModal: false,
             logs: '',
             proximityEnabled: true,
@@ -3367,6 +3366,8 @@ class Sylk extends Component {
                 this._terminatedCalls.set(callUUID, true);
                 utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
 
+//                this._notificationCenter.postSystemNotification('Call ended:', {body: data.reason});
+
                 if (direction === 'incoming' && this.timeoutIncomingTimer) {
                     clearTimeout(this.timeoutIncomingTimer);
                     this.timeoutIncomingTimer = null;
@@ -3459,10 +3460,6 @@ class Sylk extends Component {
 
                 if (play_busy_tone) {
                     this.playBusyTone();
-                }
-
-                if (direction === 'outgoing') {
-                    this.setState({declineReason: reason});
                 }
 
                 this.stopRingback();
@@ -10554,7 +10551,6 @@ class Sylk extends Component {
                 reconnectingCall = {this.state.reconnectingCall}
                 muted = {this.state.muted}
                 myContacts = {this.state.myContacts}
-                declineReason = {this.state.declineReason}
                 goBackFunc={this.goBackToHomeFromCall}
                 messages = {this.state.messages}
                 sendMessage={this.sendMessage}

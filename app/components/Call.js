@@ -260,7 +260,6 @@ class Call extends Component {
                       audioBandwidthQueue: [],
                       videoBandwidthQueue: [],
                       latencyQueue: [],
-                      declineReason: this.props.declineReason,
                       messages: this.props.messages,
                       selectedContact: this.props.selectedContact,
                       callContact: this.props.callContact,
@@ -554,8 +553,11 @@ class Call extends Component {
             this.setState({targetUri: nextProps.targetUri});
         }
 
-        this.setState({registrationState: nextProps.registrationState,
-                       declineReason: nextProps.declineReason});
+        if (nextProps.terminatedReason) {
+            this.setState({terminatedReason: nextProps.terminatedReason});
+        }
+
+        this.setState({registrationState: nextProps.registrationState});
 
         if (nextProps.localMedia && !this.state.localMedia) {
             utils.timestampedLog('Call: media has been added');
@@ -898,6 +900,7 @@ class Call extends Component {
 
     callStateChanged(oldState, newState, data) {
         //console.log('Call: callStateChanged', oldState, '->', newState);
+
         if (this.ended) {
             return;
         }
@@ -986,6 +989,10 @@ class Call extends Component {
 
         if (newState !== 'established') {
             this.cancelSSIVerify();
+        }
+
+        if (newState === 'terminated') {
+            this.setState({terminatedReason: data.reason});
         }
 
         this.forceUpdate();
@@ -1167,7 +1174,6 @@ class Call extends Component {
                         latencyQueue = {this.state.latencyQueue}
                         audioCodec = {this.audioCodec}
                         info = {this.state.info}
-                        declineReason = {this.state.declineReason}
                         showLogs = {this.props.showLogs}
                         goBackFunc = {this.props.goBackFunc}
                         callState = {this.props.callState}
@@ -1190,6 +1196,7 @@ class Call extends Component {
                         ssiVerified = {this.state.ssiVerified}
                         ssiCanVerify = {this.state.ssiCanVerify}
                         ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
+                        terminatedReason = {this.state.terminatedReason}
                         />
                 );
             } else {
@@ -1242,6 +1249,7 @@ class Call extends Component {
                             ssiVerified = {this.state.ssiVerified}
                             ssiCanVerify = {this.state.ssiCanVerify}
                             ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
+                            terminatedReason = {this.state.terminatedReason}
                             />
                     );
                 } else {
@@ -1263,7 +1271,6 @@ class Call extends Component {
                                 orientation = {this.props.orientation}
                                 isTablet = {this.props.isTablet}
                                 media = 'video'
-                                declineReason = {this.state.declineReason}
                                 showLogs = {this.props.showLogs}
                                 goBackFunc = {this.props.goBackFunc}
                                 />
@@ -1292,7 +1299,6 @@ class Call extends Component {
                     reconnectingCall = {this.state.reconnectingCall}
                     muted = {this.props.muted}
                     info = {this.state.info}
-                    declineReason = {this.state.declineReason}
                     showLogs = {this.props.showLogs}
                     goBackFunc = {this.props.goBackFunc}
                     selectedContact = {this.state.selectedContact}
@@ -1304,6 +1310,7 @@ class Call extends Component {
                     ssiVerified = {this.state.ssiVerified}
                     ssiCanVerify = {this.state.ssiCanVerify}
                     ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
+                    terminatedReason = {this.state.terminatedReason}
                     />
             );
         }
@@ -1334,7 +1341,6 @@ Call.propTypes = {
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
     myContacts              : PropTypes.object,
-    declineReason           : PropTypes.string,
     showLogs                : PropTypes.func,
     goBackFunc              : PropTypes.func,
     callState               : PropTypes.object,

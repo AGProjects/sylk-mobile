@@ -32,6 +32,7 @@ class VideoBox extends Component {
             call: this.props.call,
             reconnectingCall: this.props.reconnectingCall,
             audioMuted: this.props.muted,
+            terminatedReason: this.props.terminatedReason,
             mirror: true,
             callOverlayVisible: true,
             videoMuted: false,
@@ -116,7 +117,8 @@ class VideoBox extends Component {
                        selectedContact: nextProps.selectedContact,
                        selectedContacts: nextProps.selectedContacts,
                        ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
-                       ssiVerified: nextProps.ssiVerified
+                       ssiVerified: nextProps.ssiVerified,
+                       terminatedReason: nextProps.terminatedReason
                        });
 
     }
@@ -368,6 +370,7 @@ class VideoBox extends Component {
                     audioCodec={this.props.audioCodec}
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
+                    terminatedReason={this.state.terminatedReason}
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                     <View style={[styles.container, styles.remoteVideoContainer]}>
@@ -464,7 +467,8 @@ VideoBox.propTypes = {
     ssiVerifyFunc           : PropTypes.func,
     ssiVerified             : PropTypes.bool,
     ssiCanVerify            : PropTypes.bool,
-    ssiVerifyInProgress     : PropTypes.bool
+    ssiVerifyInProgress     : PropTypes.bool,
+    terminatedReason        : PropTypes.string
 };
 
 export default VideoBox;

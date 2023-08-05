@@ -52,7 +52,9 @@ class AudioCallBox extends Component {
             ssiRemoteIdentity           : this.props.ssiRemoteIdentity,
             ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
             ssiVerified                 : this.props.ssiVerified,
-            ssiCanVerify                : this.props.ssiCanVerify
+            ssiCanVerify                : this.props.ssiCanVerify,
+            terminatedReason            : this.props.terminatedReason
+
         };
 
         this.remoteAudio = React.createRef();
@@ -143,7 +145,8 @@ class AudioCallBox extends Component {
                        selectedContact: nextProps.selectedContact,
                        ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
                        ssiVerified: nextProps.ssiVerified,
-                       ssiCanVerify: nextProps.ssiCanVerify
+                       ssiCanVerify: nextProps.ssiCanVerify,
+                       terminatedReason: nextProps.terminatedReason
                        });
     }
 
@@ -303,6 +306,7 @@ class AudioCallBox extends Component {
                     declineReason={this.state.declineReason}
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
+                    terminatedReason={this.state.terminatedReason}
                 />
 
                 <View style={userIconContainerClass}>
@@ -517,7 +521,6 @@ AudioCallBox.propTypes = {
     videoBandwidthQueue     : PropTypes.array,
     audioBandwidthQueue     : PropTypes.array,
     latencyQueue            : PropTypes.array,
-    declineReason           : PropTypes.string,
     showLogs                : PropTypes.func,
     goBackFunc              : PropTypes.func,
     callState               : PropTypes.object,
@@ -540,7 +543,8 @@ AudioCallBox.propTypes = {
     ssiVerifyFunc           : PropTypes.func,
     ssiVerified             : PropTypes.bool,
     ssiCanVerify            : PropTypes.bool,
-    ssiVerifyInProgress     : PropTypes.bool
+    ssiVerifyInProgress     : PropTypes.bool,
+    terminatedReason        : PropTypes.string
 };
 
 export default AudioCallBox;

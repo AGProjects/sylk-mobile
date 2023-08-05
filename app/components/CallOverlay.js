@@ -28,7 +28,7 @@ class CallOverlay extends React.Component {
 
         this.state = {
             call: this.props.call,
-            declineReason: this.props.declineReason,
+            terminatedReason: this.props.terminatedReason,
             media: this.props.media ? this.props.media : 'audio',
             callState: this.props.call ? this.props.call.state : null,
             direction: this.props.call ? this.props.call.direction: null,
@@ -89,7 +89,7 @@ class CallOverlay extends React.Component {
                        remoteUri: nextProps.remoteUri,
                        media: nextProps.media,
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
-                       declineReason: nextProps.declineReason
+                       terminatedReason: nextProps.terminatedReason
                        });
     }
 
@@ -156,19 +156,22 @@ class CallOverlay extends React.Component {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting call...';
                 } else if (this.state.callState === 'terminated') {
+                    callDetail = 'Call ended';
                     if (this.finalDuration) {
-                        callDetail = 'Call ended after ' + this.finalDuration
-                    } else if (this.state.direction === 'outgoing' && this.state.declineReason) {
-                        callDetail = this.state.declineReason;
-                    } else {
-                        callDetail = 'Call ended';
+                        callDetail = callDetail + ' after ' + this.finalDuration;
+                    } else if (this.state.terminatedReason) {
+                        callDetail = callDetail + ': ' + this.state.terminatedReason;
                     }
                 } else if (this.state.callState === 'incoming') {
                     callDetail = 'Connecting...';
                 } else if (this.state.callState === 'accepted') {
                     callDetail = 'Waiting for ' + this.state.media + '...';
                 } else if (this.state.callState === 'progress') {
-                    callDetail = 'Connecting...';
+                    if (this.state.terminatedReason) {
+                        callDetail = this.state.terminatedReason;
+                    } else {
+                        callDetail = 'Connecting...';
+                    }
                 } else if (this.state.callState === 'established') {
                     callDetail = 'Media established';
                 } else if (this.state.callState) {
@@ -179,6 +182,7 @@ class CallOverlay extends React.Component {
             if (this.props.info) {
                 callDetail = callDetail + ' - ' + this.props.info;
             }
+
 
             if (this.state.remoteUri && this.state.remoteUri.search('videoconference') > -1) {
                 displayName = this.state.remoteUri.split('@')[0];
@@ -213,7 +217,7 @@ CallOverlay.propTypes = {
     call: PropTypes.object,
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool,
-    declineReason : PropTypes.string,
+    terminatedReason : PropTypes.string,
     media: PropTypes.string,
     audioCodec: PropTypes.string,
     videoCodec: PropTypes.string,
