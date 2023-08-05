@@ -926,6 +926,7 @@ class ContactsListBox extends Component {
             deleteAudio={this.deleteAudio}
             recording={this.state.recording}
             audioRecording = {this.state.audioRecording}
+            accountId = {this.state.accountId}
             />);
     }
 

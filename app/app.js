@@ -816,6 +816,7 @@ class Sylk extends Component {
         utils.timestampedLog('Loading PGP keys...');
         let keys = {};
         let lastSyncId;
+        let myContacts = this.state.myContacts;
 
         let keyStatus = this.state.keyStatus;
 
@@ -858,6 +859,12 @@ class Sylk extends Component {
 
                 keys.private = item.private_key;
                 utils.timestampedLog('Loaded PGP private key for account', this.state.accountId);
+                if (this.state.accountId in myContacts) {
+                    if (myContacts[this.state.accountId].publicKey !== item.public_key) {
+                        myContacts[this.state.accountId].publicKey = item.public_key;
+                        this.updateSylkContact(this.state.accountId, myContacts[this.state.accountId], 'my_public_key');
+                    }
+                }
                 if (!item.last_sync_id && this.lastSyncedMessageId) {
                     this.setState({keys: keys});
                     this.saveLastSyncId(this.lastSyncedMessageId);
@@ -951,6 +958,10 @@ class Sylk extends Component {
     }
 
     loadSylkContacts() {
+        if (this.state.contactsLoaded) {
+            return;
+        }
+
         console.log('Loading contacts...');
         let myContacts = {};
         let blockedUris = [];
@@ -5213,7 +5224,7 @@ class Sylk extends Component {
     }
 
     async saveSylkContact(uri, contact, origin=null) {
-        //console.log('saveSylkContact', uri, 'by', origin);
+        console.log('saveSylkContact', uri, 'by', origin);
 
         if (!contact) {
             contact = this.newContact(uri);
@@ -5527,7 +5538,7 @@ class Sylk extends Component {
         }
 
         if (this.syncRequested) {
-            console.log('Sync already requested')
+            //console.log('Sync already requested')
             return;
         }
 
@@ -8383,7 +8394,7 @@ class Sylk extends Component {
         //console.log('handleIncomingMessage')
         let content = decryptedBody || message.content;
         if (!this.state.selectedContact || this.state.selectedContact.uri != message.sender.uri) {
-            this.postAndroidMessageNotification(message.sender.uri, content);
+            //this.postAndroidMessageNotification(message.sender.uri, content);
         }
 
         this.saveIncomingMessage(message, decryptedBody);
@@ -9139,7 +9150,7 @@ class Sylk extends Component {
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received];
         await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 
-            if (myContacts[uri].name === null || myContacts[uri].name === '' && message.sender.displayName) {
+            if (!myContacts[uri].name && message.sender.displayName) {
                 myContacts[uri].name = message.sender.displayName;
             }
 
@@ -9392,7 +9403,7 @@ class Sylk extends Component {
 
         let selectedContact = this.state.selectedContact;
         if (selectedContact && selectedContact.uri === uri) {
-            selectedContact.displayName = displayName;
+            selectedContact.name = displayName;
             selectedContact.organization = organization;
             this.setState({selectedContact: selectedContact});
         }

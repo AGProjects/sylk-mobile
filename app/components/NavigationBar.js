@@ -370,14 +370,7 @@ class NavigationBar extends Component {
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
 
-        let showEditModal = false;
-        if (this.state.selectedContact) {
-            showEditModal = this.state.showEditContactModal && !this.state.syncConversations;
-        } else {
-            showEditModal = !this.state.syncConversations && this.state.contactsLoaded &&
-                                 (this.state.showEditContactModal || (!this.state.displayName && this.state.publicKey !== null && !this.state.userClosed))
-                                 || false;
-        }
+        let showEditModal = this.state.showEditContactModal;
 
         let showBackButton = this.state.selectedContact || this.state.sharingAction;
 

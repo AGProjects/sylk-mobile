@@ -231,6 +231,10 @@ class ContactCard extends Component {
             name = name + ' - ' + this.state.contact.organization;
         }
 
+        if (uri === this.props.accountId) {
+            name = 'My self';
+        }
+
         let contact_ts = '';
 
         let participantsData = [];
@@ -565,7 +569,8 @@ ContactCard.propTypes = {
     sendAudio      : PropTypes.func,
     deleteAudio    : PropTypes.func,
     recording      : PropTypes.bool,
-    audioRecording : PropTypes.string
+    audioRecording : PropTypes.string,
+    accountId      : PropTypes.string
 };
 
 
