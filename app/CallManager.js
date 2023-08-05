@@ -29,7 +29,9 @@ const options = {
         maximumCallsPerCallGroup: 2,
         supportsVideo: true,
         includesCallsInRecents: true,
-        imageName: "Image-1"
+        imageName: "Image-1",
+        supportsVideo: true,
+        displayCallReachabilityTimeout: 45000
     },
     android: {
         alertTitle: 'Calling account permission',

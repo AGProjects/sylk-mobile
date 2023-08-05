@@ -2455,15 +2455,6 @@ class Sylk extends Component {
         }
     }
 
-    startCallWhenReady(targetUri, options) {
-        this.resetGoToReadyTimer();
-
-        if (options.conference) {
-            this.startConference(targetUri, options);
-        } else {
-            this.startCall(targetUri, options);
-        }
-    }
     _sleep(ms) {
       return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -2603,10 +2594,10 @@ class Sylk extends Component {
                 this.setState({account: null});
             }
         } else {
-            utils.timestampedLog('No active account');
+            //utils.timestampedLog('No active account');
         }
 
-        if (this.state.accountId && (!this.state.connection || !this.state.account)) {
+        if (this.state.accountId && (!this.state.connection || !this.state.account) && this.state.accountVerified) {
             this.handleRegistration(this.state.accountId, this.state.password);
         }
     }
@@ -4156,7 +4147,8 @@ class Sylk extends Component {
             //utils.timestampedLog('Local media acquired');
             this.setState({localMedia: localStream});
             if (nextRoute !== null) {
-                this.changeRoute(nextRoute);
+                this.setState({loading: null});
+                this.changeRoute(nextRoute, 'media_ready');
             }
         })
         .catch((error) => {
@@ -4272,17 +4264,35 @@ class Sylk extends Component {
     }
 
     async callKeepStartCall(targetUri, options) {
+        console.log('callKeepStartCall', options);
+
         this.resetGoToReadyTimer();
         targetUri = targetUri.trim().toLowerCase();
+        let callUUID = options.callUUID || uuid.v4();
 
-        if (targetUri.indexOf('@') === -1) {
+        if (targetUri.indexOf('@') === -1 && !options.conference) {
             targetUri = targetUri + '@' + this.state.defaultDomain;
+        }
+
+        this.setState({targetUri: targetUri,
+                       callContact: this.state.selectedContact,
+                       outgoingCallUUID: callUUID,
+                       reconnectingCall: false,
+                       loading: null
+                       });
+
+        if (options.conference) {
+            this.changeRoute('/conference');
+        } else {
+            this.changeRoute('/call');
         }
 
         const micAllowed = await this.requestMicPermission();
 
         if (!micAllowed) {
             this._notificationCenter.postSystemNotification('Microphone permission denied');
+            this.setState({loading: null});
+            this.changeRoute('/ready');
             return;
         }
 
@@ -4293,10 +4303,9 @@ class Sylk extends Component {
             }
         }
 
-        let callUUID = options.callUUID || uuid.v4();
-        this.setState({outgoingCallUUID: callUUID, reconnectingCall: false});
         utils.timestampedLog('User will start call', callUUID, 'to', targetUri);
         this.respawnConnection();
+
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, callUUID: callUUID});
 
         setTimeout(() => {
@@ -4306,9 +4315,27 @@ class Sylk extends Component {
         }, 60000);
     }
 
+    startCallWhenReady(targetUri, options) {
+        console.log('startCallWhenReady', options);
+        this.resetGoToReadyTimer();
+        this.backToForeground();
+
+        if (options.conference) {
+            this.startConference(targetUri, options);
+        } else {
+            this.startCall(targetUri, options);
+        }
+    }
+
     startCall(targetUri, options) {
-        this.setState({targetUri: targetUri, callContact: this.state.selectedContact});
         this.getLocalMedia(Object.assign({audio: true, video: options.video}, options), '/call');
+    }
+
+    startConference(targetUri, options={audio: true, video: true, participants: []}) {
+        utils.timestampedLog('New outgoing conference to room', targetUri);
+        this.setState({targetUri: targetUri});
+        this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
+        this.getMessages(targetUri);
     }
 
     timeoutCall(callUUID, uri) {
@@ -4329,8 +4356,12 @@ class Sylk extends Component {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
         this.hideInternalAlertPanel('accept');
+        console.log('callKeepAcceptCall');
+        this.updateLoading('Accepting call...', 'accept');
+
         const micAllowed = await this.requestMicPermission();
         if (!micAllowed) {
+            this.setState({loading: null});
             return;
         }
 
@@ -4345,6 +4376,7 @@ class Sylk extends Component {
         this.backToForeground();
         this.callKeeper.acceptCall(callUUID, options);
         this.updateLoading(incomingCallLabel, 'incoming_call');
+        this.setState({loading: null});
 
         if (this.timeoutIncomingTimer) {
             clearTimeout(this.timeoutIncomingTimer);
@@ -4374,6 +4406,7 @@ class Sylk extends Component {
         this.hideInternalAlertPanel('accept');
         this.backToForeground();
         this.resetGoToReadyTimer();
+        this.updateLoading(null, 'accept_call');
 
         if (this.state.currentCall) {
             utils.timestampedLog('Will hangup current call first');
@@ -4406,6 +4439,7 @@ class Sylk extends Component {
 
     hangupCall(callUUID, reason) {
         utils.timestampedLog('Call', callUUID, 'hangup with reason:', reason);
+        this.setState({loading: null});
 
         let call = this.callKeeper._calls.get(callUUID);
         let direction = null;
@@ -4747,15 +4781,6 @@ class Sylk extends Component {
         this.callKeeper.handleConference(callUUID, to, from, displayName, mediaType, outgoingMedia);
     }
 
-    startConference(targetUri, options={audio: true, video: true, participants: []}) {
-        this.backToForeground();
-        this.updateLoading(null, 'start_conference');
-        utils.timestampedLog('New outgoing conference to room', targetUri);
-        this.setState({targetUri: targetUri});
-        this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
-        this.getMessages(targetUri);
-    }
-
     escalateToConference(participants) {
         let outgoingMedia = {audio: true, video: true};
         let mediaType = 'video';
@@ -4804,7 +4829,7 @@ class Sylk extends Component {
     }
 
     eventFromUrl(url) {
-        //console.log('Event from url', url);
+        console.log('Event from url', url);
         url = decodeURI(url);
 
         try {
@@ -5038,7 +5063,6 @@ class Sylk extends Component {
     }
 
     incomingCallFromWebSocket(call, mediaTypes) {
-
         if (this.unmounted) {
             return;
         }
@@ -5056,7 +5080,7 @@ class Sylk extends Component {
 
         //this.playIncomingRingtone(callUUID);
 
-        //utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
+        utils.timestampedLog('Handle incoming web socket call', callUUID, 'from', from, 'on connection', Object.id(this.state.connection));
 
         // because of limitation in Sofia stack, we cannot have more then two calls at a time
         // we can have one outgoing call and one incoming call but not two incoming calls

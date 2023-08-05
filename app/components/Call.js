@@ -295,7 +295,7 @@ class Call extends Component {
             this.startCallWhenReady(this.state.callUUID);
         }
 
-        if (this.state.call === null) {
+        if (this.state.direction === 'incoming') {
             this.mediaPlaying();
         }
     }
@@ -543,8 +543,6 @@ class Call extends Component {
                                'direction': 'outgoing',
                                'call': null
                                });
-
-                this.startCallWhenReady(nextProps.callUUID);
             }
         }
 
@@ -559,7 +557,7 @@ class Call extends Component {
         this.setState({registrationState: nextProps.registrationState,
                        declineReason: nextProps.declineReason});
 
-        if (nextProps.localMedia !== null && nextProps.localMedia !== this.state.localMedia && this.state.direction === 'outgoing') {
+        if (nextProps.localMedia !== null && this.state.localMedia === null && this.state.direction === 'outgoing') {
             utils.timestampedLog('Call: media for outgoing call has been changed');
 
             let audioOnly = false;
@@ -571,7 +569,7 @@ class Call extends Component {
             this.setState({localMedia: nextProps.localMedia,
                            audioOnly: audioOnly});
 
-            //this.mediaPlaying(nextProps.localMedia);
+            this.mediaPlaying();
         }
 
         if (nextProps.hasOwnProperty('ssiCanVerify')) {
