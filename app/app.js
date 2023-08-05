@@ -5722,7 +5722,7 @@ class Sylk extends Component {
 
         if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
-                utils.timestampedLog('Outgoing message', message._id, 'encrypted');
+                utils.timestampedLog('Outgoing message', message._id, 'encrypted', 'to', uri);
                 this.saveOutgoingMessage(uri, message, 1);
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
             }).catch((error) => {
@@ -5734,9 +5734,9 @@ class Sylk extends Component {
                 this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
             });
         } else {
-            console.log('Outgoing non-encrypted message to', uri);
             this.saveOutgoingMessage(uri, message, 0, message.contentType);
             if (message.contentType !== 'application/sylk-file-transfer' ) {
+                utils.timestampedLog('Outgoing non-encrypted message', message._id, 'to', uri);
                 this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
             }
         }
@@ -5853,19 +5853,26 @@ class Sylk extends Component {
                     remote_url = remote_url + '.asc';
                 } catch (error) {
                     console.log('Failed to encrypt file:', error)
-                    //file_transfer.error = 'Cannot encrypt file';
-                    //this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+                    file_transfer.error = 'Cannot encrypt file';
+                    this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
                     let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
                     //this.renderSystemMessage(uri, error_message, 'outgoing');
                 } finally {
                     this.updateFileTransferBubble(file_transfer);
                 }
             } else {
-                console.log('No public key available for', uri);
+                console.log('No public keys available');
             }
         }
 
-        console.log('--- Uploading file', local_url, 'to', remote_url);
+        try {
+            const exists = await RNFS.exists(local_url);
+            console.log('File exists allright', local_url);
+        } catch (e) {
+            console.log(local_url, 'does not exist');
+        }
+
+        utils.timestampedLog('Uploading file', local_url, 'to', remote_url);
         const xhr = new XMLHttpRequest();
 
         xhr.onload = () => {
@@ -6060,7 +6067,7 @@ class Sylk extends Component {
     async saveDownloadTask(id, url, local_url) {
         //console.log('saveDownloadTask', url, local_url);
         let query = "SELECT * from messages where msg_id = ? and account = ?";
-        this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
+        await this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             let file_transfer = {};
             if (rows.length === 1) {
@@ -6886,7 +6893,7 @@ class Sylk extends Component {
                 }
             }
         } else {
-            console.log('File transfer', file_transfer.transfer_id, 'is too old');
+            //console.log('File transfer', file_transfer.transfer_id, 'is too old');
         }
     }
 
@@ -7067,7 +7074,7 @@ class Sylk extends Component {
             content = await RNFS.readFile(file_path, 'utf8');
         } catch (e) {
             console.log('Error reading file from PGP envelope', e.message, file_path);
-            file_transfer.error = 'Error reading .asc file';
+            file_transfer.error = 'Error reading .asc file: ' + e.message;
             this.renderSystemMessage(uri, e.message);
             this.updateFileTransferSql(file_transfer, 3);
             return;
@@ -7242,6 +7249,7 @@ class Sylk extends Component {
 
             let params = [content, id, this.state.accountId];
             this.ExecuteQuery("update messages set encrypted = 2, content = ? where msg_id = ? and account = ?", params).then((result) => {
+                //console.log('SQL message updated', id);
             }).catch((error) => {
                 console.log('SQL message update error:', error);
             });
@@ -7326,8 +7334,8 @@ class Sylk extends Component {
         let filteredMessageIds = [];
 
         if (!uri) {
-            query = "SELECT count(*) as rows FROM messages where (from_uri = ? and direction = 'outgoing') or (to_uri = ? and direction = 'incoming')";
-            await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId]).then((results) => {
+            query = "SELECT count(*) as rows FROM messages where account = ? and ((from_uri = ? and direction = 'outgoing') or (to_uri = ? and direction = 'incoming'))";
+            await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, this.state.accountId]).then((results) => {
                 rows = results.rows;
                 total = rows.item(0).rows;
                 console.log(total, 'total messages');
@@ -7356,7 +7364,7 @@ class Sylk extends Component {
 
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
-        query = "SELECT count(*) as rows FROM messages where ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?))";
+        query = "SELECT count(*) as rows FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?))";
         if (pinned) {
             query = query + ' and pinned = 1';
         }
@@ -7365,7 +7373,7 @@ class Sylk extends Component {
             query = query + " and metadata != ''";
         }
 
-        await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
             //console.log('Got', total, 'messages with', uri, 'from database', );
@@ -7377,7 +7385,7 @@ class Sylk extends Component {
             myContacts[uri].totalMessages = total;
         }
 
-        query = "SELECT * FROM messages where ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
+        query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
         if (pinned) {
             query = query + ' and pinned = 1';
         }
@@ -7388,7 +7396,7 @@ class Sylk extends Component {
 
         query = query + ' order by unix_timestamp desc limit ?, ?';
 
-        await this.ExecuteQuery(query, [this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
+        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
             //console.log('SQL get messages, rows =', results.rows.length);
 
             let rows = results.rows;
@@ -7416,7 +7424,6 @@ class Sylk extends Component {
                     myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                     continue;
                 }
-
                 content = item.content;
                 if (!content) {
                     content = 'Empty message...';
@@ -7439,10 +7446,10 @@ class Sylk extends Component {
                     timestamp = new Date(item.unix_timestamp * 1000);
                 }
 
-                const is_encrypted =  content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+                const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
                 enc = parseInt(item.encrypted);
 
-                if (is_encrypted && enc && enc !== 3) {
+                if (is_encrypted && enc !== 3) {
                     myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                     if (item.encrypted === null) {
                         item.encrypted = 1;
@@ -7559,7 +7566,6 @@ class Sylk extends Component {
             let i = 1;
             messages_to_decrypt.forEach((item) => {
                 var updateContact = messages_to_decrypt.length === i;
-                //console.log('To decrypt', messages_to_decrypt.length, 'updateContact =', updateContact);
                 this.decryptMessage(item, updateContact);
                 i = i + 1;
             });
@@ -8670,7 +8676,7 @@ class Sylk extends Component {
     }
 
     saveOutgoingMessageSql(message, decryptedBody=null, is_encrypted=false) {
-        console.log('saveOutgoingMessageSql', message.contentType);
+        //console.log('saveOutgoingMessageSql', message.contentType);
 
         let pending = 0;
         let sent = null;
@@ -8718,7 +8724,7 @@ class Sylk extends Component {
 
         let ts = message.timestamp;
 
-        console.log('--- metadata', metadata);
+        //console.log('--- metadata', metadata);
 
         let unix_timestamp = Math.floor(ts / 1000);
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received];
@@ -8791,7 +8797,7 @@ class Sylk extends Component {
                 var new_metadata = JSON.parse(content);
                 let old_metadata = JSON.parse(item.metadata);
                 new_metadata.local_url = old_metadata.local_url;
-                console.log('File transfer', new_metadata.transfer_id, 'available at', new_metadata.url);
+                utils.timestampedLog('File transfer', new_metadata.transfer_id, 'available at', new_metadata.url);
                 let params = [content, JSON.stringify(new_metadata), pending, sent, received, id]
                 query = "update messages set content = ?, metadata = ?, pending = ?, sent = ?, received = ? where msg_id = ?"
                 this.ExecuteQuery(query, params).then((results) => {
