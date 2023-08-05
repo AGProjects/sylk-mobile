@@ -762,7 +762,6 @@ class ReadyBox extends Component {
         let backButtonTitle = 'Back to call';
 
         const showBackToCallButton = this.state.call && this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated' ? true : false ;
-
         if (showBackToCallButton) {
             if (this.state.call.hasOwnProperty('_participants')) {
                 backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';

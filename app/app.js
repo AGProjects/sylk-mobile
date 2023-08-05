@@ -2134,7 +2134,6 @@ class Sylk extends Component {
 
     postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
-        return;
         console.log('postAndroidMessageNotification');
 
         PushNotification.localNotification({
@@ -2677,12 +2676,6 @@ class Sylk extends Component {
         this.initialChatContact = null;
     }
 
-    logTimeline(step) {
-        return;
-        let diff = Math.floor((new Date() - this.startTimestamp) / 1000);
-        console.log('Timeline:', step, diff);
-    }
-
     connectionStateChanged(oldState, newState) {
         if (this.unmounted) {
             return;
@@ -2693,8 +2686,6 @@ class Sylk extends Component {
         if (oldState) {
             utils.timestampedLog('Web socket', connection, 'state changed:', oldState, '->' , newState);
         }
-
-        this.logTimeline('connection ' + newState);
 
         switch (newState) {
             case 'closed':
@@ -2883,8 +2874,8 @@ class Sylk extends Component {
         }
     }
 
-    showAlertPanel(data) {
-        console.log('Show alert panel');
+    showAlertPanel(data, source) {
+        console.log('Show alert panel', source);
 
         if (this.callKeeper._cancelledCalls.has(data.callUUID)) {
             console.log('Show internal alert panel cancelled');
@@ -2970,7 +2961,7 @@ class Sylk extends Component {
         }
 
         if (this.callKeeper.selfManaged) {
-            this.showAlertPanel(data);
+            this.showAlertPanel(data, 'push');
             return;
         }
 
@@ -3154,8 +3145,6 @@ class Sylk extends Component {
         let callUUID = call.id;
         const connection = this.getConnection();
         utils.timestampedLog('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState, 'on web socket', connection);
-
-        this.logTimeline('call ' + newState);
 
         /*
         if (newState === 'established' || newState === 'accepted') {
@@ -3377,6 +3366,11 @@ class Sylk extends Component {
 
                 this._terminatedCalls.set(callUUID, true);
                 utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
+
+                if (direction === 'incoming' && this.timeoutIncomingTimer) {
+                    clearTimeout(this.timeoutIncomingTimer);
+                    this.timeoutIncomingTimer = null;
+                }
 
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
                     newincomingCall = null;
@@ -3644,7 +3638,7 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password) {
-        console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
+        //console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
             return;
@@ -4155,11 +4149,14 @@ class Sylk extends Component {
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
-            //utils.timestampedLog('Local media acquired');
+            utils.timestampedLog('Local media acquired');
             this.setState({localMedia: localStream});
             if (nextRoute !== null) {
                 this.setState({loading: null});
                 this.changeRoute(nextRoute, 'media_ready');
+                if (nextRoute === '/conference') {
+                    this.playMessageSound();
+                }
             }
         })
         .catch((error) => {
@@ -4198,27 +4195,34 @@ class Sylk extends Component {
         this.setState({showConferenceModal: false});
     }
 
+    updateSelection(uri) {
+         //console.log('updateSelection', uri);
+         let selectedContacts = this.state.selectedContacts;
+         //console.log('selectedContacts', selectedContacts);
+
+         let idx = selectedContacts.indexOf(uri);
+
+         if (idx === -1) {
+             selectedContacts.push(uri);
+         } else {
+             selectedContacts.splice(idx, 1);
+         }
+
+         this.setState({selectedContacts: selectedContacts});
+    }
+
     async callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}) {
         if (!targetUri) {
             return;
         }
 
+        //console.log('callKeepStartConference', options);
+
+        this.changeRoute('/conference');
+
         this.backToForeground();
 
         this.resetGoToReadyTimer();
-
-        const micAllowed = await this.requestMicPermission();
-        if (!micAllowed) {
-            this._notificationCenter.postSystemNotification('Microphone permission denied');
-            return;
-        }
-
-        if (options.video) {
-            const cameraAllowed = await this.requestCameraPermission();
-            if (!cameraAllowed) {
-                options.video = false;
-            }
-        }
 
         let callUUID = options.callUUID || uuid.v4();
 
@@ -4240,7 +4244,8 @@ class Sylk extends Component {
 
         this.outgoingMedia = options;
 
-        this.setState({outgoingCallUUID: callUUID,
+        this.setState({targetUri: targetUri,
+                       outgoingCallUUID: callUUID,
                        reconnectingCall: false,
                        callContact: this.state.selectedContact,
                        participantsToInvite: participantsToInvite
@@ -4254,28 +4259,26 @@ class Sylk extends Component {
             utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri);
         }
 
+        const micAllowed = await this.requestMicPermission();
+        if (!micAllowed) {
+            this._notificationCenter.postSystemNotification('Microphone permission denied');
+            this.changeRoute('/ready');
+            return;
+        }
+
+        if (options.video) {
+            const cameraAllowed = await this.requestCameraPermission();
+            if (!cameraAllowed) {
+                options.video = false;
+            }
+        }
+
         this.respawnConnection();
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: callUUID});
     }
 
-    updateSelection(uri) {
-         //console.log('updateSelection', uri);
-         let selectedContacts = this.state.selectedContacts;
-         //console.log('selectedContacts', selectedContacts);
-
-         let idx = selectedContacts.indexOf(uri);
-
-         if (idx === -1) {
-             selectedContacts.push(uri);
-         } else {
-             selectedContacts.splice(idx, 1);
-         }
-
-         this.setState({selectedContacts: selectedContacts});
-    }
-
     async callKeepStartCall(targetUri, options) {
-        console.log('callKeepStartCall', options);
+        //console.log('callKeepStartCall', options);
 
         this.resetGoToReadyTimer();
         targetUri = targetUri.trim().toLowerCase();
@@ -4327,7 +4330,7 @@ class Sylk extends Component {
     }
 
     startCallWhenReady(targetUri, options) {
-        console.log('startCallWhenReady', options);
+        //console.log('startCallWhenReady', options);
         this.resetGoToReadyTimer();
         this.backToForeground();
 
@@ -4367,12 +4370,14 @@ class Sylk extends Component {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
         this.hideInternalAlertPanel('accept');
-        console.log('callKeepAcceptCall');
-        this.updateLoading('Accepting call...', 'accept');
+        utils.timestampedLog('Callkeep accept call');
+        this.changeRoute('/call', 'accept_call');
+        this.backToForeground();
 
         const micAllowed = await this.requestMicPermission();
         if (!micAllowed) {
             this.setState({loading: null});
+            this.changeRoute('/ready', 'no_mic');
             return;
         }
 
@@ -4383,8 +4388,6 @@ class Sylk extends Component {
             }
         }
 
-        this.logTimeline('accept call');
-        this.backToForeground();
         this.callKeeper.acceptCall(callUUID, options);
         this.updateLoading(incomingCallLabel, 'incoming_call');
         this.setState({loading: null});
@@ -5054,6 +5057,12 @@ class Sylk extends Component {
             return;
         }
 
+        if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+            console.log('Do not disturb is enabled');
+            this.postAndroidMessageNotification(from, 'missed call');
+            return;
+        }
+
         this.backToForeground();
 
         this.goToReadyNowAndCancelTimer();
@@ -5114,7 +5123,7 @@ class Sylk extends Component {
         let skipNativePanel = false;
 
         if (Platform.OS === 'android' && this.callKeeper.selfManaged) {
-            this.showAlertPanel(call);
+            this.showAlertPanel(call, 'websocket_call');
             skipNativePanel = true;
         }
 

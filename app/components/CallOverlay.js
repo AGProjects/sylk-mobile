@@ -164,7 +164,7 @@ class CallOverlay extends React.Component {
                         callDetail = 'Call ended';
                     }
                 } else if (this.state.callState === 'incoming') {
-                    callDetail = 'Waiting for incoming call...';
+                    callDetail = 'Connecting...';
                 } else if (this.state.callState === 'accepted') {
                     callDetail = 'Waiting for ' + this.state.media + '...';
                 } else if (this.state.callState === 'progress') {

@@ -557,19 +557,11 @@ class Call extends Component {
         this.setState({registrationState: nextProps.registrationState,
                        declineReason: nextProps.declineReason});
 
-        if (nextProps.localMedia !== null && this.state.localMedia === null && this.state.direction === 'outgoing') {
-            utils.timestampedLog('Call: media for outgoing call has been changed');
-
-            let audioOnly = false;
-
-            if (nextProps.localMedia.getVideoTracks().length === 0) {
-                audioOnly = true;
-            }
-
-            this.setState({localMedia: nextProps.localMedia,
-                           audioOnly: audioOnly});
-
-            this.mediaPlaying();
+        if (nextProps.localMedia && !this.state.localMedia) {
+            utils.timestampedLog('Call: media has been added');
+            let audioOnly = nextProps.localMedia.getVideoTracks().length === 0 ? true : false;
+            this.setState({localMedia: nextProps.localMedia, audioOnly: audioOnly});
+            this.mediaPlaying(nextProps.localMedia);
         }
 
         if (nextProps.hasOwnProperty('ssiCanVerify')) {
@@ -807,7 +799,7 @@ class Call extends Component {
      };
 
     mediaPlaying(localMedia) {
-        console.log('Media playing');
+        utils.timestampedLog('mediaPlaying', this.state.direction);
         if (this.state.direction === 'incoming') {
             const media = localMedia ? localMedia : this.state.localMedia;
             this.answerCall(media);
@@ -818,6 +810,7 @@ class Call extends Component {
 
     async answerCall(localMedia) {
         const media = localMedia ? localMedia : this.state.localMedia;
+        utils.timestampedLog('Answering call...');
         if (this.state.call && this.state.call.state === 'incoming' && media) {
             let options = {pcConfig: {iceServers: config.iceServers}};
             options.localStream = media;
