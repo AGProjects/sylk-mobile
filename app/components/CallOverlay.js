@@ -140,6 +140,8 @@ class CallOverlay extends React.Component {
     render() {
         let header = null;
 
+        //console.log('terminatedReason', this.state.callState, this.state.terminatedReason);
+
         let displayName = this.state.remoteUri;
 
         if (this.state.remoteDisplayName && this.state.remoteDisplayName !== this.state.remoteUri) {

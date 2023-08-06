@@ -30,7 +30,7 @@ index f752144..b70138e 100644
  
    @ReactMethod
 diff --git a/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts b/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts
-index 735c191..debb424 100644
+index 735c191..f4d438c 100644
 --- a/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts
 +++ b/node_modules/react-native-receive-sharing-intent/src/ReceiveSharingIntent.ts
 @@ -1,4 +1,4 @@
@@ -39,7 +39,7 @@ index 735c191..debb424 100644
  import { Platform, Linking, AppState, NativeModules } from "react-native";
  import  Utils from "./utils";
  
-@@ -23,12 +23,13 @@ class ReceiveSharingIntentModule implements IReceiveSharingIntent {
+@@ -23,11 +23,12 @@ class ReceiveSharingIntentModule implements IReceiveSharingIntent {
                  }
              });
          }else{
@@ -48,17 +48,15 @@ index 735c191..debb424 100644
 -                    this.getFileNames(handler,errorHandler, "");
 -                }
 -              });
--           if(!this.isClear) this.getFileNames(handler,errorHandler, "");
-+            this.getFileNames(handler,errorHandler, "");
++            // this.getFileNames(handler,errorHandler, "");
 +            // AppState.addEventListener('change', (status: string) => {
 +            //    if (status === 'active' && !this.isClear) {
 +            //        this.getFileNames(handler,errorHandler, "");
 +            //    }
 +            //  });
-+           // if(!this.isClear) this.getFileNames(handler,errorHandler, "");
+            if(!this.isClear) this.getFileNames(handler,errorHandler, "");
          }
      }
- 
 diff --git a/node_modules/react-native-receive-sharing-intent/src/utils.ts b/node_modules/react-native-receive-sharing-intent/src/utils.ts
 index 34d3091..d3b3b13 100644
 --- a/node_modules/react-native-receive-sharing-intent/src/utils.ts

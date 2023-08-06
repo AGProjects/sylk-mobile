@@ -12,7 +12,6 @@
 #import <React/RCTRootView.h>
 #import <WebRTC/RTCLogging.h>
 #import <React/RCTLog.h>
-#import <React/RCTLinkingManager.h>
 #import <PushKit/PushKit.h>
 @import Firebase;
 #import "RNCallKeep.h"
@@ -20,6 +19,7 @@
 #import <UserNotifications/UserNotifications.h>
 #import <RNCPushNotificationIOS.h>
 #import <RNBackgroundDownloader.h>
+#import <React/RCTLinkingManager.h>
 
 @implementation AppDelegate
 
@@ -56,22 +56,19 @@
   return YES;
 }
 
+- (BOOL)application:(UIApplication *)application
+            openURL:(NSURL *)url
+            options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
+{
+  return [RCTLinkingManager application:application openURL:url options:options];
+}
+
 //Called when a notification is delivered to a foreground app.
 -(void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
 {
   completionHandler(UNAuthorizationOptionSound | UNAuthorizationOptionAlert | UNAuthorizationOptionBadge);
 }
 
-
-- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url
-  sourceApplication:(NSString *)sourceApplication annotation:(id)annotation
-{
-  return [RCTLinkingManager
-           application:application openURL:url
-           sourceApplication:sourceApplication
-           annotation:annotation
-         ];
-}
 
 - (BOOL)application:(UIApplication *)application
 continueUserActivity:(NSUserActivity *)userActivity
@@ -150,7 +147,6 @@ continueUserActivity:(NSUserActivity *)userActivity
  {
   [RNCPushNotificationIOS didReceiveLocalNotification:notification];
  }
-
 
 // --- Handle updated push credentials
 - (void)pushRegistry:(PKPushRegistry *)registry didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(PKPushType)type {

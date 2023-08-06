@@ -2164,24 +2164,26 @@ class Sylk extends Component {
     }
 
     listenforPushNotifications() {
-        //console.log('listenforPushNotifications');
+        console.log('listenforPushNotifications');
         if (this.state.appState === null) {
             this.setState({appState: 'active'});
         } else {
             return;
         }
 
+        Linking.getInitialURL().then((url) => {
+            if (url) {
+              utils.timestampedLog('Initial external URL: ' + url);
+              this.eventFromUrl(url);
+            }
+
+        }).catch(err => {
+            logger.error({ err }, 'Error getting external URL');
+        });
+
+        Linking.addEventListener('url', this.updateLinkingURL);
+
         if (Platform.OS === 'android') {
-            Linking.getInitialURL().then((url) => {
-                if (url) {
-                  utils.timestampedLog('Initial external URL: ' + url);
-                  this.eventFromUrl(url);
-                }
-
-            }).catch(err => {
-                logger.error({ err }, 'Error getting external URL');
-            });
-
             firebase.messaging().setBackgroundMessageHandler(async message => {
                 this.handleFirebasePush(message);
             });
@@ -2192,8 +2194,6 @@ class Sylk extends Component {
                     this._onPushRegistered(fcmToken);
                 }
             });
-
-            Linking.addEventListener('url', this.updateLinkingURL);
 
         } else if (Platform.OS === 'ios') {
             VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
@@ -4850,7 +4850,10 @@ class Sylk extends Component {
             let scheme = url_parts[0];
             //console.log(url_parts);
 
-            if (scheme === 'sylk:') {
+            if (scheme === 'com.agprojects.sylk:') {
+                event = 'shared_content';
+
+            } else if (scheme === 'sylk:') {
                 //sylk://conference/incoming/callUUID/from/to/media - when Android is asleep
                 //sylk://call/outgoing/callUUID/to/displayName - from system dialer/history
                 //sylk://call/incoming/callUUID/from/to/displayName/media - when Android is asleep
@@ -4953,6 +4956,9 @@ class Sylk extends Component {
                 } else if (direction === 'cancel') {
                     this.cancelIncomingCall(callUUID);
                 }
+            } else if (event === 'shared_content') {
+                console.log('Media Link: ', url_parts[2]);
+                this.fetchSharedItems('Linking');
             } else {
                  utils.timestampedLog('Error: Invalid external URL event', event);
             }
@@ -5823,21 +5829,24 @@ class Sylk extends Component {
             return;
         }
 
-        if (uri in this.state.myContacts) {
-            if (!this.state.myContacts[uri].publicKey) {
-             console.log('No public key available for', uri);
-           }
+        let public_keys = '';;
+
+        if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
+            public_keys = public_keys + '\n' + this.state.myContacts[uri].publicKey;
         } else {
-            console.log('No contact for', uri);
+            console.log('No public key available for', uri);
         }
 
-        if (!this.state.keys.public) {
+        if (this.state.keys.public) {
+            public_keys = public_keys + "\n" + this.state.keys.public;
+        } else {
             console.log('No public key loaded for myself');
         }
 
+        public_keys = public_keys.trim();
+
         if (utils.isFileEncryptable(file_transfer)) {
-            if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey && this.state.keys.public) {
-                let public_keys = this.state.myContacts[uri].publicKey + "\n" + this.state.keys.public;
+            if (public_keys) {
                 this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
 
                 try {
@@ -5878,7 +5887,6 @@ class Sylk extends Component {
 
         try {
             const exists = await RNFS.exists(local_url);
-            console.log('File exists allright', local_url);
         } catch (e) {
             console.log(local_url, 'does not exist');
         }
