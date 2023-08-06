@@ -2127,7 +2127,7 @@ class Sylk extends Component {
 
     postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
-        console.log('postAndroidMessageNotification');
+        //console.log('postAndroidMessageNotification', content);
 
         PushNotification.localNotification({
           /* Android Only Properties */
@@ -2250,7 +2250,7 @@ class Sylk extends Component {
     handleFirebasePushInteraction(notification) {
         let data = notification.data;
         let event = data.event;
-        console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
+        //console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
 
         const callUUID = data['session-id'];
         const media = {audio: true, video: data['media-type'] === 'video'};
@@ -2277,7 +2277,11 @@ class Sylk extends Component {
                 this.dismissCall(callUUID);
             }
         } else if (event === 'message') {
-            this.initialChatContact = data['from_uri'];
+            if (data['from_uri'] in this.state.myContacts) {
+                this.selectContact(this.state.myContacts[data['from_uri']]);
+            } else {
+                this.initialChatContact = data['from_uri'];
+            }
         }
     }
 
@@ -8399,10 +8403,12 @@ class Sylk extends Component {
     }
 
     handleIncomingMessage(message, decryptedBody=null) {
-        //console.log('handleIncomingMessage')
+        //console.log('handleIncomingMessage', this.state.appState)
         let content = decryptedBody || message.content;
-        if (!this.state.selectedContact || this.state.selectedContact.uri != message.sender.uri) {
-            //this.postAndroidMessageNotification(message.sender.uri, content);
+        if (!this.state.selectedContact || this.state.selectedContact.uri !== message.sender.uri) {
+            if (this.state.appState === 'foreground') {
+                this.postAndroidMessageNotification(message.sender.uri, content);
+            }
         }
 
         this.saveIncomingMessage(message, decryptedBody);
@@ -10008,6 +10014,8 @@ class Sylk extends Component {
                        forwardContent: null,
                        sourceContact: null,
                        shareToContacts: false});
+
+        ReceiveSharingIntent.clearReceivedFiles();
     }
 
     filterHistory(filter) {
