@@ -5833,59 +5833,55 @@ class Sylk extends Component {
             return;
         }
 
-        let public_keys = '';;
+        let public_keys = '';
 
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
             public_keys = public_keys + '\n' + this.state.myContacts[uri].publicKey;
+            console.log('Public key available for', uri);
+            if (this.state.keys.public) {
+                public_keys = public_keys + "\n" + this.state.keys.public;
+                console.log('Public key available for myself');
+            } else {
+                console.log('No public key loaded for myself');
+            }
         } else {
             console.log('No public key available for', uri);
         }
 
-        if (this.state.keys.public) {
-            public_keys = public_keys + "\n" + this.state.keys.public;
-        } else {
-            console.log('No public key loaded for myself');
-        }
-
         public_keys = public_keys.trim();
 
-        if (utils.isFileEncryptable(file_transfer)) {
-            if (public_keys) {
-                this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
+        if (utils.isFileEncryptable(file_transfer) && public_keys.length > 0) {
+            this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
 
-                try {
-                    let encrypted_file = local_url + '.asc';
-                    //console.log('Will encrypt file', local_url, 'to', encrypted_file);
-                    await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
-                    utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted');
-                    this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
-                    let base64_content = await RNFS.readFile(encrypted_file, 'base64');
-                    let checksum = utils.getPGPCheckSum(base64_content);
+            try {
+                let encrypted_file = local_url + '.asc';
+                await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
+                utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted', 'keys length', public_keys.length);
+                this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
+                let base64_content = await RNFS.readFile(encrypted_file, 'base64');
+                let checksum = utils.getPGPCheckSum(base64_content);
 
-                    const lines = base64_content.match(/.{1,60}/g) ?? [];
-                    let content = "";
+                const lines = base64_content.match(/.{1,60}/g) ?? [];
+                let content = "";
 
-                    lines.forEach((line) => {
-                        content = content + line + "\n";
-                    });
+                lines.forEach((line) => {
+                    content = content + line + "\n";
+                });
 
-                    content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
-                    await RNFS.writeFile(encrypted_file, content, 'utf8');
-                    this.updateFileTransferBubble(file_transfer, 'File encrypted');
-                    file_transfer.filetype = file_transfer.filetype;
-                    local_url = local_url + ".asc";
-                    remote_url = remote_url + '.asc';
-                } catch (error) {
-                    console.log('Failed to encrypt file:', error)
-                    file_transfer.error = 'Cannot encrypt file';
-                    this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
-                    let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
-                    //this.renderSystemMessage(uri, error_message, 'outgoing');
-                } finally {
-                    this.updateFileTransferBubble(file_transfer);
-                }
-            } else {
-                console.log('No public keys available');
+                content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
+                await RNFS.writeFile(encrypted_file, content, 'utf8');
+                this.updateFileTransferBubble(file_transfer, 'File encrypted');
+                file_transfer.filetype = file_transfer.filetype;
+                local_url = local_url + ".asc";
+                remote_url = remote_url + '.asc';
+            } catch (error) {
+                console.log('Failed to encrypt file:', error)
+                file_transfer.error = 'Cannot encrypt file';
+                this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+                let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
+                //this.renderSystemMessage(uri, error_message, 'outgoing');
+            } finally {
+                this.updateFileTransferBubble(file_transfer);
             }
         }
 
@@ -10015,7 +10011,9 @@ class Sylk extends Component {
                        sourceContact: null,
                        shareToContacts: false});
 
-        ReceiveSharingIntent.clearReceivedFiles();
+        if (Platform.OS === "android") {
+            ReceiveSharingIntent.clearReceivedFiles();
+        }
     }
 
     filterHistory(filter) {
