@@ -58,8 +58,8 @@ class DeleteMessageModal extends Component {
         let identity = {uri: this.state.uri, displayName: this.state.displayName};
         let deleteLabel = this.state.confirm || true ? 'Confirm': 'Delete';
         let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
-        let canDeleteRemote = (this.state.message && this.state.message.direction === 'outgoing' && this.state.uri && this.state.uri.indexOf('@videoconference') === -1);
-        if (this.state.uri && this.state.uri.indexOf('@videoconference') >- -1) {
+        let canDeleteRemote = this.state.message && this.state.message.direction === 'outgoing';
+        if (this.state.uri && this.state.uri.indexOf('@videoconference') > -1) {
             canDeleteRemote = false;
         }
 

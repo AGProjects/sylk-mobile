@@ -255,6 +255,7 @@ class Call extends Component {
                       direction: direction,
                       callUUID: callUUID,
                       reconnectingCall: this.props.reconnectingCall,
+                      speakerPhoneEnabled: this.props.speakerPhoneEnabled,
                       info: '',
                       packetLossQueue: [],
                       audioBandwidthQueue: [],
@@ -572,7 +573,8 @@ class Call extends Component {
 
         this.setState({messages: nextProps.messages,
                          selectedContacts: nextProps.selectedContacts,
-                         ssiVerifyInProgress: nextProps.ssiVerifyInProgress
+                         ssiVerifyInProgress: nextProps.ssiVerifyInProgress,
+                         speakerPhoneEnabled: nextProps.speakerPhoneEnabled
                          });
 
         if (nextProps.ssiConnectionRecord) {
@@ -812,10 +814,10 @@ class Call extends Component {
 
     async answerCall(localMedia) {
         const media = localMedia ? localMedia : this.state.localMedia;
-        utils.timestampedLog('Answering call...');
         if (this.state.call && this.state.call.state === 'incoming' && media) {
             let options = {pcConfig: {iceServers: config.iceServers}};
             options.localStream = media;
+            utils.timestampedLog('Answering call...');
 
             if (this.state.ssiAgent) {
                 options.headers = [{name: 'SSI-roles', value: this.ssiRoles.toString()}];
@@ -840,10 +842,6 @@ class Call extends Component {
             if (!this.state.call) {
                 utils.timestampedLog('Call: no Sylkrtc call present');
                 this.hangupCall('answer_failed');
-            }
-
-            if (this.state.call && this.state.call.state !== 'incoming') {
-                utils.timestampedLog('Call: state is not incoming');
             }
 
             if (!media) {
@@ -1162,7 +1160,7 @@ class Call extends Component {
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
                         toggleMute = {this.props.toggleMute}
-                        speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
+                        speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         orientation = {this.props.orientation}
                         isTablet = {this.props.isTablet}

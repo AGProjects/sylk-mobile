@@ -295,6 +295,9 @@ class ContactCard extends Component {
         }
 
         let cardHeight = this.state.fontScale <= 1 ? 75 : 70;
+        if (this.state.selectMode) {
+            cardHeight = 40;
+        }
 
         let duration;
 
@@ -423,6 +426,7 @@ class ContactCard extends Component {
 
         //console.log('selectedContact', this.state.selectedContact);
 
+        if (this.state.selectMode) {
         return (
             <Fragment>
                 <Card style={[cardContainerClass, {height: cardHeight}]}
@@ -432,8 +436,39 @@ class ContactCard extends Component {
                 <View style={styles.rowContent}>
                     <Card.Content style={styles.cardContent}>
                         <View style={styles.avatarContent}>
-                            { this.state.contact.photo || ! this.state.contact.email ?
-                            <UserIcon style={styles.userIcon} identity={this.state.contact} unread={unread}/>
+                            { this.state.contact.photo || !this.state.contact.email ?
+                            <UserIcon identity={this.state.contact} size={20}/>
+                            :
+                             <Gravatar options={{email: this.state.contact.email, parameters: { "size": "10", "d": "mm" }, secure: true}} style={styles.smallGravatar} />
+                             }
+                        </View>
+
+                        <View style={styles.mainContent}>
+                            <Title noWrap style={[styles.title, titlePadding]}>{title}</Title>
+                        </View>
+                    </Card.Content>
+
+                    <View style={styles.selectBox}>
+                        <Icon style={styles.selectedContact} name={selectCircle} size={20} />
+                    </View>
+
+                </View>
+                </Card>
+            </Fragment>
+            );
+
+        } else {
+        return (
+            <Fragment>
+                <Card style={[cardContainerClass, {height: cardHeight}]}
+                    onPress={() => {this.setTargetUri(uri, this.state.contact)}}
+                    >
+
+                <View style={styles.rowContent}>
+                    <Card.Content style={styles.cardContent}>
+                        <View style={styles.avatarContent}>
+                            { this.state.contact.photo || !this.state.contact.email ?
+                            <UserIcon size={50} identity={this.state.contact} unread={unread}/>
                             :
                              <Gravatar options={{email: this.state.contact.email, parameters: { "size": "50", "d": "mm" }, secure: true}} style={styles.gravatar} />
                              }
@@ -495,9 +530,10 @@ class ContactCard extends Component {
                                 }
 
                             </View>
-                           : <Subheading style={styles.subtitle}>{subtitle}</Subheading>}
+                           : <Subheading style={styles.subtitle}>{subtitle}</Subheading>
+                           }
 
-                            {this.state.fontScale <= 1 && !this.state.callButtonsEnabled ?
+                            {this.state.fontScale <= 0.85 && !this.state.callButtonsEnabled ?
                             <Caption style={styles.description}>
                                 {this.state.contact.direction ?
                                 <Icon name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
@@ -524,12 +560,7 @@ class ContactCard extends Component {
                     </Card.Content>
 
                     <View style={styles.rightContent}>
-                        { this.state.selectMode ?
-                        <Icon style={styles.selectedContact} name={selectCircle} size={20} />
-                        :
                         <Text style={styles.timestamp}>{contact_ts}</Text>
-                        }
-
                         {unread ?
                         <Badge value={unread} status="error" textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
                         : null
@@ -539,9 +570,9 @@ class ContactCard extends Component {
 
                 </View>
                 </Card>
-
             </Fragment>
-        );
+            );
+        }
     }
 }
 

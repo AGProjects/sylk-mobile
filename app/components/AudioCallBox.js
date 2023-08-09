@@ -53,7 +53,8 @@ class AudioCallBox extends Component {
             ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
             ssiVerified                 : this.props.ssiVerified,
             ssiCanVerify                : this.props.ssiCanVerify,
-            terminatedReason            : this.props.terminatedReason
+            terminatedReason            : this.props.terminatedReason,
+            speakerPhoneEnabled         : this.props.speakerPhoneEnabled
 
         };
 
@@ -146,7 +147,8 @@ class AudioCallBox extends Component {
                        ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
                        ssiVerified: nextProps.ssiVerified,
                        ssiCanVerify: nextProps.ssiCanVerify,
-                       terminatedReason: nextProps.terminatedReason
+                       terminatedReason: nextProps.terminatedReason,
+                       speakerPhoneEnabled: nextProps.speakerPhoneEnabled
                        });
     }
 
@@ -310,7 +312,7 @@ class AudioCallBox extends Component {
                 />
 
                 <View style={userIconContainerClass}>
-                    <UserIcon identity={remoteIdentity} large={true} active={this.state.active} />
+                    <UserIcon identity={remoteIdentity} size={150} active={this.state.active} />
                 </View>
 
                 <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
@@ -411,7 +413,7 @@ class AudioCallBox extends Component {
                                     <IconButton
                                         size={buttonSize}
                                         style={whiteButtonClass}
-                                        icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
+                                        icon={this.state.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                                         onPress={this.props.toggleSpeakerPhone} />
                                 </TouchableHighlight>
                             </View>
@@ -456,7 +458,7 @@ class AudioCallBox extends Component {
                             <IconButton
                                 size={buttonSize}
                                 style={whiteButtonClass}
-                                icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
+                                icon={this.state.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                                 onPress={this.props.toggleSpeakerPhone}
                             />
                         </TouchableHighlight>

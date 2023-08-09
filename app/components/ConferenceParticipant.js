@@ -122,7 +122,7 @@ class ConferenceParticipant extends React.Component {
 
         let icon;
         if (this.props.pauseVideo && this.props.display) {
-            icon = <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}><View><UserIcon identity={this.props.participant.identity} carousel /></View></TouchableWithoutFeedback>;
+            icon = <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}><View><UserIcon identity={this.props.participant.identity} size={50} /></View></TouchableWithoutFeedback>;
         }
 
         return (

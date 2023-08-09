@@ -133,7 +133,7 @@ class DeleteHistoryModal extends Component {
                         </View>
                         : null}
 
-                            {this.state.uri ?
+                            {canDeleteRemote ?
                             <View style={styles.checkBoxRow}>
                               {Platform.OS === 'ios' ?
                                <Switch value={this.state.remoteDelete} onValueChange={(value) => this.toggleRemoteDelete()}/>

@@ -91,7 +91,7 @@ class ConferenceAudioParticipant extends Component {
                 description={identity.uri}
                 descriptionStyle={styles.uri}
                 left={props => <View style={styles.userIconContainer}>
-                                  <UserIcon small={true} identity={identity}/>
+                                  <UserIcon size={40} identity={identity}/>
                                </View>
                       }
                 right={props =>

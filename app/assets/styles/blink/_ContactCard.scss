@@ -79,12 +79,28 @@
     border-radius: 50px;
 }
 
+.smallGravatar {
+    width: 25px;
+    height: 25px;
+    border-width: 2px;
+    border-color: white;
+    border-radius: 25px;
+}
+
 .mainContent {
     margin-left: 10px;
 }
 
 .rightContent {
     margin-top: 10px;
+    margin-left: 60px;
+    margin-right: 10px;
+    align-items: flex-end;
+    border: 0px;
+}
+
+.selectBox {
+    margin-top: -5px;
     margin-left: 60px;
     margin-right: 10px;
     align-items: flex-end;

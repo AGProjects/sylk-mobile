@@ -101,7 +101,7 @@ class IncomingCallModal extends Component {
             <Portal>
                 <Modal visible={this.show} onDismiss={this.onHide}>
                     <Surface style={styles.container}>
-                        <UserIcon style={styles.userIcon} large={true} identity={remoteIdentity} />
+                        < Logo />
 
                         <Title style={styles.remoteDisplayName}>{remoteIdentity.displayName}</Title>
 

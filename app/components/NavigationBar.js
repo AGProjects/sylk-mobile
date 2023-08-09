@@ -507,9 +507,9 @@ class NavigationBar extends Component {
                         <View>
 
                         <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
-                        <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                         </View>
                         : null}
+                        <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
                         {enableSsi?
                         <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
                         : null}

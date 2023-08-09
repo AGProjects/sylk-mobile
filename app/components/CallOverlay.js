@@ -94,6 +94,7 @@ class CallOverlay extends React.Component {
     }
 
     callStateChanged(oldState, newState, data) {
+        //console.log('allStateChanged', oldState, newState);
         if (newState === 'established' && this._isMounted) {
             this.startTimer();
         }
@@ -109,9 +110,16 @@ class CallOverlay extends React.Component {
             this.timer = null;
         }
 
+        if (newState === 'proceeding') {
+            if (this.state.callState === 'ringing' || data.code === 110 || data.code === 180) {
+                newState = 'ringing';
+            }
+        }
+
         if (!this._isMounted) {
             return;
         }
+
         this.setState({callState: newState});
     }
 
@@ -139,9 +147,6 @@ class CallOverlay extends React.Component {
 
     render() {
         let header = null;
-
-        //console.log('terminatedReason', this.state.callState, this.state.terminatedReason);
-
         let displayName = this.state.remoteUri;
 
         if (this.state.remoteDisplayName && this.state.remoteDisplayName !== this.state.remoteUri) {
@@ -185,6 +190,11 @@ class CallOverlay extends React.Component {
                 callDetail = callDetail + ' - ' + this.props.info;
             }
 
+            let mediaLabel = 'Audio call';
+
+            if (this.state.media) {
+                mediaLabel = toTitleCase(this.state.media) + ' call';
+            }
 
             if (this.state.remoteUri && this.state.remoteUri.search('videoconference') > -1) {
                 displayName = this.state.remoteUri.split('@')[0];
@@ -201,7 +211,7 @@ class CallOverlay extends React.Component {
                     <Appbar.Header style={styles.appbarContainer}>
                         <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                         <Appbar.Content
-                            title={`Call with ${displayName}`} subtitle={callDetail}
+                            title={mediaLabel} subtitle={callDetail}
                         />
                     </Appbar.Header>
                 );
