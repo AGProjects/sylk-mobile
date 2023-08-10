@@ -703,13 +703,10 @@ class Sylk extends Component {
 
 
     useExistingKeys() {
-        var uri = uuid.v4() + '@' + this.state.defaultDomain;
         console.log('Keep existing PGP key');
-        //this.sendPublicKey(uri);
-        //this.setState({keyDifferentOnServer: false});
     }
 
-    async saveMyKey(keys) {
+    async savePrivateKey(keys) {
         let keyStatus = this.state.keyStatus;
         let myContacts = this.state.myContacts;
 
@@ -724,8 +721,6 @@ class Sylk extends Component {
         if (this.state.account) {
             this.requestSyncConversations();
 
-            this.useExistingKeys();
-
             let accountId = this.state.account.id;
 
             if (accountId in myContacts) {
@@ -735,6 +730,10 @@ class Sylk extends Component {
 
             myContacts[accountId].publicKey = keys.public;
             this.saveSylkContact(accountId, myContacts[accountId], 'PGP key generated');
+
+            setTimeout(() => {
+                this.sendPublicKey();
+            }, 100);
 
         } else {
             console.log('Send 1st public key later');
@@ -747,6 +746,7 @@ class Sylk extends Component {
         let params = [this.state.accountId, keys.private, keys.public, unixTime, my_uuid];
         await this.ExecuteQuery("INSERT INTO keys (account, private_key, public_key, timestamp, my_uuid) VALUES (?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted private key');
+
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
                 this.updateKeySql(keys);
@@ -833,7 +833,7 @@ class Sylk extends Component {
                     keyStatus.existsLocal = true;
                     if ('existsOnServer' in keyStatus) {
                         if (keyStatus.serverPublicKey !== item.public_key) {
-                            console.log('My PGP key on server is different than local, existsOnServer = ', keyStatus.existsOnServer);
+                            //console.log('My PGP public key local', item.public_key);
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
                             //console.log('My PGP keys are the same');
@@ -936,7 +936,7 @@ class Sylk extends Component {
             utils.timestampedLog("PGP keypair generated");
             this.setState({loading: null, generatingKey: false});
             this.setState({showImportPrivateKeyModal: false});
-            this.saveMyKey(keys);
+            this.savePrivateKey(keys);
             this.showCallMeModal();
 
         }).catch((error) => {
@@ -2875,10 +2875,7 @@ class Sylk extends Component {
             }
 
             if (this.mustSendPublicKey) {
-                var uri = uuid.v4() + '@' + this.state.defaultDomain;
-                console.log('Send 1st public to', uri);
-                this.sendPublicKey(uri);
-                this.mustSendPublicKey = false;
+                this.sendPublicKey();
             }
 
             storage.set('account', {
@@ -4061,17 +4058,17 @@ class Sylk extends Component {
                         console.log('My PGP key is the same as the one on server');
                     }
                 } else {
-                    console.log('My PGP key does not exist');
+                    //console.log('My local PGP key does not exist', keyStatus);
                     setTimeout(() => {
                         this.showImportPrivateKeyModal();
                     }, 10);
                 }
             } else {
                 if (!keyStatus.existsLocal) {
-                    console.log('We have no PGP key here nor on server');
+                    //console.log('We have no PGP key here nor on server');
                     this.generateKeys();
                 } else {
-                    console.log('My PGP key exists local but not on server');
+                    //console.log('My PGP key exists local but not on server');
                 }
             }
         } else {
@@ -4084,16 +4081,16 @@ class Sylk extends Component {
                     //console.log('Key status:', keyStatus);
 
                     keyStatus.existsOnServer = true;
-                    //console.log('PGP key does exist on server');
+                    //console.log('PGP public key on server', key);
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== key) {
-                            console.log('My PGP key on server is different than local');
+                            //console.log('My PGP key on server is different than local');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
                             //console.log('My PGP keys are the same');
                             keyStatus.existsLocal = true;
                         }
-                    this.setState({keyStatus: keyStatus});
+                        this.setState({keyStatus: keyStatus});
 
                     } else {
                         //console.log('My PGP keys have not yet been loaded');
@@ -5252,25 +5249,24 @@ class Sylk extends Component {
         this.getLocalMedia({audio: true, video: true}, '/preview');
     }
 
-    sendPublicKey(uri) {
-        if (!uri) {
-            console.log('Missing uri, cannot send public key');
-        }
+    sendPublicKey(puri, force=false) {
+        let random_uri = uuid.v4() + '@' + this.state.defaultDomain;
+        let uri =  puri || random_uri;
+
+        this.mustSendPublicKey = false;
 
         if (uri === this.state.accountId) {
             return;
         }
 
-        if (this.state.keyDifferentOnServer) {
+        if (this.state.keyDifferentOnServer && !force) {
             return;
         }
 
         // Send outgoing messages
         if (this.state.account && this.state.keys && this.state.keys.public) {
-            console.log('Sending public key to', uri);
+            console.log('Send my PGP public key to', uri);
             this.state.account.sendMessage(uri, this.state.keys.public, 'text/pgp-public-key');
-        } else {
-            console.log('No public key available');
         }
     }
 
@@ -5454,19 +5450,20 @@ class Sylk extends Component {
             return;
         }
 
+        this.sendPublicKey();
+
         password = password.trim();
         const public_key = this.state.keys.public.replace(/\r/g, '').trim();
         await OpenPGP.encryptSymmetric(this.state.keys.private, password, KeyOptions).then((encryptedBuffer) => {
             utils.timestampedLog('Sending encrypted private key');
             encryptedBuffer = public_key + "\n" + encryptedBuffer;
             this.state.account.sendMessage(this.state.account.id, encryptedBuffer, 'text/pgp-private-key');
-
         }).catch((error) => {
             console.log('Error encrypting private key:', error);
         });
     }
 
-    processRemotePrivateKey(keyPair) {
+    handleRemotePrivateKey(keyPair) {
         let regexp;
         let match;
         let public_key;
@@ -5478,8 +5475,14 @@ class Sylk extends Component {
             public_key = match[0];
         }
 
+        //console.log('Remote public_key', public_key);
+        //console.log('Local public_key', this.state.keys.public);
+
         if (public_key && this.state.keys && this.state.keys.public === public_key) {
             console.log('Private key is the same');
+            this.setState({showImportPrivateKeyModal: false});
+            this._notificationCenter.postSystemNotification('Private key is the same');
+            this.sendPublicKey(null, true);
             return;
         }
 
@@ -5487,7 +5490,7 @@ class Sylk extends Component {
                        privateKey: keyPair});
     }
 
-    async savePrivateKey(password) {
+    async decryptPrivateKey(password) {
         utils.timestampedLog('Save encrypted private key');
         password = password.trim();
 
@@ -5573,7 +5576,7 @@ class Sylk extends Component {
 
         if (public_key && private_key) {
             let new_keys = {private: private_key, public: public_key}
-            this.saveMyKey(new_keys);
+            this.savePrivateKey(new_keys);
             status = 'Private key copied successfully';
 
             if (this.state.account) {
@@ -8411,9 +8414,7 @@ class Sylk extends Component {
         } else {
             console.log('No public key available on server for', message.uri);
             if (message.uri === this.state.accountId) {
-                var uri = uuid.v4() + '@' + this.state.defaultDomain;
-                //console.log('Send 1st public to', uri);
-                this.sendPublicKey(uri);
+                this.sendPublicKey();
             }
         }
     }
@@ -8438,7 +8439,7 @@ class Sylk extends Component {
 
         if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
             console.log('Received PGP private key from another device');
-            this.processRemotePrivateKey(message.content);
+            this.handleRemotePrivateKey(message.content);
             return;
         }
 
@@ -8603,7 +8604,7 @@ class Sylk extends Component {
 
         if (message.contentType === 'text/pgp-private-key' && message.sender.uri === this.state.account.id) {
             console.log('Received my own PGP private key');
-            this.processRemotePrivateKey(message.content);
+            this.handleRemotePrivateKey(message.content);
             return;
         }
 
@@ -10571,7 +10572,7 @@ class Sylk extends Component {
                 <ImportPrivateKeyModal
                     show={this.state.showImportPrivateKeyModal}
                     close={this.hideImportPrivateKeyModal}
-                    saveFunc={this.savePrivateKey}
+                    saveFunc={this.decryptPrivateKey}
                     generateKeysFunc={this.generateKeys}
                     useExistingKeysFunc={this.useExistingKeys}
                     privateKey={this.state.privateKey}
