@@ -37,10 +37,10 @@ class GenerateKeysModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Generate private key</Dialog.Title>
                          <Text style={styles.body}>
-                            You should generate a new private key in case you lost one of your devices.
+                            You should only generate a new private key in specific cases, for example when new versions of software require it.
                         </Text>
                          <Text style={styles.body}>
-                            Once you generate a new key, new messages cannot be read on
+                            Once you generate a new key, new incoming messages cannot be read on
                             other devices until the new key is exported.
                         </Text>
                         <View style={styles.buttonRow}>
