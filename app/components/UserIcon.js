@@ -50,7 +50,7 @@ const UserIcon = (props) => {
 UserIcon.propTypes = {
     identity: PropTypes.object.isRequired,
     large: PropTypes.bool,
-    size: PropTypes.bool
+    size: PropTypes.number
 };
 
 export default UserIcon;
