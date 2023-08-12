@@ -3191,7 +3191,7 @@ class Sylk extends Component {
 
         let callUUID = call.id;
         const connection = this.getConnection();
-        utils.timestampedLog('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState);
+        console.log('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState, data);
 
         /*
         if (newState === 'established' || newState === 'accepted') {
@@ -3340,12 +3340,9 @@ class Sylk extends Component {
                 utils.timestampedLog(callUUID, 'Proceeding', data.code);
                 if (data.code === 110) {
                     utils.timestampedLog(callUUID, 'Push sent to remote party devices');
-                    this.startRingback();
                 }
 
-                if (data.code === 180) {
-                    this.startRingback();
-                }
+                this.startRingback();
                 break;
             case 'early-media':
                 //this.callKeeper.setCurrentCallActive(callUUID);
@@ -4542,8 +4539,6 @@ class Sylk extends Component {
                     console.log('Clear timer conferenceEndedTimer');
                     clearTimeout(this.conferenceEndedTimer);
                     this.conferenceEndedTimer = null;
-                } else {
-                    console.log('Clear timer conferenceEndedTimer is not needed');
                 }
             }
         } else if (reason === 'user_hangup_conference') {
