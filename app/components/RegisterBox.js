@@ -35,7 +35,7 @@ const RegisterBox = (props) => {
                     orientation={props.orientation}
                     isTablet={props.isTablet}
                     connected={props.connected}
-                    phoneNumber={props.phoneNumber}
+                    myPhoneNumber={props.myPhoneNumber}
                 />
 
             </View>
@@ -52,7 +52,7 @@ RegisterBox.propTypes = {
     orientation            : PropTypes.string,
     isTablet               : PropTypes.bool,
     connected              : PropTypes.bool,
-    phoneNumber            : PropTypes.string
+    myPhoneNumber          : PropTypes.string
 };
 
 export default RegisterBox;

@@ -101,7 +101,7 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
             text = beautyFileNameForBubble(metadata);
 
             if (metadata.local_url && metadata.error != 'decryption failed') {
-                if (isImage(decrypted_file_name)) {
+                if (isImage(decrypted_file_name, metadata.filetype)) {
                     image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
                 } else if (isAudio(decrypted_file_name)) {
                     audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
@@ -157,7 +157,11 @@ function sql2GiftedChat(item, content, filter={}) {
     //console.log('--- sql2GiftedChat', item, filter);
 
     let timestamp = new Date(item.unix_timestamp * 1000);
-    let text = content || item.content
+    let text = content || item.content;
+
+    if (text.indexOf('-----BEGIN PGP MESSAGE-----') > -1) {
+        text = '';
+    }
 
     let failed = (item.received === 0 || item.encrypted === 3) ? true: false;
     let received = item.received === 1 ? true : false;
@@ -218,7 +222,7 @@ function sql2GiftedChat(item, content, filter={}) {
 
         if (metadata.local_url) {
             if (!metadata.error) {
-                if (isImage(file_name)) {
+                if (isImage(file_name, metadata.filetype)) {
                     if (metadata.b64) {
                         image = `data:${metadata.filetype};base64,${metadata.b64}`;
                     } else {
@@ -244,7 +248,7 @@ function sql2GiftedChat(item, content, filter={}) {
                 }
             }
         } else {
-            if (isImage(file_name) && must_check_category && category && category !== 'image') {
+            if (isImage(file_name, metadata.filetype) && must_check_category && category && category !== 'image') {
                 return null;
             } else if (isAudio(file_name && must_check_category && category && category !== 'audio')) {
                 return null;
@@ -264,6 +268,7 @@ function sql2GiftedChat(item, content, filter={}) {
     } else {
         if (item.image) {
             image = item.image;
+            text = 'Photo';
         }
 
         if (item.encrypted === 3) {
@@ -312,7 +317,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
         return metadata.duration? 'Movie preview' : 'Photo preview';
     }
 
-    if (isImage(decrypted_file_name)) {
+    if (isImage(decrypted_file_name, metadata.filetype)) {
         if (metadata.local_url || lastMessage) {
             text = 'Photo';
         } else {
@@ -530,12 +535,16 @@ function isEmailAddress(uri) {
     return email_reg.test(uri);
 }
 
-function isImage(filename) {
+function isImage(filename, filetype=null) {
     if (!filename || typeof filename !== 'string') {
         return false;
     }
 
     filename = filename.endsWith('.asc') ? filename.slice(0, -4) : filename;
+
+    if (filetype && filetype.startsWith('image/')) {
+        return true
+    }
 
     if (filename.toLowerCase().endsWith('.png')) {
         return true

@@ -18,10 +18,8 @@ import OpenPGP from "react-native-fast-openpgp";
 import DocumentPicker from 'react-native-document-picker';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import VideoPlayer from 'react-native-video-player';
-import RNFetchBlob from "rn-fetch-blob";
 import { IconButton} from 'react-native-paper';
 import ImageViewer from 'react-native-image-zoom-viewer';
-import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
 import Sound from 'react-native-sound';
@@ -74,8 +72,6 @@ const options = {
     audioSource: 6,     // android only (see below)
     wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
 };
-
-AudioRecord.init(options);
 
 // Note: copy and paste all styles in App.js from my repository
 function  renderBubble (props) {
@@ -542,7 +538,7 @@ class ContactsListBox extends Component {
         let asset = result.assets[0];
         asset.preview = true;
 
-        let msg = await this.file2GiftedChat(asset);
+        let msg = await this.props.file2GiftedChat(asset);
 
         let assetType = 'file';
         if (msg.video) {
@@ -577,7 +573,14 @@ class ContactsListBox extends Component {
        this.setState({texting: (text.length > 0)})
     }
 
-    recordAudio() {
+    async recordAudio() {
+        const micAllowed = await this.props.requestMicPermission();
+        console.log('micAllowed', micAllowed);
+
+        if (!micAllowed) {
+            return;
+        }
+
         if (!this.state.recording) {
             if (this.state.audioRecording) {
                 this.deleteAudio();
@@ -604,7 +607,16 @@ class ContactsListBox extends Component {
         this.recordingStopTimer = setTimeout(() => {
             this.stopRecording();
         }, 20000);
-        AudioRecord.start();
+
+        if (!AudioRecord) {
+            AudioRecord.init(options);
+        }
+
+        try {
+            AudioRecord.start();
+        } catch (e) {
+            console.log(e.message);
+        }
     };
 
     stopRecording() {
@@ -920,12 +932,6 @@ class ContactsListBox extends Component {
             toggleBlocked={this.props.toggleBlocked}
             sendPublicKey={this.props.sendPublicKey}
             selectMode={this.state.selectMode}
-            startCall={this.props.startCall}
-            recordAudio={this.recordAudio}
-            sendAudio={this.sendAudioFile}
-            deleteAudio={this.deleteAudio}
-            recording={this.state.recording}
-            audioRecording = {this.state.audioRecording}
             accountId = {this.state.accountId}
             />);
     }
@@ -1171,14 +1177,20 @@ class ContactsListBox extends Component {
             setTimeout(() => {
                 this.setState({audioSendFinished: false});
             }, 10);
-            let msg = await this.file2GiftedChat(this.state.audioRecording);
+            let msg = await this.props.file2GiftedChat(this.state.audioRecording);
             this.transferFile(msg);
             this.setState({audioRecording: null});
         }
     }
 
     async _pickDocument() {
-          try {
+        const storageAllowed = await this.props.requestStoragePermission();
+
+        if (!storageAllowed) {
+            return;
+        }
+
+        try {
             const result = await DocumentPicker.pick({
               type: [DocumentPicker.types.allFiles],
               copyTo: 'documentDirectory',
@@ -1192,7 +1204,7 @@ class ContactsListBox extends Component {
                 return;
             }
 
-            let msg = await this.file2GiftedChat(fileUri);
+            let msg = await this.props.file2GiftedChat(fileUri);
             this.transferFile(msg);
 
           } catch (err) {
@@ -1202,7 +1214,7 @@ class ContactsListBox extends Component {
               console.log('DocumentPicker err => ', err);
               throw err;
             }
-          }
+        }
     };
 
     renderMessageImageOld =(props) => {
@@ -1313,95 +1325,6 @@ class ContactsListBox extends Component {
     async transferFile(msg) {
         msg.metadata.preview = false;
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
-    }
-
-    async file2GiftedChat(fileObject) {
-        var id = uuid.v4();
-        let uri;
-        if (!this.state.selectedContact) {
-            if (this.state.targetUri && this.state.chat) {
-                 let contacts = this.searchedContact(this.state.targetUri);
-                 if (contacts.length !== 1) {
-                     return;
-                 }
-                 uri = contacts[0].uri;
-            } else {
-                return;
-            }
-        } else {
-            uri = this.state.selectedContact.uri;
-        }
-
-        let filepath = fileObject.uri ? fileObject.uri : fileObject;
-        let basename = fileObject.fileName || filepath.split('\\').pop().split('/').pop();
-
-        basename = basename.replace(/\s|:/g, '_');
-
-        let file_transfer = { 'path': filepath,
-                              'filename': basename,
-                              'sender': {'uri': this.state.accountId},
-                              'receiver': {'uri': uri},
-                              'transfer_id': id,
-                              'direction': 'outgoing'
-                              };
-
-        if (filepath.startsWith('content://')) {
-            // on android we must copy this file early
-            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri + "/" + id + "/" + basename;
-            const dirname = path.dirname(localPath);
-            await RNFS.mkdir(dirname);
-            console.log('Copy', filepath, localPath);
-            await RNFS.copyFile(filepath, localPath);
-            filepath = localPath;
-            file_transfer.local_url = localPath;
-        }
-
-        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
-        const { size } = await RNFetchBlob.fs.stat(stats_filename);
-        file_transfer.filesize = fileObject.fileSize || size;
-
-        if (fileObject.preview) {
-            file_transfer.preview = fileObject.preview;
-        }
-
-        if (fileObject.duration) {
-            file_transfer.duration = fileObject.duration;
-        }
-
-        if (fileObject.fileType) {
-            file_transfer.filetype = fileObject.fileType;
-        } else {
-            try {
-                let mime = await fileType(filepath);
-                if (mime.mime) {
-                    file_transfer.filetype = mime.mime;
-                }
-            } catch (e) {
-                console.log('Error getting mime type', e.message);
-            }
-        }
-
-        let text = utils.beautyFileNameForBubble(file_transfer);
-
-        let msg = {
-            _id: id,
-            key: id,
-            text: text,
-            metadata: file_transfer,
-            createdAt: new Date(),
-            direction: 'outgoing',
-            user: {}
-            }
-
-        if (utils.isImage(basename)) {
-            msg.image = filepath;
-        } else if (utils.isAudio(basename)) {
-            msg.audio = filepath;
-        } else if (utils.isVideo(basename) || file_transfer.duration) {
-            msg.video = filepath;
-        }
-
-        return msg;
     }
 
     matchContact(contact, filter='', tags=[]) {
@@ -1515,7 +1438,7 @@ class ContactsListBox extends Component {
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
         }
-        //console.log('currentMessage metadata', currentMessage.metadata);
+        //console.log('currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
@@ -1535,7 +1458,7 @@ class ContactsListBox extends Component {
                 options.push('Delete');
             }
 
-            let showResend = currentMessage.failed;
+            let showResend = currentMessage.failed || (currentMessage.direction === 'outgoing' && !currentMessage.sent && !currentMessage.received && !currentMessage.pending);
             if (currentMessage.metadata && currentMessage.metadata.error) {
                 showResend = false;
             }
@@ -2247,10 +2170,11 @@ class ContactsListBox extends Component {
         messages.forEach((m) => {
         });
 
+//
         return (
             <SafeAreaView style={container}>
               {items.length === 1 ?
-              (this.renderItem(items[0]))
+              (null)  // this.renderItem(items[0])
              :
               <FlatList
                 horizontal={false}
@@ -2409,9 +2333,12 @@ ContactsListBox.propTypes = {
     decryptFunc     : PropTypes.func,
     forwardMessageFunc: PropTypes.func,
     messagesCategoryFilter: PropTypes.string,
-    requestCameraPermission: PropTypes.func,
     startCall: PropTypes.func,
-    sourceContact:   PropTypes.object
+    sourceContact:   PropTypes.object,
+    requestCameraPermission: PropTypes.func,
+    requestMicPermission: PropTypes.func,
+    requestStoragePermissions: PropTypes.func,
+    file2GiftedChat: PropTypes.func
 };
 
 

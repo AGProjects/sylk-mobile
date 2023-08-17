@@ -47,6 +47,7 @@ class RegisterForm extends Component {
             connected: props.connected,
             registering: false,
             remember: false,
+            myPhoneNumber: props.myPhoneNumber,
             showEnrollmentModal: false
         };
     }
@@ -181,7 +182,7 @@ class RegisterForm extends Component {
                 <EnrollmentModal
                    show={this.state.showEnrollmentModal}
                    handleEnrollment={this.handleEnrollment}
-                   phoneNumber={this.props.phoneNumber}
+                   myPhoneNumber={this.props.myPhoneNumber}
                    orientation={this.props.orientation}
                    isTablet={this.props.isTablet}
                 />
@@ -199,7 +200,7 @@ RegisterForm.propTypes = {
     connected              : PropTypes.bool,
     orientation            : PropTypes.string,
     isTablet               : PropTypes.bool,
-    phoneNumber            : PropTypes.string
+    myPhoneNumber          : PropTypes.string
 };
 
 

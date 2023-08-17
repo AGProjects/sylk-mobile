@@ -1,4 +1,4 @@
-// copyright AG Projects 2020-2022
+// copyright AG Projects 2020-2023
 
 import React, { Component, Fragment } from 'react';
 import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration, PermissionsAndroid} from 'react-native';
@@ -21,7 +21,6 @@ import BackgroundTimer from 'react-native-background-timer';
 import DeepLinking from 'react-native-deep-linking';
 import base64 from 'react-native-base64';
 import SoundPlayer from 'react-native-sound-player';
-import RNSimpleCrypto from "react-native-simple-crypto";
 import OpenPGP from "react-native-fast-openpgp";
 import ShortcutBadge from 'react-native-shortcut-badge';
 import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
@@ -29,7 +28,7 @@ import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
 import {Keyboard} from 'react-native';
 import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from 'react-native-background-downloader';
-import {check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
+import {check, request, PERMISSIONS, RESULTS, openSettings} from 'react-native-permissions';
 import {decode as atob, encode as btoa} from 'base-64';
 
 registerGlobals();
@@ -232,7 +231,7 @@ class Sylk extends Component {
             isTablet: isTablet(),
             refreshHistory: false,
             refreshFavorites: false,
-            myPhoneNumber: null,
+            myPhoneNumber: '',
             favoriteUris: [],
             blockedUris: [],
             missedCalls: [],
@@ -301,8 +300,8 @@ class Sylk extends Component {
             isTexting: false,
             filteredMessageIds: [],
             contentTypes: {},
-            androidPermissions: {},
-            dnd: false
+            dnd: false,
+            headsetIsPlugged: false
         };
 
         utils.timestampedLog('Init app');
@@ -398,7 +397,7 @@ class Sylk extends Component {
             });
             */
         } else {
-            console.log('InCallManager recordPermission', InCallManager.recordPermission);
+            //console.log('InCallManager recordPermission', InCallManager.recordPermission);
         }
 
         storage.initialize();
@@ -412,7 +411,7 @@ class Sylk extends Component {
 
         storage.get('account').then((account) => {
             if (account && account.verified) {
-                console.log('Account is verified, will autologin');
+                utils.timestampedLog('Account is verified, will autologin');
                 this.setState({accountVerified: account.verified});
                 this.handleRegistration(account.accountId, account.password);
                 this.changeRoute('/ready', 'start_up')
@@ -539,41 +538,47 @@ class Sylk extends Component {
     }
 
     async requestPermissions() {
+        //console.log('requestPermissions');
         if (Platform.OS !== 'android') {
             return;
         }
 
-        // Android 13
-        const OsVer = Platform.constants['Release'];
-        console.log('Android version', OsVer);
-        let granted;
+        await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
 
-        let androidPermissions = this.state.androidPermissions;
+        this.requestDisplayOverOtherAppsPermission();
 
-        let granted_READ_PHONE_NUMBERS = await PermissionsAndroid.request('android.permission.READ_PHONE_NUMBERS');
-        console.log('READ_PHONE_NUMBERS', granted_READ_PHONE_NUMBERS);
-        androidPermissions['POST_NOTIFICATIONS'] = granted_READ_PHONE_NUMBERS;
-        this.setState({androidPermissions: androidPermissions});
+    }
 
+    async requestPhonePermission () {
         let granted_POST_NOTIFICATIONS = await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
-        androidPermissions['POST_NOTIFICATIONS'] = granted_POST_NOTIFICATIONS;
-        this.setState({androidPermissions: androidPermissions});
 
-        try {
-          const permission = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
-          let granted_WRITE_EXTERNAL_STORAGE = await PermissionsAndroid.request(permission);
-          androidPermissions['WRITE_EXTERNAL_STORAGE'] = granted_WRITE_EXTERNAL_STORAGE;
-          this.setState({androidPermissions: androidPermissions});
-          Promise.resolve();
-        } catch (error) {
-          Promise.reject(error);
+        let granted = await PermissionsAndroid.request('android.permission.READ_PHONE_NUMBERS');
+
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            console.log("Phone permission denied");
+            return false;
         }
+
+        return true;
+    }
+
+    async requestStoragePermission() {
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
+        const permission = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
+        let granted = await PermissionsAndroid.request(permission);
+
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            console.log("Storage permission denied");
+            return false;
+        }
+        return true;
     }
 
     async requestCameraPermission() {
         console.log('Request camera permission');
-
-        let androidPermissions = this.state.androidPermissions;
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.CAMERA).then((result) => {
@@ -606,7 +611,7 @@ class Sylk extends Component {
                 let granted = await PermissionsAndroid.request(
                 PermissionsAndroid.PERMISSIONS.CAMERA,
                     {
-                    title: "Sylk camera permission",
+                    title: "Camera permission",
                     message:
                       "Sylk needs access to your camera " +
                       "for video calls",
@@ -615,10 +620,6 @@ class Sylk extends Component {
                     buttonPositive: "OK"
                     }
                 );
-
-                androidPermissions['CAMERA'] = granted;
-                this.setState({androidPermissions: androidPermissions});
-                console.log('CAMERA', granted);
 
                 if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
                     console.log("Camera permission denied");
@@ -633,9 +634,29 @@ class Sylk extends Component {
         }
     }
 
+    async requestDisplayOverOtherAppsPermission () {
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
+        RNDrawOverlay.checkForDisplayOverOtherAppsPermission()
+             .then(res => {
+                //utils.timestampedLog("Display over other apps was granted");
+                 // res will be true if permission was granted
+             })
+             .catch(e => {
+                utils.timestampedLog("Display over other apps was declined");
+                setTimeout(() => {
+                    this.openAppSettings("Advanced / Allow display over other apps must be allowed");
+                }, 2000);
+             // permission was declined
+             });
+
+        return;
+    }
+
     async requestMicPermission() {
         console.log('Request mic permission');
-        let androidPermissions = this.state.androidPermissions;
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.MICROPHONE).then((result) => {
@@ -654,7 +675,7 @@ class Sylk extends Component {
                     console.log('Mic permission is granted');
                     break;
                   case RESULTS.BLOCKED:
-                    this._notificationCenter.postSystemNotification("Access to microphone is denied. Go to Settings -> Sylk to enable access.");
+                    this._notificationCenter.postSystemNotification("Microphone permission. Go to Settings -> Sylk to enable access.");
                     console.log('Mic permission is denied and not requestable anymore');
                     break;
                 }
@@ -666,15 +687,11 @@ class Sylk extends Component {
 
         if (Platform.OS === 'android') {
             try {
-                let granted_BLUETOOTH_CONNECT = await PermissionsAndroid.request(PERMISSIONS.ANDROID.BLUETOOTH_CONNECT);
-                console.log('BLUETOOTH_CONNECT', granted_BLUETOOTH_CONNECT);
-                androidPermissions['BLUETOOTH_CONNECT'] = granted_BLUETOOTH_CONNECT;
-                this.setState({androidPermissions: androidPermissions});
 
                 const granted = await PermissionsAndroid.request(
                   PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
                   {
-                    title: "Sylk microphone permission",
+                    title: "Microphone permission",
                     message:
                       "Sylk needs access to your microphone " +
                       "for audio calls.",
@@ -684,11 +701,21 @@ class Sylk extends Component {
                   }
                 );
 
-                console.log('RECORD_AUDIO', granted);
-                androidPermissions['RECORD_AUDIO'] = granted;
-                this.setState({androidPermissions: androidPermissions});
+                const granted_bluetooth = await PermissionsAndroid.request(
+                  PERMISSIONS.ANDROID.BLUETOOTH_CONNECT,
+                  {
+                    title: "BLUETOOTH audio permission",
+                    message:
+                      "Sylk may need access to BLUETOOTH devices " +
+                      "for audio calls.",
+                    buttonNeutral: "Ask Me Later",
+                    buttonNegative: "Cancel",
+                    buttonPositive: "OK"
+                  }
+                );
 
                 if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+                    this._notificationCenter.postSystemNotification("Microphone permission denied");
                     return false;
                 }
 
@@ -745,7 +772,7 @@ class Sylk extends Component {
         const my_uuid = uuid.v4();
         let params = [this.state.accountId, keys.private, keys.public, unixTime, my_uuid];
         await this.ExecuteQuery("INSERT INTO keys (account, private_key, public_key, timestamp, my_uuid) VALUES (?, ?, ?, ?, ?)", params).then((result) => {
-            console.log('SQL inserted private key');
+            //console.log('SQL inserted private key');
 
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
@@ -874,7 +901,7 @@ class Sylk extends Component {
                     lastSyncId = this.lastSyncedMessageId;
                 } else {
                     lastSyncId = item.last_sync_id
-                    console.log('Loaded from SQL las sync id', lastSyncId);
+                    utils.timestampedLog('Loaded last sync id', lastSyncId);
                     this.setState({keys: keys, lastSyncId: lastSyncId});
                 }
 
@@ -883,7 +910,7 @@ class Sylk extends Component {
                 }
 
             } else {
-                console.log('SQL has no keys');
+                //console.log('SQL has no keys');
                 keyStatus.existsLocal = false;
                 if (this.state.account) {
                     this.generateKeysIfNecessary(this.state.account);
@@ -925,7 +952,7 @@ class Sylk extends Component {
           keyOptions: KeyOptions
         }
 
-        utils.timestampedLog('Generating key pair with options', Options);
+        utils.timestampedLog('Generating PGP keys...');
         this.setState({loading: 'Generating private key...', generatingKey: true});
 
         await OpenPGP.generate(Options).then((keys) => {
@@ -974,7 +1001,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Loading contacts...');
+        //console.log('Loading contacts...');
         let myContacts = {};
         let blockedUris = [];
         let favoriteUris = [];
@@ -1192,7 +1219,7 @@ class Sylk extends Component {
 
                 this.updateTotalUread(myContacts);
 
-                console.log('Loaded', rows.length, 'contacts for account', this.state.accountId);
+                utils.timestampedLog('Loaded', rows.length, 'contacts for account', this.state.accountId);
                 this.setState({myContacts: myContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
@@ -1212,8 +1239,9 @@ class Sylk extends Component {
             this.refreshNavigationItems();
 
             setTimeout(() => {
+                this.fetchSharedItems('start_up');
                 if (this.initialChatContact) {
-                    console.log('Starting chat with', this.initialChatContact);
+                    //console.log('Starting chat with', this.initialChatContact);
                     if (this.initialChatContact in this.state.myContacts) {
                         this.selectContact(this.state.myContacts[this.initialChatContact]);
                     } else {
@@ -1343,7 +1371,7 @@ class Sylk extends Component {
 
         await SQLite.openDatabase(database_name, database_version, database_displayname, database_size).then((DB) => {
             this.db = DB;
-            console.log('SQL database', database_name, 'opened');
+            //console.log('SQL database', database_name, 'opened');
             this.resetStorage();
             //this.dropTables();
             this.createTables();
@@ -1595,7 +1623,6 @@ class Sylk extends Component {
             if (Platform.OS === 'android') {
                this.requestReadContactsPermission();
             } else {
-
                Contacts.requestPermission((err, permission) => {
                });
             }
@@ -1756,6 +1783,7 @@ class Sylk extends Component {
         if (route === '/call') {
            this.backToForeground();
         }
+
 
         if (route === '/ready' && reason !== 'back to home') {
             Vibration.cancel();
@@ -1931,7 +1959,6 @@ class Sylk extends Component {
 
     async componentDidMount() {
         utils.timestampedLog('App did mount');
-        this.requestPermissions();
 
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
@@ -1955,42 +1982,20 @@ class Sylk extends Component {
         }, 5000);
 
         try {
-            await RNCallKeep.supportConnectionService ();
+            await RNCallKeep.supportConnectionService();
             utils.timestampedLog('Connection service is enabled');
         } catch(err) {
             utils.timestampedLog(err);
         }
-
-        try {
-            await RNCallKeep.hasPhoneAccount();
-            utils.timestampedLog('Phone account is enabled');
-
-        } catch(err) {
-            utils.timestampedLog(err);
-        }
-
-        if (Platform.OS === 'android') {
-            RNDrawOverlay.askForDispalayOverOtherAppsPermission()
-                 .then(res => {
-                   //utils.timestampedLog("Display over other apps was granted");
-                     // res will be true if permission was granted
-                 })
-                 .catch(e => {
-                   utils.timestampedLog("Display over other apps was declined");
-                     // permission was declined
-                 })
-        }
-
-        // prime the ref
-        //logger.debug('NotificationCenter ref: %o', this._notificationCenter);
 
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
         this._boundOnPushRegistered = this._onPushRegistered.bind(this);
 
         this._detectOrientation();
 
-        getPhoneNumber().then(phoneNumber => {
-            this.setState({myPhoneNumber: phoneNumber});
+        getPhoneNumber().then(myPhoneNumber => {
+            //console.log('myPhoneNumber', myPhoneNumber);
+            this.setState({myPhoneNumber: myPhoneNumber});
         });
 
         this.listenforPushNotifications();
@@ -2090,7 +2095,7 @@ class Sylk extends Component {
         PushNotification.createChannel(
         {
           channelId: "sylk-messages", // (required)
-          channelName: "My Sylk stream", // (required)
+          channelName: "My Sylk silent stream", // (required)
           channelDescription: "A channel to receive Sylk Message", // (optional) default: undefined.
           playSound: false, // (optional) default: true
           importance: Importance.HIGH, // (optional) default: Importance.HIGH. Int value of the Android notification importance
@@ -2127,18 +2132,69 @@ class Sylk extends Component {
         (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
         );
 
-        /*
+        return;
+
         console.log('Available Sylk channels:');
 
         PushNotification.getChannels(function (channel_ids) {
         console.log(channel_ids); // ['channel_id_1']
         });
-        */
     }
 
     handleiOSNotification(notification) {
         // when user touches the system notification and app launches...
         console.log("Handle iOS push notification:", notification);
+    }
+
+    postAndroidIncomingCallNotification(data) {
+        //console.log('postAndroidIncomingCallNotification', data);
+
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
+        if (this.callKeeper.selfManaged) {
+            this.showAlertPanel(data, 'push');
+            return;
+        }
+
+        let media = {audio: true, video: data['media-type'] === 'video'};
+        let from = data.from_display_name || data.from_uri;
+        if (data.from_display_name && data.from_display_name != data.from_uri) {
+            from = data.from_display_name + ' (' + data.from_uri + ')';
+        }
+
+        console.log('Show Android incoming call notification', from, media);
+
+        let actions = ['Audio'];
+        if (media.video) {
+            actions.push('Video');
+        }
+
+        actions.push('Reject');
+        actions.push('Dismiss');
+
+        PushNotification.localNotification({
+          /* Android Only Properties */
+          channelId: "sylk-alert-panel", // (required) channelId, if the channel doesn't exist, notification will not trigger.
+          vibrate: true, // (optional) default: true
+          priority: "max", // (optional) set notification priority, default: high
+          ongoing: true,
+          autoCancel: false,
+          timeoutAfter: 45000,
+          fullScreen: true,
+          subtitle: 'Somebody is calling',
+          ignoreInForeground: true, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
+          invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
+          actions: actions,
+
+          /* iOS and Android properties */
+          title: 'Incoming call', // (optional)
+          message: 'From ' + from, // (required)
+          //picture: "https://www.example.tld/picture.jpg", // (optional) Display an picture with the notification, alias of `bigPictureUrl` for Android. default: undefined
+          userInfo: data, // (optional) default: {} (using null throws a JSON value '<null>' error)
+          number: 10, // (optional) Valid 32 bit integer specified as string. default: none (Cannot be zero)
+        });
     }
 
     postAndroidMessageNotification(uri, content) {
@@ -2168,7 +2224,6 @@ class Sylk extends Component {
           ignoreInForeground: true, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
           onlyAlertOnce: true, // (optional) alert will open only once with sound and notify, default: false
           invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
-
           /* iOS and Android properties */
           id: 0, // (optional) Valid unique 32 bit integer specified as string. default: Autogenerated Unique ID
           title: uri, // (optional)
@@ -2195,7 +2250,7 @@ class Sylk extends Component {
               utils.timestampedLog('Initial external URL: ' + url);
               this.eventFromUrl(url);
             } else {
-              utils.timestampedLog('No external URL');
+              //utils.timestampedLog('No external URL');
             }
 
         }).catch(err => {
@@ -2231,8 +2286,10 @@ class Sylk extends Component {
         }
 
         this.boundProximityDetect = this._proximityDetect.bind(this);
+        this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
 
         DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
+        DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
 
         AppState.addEventListener('change', this._handleAppStateChange);
 
@@ -2304,7 +2361,7 @@ class Sylk extends Component {
 
     handleFirebasePush(notification) {
         let event = notification.data.event;
-        //console.log("handleFirebasePush", notification);
+        //console.log("Firebase Push notification", event);
         const callUUID = notification.data['session-id'];
         const from = notification.data['from_uri'];
         const to = notification.data['to_uri'];
@@ -2317,7 +2374,7 @@ class Sylk extends Component {
         }
 
         if (event === 'incoming_conference_request') {
-            utils.timestampedLog('Push notification: incoming conference', callUUID);
+            utils.timestampedLog('Firebase push notification: incoming conference', callUUID);
             if (!from || !to) {
                 return;
             }
@@ -2327,7 +2384,7 @@ class Sylk extends Component {
             this.postAndroidIncomingCallNotification(notification.data);
             this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
         } else if (event === 'incoming_session') {
-            utils.timestampedLog('Push notification: incoming call', callUUID);
+            utils.timestampedLog('Firbase push notification: incoming call', callUUID);
             if (!from) {
                 return;
             }
@@ -2339,7 +2396,7 @@ class Sylk extends Component {
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
         } else if (event === 'message') {
-            //console.log('Push notification: new messages on Sylk server from', from);
+            console.log('Firebase push notification: new message from', from);
         }
     }
 
@@ -2450,6 +2507,7 @@ class Sylk extends Component {
             this.initialChatContact = from_uri;
         }
     }
+
     cancelIncomingCall(callUUID) {
         if (this.unmounted) {
             return;
@@ -2492,15 +2550,30 @@ class Sylk extends Component {
     }
 
     _proximityDetect(data) {
-        //utils.timestampedLog('Proximity changed, isNear is', data.isNear);
         if (!this.state.proximityEnabled) {
             return;
         }
+
+        if (this.state.headsetIsPlugged) {
+            utils.timestampedLog('Proximity disabled when headset is plugged');
+            return;
+        }
+
+        utils.timestampedLog('Proximity changed, isNear is', data.isNear);
 
         if (data.isNear) {
            this.speakerphoneOff();
         } else {
            this.speakerphoneOn();
+        }
+    }
+
+    _wiredHeadsetDetect(data) {
+        console.log('Wired headset:', data);
+        // {'isPlugged': boolean, 'hasMic': boolean, 'deviceName': string }
+        this.setState({'headsetIsPlugged': data.isPlugged});
+        if (data.isPlugged) {
+           this.speakerphoneOff();
         }
     }
 
@@ -2585,32 +2658,6 @@ class Sylk extends Component {
 
         if (nextAppState === this.state.appState) {
             return;
-        }
-
-        if (this.callKeeper.countCalls === 0 && !this.state.outgoingCallUUID) {
-            /*
-
-            utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
-
-            if (this.callKeeper.countCalls) {
-                utils.timestampedLog('- APP state changed, we have', this.callKeeper.countCalls, 'calls');
-            }
-
-            if (this.callKeeper.countPushCalls) {
-                utils.timestampedLog('- APP state changed, we have', this.callKeeper.countPushCalls, 'push calls');
-            }
-
-            if (this.startedByPush) {
-                utils.timestampedLog('- APP state changed, started by push in', nextAppState, 'state');
-            }
-
-            if (this.state.connection) {
-                utils.timestampedLog('- APP state changed from', this.state.appState, 'to', nextAppState, 'with connection', Object.id(this.state.connection));
-            } else {
-                utils.timestampedLog('- APP state changed from', this.state.appState, 'to', nextAppState);
-            }
-            */
-
         }
 
         if (this.state.appState !== 'active' && nextAppState === 'active') {
@@ -2712,6 +2759,9 @@ class Sylk extends Component {
 
         this.setState({selectedContact: contact});
         this.initialChatContact = null;
+        if (contact) {
+            this.confirmRead(contact.uri);
+        }
     }
 
     connectionStateChanged(oldState, newState) {
@@ -2900,6 +2950,8 @@ class Sylk extends Component {
 
             this.replayJournal();
 
+            this.requestPermissions();
+
             //if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
             // TODO if the call does not arrive, we never get back to ready
             if (this.currentRoute === '/login' && !this.signOut) {
@@ -2911,7 +2963,7 @@ class Sylk extends Component {
         }
     }
 
-    showAlertPanel(data, source) {
+    async showAlertPanel(data, source) {
         console.log('Show alert panel', source);
 
         if (this.callKeeper._cancelledCalls.has(data.callUUID)) {
@@ -2932,6 +2984,15 @@ class Sylk extends Component {
         if (this.callKeeper._rejectedCalls.has(data.callUUID)) {
             console.log('Show internal alert panel cancelled');
             return;
+        }
+
+        if (Platform.OS === 'android') {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (!phoneAllowed) {
+                this._notificationCenter.postSystemNotification('Phone permission denied');
+                this.changeRoute('/ready', 'phone_permission_denied');
+                return;
+            }
         }
 
         let contact;
@@ -2959,6 +3020,10 @@ class Sylk extends Component {
         } else {
             console.log('Missing contact data for Alert panel');
             return;
+        }
+
+        if (displayName === "<null>") {
+            displayName = from;
         }
 
         if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
@@ -2991,54 +3056,6 @@ class Sylk extends Component {
                        });
     }
 
-    postAndroidIncomingCallNotification(data) {
-        //console.log('postAndroidIncomingCallNotification', data);
-        if (Platform.OS !== 'android') {
-            return;
-        }
-
-        if (this.callKeeper.selfManaged) {
-            this.showAlertPanel(data, 'push');
-            return;
-        }
-
-        let media = {audio: true, video: data['media-type'] === 'video'};
-        let from = data.from_display_name || data.from_uri;
-        if (data.from_display_name && data.from_display_name != data.from_uri) {
-            from = data.from_display_name + ' (' + data.from_uri + ')';
-        }
-
-        //console.log('Show Android incoming call notification', from, media);
-
-        let actions = ['Audio'];
-        if (media.video) {
-            actions.push('Video');
-        }
-        actions.push('Reject');
-        actions.push('Dismiss');
-
-        PushNotification.localNotification({
-          /* Android Only Properties */
-          channelId: "sylk-alert-panel", // (required) channelId, if the channel doesn't exist, notification will not trigger.
-          vibrate: true, // (optional) default: true
-          priority: "max", // (optional) set notification priority, default: high
-          ongoing: true,
-          loopSound: true,
-          fullScreen: true,
-          ignoreInForeground: false, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
-          invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
-          actions: actions,
-
-          /* iOS and Android properties */
-          title: 'Incoming call', // (optional)
-          message: 'From ' + from, // (required)
-          //picture: "https://www.example.tld/picture.jpg", // (optional) Display an picture with the notification, alias of `bigPictureUrl` for Android. default: undefined
-          userInfo: data, // (optional) default: {} (using null throws a JSON value '<null>' error)
-          playSound: true, // (optional) default: true
-          number: 10, // (optional) Valid 32 bit integer specified as string. default: none (Cannot be zero)
-        });
-    }
-
     playIncomingRingtone(callUUID, force=false) {
         if (!this.callKeeper.selfManaged) {
             console.log('playIncomingRingtone skip because we are not self managed....');
@@ -3056,13 +3073,13 @@ class Sylk extends Component {
         } else {
             console.log('Play local ringtone and vibrate');
             Vibration.vibrate(VIBRATION_PATTERN, true);
-            InCallManager.startRingtone('_DEFAULT_');
+            InCallManager.startRingtone('_BUNDLE_');
         }
 
         this.cancelRingtoneTimer = setTimeout(() => {
             console.log('Cancel ringtones by timer')
             this.stopRingtones();
-        }, 60000);
+        }, 45000);
     }
 
     stopRingtones() {
@@ -3792,6 +3809,7 @@ class Sylk extends Component {
                 utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
 
                 this._sendPushToken(account, this.state.dnd);
+
                 this.setState({account: account});
 
                 this.generateKeysIfNecessary(account);
@@ -4039,7 +4057,7 @@ class Sylk extends Component {
         //console.log('PGP key generation...');
 
         if ('existsOnServer' in keyStatus) {
-            console.log('PGP key server was already queried');
+            //console.log('PGP key server was already queried');
             // server was queried
 
             if (keyStatus.existsOnServer) {
@@ -4327,8 +4345,45 @@ class Sylk extends Component {
         this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: callUUID});
     }
 
+    openAppSettings(subject) {
+        Alert.alert(
+         'Open Sylk App Permissions?',
+         subject || '',
+         [
+            {text: 'Cancel', onPress: () => console.log('Cancel dialog'), style: 'cancel'},
+            {text: 'OK', onPress: () =>  openSettings()},
+         ],
+         { cancelable: true }
+         );
+    }
+
+    openDrawSettings() {
+        Alert.alert(
+         'Incoming calls alert panel',
+         'To show the alert panel for incoming calls, Sylk must be allowed to come in front of other apps.',
+         [
+            {text: 'Cancel', onPress: () => console.log('Cancel dialog'), style: 'cancel'},
+            {text: 'OK', onPress: () => this.askForDrawPermission ()},
+         ],
+         { cancelable: true }
+         );
+    }
+
+    askForDrawPermission() {
+           RNDrawOverlay.askForDisplayOverOtherAppsPermission()
+             .then(res => {
+                //utils.timestampedLog("Display over other apps was granted");
+                 // res will be true if permission was granted
+             })
+             .catch(e => {
+                //utils.timestampedLog("Display over other apps was declined");
+             // permission was declined
+             });
+    }
+
     async callKeepStartCall(targetUri, options) {
-        //console.log('callKeepStartCall', options);
+        console.log('callKeepStartCall', options);
+
 
         this.resetGoToReadyTimer();
         targetUri = targetUri.trim().toLowerCase();
@@ -4351,12 +4406,29 @@ class Sylk extends Component {
             this.changeRoute('/call');
         }
 
+        if (Platform.OS === 'android') {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (!phoneAllowed) {
+                this._notificationCenter.postSystemNotification('Phone permission denied');
+                this.changeRoute('/ready', 'phone_permission_denied');
+
+                setTimeout(() => {
+                    this.openAppSettings('Phone permission must be allowed');
+                }, 2000);
+
+                return;
+            }
+        }
+
         const micAllowed = await this.requestMicPermission();
 
         if (!micAllowed) {
             this._notificationCenter.postSystemNotification('Microphone permission denied');
             this.setState({loading: null});
-            this.changeRoute('/ready');
+            this.changeRoute('/ready', 'mic_permission_denied');
+            setTimeout(() => {
+                this.openAppSettings('Microphone permission must be allowed');
+            }, 2000);
             return;
         }
 
@@ -4424,10 +4496,20 @@ class Sylk extends Component {
         this.changeRoute('/call', 'accept_call');
         this.backToForeground();
 
+
+        if (Platform.OS === 'android') {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (!phoneAllowed) {
+                this._notificationCenter.postSystemNotification('Phone permission denied');
+                this.changeRoute('/ready', 'phone_permission_denied');
+                return;
+            }
+        }
+
         const micAllowed = await this.requestMicPermission();
         if (!micAllowed) {
             this.setState({loading: null});
-            this.changeRoute('/ready', 'no_mic');
+            this.changeRoute('/ready', 'mic_permission_denied');
             return;
         }
 
@@ -4698,7 +4780,12 @@ class Sylk extends Component {
         }
     }
 
-    speakerphoneOn() {
+    async speakerphoneOn() {
+        if (this.state.headsetIsPlugged) {
+            utils.timestampedLog('Speakerphone disabled if headset is on');
+            return;
+        }
+
         utils.timestampedLog('Speakerphone On');
         this.setState({speakerPhoneEnabled: true});
         InCallManager.setForceSpeakerphoneOn(true);
@@ -5096,7 +5183,7 @@ class Sylk extends Component {
         return false;
     }
 
-    incomingCallFromPush(callUUID, from, displayName, mediaType, force) {
+    async incomingCallFromPush(callUUID, from, displayName, mediaType, force) {
         //utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.unmounted) {
@@ -5117,6 +5204,34 @@ class Sylk extends Component {
             return;
         }
 
+        if (this.state.appState === 'background') {
+            RNDrawOverlay.checkForDisplayOverOtherAppsPermission()
+                 .then(res => {
+                    // utils.timestampedLog("Display over other apps was granted");
+                     // res will be true if permission was granted
+                 })
+                 .catch(e => {
+                    utils.timestampedLog("Display over other apps was declined, we must send a notification");
+
+                    let data = {};
+                    data['session-id'] = callUUID;
+                    data['event'] = 'incoming_call';
+                    data['to_uri'] = this.state.accountId;
+                    data['from_uri'] = from;
+                    data['from_display_name'] = displayName;
+                    data['media-type'] = mediaType;
+
+                    this.postAndroidIncomingCallNotification(data);
+                    return;
+                 // permission was declined
+                 });
+        }
+
+        const phoneAllowed = await this.requestPhonePermission();
+        if (!phoneAllowed) {
+            return;
+        }
+
         this.backToForeground();
 
         this.goToReadyNowAndCancelTimer();
@@ -5133,10 +5248,9 @@ class Sylk extends Component {
         }
 
         this.callKeeper.incomingCallFromPush(callUUID, from, displayName, mediaType, force, skipNativePanel);
-
     }
 
-    incomingCallFromWebSocket(call, mediaTypes) {
+    async incomingCallFromWebSocket(call, mediaTypes) {
         if (this.unmounted) {
             return;
         }
@@ -5145,6 +5259,15 @@ class Sylk extends Component {
             console.log('Clear incoming timer');
             clearTimeout(this.timeoutIncomingTimer);
             this.timeoutIncomingTimer = null;
+        }
+
+        if (Platform.OS === 'android') {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (!phoneAllowed) {
+                this._notificationCenter.postSystemNotification('Phone permission denied');
+                this.changeRoute('/ready', 'phone_permission_denied');
+                return;
+            }
         }
 
         this.callKeeper.addWebsocketCall(call);
@@ -5283,7 +5406,7 @@ class Sylk extends Component {
         this.setState({showCallMeMaybeModal: true});
         setTimeout(() => {
             this.hideCallMeModal();
-        }, 25000);
+        }, 5000);
     }
 
     hideCallMeModal() {
@@ -5662,9 +5785,10 @@ class Sylk extends Component {
 
         utils.timestampedLog('Public key of', uri, 'saved');
 
-        //this.saveSystemMessage(uri, 'Public key received', 'incoming');
+        this.saveSystemMessage(uri, 'Public key received', 'incoming');
 
         myContacts[uri].publicKey = key;
+
         this.saveSylkContact(uri, myContacts[uri], 'savePublicKey');
         this.sendPublicKey(uri);
     }
@@ -5902,7 +6026,7 @@ class Sylk extends Component {
         if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
             public_keys = public_keys + '\n' + this.state.myContacts[uri].publicKey;
             console.log('Public key available for', uri);
-            if (this.state.keys.public) {
+            if (this.state.keys && this.state.keys.public) {
                 public_keys = public_keys + "\n" + this.state.keys.public;
                 console.log('Public key available for myself');
             } else {
@@ -6756,6 +6880,12 @@ class Sylk extends Component {
      }
 
      async confirmRead(uri){
+        //console.log('confirmRead', uri, 'app state', this.state.appState);
+
+        if (this.state.appState === 'background') {
+            return;
+        }
+
         if (uri.indexOf('@') === -1) {
             return;
         }
@@ -6873,7 +7003,7 @@ class Sylk extends Component {
     }
 
     async sendDispositionNotification(message, state='displayed') {
-        //console.log('sendDispositionNotification', state);
+        //console.log('sendDispositionNotification', state, 'app state', this.state.appState);
         let id = message.msg_id || message.id || message.transfer_id;
 
         if (!this.canSend()) {
@@ -6966,7 +7096,7 @@ class Sylk extends Component {
         let days = Math.ceil(difference / (1000 * 3600 * 24));
 
         if (days < 10) {
-            if (utils.isImage(file_transfer.filename)) {
+            if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
                 this.downloadFile(file_transfer);
             } else {
                 if (file_transfer.filesize < 1000 * 10000) {
@@ -7046,7 +7176,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('Downloading file', file_transfer.url);
+        console.log('Downloading file', file_transfer);
         // add a timer to cancel the download
         //console.log('To local storage:', tmp_file_path);
 
@@ -7334,7 +7464,9 @@ class Sylk extends Component {
                 render_messages.push(msg);
                 messages[uri] = render_messages;
                 if (pending_messages.length === 0) {
-                    this.confirmRead(uri);
+                    if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                        this.confirmRead(uri);
+                    }
                     this.setState({message: messages});
                 }
             }
@@ -7588,6 +7720,9 @@ class Sylk extends Component {
                     last_content = content;
 
                     msg = utils.sql2GiftedChat(item, content, filter);
+
+                    //console.log(msg);
+
                     if (!msg) {
                         myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                         continue;
@@ -7645,7 +7780,7 @@ class Sylk extends Component {
             }
 
             if (orig_uri in myContacts) {
-                if (last_message && last_message != myContacts[orig_uri].lastMessage) {
+                if (last_message && last_message != myContacts[orig_uri].lastMessage && last_message !== 'Public key received') {
                     myContacts[orig_uri].lastMessage = last_message;
                     myContacts[orig_uri].lastMessageId = last_message_id;
                     this.saveSylkContact(uri, myContacts[orig_uri], 'getMessages');
@@ -7813,23 +7948,28 @@ class Sylk extends Component {
     }
 
     playMessageSound(direction='incoming') {
+        //console.log('playMessageSound', this.state.appState);
         let must_play_sound = true;
 
         if (this.state.dnd) {
             return;
         }
 
+        if (this.state.appState === 'background') {
+            return;
+        }
+
         if (direction === 'incoming') {
             if (this.incoming_sound_ts) {
                 let diff = (Date.now() - this.incoming_sound_ts)/ 1000;
-                if (diff < 5) {
+                if (diff < 10) {
                     must_play_sound = false;
                 }
             }
         } else {
             if (this.outgoing_sound_ts) {
                 let diff = (Date.now() - this.outgoing_sound_ts)/ 1000;
-                if (diff < 5) {
+                if (diff < 10) {
                     must_play_sound = false;
                 }
             }
@@ -7837,6 +7977,7 @@ class Sylk extends Component {
 
         if (!must_play_sound) {
             console.log('Play incoming sound skipped');
+            return;
         }
 
         if (Platform.OS === 'android' && this.state.appState === 'foreground') {
@@ -9002,7 +9143,7 @@ class Sylk extends Component {
             });
 
             this.ExecuteQuery(query, all_values).then((result) => {
-                console.log('SQL inserted', pendingNewSQLMessages.length, 'messages');
+                //console.log('SQL inserted', pendingNewSQLMessages.length, 'messages');
                 this.newSyncMessagesCount = this.newSyncMessagesCount + pendingNewSQLMessages.length;
                 // todo process file transfers
 
@@ -9120,6 +9261,8 @@ class Sylk extends Component {
             return;
         }
 
+        //console.log('updateFileTransferBubble', metadata);
+
         let id = metadata.transfer_id;
 
         let renderMessages = this.state.messages;
@@ -9139,12 +9282,12 @@ class Sylk extends Component {
                 }
 
                 msg.metadata = metadata;
-                if (!metadata.local_url || metadata.error || metadata.local_url.endsWith('.asc')) {
+                if (!metadata.local_url || metadata.local_url.endsWith('.asc')) {
                     msg.image = null;
                     msg.video = null;
                     msg.audio = null;
                 } else {
-                    if (utils.isImage(metadata.filename)) {
+                    if (utils.isImage(metadata.filename, metadata.filetype)) {
                         if (metadata.b64) {
                             msg.image = `data:${metadata.filetype};base64,${metadata.b64}`;
                         } else {
@@ -9156,7 +9299,7 @@ class Sylk extends Component {
                         msg.video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
                     }
                 }
-                //console.log('updateFileTransferBubble', msg.text);
+                //console.log('updateFileTransferBubble', msg);
             }
             newMessages.push(msg);
         });
@@ -9860,12 +10003,12 @@ class Sylk extends Component {
     }
 
      fetchSharedItems(source) {
-        console.log('Fetch shared items');
+        //console.log('Fetch shared items', source);
         ReceiveSharingIntent.getReceivedFiles(files => {
             // files returns as JSON Array example
             //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
                 if (files.length > 0) {
-                    console.log('Will share to contacts', files.length, 'items');
+                    //console.log('Share', files.length, 'items');
 
                     this.setState({shareToContacts: true,
                                    shareContent: files,
@@ -9884,10 +10027,10 @@ class Sylk extends Component {
 
                     this._notificationCenter.postSystemNotification(what);
                 } else {
-                    console.log('Nothing to share');
+                    //console.log('Nothing to share');
                 }
             }, (error) => {
-                console.log('Error receiving sharing intent', error.message);
+                //console.log('Error receiving sharing intent', error.message);
             },
             'com.agprojects.sylk'
         );
@@ -10018,7 +10161,7 @@ class Sylk extends Component {
 
                     msg.metadata = file_transfer;
 
-                    if (utils.isImage(item.fileName)) {
+                    if (utils.isImage(item.fileName, file_transfer.filetype)) {
                         msg.image = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
                     } else if (utils.isAudio(item.fileName)) {
                         msg.audio = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
@@ -10074,7 +10217,7 @@ class Sylk extends Component {
     }
 
     endShareContent() {
-        console.log('endShareContent');
+        //console.log('endShareContent');
         let newSelectedContact = this.state.sourceContact;
 
         if (this.state.selectedContacts.length === 1 && ! newSelectedContact) {
@@ -10440,6 +10583,7 @@ class Sylk extends Component {
                     isTablet = {this.state.isTablet}
                     displayName = {this.state.displayName}
                     myDisplayName = {this.state.displayName}
+                    myPhoneNumber = {this.state.myPhoneNumber}
                     organization = {this.state.organization}
                     selectedContact = {this.state.selectedContact}
                     messages = {this.state.messages}
@@ -10544,6 +10688,7 @@ class Sylk extends Component {
                     hideConferenceModalFunc = {this.hideConferenceModal}
                     showConferenceModalFunc = {this.showConferenceModal}
                     shareContent = {this.shareContent}
+                    cancelShareContent = {this.endShareContent}
                     filterHistoryFunc = {this.filterHistory}
                     historyFilter = {this.state.historyFilter}
                     inviteToConferenceFunc = {this.inviteToConference}
@@ -10562,6 +10707,8 @@ class Sylk extends Component {
                     forwardMessageFunc = {this.forwardMessage}
                     sourceContact = {this.state.sourceContact}
                     requestCameraPermission = {this.requestCameraPermission}
+                    requestMicPermission = {this.requestMicPermission}
+                    requestStoragePermission = {this.requestStoragePermission}
                 />
 
                 <ImportPrivateKeyModal
@@ -10865,7 +11012,7 @@ class Sylk extends Component {
                     showLogo={!this.state.keyboardVisible || this.state.isTablet}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
-                    phoneNumber= {this.state.phoneNumber}
+                    myPhoneNumber= {this.state.myPhoneNumber}
                 />
             );
         }

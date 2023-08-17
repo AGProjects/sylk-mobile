@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity} from 'react-native';
-import { IconButton, Title, Button, Colors, Text  } from 'react-native-paper';
+import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';
@@ -16,6 +16,13 @@ import styles from '../assets/styles/blink/_ReadyBox.scss';
 import {Keyboard} from 'react-native';
 import QRCodeScanner from 'react-native-qrcode-scanner';
 import { RNCamera } from 'react-native-camera';
+import AudioRecord from 'react-native-audio-record';
+
+
+import uuid from 'react-native-uuid';
+import RNFetchBlob from "rn-fetch-blob";
+import fileType from 'react-native-file-type';
+
 
 class ReadyBox extends Component {
     constructor(props) {
@@ -84,6 +91,7 @@ class ReadyBox extends Component {
         }
 
         if (nextProps.selectedContact !== this.state.selectedContact) {
+           this.resetContact()
            this.setState({'messagesCategoryFilter': null});
            if (this.navigationRef && !this.state.selectedContact) {
                this.navigationRef.scrollToIndex({animated: true, index: 0});
@@ -231,6 +239,15 @@ class ReadyBox extends Component {
         if (this.state.selectedContact) {
             //return false;
         }
+
+        if (this.state.recording) {
+            return false;
+        }
+
+        if (this.state.audioRecording) {
+            return false;
+        }
+
         return true;
 
     }
@@ -252,6 +269,42 @@ class ReadyBox extends Component {
             return false;
         }
 
+        return true;
+    }
+
+    get showConferenceButton() {
+        if (this.state.selectedContact) {
+            return false;
+        }
+
+        if (this.state.shareToContacts) {
+            return false;
+        }
+        return true;
+    }
+
+    get showAudioSendButton() {
+        if (!this.state.selectedContact) {
+            return false;
+        }
+        return true;
+    }
+
+    get showAudioCancelButton() {
+        if (!this.state.audioRecording) {
+            return false;
+        }
+        return true;
+    }
+
+    get showAudioRecordButton() {
+        if (!this.state.selectedContact) {
+            return false;
+        }
+
+        if (this.state.audioRecording) {
+            return false;
+        }
         return true;
     }
 
@@ -280,12 +333,14 @@ class ReadyBox extends Component {
             return true;
         }
 
+        /*
         if (this.state.selectedContact) {
             if (this.state.isLandscape && !this.state.isTablet) {
                 return false;
             }
             return false;
         }
+        */
 
         return true;
     }
@@ -379,6 +434,10 @@ class ReadyBox extends Component {
         this.props.shareContent();
     }
 
+    cancelShareContent() {
+        this.props.cancelShareContent();
+    }
+
     showConferenceModal(event) {
         event.preventDefault();
         this.props.showConferenceModalFunc();
@@ -412,17 +471,23 @@ class ReadyBox extends Component {
     }
 
     handleAudioCall(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        let uri = this.state.targetUri.trim().toLowerCase();
-        var uri_parts = uri.split("/");
-        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
-            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
-            // https://webrtc.sipthor.net/call/alice@example.com from external web link
-            let event = uri_parts[3];
-            uri = uri_parts[4];
-            if (event === 'conference') {
-                uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+        let uri;
+
+        if (this.state.selectedContact) {
+            uri = this.state.selectedContact.uri;
+        } else {
+            event.preventDefault();
+            Keyboard.dismiss();
+            uri = this.state.targetUri.trim().toLowerCase();
+            var uri_parts = uri.split("/");
+            if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+                // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+                // https://webrtc.sipthor.net/call/alice@example.com from external web link
+                let event = uri_parts[3];
+                uri = uri_parts[4];
+                if (event === 'conference') {
+                    uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+                }
             }
         }
 
@@ -434,17 +499,23 @@ class ReadyBox extends Component {
     }
 
     handleVideoCall(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        let uri = this.state.targetUri.toLowerCase();
-        var uri_parts = uri.split("/");
-        if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
-            // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
-            // https://webrtc.sipthor.net/call/alice@example.com from external web link
-            let event = uri_parts[3];
-            uri = uri_parts[4];
-            if (event === 'conference') {
-                uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+        let uri;
+
+        if (this.state.selectedContact) {
+            uri = this.state.selectedContact.uri;
+        } else {
+            event.preventDefault();
+            Keyboard.dismiss();
+            uri = this.state.targetUri.trim().toLowerCase();
+            var uri_parts = uri.split("/");
+            if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
+                // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
+                // https://webrtc.sipthor.net/call/alice@example.com from external web link
+                let event = uri_parts[3];
+                uri = uri_parts[4];
+                if (event === 'conference') {
+                    uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+                }
             }
         }
 
@@ -499,11 +570,19 @@ class ReadyBox extends Component {
 
     get callButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
+        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1) {
             return true;
         }
 
         if (this.state.shareToContacts) {
+            return true;
+        }
+
+        if (this.state.recording) {
+            return true;
+        }
+
+        if (this.state.audioRecording) {
             return true;
         }
 
@@ -520,7 +599,7 @@ class ReadyBox extends Component {
 
     get videoButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
+        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1) {
             return true;
         }
 
@@ -529,6 +608,14 @@ class ReadyBox extends Component {
         }
 
         if (this.state.shareToContacts) {
+            return true;
+        }
+
+        if (this.state.recording) {
+            return true;
+        }
+
+        if (this.state.audioRecording) {
             return true;
         }
 
@@ -710,12 +797,263 @@ class ReadyBox extends Component {
         this.handleTargetChange(e.data);
     }
 
+    get showContactsList() {
+        if (this.state.recording) {
+             return false;
+        }
+
+        if (this.state.audioRecording) {
+             return false;
+        }
+        return true;
+    }
+
     get showQRCodeButton() {
         if (!this.props.canSend()) {
             return false;
         }
+
+        if (this.state.shareToContacts) {
+            return false;
+        }
+
         let uri = this.state.targetUri.toLowerCase();
         return uri.length === 0 && !this.state.shareToContacts && !this.state.inviteContacts;
+    }
+
+    async recordAudio() {
+        const micAllowed = await this.props.requestMicPermission();
+        console.log('micAllowed', micAllowed);
+
+        if (!micAllowed) {
+            return;
+        }
+
+        if (!this.state.recording) {
+            if (this.state.audioRecording) {
+                this.deleteAudio();
+            } else {
+                this.onStartRecord();
+            }
+        } else {
+            this.onStopRecord();
+        }
+    }
+
+    recordAudio(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.recordAudio();
+    }
+
+    async file2GiftedChat(fileObject) {
+        var id = uuid.v4();
+        let uri = this.state.selectedContact.uri;
+
+        let filepath = fileObject.uri ? fileObject.uri : fileObject;
+        let basename = fileObject.fileName || filepath.split('\\').pop().split('/').pop();
+
+        basename = basename.replace(/\s|:/g, '_');
+
+        let file_transfer = { 'path': filepath,
+                              'filename': basename,
+                              'sender': {'uri': this.state.accountId},
+                              'receiver': {'uri': uri},
+                              'transfer_id': id,
+                              'direction': 'outgoing'
+                              };
+
+        if (filepath.startsWith('content://')) {
+            // on android we must copy this file early
+            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri + "/" + id + "/" + basename;
+            const dirname = path.dirname(localPath);
+            await RNFS.mkdir(dirname);
+            console.log('Copy', filepath, localPath);
+            await RNFS.copyFile(filepath, localPath);
+            filepath = localPath;
+            file_transfer.local_url = localPath;
+        }
+
+        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
+        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+        file_transfer.filesize = fileObject.fileSize || size;
+
+        if (fileObject.preview) {
+            file_transfer.preview = fileObject.preview;
+        }
+
+        if (fileObject.duration) {
+            file_transfer.duration = fileObject.duration;
+        }
+
+        if (fileObject.fileType) {
+            file_transfer.filetype = fileObject.fileType;
+        } else {
+            try {
+                let mime = await fileType(filepath);
+                if (mime.mime) {
+                    file_transfer.filetype = mime.mime;
+                }
+            } catch (e) {
+                console.log('Error getting mime type', e.message);
+            }
+        }
+
+        let text = utils.beautyFileNameForBubble(file_transfer);
+
+        let msg = {
+            _id: id,
+            key: id,
+            text: text,
+            metadata: file_transfer,
+            createdAt: new Date(),
+            direction: 'outgoing',
+            user: {}
+            }
+
+        if (utils.isImage(basename, file_transfer.filetype)) {
+            msg.image = filepath;
+        } else if (utils.isAudio(basename)) {
+            msg.audio = filepath;
+        } else if (utils.isVideo(basename) || file_transfer.duration) {
+            msg.video = filepath;
+        }
+
+        return msg;
+    }
+
+    async sendAudioFile(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        if (this.state.audioRecording) {
+            this.setState({audioSendFinished: true});
+            setTimeout(() => {
+                this.setState({audioSendFinished: false});
+            }, 10);
+            let msg = await this.file2GiftedChat(this.state.audioRecording);
+            this.transferFile(msg);
+            this.setState({audioRecording: null});
+        }
+    }
+
+    async transferFile(msg) {
+        msg.metadata.preview = false;
+        this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
+    }
+
+    deleteAudio(event) {
+        event.preventDefault();
+        Keyboard.dismiss();
+        this.props.deleteAudio();
+    }
+
+    async recordAudio() {
+        /*
+        const micAllowed = await this.props.requestMicPermission();
+        console.log('micAllowed', micAllowed);
+
+        if (!micAllowed) {
+            return;
+        }
+        */
+
+
+        if (!this.state.recording) {
+            if (this.state.audioRecording) {
+                this.deleteAudio();
+            } else {
+                this.onStartRecord();
+            }
+        } else {
+            this.onStopRecord();
+        }
+    }
+
+    deleteAudio() {
+        console.log('Delete audio');
+        this.setState({audioRecording: null, recording: false});
+        if (this.recordingStopTimer !== null) {
+            clearTimeout(this.recordingStopTimer);
+            this.recordingStopTimer = null;
+        }
+    }
+
+    async onStartRecord () {
+        console.log('Start recording...');
+        this.setState({recording: true});
+        this.recordingStopTimer = setTimeout(() => {
+            this.stopRecording();
+        }, 20000);
+
+        if (!AudioRecord) {
+            AudioRecord.init(options);
+        }
+
+        try {
+            AudioRecord.start();
+        } catch (e) {
+            console.log(e.message);
+        }
+    };
+
+    stopRecording() {
+        console.log('Stop recording...');
+        this.setState({recording: false});
+        if (this.recordingStopTimer !== null) {
+            clearTimeout(this.recordingStopTimer);
+            this.recordingStopTimer = null;
+        }
+        this.onRecording(false);
+        this.onStopRecord();
+    }
+
+    async onStopRecord () {
+        console.log('Stop recording...');
+        const result = await AudioRecord.stop();
+        this.audioRecorded(result);
+        this.setState({audioRecording: result});
+    };
+
+    onRecording(state) {
+        this.setState({recording: state});
+        if (state) {
+            this.startRecordingTimer();
+        } else {
+            this.stopRecordingTimer()
+        }
+    }
+
+    resetContact() {
+        this.stopRecordingTimer()
+        this.setState({
+            recording: false,
+            audioRecording: null,
+            audioSendFinished: false
+        });
+    }
+
+    startRecordingTimer() {
+        let i = 0;
+        this.recordingTimer = setInterval(() => {
+            i = i + 1
+            this.setState({placeholder: 'Recording audio ' + i + 's'});
+        }, 1000);
+    }
+
+    stopRecordingTimer() {
+        if (this.recordingTimer) {
+            clearInterval(this.recordingTimer);
+            this.recordingTimer = null;
+        }
+    }
+
+    async audioRecorded(file) {
+        if (file) {
+            console.log('Audio recording ready to send', file);
+        } else {
+            console.log('Audio recording removed');
+        }
+        this.setState({recording: false, audioRecording: file});
     }
 
     render() {
@@ -772,11 +1110,32 @@ class ReadyBox extends Component {
 
         let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
         let blueButtonClass          = Platform.OS === 'ios' ? styles.blueButtoniOS              : styles.blueButton;
+        let redButtonClass           = Platform.OS === 'ios' ? styles.redButtoniOS               : styles.redButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS     : styles.disabledGreenButton;
         let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
+        let recordIcon               = this.state.recording ? 'pause' : 'microphone';
+        let activityTitle            = this.state.recording ? "Recording audio..." : "Audio recording ready";
+
+
+        let fileTransfersDisabled = false;
+
+        if (this.state.selectedContact) {
+            fileTransfersDisabled = false;
+
+            if (this.state.selectedContact.tags.indexOf('test') > -1) {
+                fileTransfersDisabled = true;
+            }
+
+            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+                fileTransfersDisabled = true;
+            }
+
+            if (this.state.selectedContact.uri.indexOf('@conference') > -1) {
+                fileTransfersDisabled = true;
+            }
+        }
 
         return (
-
             <Fragment>
                 <View style={styles.container}>
                     <View >
@@ -817,8 +1176,10 @@ class ReadyBox extends Component {
                                     >{backButtonTitle}
                                 </Button>
                             </View>
-                                :
+                            :
+
                             <View style={buttonGroupClass}>
+                                  {!this.state.selectedContact ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -830,6 +1191,35 @@ class ReadyBox extends Component {
                                     />
                                     </TouchableHighlight>
                                   </View>
+                                  : null }
+
+                                  {this.showAudioRecordButton?
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                        style={blueButtonClass}
+                                        size={32}
+                                        disabled={fileTransfersDisabled}
+                                        onPress={this.recordAudio}
+                                        icon={recordIcon}
+                                    />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
+
+                                  {this.showAudioCancelButton ?
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={redButtonClass}
+                                            size={32}
+                                            onPress={this.deleteAudio}
+                                            icon="cancel"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
+
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -841,6 +1231,7 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
+
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -853,18 +1244,20 @@ class ReadyBox extends Component {
                                     </TouchableHighlight>
                                   </View>
 
+                                  { this.state.shareToContacts ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                            style={!this.state.shareToContacts ? disabledBlueButtonClass : blueButtonClass}
-                                            disabled={!this.state.shareToContacts}
+                                            style={redButtonClass}
                                             size={32}
-                                            onPress={this.shareContent}
-                                            icon="share"
+                                            onPress={this.cancelShareContent}
+                                            icon="cancel"
                                         />
                                     </TouchableHighlight>
                                   </View>
+                                  : null}
 
+                                  {this.showConferenceButton ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -876,10 +1269,36 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
+                                  : null }
 
+                                  {this.showAudioSendButton ?
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={blueButtonClass}
+                                            disabled={!this.state.audioRecording}
+                                            size={32}
+                                            onPress={this.sendAudioFile}
+                                            icon="share"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
 
-                                 { this.showQRCodeButton ?
+                                  { this.state.shareToContacts ?
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={!this.state.shareToContacts ? disabledBlueButtonClass : blueButtonClass}
+                                            size={32}
+                                            onPress={this.shareContent}
+                                            icon="share"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
 
+                                  { this.showQRCodeButton ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -899,9 +1318,11 @@ class ReadyBox extends Component {
                         : null}
 
                     </View>
-                    <View style={[historyContainer, borderClass]}>
-                      { this.state.showQRCodeScanner &&  !showBackToCallButton ?
 
+                    {this.showContactsList ?
+                    <View style={[historyContainer, borderClass]}>
+
+                   {this.state.showQRCodeScanner ?
                     <QRCodeScanner
                         onRead={this.QRCodeRead}
                         showMarker={true}
@@ -909,7 +1330,6 @@ class ReadyBox extends Component {
                         containerStyle={styles.QRcodeContainer}
                      />
                       :
-
                         <ContactsListBox
                             contacts={this.state.contacts}
                             targetUri={this.state.targetUri}
@@ -970,12 +1390,33 @@ class ReadyBox extends Component {
                             isTexting = {this.state.isTexting}
                             forwardMessageFunc = {this.props.forwardMessageFunc}
                             requestCameraPermission = {this.props.requestCameraPermission}
+                            requestStoragePermissions = {this.props.requestStoragePermissions}
+                            requestMicPermission = {this.props.requestMicPermission}
+                            requestStoragePermission = {this.props.requestStoragePermission}
                             startCall = {this.props.startCall}
                             sourceContact = {this.state.sourceContact}
+                            file2GiftedChat = {this.file2GiftedChat}
                         />
                         }
 
                     </View>
+                    : null
+                    }
+
+                    { this.state.recording  ?
+                        <View style={styles.recordingContainer}>
+                            <ActivityIndicator animating={true} size={'large'} color={Colors.red800} />
+                            <Title style={styles.activityTitle}>{activityTitle}</Title>
+                        </View>
+                    : null
+                    }
+
+                    { this.state.audioRecording  ?
+                        <View style={styles.recordingContainer}>
+                            <Title style={styles.activityTitle}>{activityTitle}</Title>
+                        </View>
+                    : null
+                    }
 
                     {this.showNavigationBar ?
                     <View style={styles.navigationContainer}>
@@ -1074,6 +1515,7 @@ ReadyBox.propTypes = {
     showConferenceModalFunc: PropTypes.func,
     hideConferenceModalFunc: PropTypes.func,
     shareContent:  PropTypes.func,
+    cancelShareContent: PropTypes.func,
     filterHistoryFunc:  PropTypes.func,
     historyFilter: PropTypes.string,
     fontScale: PropTypes.number,
@@ -1093,7 +1535,9 @@ ReadyBox.propTypes = {
     canSend: PropTypes.func,
     forwardMessageFunc: PropTypes.func,
     sourceContact: PropTypes.object,
-    requestCameraPermission: PropTypes.func
+    requestCameraPermission: PropTypes.func,
+    requestStoragePermissions: PropTypes.func,
+    requestMicPermission: PropTypes.func
 };
 
 

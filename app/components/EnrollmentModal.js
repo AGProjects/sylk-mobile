@@ -1,5 +1,5 @@
 import React, { Component } from 'react';
-import { View, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { View, KeyboardAvoidingView, Platform, ScrollView, Keyboard} from 'react-native';
 import PropTypes from 'prop-types';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
@@ -28,7 +28,8 @@ class EnrollmentModal extends Component {
             enrolling: false,
             error: '',
             errorVisible: false,
-            status: ''
+            status: '',
+            myPhoneNumber: props.myPhoneNumber
         };
         this.state = Object.assign({}, this.initialState);
     }
@@ -88,12 +89,17 @@ class EnrollmentModal extends Component {
 
         this.setState({enrolling: true, error:''});
 
+        let data = {username: this.state.username,
+                    password: this.state.password,
+                    email: this.state.email,
+                    phoneNumber: this.state.myPhoneNumber,
+                    display_name: this.state.displayName
+                   };
+
+        console.log(data);
+
         superagent.post(config.enrollmentUrl)
-                  .send(superagent.serialize['application/x-www-form-urlencoded']({username: this.state.username,
-                                                                                   password: this.state.password,
-                                                                                   email: this.state.email,
-                                                                                   phoneNumber: this.props.phoneNumber,
-                                                                                   display_name: this.state.displayName}))   //eslint-disable-line camelcase
+                  .send(superagent.serialize['application/x-www-form-urlencoded'](data))   //eslint-disable-line camelcase
                   .end((error, res) => {
                       this.setState({enrolling: false});
                       if (error) {
@@ -194,6 +200,7 @@ class EnrollmentModal extends Component {
                             label="E-mail"
                             textContentType="emailAddress"
                             name="email"
+                            keyboardType="email-address"
                             autoCapitalize="none"
                             placeholder="Used to recover the password"
                             value={this.state.email}
@@ -234,6 +241,7 @@ class EnrollmentModal extends Component {
                             label="Password"
                             name="password"
                             secureTextEntry={true}
+                            visible-password={true}
                             placeholder="Enter at least 5 characters"
                             textContentType="password"
                             onChangeText={(text) => {this.handleFormFieldChange(text, 'password');}}
@@ -266,7 +274,6 @@ class EnrollmentModal extends Component {
                         : null}
 
                         {this.validInput ?
-
                         <Button
                             mode="contained"
                             style={styles.button}
@@ -275,17 +282,15 @@ class EnrollmentModal extends Component {
                         >{buttonText}
                         </Button>
                         :
-
-                       <Text style={styles.status}>{status}</Text>
+                        <Text style={styles.status}>{status}</Text>
                         }
-
 
                         <Snackbar style={styles.snackbar}
                             visible={this.state.errorVisible}
                             duration={4000}
                             onDismiss={() => this.setState({ errorVisible: false })}
                         >
-                            {this.state.error}
+                        {this.state.error}
                         </Snackbar>
                             </ScrollView>
                     </Surface>
@@ -298,9 +303,9 @@ class EnrollmentModal extends Component {
 EnrollmentModal.propTypes = {
     handleEnrollment: PropTypes.func.isRequired,
     show: PropTypes.bool.isRequired,
-    phoneNumber : PropTypes.string,
-    orientation : PropTypes.string,
-    isTablet    : PropTypes.bool
+    myPhoneNumber : PropTypes.string,
+    orientation   : PropTypes.string,
+    isTablet      : PropTypes.bool
 };
 
 export default EnrollmentModal;

@@ -30,7 +30,8 @@ class EditContactModal extends Component {
             email: this.props.email,
             myself: this.props.myself,
             uri: this.props.uri,
-            confirm: false
+            confirm: false,
+            myuuid: this.props.myuuid
         }
     }
 
@@ -40,7 +41,8 @@ class EditContactModal extends Component {
                        email: nextProps.email,
                        uri: nextProps.uri,
                        myself: nextProps.myself,
-                       organization: nextProps.organization
+                       organization: nextProps.organization,
+                       myuuid: nextProps.myuuid
                        });
     }
 
@@ -228,7 +230,7 @@ class EditContactModal extends Component {
 
                         {true ?
                         <View style={{flexDirection: 'row'}}>
-                        <Text style={styles.pgp}>My device id: {this.props.myuuid}</Text>
+                        <Text style={styles.pgp}>Device: {this.props.myuuid}</Text>
                         </View>
                         : null}
 

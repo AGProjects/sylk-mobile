@@ -923,14 +923,14 @@ class Call extends Component {
                     utils.timestampedLog('SSI local roles:', this.ssiRoles.toString());
                     utils.timestampedLog('SSI remote roles:', this.ssiRemoteRoles.toString());
                 } else {
-                    console.log('Remove party does not support SSI');
+                    //console.log('Remote party does not support SSI');
                 }
             } else {
                 if (this.ssiRemoteRoles.length > 0) {
                     utils.timestampedLog('SSI local roles:', this.ssiRoles.toString());
                     utils.timestampedLog('SSI remote roles:', this.ssiRemoteRoles.toString());
                 } else {
-                    console.log('Remove party does not support SSI');
+                    //console.log('Remote party does not support SSI');
                 }
             }
 

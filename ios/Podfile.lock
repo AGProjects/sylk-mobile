@@ -357,8 +357,6 @@ PODS:
     - React-Core
   - react-native-safe-area-context (3.3.2):
     - React-Core
-  - react-native-simple-crypto (0.2.15):
-    - React
   - react-native-splash-screen (3.2.0):
     - React
   - react-native-sqlite-storage (5.0.0):
@@ -507,7 +505,6 @@ DEPENDENCIES:
   - react-native-randombytes (from `../node_modules/react-native-randombytes`)
   - react-native-receive-sharing-intent (from `../node_modules/react-native-receive-sharing-intent`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
-  - react-native-simple-crypto (from `../node_modules/react-native-simple-crypto`)
   - react-native-splash-screen (from `../node_modules/react-native-splash-screen`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
   - react-native-version-number (from `../node_modules/react-native-version-number`)
@@ -636,8 +633,6 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-receive-sharing-intent"
   react-native-safe-area-context:
     :path: "../node_modules/react-native-safe-area-context"
-  react-native-simple-crypto:
-    :path: "../node_modules/react-native-simple-crypto"
   react-native-splash-screen:
     :path: "../node_modules/react-native-splash-screen"
   react-native-sqlite-storage:
@@ -764,7 +759,6 @@ SPEC CHECKSUMS:
   react-native-randombytes: 421f1c7d48c0af8dbcd471b0324393ebf8fe7846
   react-native-receive-sharing-intent: 62ab28c50e6ae56d32b9e841d7452091312a0bc7
   react-native-safe-area-context: 584dc04881deb49474363f3be89e4ca0e854c057
-  react-native-simple-crypto: 499ddd9f317932677e50393e58e7a72bca2a86e1
   react-native-splash-screen: 200d11d188e2e78cea3ad319964f6142b6384865
   react-native-sqlite-storage: 418ef4afc5e6df6ce3574c4617e5f0b65cffde55
   react-native-version-number: b415bbec6a13f2df62bf978e85bc0d699462f37f

@@ -53,13 +53,6 @@ class ContactCard extends Component {
         super(props);
         autoBind(this);
 
-        let callButtonsEnabled = true;
-        if (this.props.selectedContact && this.props.contact && this.props.selectedContact.uri === this.props.contact.uri) {
-            callButtonsEnabled = this.buttonsEnabledForContact(this.props.selectedContact);
-        } else {
-            callButtonsEnabled = false;
-        }
-
         this.state = {
             id: this.props.contact.id,
             contact: this.props.contact,
@@ -75,7 +68,6 @@ class ContactCard extends Component {
             messages: this.props.messages,
             unread: this.props.unread,
             chat: this.props.chat,
-            callButtonsEnabled: callButtonsEnabled,
             pinned: this.props.pinned,
             fontScale: this.props.fontScale,
             selectMode: this.props.selectMode
@@ -85,12 +77,6 @@ class ContactCard extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        let callButtonsEnabled = true;
-        if (nextProps.selectedContact && nextProps.contact && nextProps.selectedContact.uri === nextProps.contact.uri) {
-            callButtonsEnabled = this.buttonsEnabledForContact(nextProps.selectedContact);
-        } else {
-            callButtonsEnabled = false;
-        }
 
         this.setState({
             id: nextProps.contact.id,
@@ -102,9 +88,6 @@ class ContactCard extends Component {
             favorite: (nextProps.contact.tags.indexOf('favorite') > -1)? true : false,
             blocked: (nextProps.contact.tags.indexOf('blocked') > -1)? true : false,
             chat: nextProps.chat,
-            callButtonsEnabled: callButtonsEnabled,
-            recording: nextProps.recording,
-            audioRecording: nextProps.audioRecording,
             pinned: nextProps.pinned,
             messages: nextProps.messages,
             unread: nextProps.unread,
@@ -182,36 +165,6 @@ class ContactCard extends Component {
 
     renderChatComposer () {
         return null;
-    }
-
-    startCall(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        this.props.startCall(this.state.contact.uri, {audio: true, video: false});
-    }
-
-    recordAudio(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        this.props.recordAudio();
-    }
-
-    sendAudio(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        this.props.sendAudio();
-    }
-
-    deleteAudio(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        this.props.deleteAudio();
-    }
-
-    startVideoCall(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        this.props.startCall(this.state.contact.uri, {audio: true, video: true});
     }
 
     render () {
@@ -295,10 +248,6 @@ class ContactCard extends Component {
         }
 
         let cardHeight = this.state.fontScale <= 1 ? 75 : 70;
-        if (this.state.selectMode) {
-            cardHeight = 40;
-        }
-
         let duration;
 
         if (this.state.contact.tags.indexOf('history') > -1) {
@@ -408,14 +357,6 @@ class ContactCard extends Component {
         let unread = (this.state.contact && this.state.contact.unread && !this.state.selectMode) ? this.state.contact.unread.length : 0;
         let selectCircle = this.state.contact.selected ? 'check-circle' : 'circle-outline';
 
-        let recordIcon = this.state.recording ? 'pause' : 'microphone';
-        let recordStyle = this.state.recording ? styles.greenButton : styles.greenButton;
-
-        if (this.state.audioRecording) {
-            recordIcon = 'delete';
-            recordStyle = styles.redButton;
-        }
-
         let titlePadding = styles.titlePadding;
 
         if (this.state.fontScale < 1) {
@@ -423,10 +364,11 @@ class ContactCard extends Component {
         } else if (this.state.fontScale > 1.2) {
             titlePadding = styles.titlePaddingSmall;
         }
-
         //console.log('selectedContact', this.state.selectedContact);
 
         if (this.state.selectMode) {
+        titlePadding = styles.titlePaddingSelect;
+
         return (
             <Fragment>
                 <Card style={[cardContainerClass, {height: cardHeight}]}
@@ -437,14 +379,14 @@ class ContactCard extends Component {
                     <Card.Content style={styles.cardContent}>
                         <View style={styles.avatarContent}>
                             { this.state.contact.photo || !this.state.contact.email ?
-                            <UserIcon identity={this.state.contact} size={20}/>
+                            <UserIcon identity={this.state.contact} size={50}/>
                             :
                              <Gravatar options={{email: this.state.contact.email, parameters: { "size": "10", "d": "mm" }, secure: true}} style={styles.smallGravatar} />
                              }
                         </View>
 
                         <View style={styles.mainContent}>
-                            <Title noWrap style={[styles.title, titlePadding]}>{title}</Title>
+                            <Title numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Title>
                         </View>
                     </Card.Content>
 
@@ -476,65 +418,11 @@ class ContactCard extends Component {
                         </View>
 
                         <View style={styles.mainContent}>
-                            <Title noWrap style={[styles.title, titlePadding]}>{title}</Title>
-                        {this.state.callButtonsEnabled ?
-                            <View style={styles.callButtons}>
-                                {fileTransfersEnabled ?
-                                <View style={styles.greenButtonContainer}>
-                                    <IconButton
-                                        style={recordStyle}
-                                        size={18}
-                                        onPress={this.recordAudio}
-                                        icon={recordIcon}
-                                    />
-                                </View>
-                                : null}
-                                {!this.state.recording && !this.state.audioRecording ?
-                                <View style={styles.greenButtonContainer}>
-                                    <IconButton
-                                        style={styles.greenButton}
-                                        size={18}
-                                        onPress={this.startCall}
-                                        icon="phone"
-                                    />
-                                </View>
-                                : null
-                                }
-
-                                { this.state.recording && !this.state.audioRecording ?
-                                <Text style={styles.recordingLabel}>Recording audio...</Text>
-                                : null
-                                }
-
-                                {!this.state.recording && !this.state.audioRecording ?
-                                <View style={styles.greenButtonContainer}>
-                                    <IconButton
-                                        style={styles.greenButton}
-                                        size={18}
-                                        onPress={this.startVideoCall}
-                                        icon="video"
-                                    />
-                                </View>
-                                : null}
-
-                                {!this.state.recording && this.state.audioRecording ?
-                                <View style={styles.greenButtonContainer}>
-                                    <IconButton
-                                        style={styles.greenButton}
-                                        size={18}
-                                        onPress={this.sendAudio}
-                                        icon="send"
-                                    />
-                                </View>
-                                : null
-                                }
-
-                            </View>
-                           : <Subheading style={styles.subtitle}>{subtitle}</Subheading>
-                           }
+                            <Title numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Title>
+                           <Subheading numberOfLines={1} style={styles.subtitle}>{subtitle}</Subheading>
 
                             {this.state.fontScale <= 0.85 && !this.state.callButtonsEnabled ?
-                            <Caption style={styles.description}>
+                            <Caption numberOfLines={1} style={styles.description}>
                                 {this.state.contact.direction ?
                                 <Icon name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
                                 : null}
@@ -595,12 +483,6 @@ ContactCard.propTypes = {
     sendPublicKey  : PropTypes.func,
     fontScale      : PropTypes.number,
     selectMode     : PropTypes.bool,
-    startCall      : PropTypes.func,
-    recordAudio    : PropTypes.func,
-    sendAudio      : PropTypes.func,
-    deleteAudio    : PropTypes.func,
-    recording      : PropTypes.bool,
-    audioRecording : PropTypes.string,
     accountId      : PropTypes.string
 };
 

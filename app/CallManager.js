@@ -40,7 +40,7 @@ const options = {
         okButton: 'Allow',
         selfManaged: true,
         imageName: 'phone_account_icon',
-        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, PermissionsAndroid.PERMISSIONS.READ_CONTACTS],
+//        additionalPermissions: [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO],
         foregroundService: {
           channelId: 'com.agprojects.sylk',
           channelName: 'Foreground service for Sylk',

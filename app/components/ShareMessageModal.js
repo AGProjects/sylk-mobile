@@ -111,6 +111,7 @@ class ShareMessageModal extends Component {
                 this.props.close();
             })
             .catch((err) => {
+                console.log('Error sharing data', err);
                 this.props.close();
             });
     }

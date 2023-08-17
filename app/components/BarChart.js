@@ -60,6 +60,11 @@ class TrafficStats extends Component {
             return (null);
         }
 
+        if (this.state.audioBandwidthQueue.length === 0) {
+            //console.log('No bandwidth information...');
+            return (null);
+        }
+
         const currentBandwidth = this.state.audioBandwidthQueue[this.state.audioBandwidthQueue.length-1] + ' kbit/s';
 
         let currentLoss = (this.state.packetLossQueue[this.state.packetLossQueue.length-1] +
@@ -92,9 +97,8 @@ class TrafficStats extends Component {
                 latencyColor = 'red';
             }
             latency = Math.ceil(latency);
-        }
-
-        if (!latency) {
+        } else {
+            //console.log('No latency information...');
             return (null);
         }
 

@@ -20,6 +20,7 @@ import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
 import VersionNumber from 'react-native-version-number';
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
+import {openSettings} from 'react-native-permissions';
 
 
 class NavigationBar extends Component {
@@ -52,6 +53,7 @@ class NavigationBar extends Component {
             organization: organization,
             publicKey: this.props.publicKey,
             showPublicKey: false,
+            myPhoneNumber: this.props.myPhoneNumber,
             messages: this.props.messages,
             userClosed: false,
             blockedUris: this.props.blockedUris,
@@ -59,7 +61,8 @@ class NavigationBar extends Component {
             filteredMessageIds: this.props.filteredMessageIds,
             contentTypes: this.props.contentTypes,
             sharingAction: this.props.sharingAction,
-            dnd: this.props.dnd
+            dnd: this.props.dnd,
+            myuuid: this.props.myuuid
         }
 
         this.menuRef = React.createRef();
@@ -100,7 +103,9 @@ class NavigationBar extends Component {
                        filteredMessageIds: nextProps.filteredMessageIds,
                        contentTypes: nextProps.contentTypes,
                        sharingAction: nextProps.sharingAction,
-                       dnd: nextProps.dnd
+                       dnd: nextProps.dnd,
+                       myuuid: nextProps.myuuid,
+                       myPhoneNumber: nextProps.myPhoneNumber
                        });
 
                     if (nextProps.menuVisible) {
@@ -162,6 +167,9 @@ class NavigationBar extends Component {
                 break;
             case 'conference':
                 this.conferenceCall();
+                break;
+            case 'appSettings':
+                openSettings();
                 break;
             case 'addContact':
                 this.toggleAddContactModal();
@@ -350,7 +358,6 @@ class NavigationBar extends Component {
         }
 
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
-        let subtitle = 'Signed in as ' +  this.state.accountId;
         let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
         let isConference = false;
@@ -388,6 +395,14 @@ class NavigationBar extends Component {
         let ssiTitle = this.state.ssiRequired ? 'Disable SSI' : 'Enable SSI';
         let enableSsi = false;
 
+        let subtitle = this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId;
+        let title = this.state.selectedContact ? this.state.selectedContact.name : this.state.myDisplayName;
+
+        if (!title) {
+            title = subtitle;
+            subtitle = '';
+        }
+
         return (
             <Appbar.Header style={{backgroundColor: 'black'}}>
                 {showBackButton ?
@@ -395,13 +410,13 @@ class NavigationBar extends Component {
                 : <Image source={blinkLogo} style={styles.logo}/>}
 
                 <Appbar.Content
-                    title="Sylk"
+                    title={title}
+                    subtitle={subtitle}
                     titleStyle={titleStyle}
                     subtitleStyle={subtitleStyle}
-                    subtitle={this.props.isTablet? null: ((this.state.accountId || 'Loading...') + (this.state.myDisplayName ? ' (' + this.state.myDisplayName + ')' : ''))}
                 />
                 {this.props.isTablet?
-                <Text style={subtitleStyle}>{subtitle}</Text>
+                <Text style={subtitleStyle}>{subtitle} </Text>
                 : null}
 
                 <IconButton
@@ -514,6 +529,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Logs" />
+                        <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
 
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
@@ -568,7 +584,7 @@ class NavigationBar extends Component {
                     deleteContact={this.props.deleteContact}
                     deletePublicKey={this.props.deletePublicKey}
                     publicKey={this.state.showPublicKey ? this.state.publicKey: null}
-                    myuuid={this.props.myuuid}
+                    myuuid={this.state.myuuid}
                 />
 
                 <EditConferenceModal
@@ -623,6 +639,7 @@ NavigationBar.propTypes = {
     proximity          : PropTypes.bool,
     displayName        : PropTypes.string,
     myDisplayName      : PropTypes.string,
+    myPhoneNumber      : PropTypes.string,
     email              : PropTypes.string,
     organization       : PropTypes.string,
     account            : PropTypes.object,

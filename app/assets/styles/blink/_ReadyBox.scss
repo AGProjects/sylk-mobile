@@ -6,6 +6,19 @@
     justify-content: center;
 }
 
+.recordingContainer {
+    flex: 1;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.activityTitle {
+    padding-top: 25px;
+    font-size: 25px;
+    color: white;
+    text-align: center;
+}
+
 .historyLandscapeContainer {
     margin-top: 0px;
     width: 100%;
@@ -146,15 +159,19 @@
 }
 
 .disabledGreenButton {
-    background-color: rgba(#395936, .9);
+    background-color: rgba(#395936, .5);
 }
 
 .blueButton {
     background-color: rgba(#4572a6, 1);
 }
 
+.redButton {
+    background-color: red;
+}
+
 .disabledBlueButton {
-    background-color: rgba(#2E4C6F, 1);
+    background-color: rgba(#2E4C6F, 0.5);
 }
 
 .greenButtoniOS {
@@ -170,6 +187,11 @@
 .blueButtoniOS {
     padding-top: 4px;
     background-color: rgba(#4572a6, 1);
+}
+
+.redButtoniOS {
+    padding-top: 4px;
+    background-color: red;
 }
 
 .disabledBlueButtoniOS {
