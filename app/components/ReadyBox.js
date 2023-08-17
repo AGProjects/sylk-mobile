@@ -244,10 +244,6 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.audioRecording) {
-            return false;
-        }
-
         return true;
 
     }
@@ -681,6 +677,14 @@ class ReadyBox extends Component {
             return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
         }
 
+        if (key === "deleteAudio") {
+            return (<Button style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
+        }
+
+        if (key === "sendAudio") {
+            return (<Button style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
+        }
+
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
@@ -723,6 +727,13 @@ class ReadyBox extends Component {
             conferenceEnabled = false;
         }
 
+        if (this.state.audioRecording) {
+        return [
+              {key: "deleteAudio", title: 'Delete', enabled: true, selected: false},
+              {key: "sendAudio", title: 'Send', enabled: true, selected: false}
+              ];
+        }
+
         if (this.state.showQRCodeScanner) {
             return [
               {key: "hideQRCodeScanner", title: 'Cancel', enabled: true, selected: false}
@@ -730,7 +741,6 @@ class ReadyBox extends Component {
         }
 
         if (this.state.selectedContact) {
-
             let content_items = [];
             if ('pinned' in this.state.contentTypes) {
                 content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned});
@@ -922,9 +932,7 @@ class ReadyBox extends Component {
         return msg;
     }
 
-    async sendAudioFile(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
+    async sendAudioFile() {
         if (this.state.audioRecording) {
             this.setState({audioSendFinished: true});
             setTimeout(() => {
@@ -1115,7 +1123,6 @@ class ReadyBox extends Component {
         let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
         let recordIcon               = this.state.recording ? 'pause' : 'microphone';
         let activityTitle            = this.state.recording ? "Recording audio..." : "Audio recording ready";
-
 
         let fileTransfersDisabled = false;
 

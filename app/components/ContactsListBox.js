@@ -1956,6 +1956,10 @@ class ContactsListBox extends Component {
                 return;
             }
 
+            if (this.state.shareToContacts && elem.uri.indexOf('videoconference') > -1) {
+                return;
+            }
+
             if (this.state.sourceContact && this.state.sourceContact.uri === elem.uri) {
                 return;
             }
