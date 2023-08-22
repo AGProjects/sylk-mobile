@@ -389,7 +389,7 @@ class ContactsListBox extends Component {
                 if (this.state.renderMessages.length < renderMessages.length) {
                     //console.log('Number of messages changed', this.state.renderMessages.length, '->', renderMessages.length);
                     this.setState({isLoadingEarlier: false});
-                    this.props.confirmRead(uri);
+                    this.props.confirmRead(uri, 'contact_list_refresh');
                     if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
                         let last_message_ts = this.state.renderMessages[0].createdAt;
                         if (renderMessages[0].createdAt > last_message_ts) {

@@ -2760,7 +2760,7 @@ class Sylk extends Component {
         this.setState({selectedContact: contact});
         this.initialChatContact = null;
         if (contact) {
-            this.confirmRead(contact.uri);
+            //this.confirmRead(contact.uri, 'selectContact');
         }
     }
 
@@ -6879,8 +6879,8 @@ class Sylk extends Component {
         this.sendPendingMessages();
      }
 
-     async confirmRead(uri){
-        //console.log('confirmRead', uri, 'app state', this.state.appState);
+     async confirmRead(uri, source) {
+        console.log('confirmRead', uri, 'app state', this.state.appState, source);
 
         if (this.state.appState === 'background') {
             return;
@@ -6898,7 +6898,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (uri in this.state.decryptingMessages) {
+        if (uri in this.state.decryptingMessages && this.state.decryptingMessages[uri].length > 0) {
             return;
         }
 
@@ -6909,6 +6909,8 @@ class Sylk extends Component {
             let rows = results.rows;
             if (rows.length > 0) {
                //console.log('We must confirm read of', rows.length, 'messages');
+            } else {
+               //console.log('No messages to confirm read');
             }
 
             for (let i = 0; i < rows.length; i++) {
@@ -6918,7 +6920,7 @@ class Sylk extends Component {
                     this.sendDispositionNotification(item, 'error');
                     let query = "UPDATE messages set received = 2 where msg_id = ? ";
                     this.ExecuteQuery(query, [item.msg_id]).then((results) => {
-                        console.log('Sent disposition saved for', item.msg_id);
+                        //console.log('Sent disposition saved for', item.msg_id);
                     }).catch((error) => {
                         console.log('SQL confirmRead error:', error);
                     });
@@ -6942,7 +6944,7 @@ class Sylk extends Component {
                 });
 
                 let query = "UPDATE messages set received = 2 where msg_id in (" + sql_ids + ")";
-                //console.log(query);
+                    console.log('Messages read confirmed for', displayed.length, 'messages');
                 this.ExecuteQuery(query).then((results) => {
                     //console.log('Sent disposition saved for', displayed.length, 'messages');
                 }).catch((error) => {
@@ -7007,7 +7009,7 @@ class Sylk extends Component {
         let id = message.msg_id || message.id || message.transfer_id;
 
         if (!this.canSend()) {
-            console.log('sendDispositionNotification', id, state, 'will be sent later');
+            //console.log('sendDispositionNotification', id, state, 'will be sent later');
             return false;
         }
 
@@ -7465,7 +7467,7 @@ class Sylk extends Component {
                 messages[uri] = render_messages;
                 if (pending_messages.length === 0) {
                     if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
-                        this.confirmRead(uri);
+                        this.confirmRead(uri, 'decryptMessage');
                     }
                     this.setState({message: messages});
                 }
@@ -7473,7 +7475,9 @@ class Sylk extends Component {
 
             let params = [content, id, this.state.accountId];
             this.ExecuteQuery("update messages set encrypted = 2, content = ? where msg_id = ? and account = ?", params).then((result) => {
-                //console.log('SQL message updated', id);
+                if (this.state.selectedContact && this.state.selectedContact.uri === uri && pending_messages.length === 0) {
+                    this.confirmRead(uri, 'sql saved read');
+                }
             }).catch((error) => {
                 console.log('SQL message update error:', error);
             });
