@@ -1403,6 +1403,7 @@ class ReadyBox extends Component {
                             startCall = {this.props.startCall}
                             sourceContact = {this.state.sourceContact}
                             file2GiftedChat = {this.file2GiftedChat}
+                            postSystemNotification = {this.props.postSystemNotification}
                         />
                         }
 
@@ -1544,7 +1545,8 @@ ReadyBox.propTypes = {
     sourceContact: PropTypes.object,
     requestCameraPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,
-    requestMicPermission: PropTypes.func
+    requestMicPermission: PropTypes.func,
+    postSystemNotification: PropTypes.func
 };
 
 

@@ -10717,6 +10717,7 @@ class Sylk extends Component {
                     requestCameraPermission = {this.requestCameraPermission}
                     requestMicPermission = {this.requestMicPermission}
                     requestStoragePermission = {this.requestStoragePermission}
+                    postSystemNotification = {this.postSystemNotification}
                 />
 
                 <ImportPrivateKeyModal

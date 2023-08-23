@@ -1532,6 +1532,7 @@ class ContactsListBox extends Component {
                     })
                     .catch(error => {
                         console.log('Failed to open', currentMessage, error.message);
+                        this.props.postSystemNotification(error.message);
                     });
                 }
             });
@@ -2342,7 +2343,8 @@ ContactsListBox.propTypes = {
     requestCameraPermission: PropTypes.func,
     requestMicPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,
-    file2GiftedChat: PropTypes.func
+    file2GiftedChat: PropTypes.func,
+    postSystemNotification: PropTypes.func
 };
 
 
