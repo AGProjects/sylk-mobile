@@ -867,7 +867,7 @@ class ReadyBox extends Component {
 
         let file_transfer = { 'path': filepath,
                               'filename': basename,
-                              'sender': {'uri': this.state.accountId},
+                              'sender': {'uri': this.props.account.id},
                               'receiver': {'uri': uri},
                               'transfer_id': id,
                               'direction': 'outgoing'
@@ -875,7 +875,7 @@ class ReadyBox extends Component {
 
         if (filepath.startsWith('content://')) {
             // on android we must copy this file early
-            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri + "/" + id + "/" + basename;
+            const localPath = RNFS.DocumentDirectoryPath + "/" + this.props.account.id + "/" + uri + "/" + id + "/" + basename;
             const dirname = path.dirname(localPath);
             await RNFS.mkdir(dirname);
             console.log('Copy', filepath, localPath);
