@@ -125,11 +125,6 @@ class ShareMessageModal extends Component {
                         <View style={styles.iconContainer}>
                             <IconButton
                                 size={30}
-                                onPress={this.handleClipboardButton}
-                                icon="content-copy"
-                            />
-                            <IconButton
-                                size={30}
                                 onPress={this.handleEmailButton}
                                 icon="email"
                             />

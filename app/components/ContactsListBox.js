@@ -35,6 +35,8 @@ import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
 
 import styles from '../assets/styles/blink/_ContactsListBox.scss';
+import Share from 'react-native-share';
+
 
 String.prototype.toDate = function(format)
 {
@@ -699,6 +701,48 @@ class ContactsListBox extends Component {
         });
 
         this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
+    }
+
+    async handleShare(message) {
+        let local_url;
+        let what = 'message';
+
+        if (message.metadata) {
+            local_url = message.metadata.local_url;
+            if (message.image) {
+                what = 'photo';
+                let res = await RNFS.readFile(local_url, 'base64');
+                local_url = `data:${message.metadata.filetype};base64,${res}`;
+            } else if (utils.isAudio(message.metadata.filename)) {
+                what = 'Audio message';
+                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
+            } else if (message.metadata.video) {
+                what = 'Video';
+                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
+            } else {
+                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
+            }
+
+        }
+
+        let options= {
+            title: 'Share via',
+            subject: 'Share ' + what,
+            message: message.text,
+            url: local_url
+        }
+
+        if (message.metadata) {
+            options.type = message.metadata.filetype;
+        }
+
+        Share.open(options)
+            .then((res) => {
+                console.log('Sharing finished');
+            })
+            .catch((err) => {
+                console.log('Error sharing data', err);
+            });
     }
 
     async startPlaying(message) {
@@ -1529,7 +1573,7 @@ class ContactsListBox extends Component {
                 } else if (action === 'Edit') {
                     this.setState({message: currentMessage, showEditMessageModal: true});
                 } else if (action.startsWith('Share')) {
-                    this.setState({message: currentMessage, showShareMessageModal: true});
+                    this.handleShare(currentMessage);
                 } else if (action.startsWith('Forward')) {
                     this.props.forwardMessageFunc(currentMessage, this.state.targetUri);
                 } else if (action === 'Resend') {
