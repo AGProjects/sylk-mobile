@@ -6725,7 +6725,6 @@ class Sylk extends Component {
                 var item = rows.item(i);
                 let timestamp = JSON.parse(item.timestamp, _parseSQLDate);
                 imdn_msg = {id: item.msg_id, timestamp: timestamp, from_uri: item.from_uri}
-                    utils.timestampedLog('Debug IMDN 2');
                 this.sendDispositionNotification(imdn_msg, 'delivered', true);
             }
 
@@ -6976,7 +6975,6 @@ class Sylk extends Component {
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
-                utils.timestampedLog('Debug IMDN 3');
                 if (item.encrypted === 3) {
                     console.log('Message could not be decrypted', item.msg_id, item.content_type);
                     this.sendDispositionNotification(item, 'error', true);
@@ -8639,7 +8637,6 @@ class Sylk extends Component {
         if (is_encrypted) {
             if (!this.state.keys || !this.state.keys.private) {
                 console.log('Missing private key, cannot decrypt message');
-                utils.timestampedLog('Debug IMDN 4');
                 this.sendDispositionNotification(message, 'error', true);
                 this.saveSystemMessage(message.sender.uri, 'Cannot decrypt message, no private key', 'incoming');
             } else {
@@ -8649,7 +8646,6 @@ class Sylk extends Component {
                 }).catch((error) => {
                     console.log('Failed to decrypt message', message.id, error);
                     this.saveSystemMessage(message.sender.uri, 'Received message encrypted with wrong key', 'incoming');
-                    utils.timestampedLog('Debug IMDN 1');
                     this.sendDispositionNotification(message, 'error', true);
                     this.sendPublicKey(message.sender.uri);
                 });
@@ -9044,8 +9040,6 @@ class Sylk extends Component {
                 let received = reset ? '1' : item.received;
 
                 if (this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
-                utils.timestampedLog('Debug IMDN 5');
-
                     if (encrypted === 2 || encrypted === 0) {
                         this.sendDispositionNotification(file_transfer, 'displayed', true);
                     } else if (encrypted === 3) {
@@ -9488,7 +9482,9 @@ class Sylk extends Component {
         } else {
             if (message.dispositionNotification.indexOf('positive-delivery') > -1) {
                 imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri}
-                if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
+                let result = await this.sendDispositionNotification(imdn_msg, 'delivered');
+                console.log('IMDN promise', result);
+                if (result) {
                     received = 1;
                 }
             } else {
