@@ -249,7 +249,7 @@ class ReadyBox extends Component {
     }
 
     get showSearchBar() {
-        if (this.state.selectedContact && !this.state.isTablet) {
+        if (this.state.selectedContact) {
             return false;
         }
 
