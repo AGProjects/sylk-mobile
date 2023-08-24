@@ -1,5 +1,5 @@
 ﻿import React, { Component, Fragment} from 'react';
-import { View, SafeAreaView, FlatList } from 'react-native';
+import { View, SafeAreaView, FlatList, Platform } from 'react-native';
 import { Badge } from 'react-native-elements'
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';

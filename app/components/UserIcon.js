@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import utils from '../utils';
-import { Text, View } from 'react-native'
+import { Text, View, Platform } from 'react-native'
 import { Avatar} from 'react-native-paper';
 import styles from '../assets/styles/blink/_Avatar.scss';
 
@@ -42,8 +42,10 @@ const UserIcon = (props) => {
                 );
     }
 
+    let lableStyle = Platform.OS === 'android' ? styles.avatarLabelAndroid : styles.avatarLabeliOS;
+
     return (
-        <Avatar.Text style={{backgroundColor: color}} size={avatarSize} label={initials.toUpperCase()} />
+        <Avatar.Text labelStyle={lableStyle} style={[{backgroundColor: color}]} size={avatarSize} label={initials.toUpperCase()} />
             );
 };
 
