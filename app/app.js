@@ -6413,14 +6413,54 @@ class Sylk extends Component {
         });
     }
 
-    async deleteMessage(id, uri, remote=true) {
-        utils.timestampedLog('Message', id, 'is deleted');
+    async deleteMessage(id, uri, remote=true, after=false) {
+
+        utils.timestampedLog('Message', id, 'is deleted', after);
         let query;
-        // TODO send request to server
-        //console.log(query);
-        this.removeFilesForMessage(id, uri);
-        if (remote) {
-            this.addJournal(id, 'removeMessage', {uri: uri});
+
+        let message_ids = [id];
+        if (after) {
+            let rows;
+            let sql_message;
+            let unix_timestamp;
+            let day;
+
+            query = "SELECT * FROM messages where account = ? and msg_id = ?";
+            await this.ExecuteQuery(query, [this.state.accountId, id]).then((results) => {
+                rows = results.rows;
+                if (rows.length === 1) {
+                    sql_message = rows.item(0);
+                    unix_timestamp = sql_message.unix_timestamp;
+                    day = new Date(unix_timestamp * 1000).toISOString().slice(0,10);
+                    day = '%'+ day+ '%';
+                };
+
+            }).catch((error) => {
+                console.log('SQL error:', error);
+            });
+
+
+            if (unix_timestamp) {
+                query = "SELECT * FROM messages where account = ? and ((to_uri = ? and direction = 'outgoing') or (from_uri = ? and direction = 'incoming')) and unix_timestamp >= ? and timestamp like ? order by unix_timestamp asc";
+                await this.ExecuteQuery(query, [this.state.accountId, uri, uri, unix_timestamp, day]).then((results) => {
+                    rows = results.rows;
+                    for (let i = 0; i < rows.length; i++) {
+                        var item = rows.item(i);
+                        message_ids.push(item.msg_id);
+                    }
+
+                }).catch((error) => {
+                    console.log('SQL error:', error);
+                });
+            }
+        }
+
+        for (let j = 0; j < message_ids.length; j++) {
+            var _id = message_ids[j];
+            this.removeFilesForMessage(_id, uri);
+            if (remote) {
+               this.addJournal(_id, 'removeMessage', {uri: uri});
+            }
         }
     }
 
@@ -8304,7 +8344,7 @@ class Sylk extends Component {
         } else {
             this.setState({firstSyncDone: true});
             utils.timestampedLog('No new messages on server');
-            this._notificationCenter.postSystemNotification('No new messages');
+            //this._notificationCenter.postSystemNotification('No new messages');
             setTimeout(() => {
                 this.addTestContacts();
                 this.refreshNavigationItems();

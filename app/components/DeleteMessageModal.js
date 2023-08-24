@@ -22,6 +22,7 @@ class DeleteMessageModal extends Component {
             contact: this.props.contact,
             show: this.props.show,
             remoteDelete: true,
+            afterDelete: false,
             message: this.props.message,
             confirm: false,
         }
@@ -42,8 +43,8 @@ class DeleteMessageModal extends Component {
         event.preventDefault();
         if (this.state.confirm || true) {
             let id = this.state.message ? this.state.message._id : 'Unknown';
-            this.setState({confirm: false, remoteDelete: true});
-            this.props.deleteMessage(id, this.state.uri, this.state.remoteDelete);
+            this.setState({confirm: false, remoteDelete: true, afterDelete: false});
+            this.props.deleteMessage(id, this.state.uri, this.state.remoteDelete, this.state.afterDelete);
             this.props.close();
         } else {
             this.setState({confirm: true});
@@ -52,6 +53,10 @@ class DeleteMessageModal extends Component {
 
     toggleRemoteDelete() {
         this.setState({remoteDelete: !this.state.remoteDelete})
+    }
+
+    toggleAfterDelete() {
+        this.setState({afterDelete: !this.state.afterDelete})
     }
 
     render() {
@@ -93,6 +98,21 @@ class DeleteMessageModal extends Component {
                             {canDeleteRemote ?
                             <Text> Also delete for {remote_label}</Text>
                             : null}
+
+                            </View>
+
+                        <View style={styles.checkBoxRow}>
+                          {Platform.OS === 'ios' ?
+                           <Switch value={this.state.afterDelete} onValueChange={(value) => this.toggleAfterDelete()}/>
+                           : null
+                           }
+
+                            {Platform.OS === 'android' ?
+                            <Checkbox status={this.state.afterDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleAfterDelete()}}/>
+                            : null
+                            }
+
+                            <Text> Delete conversation after for this day</Text>
 
                             </View>
 
