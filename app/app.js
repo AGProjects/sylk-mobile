@@ -550,6 +550,10 @@ class Sylk extends Component {
     }
 
     async requestPhonePermission () {
+        if (Platform.OS !== 'android') {
+            return;
+        }
+
         let granted_POST_NOTIFICATIONS = await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
 
         let granted = await PermissionsAndroid.request('android.permission.READ_PHONE_NUMBERS');
