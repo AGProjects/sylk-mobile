@@ -112,7 +112,7 @@ class DeleteMessageModal extends Component {
                             : null
                             }
 
-                            <Text> Delete conversation after for this day</Text>
+                            <Text> Delete conversation for this day</Text>
 
                             </View>
 

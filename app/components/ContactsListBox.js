@@ -295,7 +295,6 @@ class ContactsListBox extends Component {
             audioSendFinished: false,
             messagesCategoryFilter: this.props.messagesCategoryFilter,
             isTexting: this.props.isTexting,
-            showDeleteMessageModal: false,
             sourceContact: this.props.sourceContact
         }
 
