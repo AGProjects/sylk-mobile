@@ -456,7 +456,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
-                        {<Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="delete" title="Refetch messages"/> }
+                        {<Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> }
 
                         { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 && 'paused' in this.state.contentTypes ?
                         <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
@@ -528,7 +528,7 @@ class NavigationBar extends Component {
                         {enableSsi?
                         <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
                         : null}
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="timeline-text-outline" title="Logs" />
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
 
                         {!this.state.inCall ?

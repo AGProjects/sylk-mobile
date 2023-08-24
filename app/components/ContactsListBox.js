@@ -1494,7 +1494,7 @@ class ContactsListBox extends Component {
                 }
                 if (currentMessage.metadata && currentMessage.metadata.local_url) {
                     options.push('Open')
-                    icons.push(<Icon name="open" size={20} />);
+                    icons.push(<Icon name="folder-open" size={20} />);
                 //
                 } else {
                     options.push('Copy');
@@ -1523,7 +1523,7 @@ class ContactsListBox extends Component {
 
             if (currentMessage.pinned) {
                 options.push('Unpin');
-                icons.push(<Icon name="pin" size={20} />);
+                icons.push(<Icon name="pin-off" size={20} />);
             } else {
                 if (!isSsiMessage && !currentMessage.metadata.error) {
                     options.push('Pin');
@@ -1545,10 +1545,10 @@ class ContactsListBox extends Component {
             if (currentMessage.metadata && currentMessage.metadata.filename) {
                 if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
                     options.push('Download again');
-                    icons.push(<Icon name="arrow-down-bold-circle" size={20} />);
+                    icons.push(<Icon name="cloud-download" size={20} />);
                 } else {
                     options.push('Download');
-                    icons.push(<Icon name="arrow-down-bold-circle" size={20} />);
+                    icons.push(<Icon name="cloud-download" size={20} />);
                 }
             }
 
