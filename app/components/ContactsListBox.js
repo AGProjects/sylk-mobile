@@ -1438,6 +1438,8 @@ class ContactsListBox extends Component {
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
         }
+
+        let icons = [];
         //console.log('currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
             let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
@@ -1445,17 +1447,21 @@ class ContactsListBox extends Component {
             if (currentMessage.metadata && !currentMessage.metadata.error) {
                 if (!isSsiMessage && this.isMessageEditable(currentMessage)) {
                     options.push('Edit');
+                    icons.push(<Icon name="file-document-edit" size={20} />);
                 }
                 if (currentMessage.metadata && currentMessage.metadata.local_url) {
                     options.push('Open')
+                    icons.push(<Icon name="open" size={20} />);
                 //
                 } else {
                     options.push('Copy');
+                    icons.push(<Icon name="content-copy" size={20} />);
                 }
             }
 
             if (!isSsiMessage) {
                 options.push('Delete');
+                icons.push(<Icon name="delete" size={20} />);
             }
 
             let showResend = currentMessage.failed || (currentMessage.direction === 'outgoing' && !currentMessage.sent && !currentMessage.received && !currentMessage.pending);
@@ -1467,40 +1473,48 @@ class ContactsListBox extends Component {
                 if (currentMessage.direction === 'outgoing') {
                     if (showResend) {
                         options.push('Resend')
+                        icons.push(<Icon name="send" size={20} />);
                     }
                 }
             }
 
             if (currentMessage.pinned) {
                 options.push('Unpin');
+                icons.push(<Icon name="pin" size={20} />);
             } else {
                 if (!isSsiMessage && !currentMessage.metadata.error) {
                     options.push('Pin');
+                    icons.push(<Icon name="pin" size={20} />);
                 }
             }
 
             //options.push('Info');
             if (!isSsiMessage && !currentMessage.metadata.error) {
                 options.push('Forward');
+                icons.push(<Icon name="arrow-right" size={20} />);
             }
 
             if (!isSsiMessage && !currentMessage.metadata.error) {
                 options.push('Share');
+                icons.push(<Icon name="share" size={20} />);
             }
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {
                 if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
                     options.push('Download again');
+                    icons.push(<Icon name="arrow-down-bold-circle" size={20} />);
                 } else {
                     options.push('Download');
+                    icons.push(<Icon name="arrow-down-bold-circle" size={20} />);
                 }
             }
 
             options.push('Cancel');
+            icons.push(<Icon name="cancel" size={20} />);
 
             let l = options.length - 1;
 
-            context.actionSheet().showActionSheetWithOptions({options, l}, (buttonIndex) => {
+            context.actionSheet().showActionSheetWithOptions({options, l, l, icons, textStyle: styles.actionSheetText}, (buttonIndex) => {
                 let action = options[buttonIndex];
                 if (action === 'Copy') {
                     Clipboard.setString(currentMessage.text);
@@ -1666,7 +1680,7 @@ class ContactsListBox extends Component {
                     <View style={styles.photoMenuText}>
                     <MessageText
                         {...props}
-                        customTextStyle={{fontSize: 12}}
+                        customTextStyle={styles.messageText}
                     />
                     </View>
 
@@ -1684,7 +1698,7 @@ class ContactsListBox extends Component {
                     <View style={styles.photoMenuText}>
                     <MessageText
                         {...props}
-                        customTextStyle={{fontSize: 12}}
+                        customTextStyle={styles.messageText}
                     />
                     </View>
 
@@ -1692,10 +1706,10 @@ class ContactsListBox extends Component {
             );
         } else {
             return (
-                <View>
+                <View style={styles.messageTextContainer}>
                     <MessageText
                         {...props}
-                        customTextStyle={{fontSize: 14}}
+                        customTextStyle={styles.messageText}
                     />
 
                 </View>
