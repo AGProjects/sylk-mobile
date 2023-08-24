@@ -2282,6 +2282,18 @@ class Sylk extends Component {
             PushNotificationIOS.addEventListener('register', this._boundOnPushRegistered);
             PushNotificationIOS.addEventListener('localNotification', this.onLocalNotification);
             PushNotificationIOS.addEventListener('notification', this.onRemoteNotification);
+            PushNotificationIOS.getInitialNotification().then(notification => {
+                if (!notification) {
+                    console.log('No initial notification');
+                    return;
+                }
+                const data = notification.getData();
+                if (data.data && data.data.event === 'message' && data.data.from_uri && data.data.to_uri) {
+                    this.selectChatContact(data.data.from_uri, data.data.to_uri);
+                }
+
+            });
+
 
             //let permissions = await checkIosPermissions();
             //if (!permissions.alert) {
