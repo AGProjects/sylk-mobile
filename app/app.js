@@ -2505,10 +2505,12 @@ class Sylk extends Component {
     };
 
     onLocalNotification(notification) {
-        console.log('Got local notification', notification);
-        this.updateTotalUread();
-
         let notification_data = notification.getData();
+        console.log('Got local notification', notification_data.data.event, 'from', notification_data.data.from_uri);
+        if (!this.state.selectedContact) {
+            this.updateTotalUread();
+        }
+
         if (notification_data.data && notification_data.data.event && notification_data.data.event === "message") {
             this.selectChatContact(notification_data.data.from_uri, notification_data.data.to_uri);
         }
@@ -2670,18 +2672,26 @@ class Sylk extends Component {
     }
 
     _handleAppStateChange = nextAppState => {
-        //utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
+        utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
 
         if (nextAppState === this.state.appState) {
             return;
         }
 
-        if (this.state.appState !== 'active' && nextAppState === 'active') {
+        this.setState({appState: nextAppState});
+
+        if (nextAppState === 'active') {
             this.respawnConnection(nextAppState);
             this.fetchSharedItems('app_active');
-        }
 
-        this.setState({appState: nextAppState});
+            if (Platform.OS === 'ios') {
+                if (this.state.selectedContact) {
+                    setTimeout(() => {
+                        this.confirmRead(this.state.selectedContact.uri);
+                    }, 100);
+                }
+            }
+        }
     }
 
     respawnConnection(state) {
@@ -2775,7 +2785,7 @@ class Sylk extends Component {
 
         this.setState({selectedContact: contact});
         this.initialChatContact = null;
-        if (contact) {
+        if (contact && Platform.OS == 'ios') {
             //this.confirmRead(contact.uri, 'selectContact');
         }
     }
@@ -6715,13 +6725,8 @@ class Sylk extends Component {
                 var item = rows.item(i);
                 let timestamp = JSON.parse(item.timestamp, _parseSQLDate);
                 imdn_msg = {id: item.msg_id, timestamp: timestamp, from_uri: item.from_uri}
-                if (this.sendDispositionNotification(imdn_msg, 'delivered')) {
-                    query = "UPDATE messages set received = 1 where msg_id = ?";
-                    this.ExecuteQuery(query, [item.msg_id]).then((results) => {
-                    }).catch((error) => {
-                        console.log('sendPendingMessages SQL error:', error);
-                    });
-                }
+                    utils.timestampedLog('Debug IMDN 2');
+                this.sendDispositionNotification(imdn_msg, 'delivered', true);
             }
 
         }).catch((error) => {
@@ -6936,7 +6941,7 @@ class Sylk extends Component {
      }
 
      async confirmRead(uri, source) {
-        console.log('confirmRead', uri, 'app state', this.state.appState, source);
+        //console.log('confirmRead', uri, 'app state', this.state.appState, source);
 
         if (this.state.appState === 'background') {
             return;
@@ -6971,41 +6976,13 @@ class Sylk extends Component {
 
             for (let i = 0; i < rows.length; i++) {
                 var item = rows.item(i);
+                utils.timestampedLog('Debug IMDN 3');
                 if (item.encrypted === 3) {
                     console.log('Message could not be decrypted', item.msg_id, item.content_type);
-                    this.sendDispositionNotification(item, 'error');
-                    let query = "UPDATE messages set received = 2 where msg_id = ? ";
-                    this.ExecuteQuery(query, [item.msg_id]).then((results) => {
-                        //console.log('Sent disposition saved for', item.msg_id);
-                    }).catch((error) => {
-                        console.log('SQL confirmRead error:', error);
-                    });
-
+                    this.sendDispositionNotification(item, 'error', true);
                 } else {
-                    if (this.sendDispositionNotification(item, 'displayed')) {
-                        displayed.push(item.msg_id);
-                    }
+                    this.sendDispositionNotification(item, 'displayed', true);
                 }
-            }
-
-            if (displayed.length > 0) {
-                let sql_ids = '';
-                let i = 1;
-                displayed.forEach((msg_id) => {
-                    sql_ids = sql_ids + "'" + msg_id + "'";
-                    if (i < displayed.length) {
-                        sql_ids = sql_ids + ', ';
-                    }
-                    i = i + 1;
-                });
-
-                let query = "UPDATE messages set received = 2 where msg_id in (" + sql_ids + ")";
-                    console.log('Messages read confirmed for', displayed.length, 'messages');
-                this.ExecuteQuery(query).then((results) => {
-                    //console.log('Sent disposition saved for', displayed.length, 'messages');
-                }).catch((error) => {
-                    console.log('SQL confirmRead error:', error);
-                });
             }
 
         }).catch((error) => {
@@ -7060,29 +7037,38 @@ class Sylk extends Component {
         this.setState({missedCalls: missedCalls});
     }
 
-    async sendDispositionNotification(message, state='displayed') {
+	async sendDispositionNotification(message, state='displayed', save=false) {
         //console.log('sendDispositionNotification', state, 'app state', this.state.appState);
         let id = message.msg_id || message.id || message.transfer_id;
+        let uri =  message.sender ? message.sender.uri : message.from_uri;
+        utils.timestampedLog('Message', id, 'IMDN state is', state);
 
         if (!this.canSend()) {
-            //console.log('sendDispositionNotification', id, state, 'will be sent later');
+            console.log('IMDN for', id, state, 'will be sent later');
             return false;
         }
 
-        let query;
-        let result = {};
-        let uri =  message.sender ? message.sender.uri : message.from_uri;
-        this.state.account.sendDispositionNotification(uri, id, message.timestamp, state,(error) => {
-            if (!error) {
-                utils.timestampedLog('Message', id, 'is', state);
-                return true;
-            } else {
-                utils.timestampedLog('sendDispositionNotification', id, state, 'state failed to be sent to server');
-                return false;
-            }
+        let result = await new Promise((resolve, reject) => {
+            this.state.account.sendDispositionNotification(uri, id, message.timestamp, state,(error) => {
+                if (!error) {
+                    if (save) {
+                        let received = (state === 'delivered') ? 1 : 2;
+                        let query = "UPDATE messages set received = ? where msg_id = ? and account = ?";
+                        this.ExecuteQuery(query, [received, id, this.state.accountId]).then((results) => {
+                            utils.timestampedLog('IMDN for', id, 'saved');
+                        }).catch((error) => {
+                            utils.timestampedLog('IMDN for', id, 'save error:', error.message);
+                        });
+                    }
+                    resolve(true);
+                } else {
+                    utils.timestampedLog('IMDN for', id, state, 'sent failed,', error);
+                    resolve(false);
+                }
+            });
         });
 
-        return false;
+        return result;
     }
 
     loadEarlierMessages() {
@@ -7481,8 +7467,8 @@ class Sylk extends Component {
                     let status = 'Decrypting ' + pending_messages.length + ' messages with';
                     this._notificationCenter.postSystemNotification(status, {body: uri});
                 } else if (pending_messages.length === 10) {
-                    let status = 'All messages decrypted';
-                    this._notificationCenter.postSystemNotification(status);
+                    //let status = 'All messages decrypted';
+                    //this._notificationCenter.postSystemNotification(status);
                 }
                 if (idx > -1) {
                     pending_messages.splice(idx, 1);
@@ -8073,7 +8059,7 @@ class Sylk extends Component {
         }
 
         await this.deleteMessage(message.id, uri, false).then((result) => {
-            console.log('Message', message.id, 'to', uri, 'is removed');
+            //console.log('Message', message.id, 'to', uri, 'is removed');
         }).catch((error) => {
             //console.log('Failed to remove message', message.id, 'to', uri);
             return;
@@ -8653,7 +8639,8 @@ class Sylk extends Component {
         if (is_encrypted) {
             if (!this.state.keys || !this.state.keys.private) {
                 console.log('Missing private key, cannot decrypt message');
-                this.sendDispositionNotification(message, 'error');
+                utils.timestampedLog('Debug IMDN 4');
+                this.sendDispositionNotification(message, 'error', true);
                 this.saveSystemMessage(message.sender.uri, 'Cannot decrypt message, no private key', 'incoming');
             } else {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
@@ -8662,7 +8649,8 @@ class Sylk extends Component {
                 }).catch((error) => {
                     console.log('Failed to decrypt message', message.id, error);
                     this.saveSystemMessage(message.sender.uri, 'Received message encrypted with wrong key', 'incoming');
-                    this.sendDispositionNotification(message, 'error');
+                    utils.timestampedLog('Debug IMDN 1');
+                    this.sendDispositionNotification(message, 'error', true);
                     this.sendPublicKey(message.sender.uri);
                 });
             }
@@ -8759,10 +8747,10 @@ class Sylk extends Component {
         let content = message.content;
 
         if (is_encrypted) {
-            this.saveIncomingMessageSync(message, null, true);
+            await this.saveIncomingMessageSync(message, null, true);
         } else {
             //console.log('Incoming message', message.id, 'not encrypted from', message.sender.uri);
-            this.saveIncomingMessageSync(message);
+            await this.saveIncomingMessageSync(message);
         }
 
         this.remove_sync_pending_item(message.id);
@@ -9056,19 +9044,17 @@ class Sylk extends Component {
                 let received = reset ? '1' : item.received;
 
                 if (this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
+                utils.timestampedLog('Debug IMDN 5');
+
                     if (encrypted === 2 || encrypted === 0) {
-                        if (this.sendDispositionNotification(file_transfer, 'displayed')) {
-                            received = 2;
-                        }
+                        this.sendDispositionNotification(file_transfer, 'displayed', true);
                     } else if (encrypted === 3) {
-                        if (this.sendDispositionNotification(file_transfer, 'error')) {
-                            received = 2;
-                        }
+                        this.sendDispositionNotification(file_transfer, 'error', true);
                     }
                 }
 
-                let params = [JSON.stringify(file_transfer), received, encrypted, file_transfer.transfer_id, this.state.accountId];
-                query = "update messages set metadata = ?, received = ?, encrypted = ? where msg_id = ? and account = ?"
+                let params = [JSON.stringify(file_transfer), encrypted, file_transfer.transfer_id, this.state.accountId];
+                query = "update messages set metadata = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
                     console.log('SQL updated file transfer', file_transfer.transfer_id, 'received =', received, 'encrypted =', encrypted);
                     this.updateFileTransferBubble(file_transfer);
@@ -9469,7 +9455,11 @@ class Sylk extends Component {
                 }
             }
 
-            this.updateTotalUread(myContacts);
+            if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                this.confirmRead(uri, 'incoming_message');
+            } else {
+                this.updateTotalUread(myContacts);
+            }
 
             this.saveSylkContact(uri, myContacts[uri], 'saveIncomingMessage');
 
@@ -9480,7 +9470,7 @@ class Sylk extends Component {
         });
     }
 
-    saveIncomingMessageSync(message, decryptedBody=null, is_encrypted=false) {
+    async saveIncomingMessageSync(message, decryptedBody=null, is_encrypted=false) {
         var content = decryptedBody || message.content;
         let encrypted = 0;
         if (decryptedBody !== null) {
