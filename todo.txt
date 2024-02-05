@@ -1,3 +1,6 @@
+An Invalid account is stored and used later for autologin
+ 
+
 File transfers
 --------------
 
