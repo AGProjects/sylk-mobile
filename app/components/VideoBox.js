@@ -54,7 +54,8 @@ class VideoBox extends Component {
             ssiRemoteIdentity           : this.props.ssiRemoteIdentity,
             ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
             ssiVerified                 : this.props.ssiVerified,
-            ssiCanVerify                : this.props.ssiCanVerify
+            ssiCanVerify                : this.props.ssiCanVerify,
+            localMedia                  : this.props.localMedia
         };
 
         this.overlayTimer = null;
@@ -118,6 +119,7 @@ class VideoBox extends Component {
                        selectedContacts: nextProps.selectedContacts,
                        ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
                        ssiVerified: nextProps.ssiVerified,
+                       localMedia: nextProps.localMedia,
                        terminatedReason: nextProps.terminatedReason
                        });
 
@@ -360,7 +362,8 @@ class VideoBox extends Component {
                     show = {show}
                     remoteUri = {this.state.remoteUri}
                     remoteDisplayName = {this.state.remoteDisplayName}
-                    photo={this.state.photo}
+                    photo = {this.state.photo}
+                    localMedia = {this.state.localMedia}
                     call = {this.state.call}
                     connection = {this.state.connection}
                     accountId = {this.state.accountId}

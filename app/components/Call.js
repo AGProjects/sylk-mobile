@@ -187,9 +187,9 @@ class Call extends Component {
         let callState = null;
         let direction = null;
         let callEnded = false;
-        this.mediaIsPlaying = false;
         this.ended = false;
         this.answering = false;
+        this.mediaIsPlaying = false;
 
         if (this.props.call) {
             // If current call is available on mount we must have incoming
@@ -271,7 +271,8 @@ class Call extends Component {
                       ssiRemoteIdentity: null,
                       ssiVerified: null,
                       ssiVerifyInProgress: false,
-                      ssiCanVerify: false
+                      ssiCanVerify: false,
+                      callEndReason: null
                       }
 
         this.statisticsTimer = setInterval(() => {
@@ -584,6 +585,7 @@ class Call extends Component {
         if (nextProps.ssiInvitationUrl) {
             this.setState({ssiInvitationUrl: nextProps.ssiInvitationUrl});
         }
+
     }
 
     getConnectionStats() {
@@ -990,7 +992,7 @@ class Call extends Component {
         }
 
         if (newState === 'terminated') {
-            this.setState({terminatedReason: data.reason});
+            this.setState({terminatedReason: this.state.terminatedReason});
         }
 
         this.forceUpdate();
@@ -1041,6 +1043,11 @@ class Call extends Component {
         if (!this.mediaIsPlaying) {
             if (this.waitCounter > 0) {
                 console.log('Call: media is not yet playing');
+                if (this.waitCounter == 10) {
+                    // something went wrong
+                    this.setState({terminatedReason: 'Cannot start media'});
+                    this.hangupCall('local_media_timeout');
+                }
             }
             return false;
         }
@@ -1156,6 +1163,7 @@ class Call extends Component {
                         call = {this.state.call}
                         accountId={this.state.accountId}
                         connection = {this.state.connection}
+                        localMedia = {this.state.localMedia}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
@@ -1323,6 +1331,7 @@ Call.propTypes = {
     connection              : PropTypes.object,
     registrationState       : PropTypes.string,
     call                    : PropTypes.object,
+    terminatedReason        : PropTypes.string,
     localMedia              : PropTypes.object,
     shareScreen             : PropTypes.func,
     escalateToConference    : PropTypes.func,

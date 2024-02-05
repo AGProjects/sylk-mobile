@@ -55,7 +55,6 @@ class AudioCallBox extends Component {
             ssiCanVerify                : this.props.ssiCanVerify,
             terminatedReason            : this.props.terminatedReason,
             speakerPhoneEnabled         : this.props.speakerPhoneEnabled
-
         };
 
         this.remoteAudio = React.createRef();
@@ -148,7 +147,8 @@ class AudioCallBox extends Component {
                        ssiVerified: nextProps.ssiVerified,
                        ssiCanVerify: nextProps.ssiCanVerify,
                        terminatedReason: nextProps.terminatedReason,
-                       speakerPhoneEnabled: nextProps.speakerPhoneEnabled
+                       speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
+                       localMedia: nextProps.localMedia
                        });
     }
 
@@ -305,6 +305,7 @@ class AudioCallBox extends Component {
                     connection={this.props.connection}
                     accountId={this.props.accountId}
                     media='audio'
+                    localMedia={this.state.localMedia}
                     declineReason={this.state.declineReason}
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
@@ -511,6 +512,7 @@ AudioCallBox.propTypes = {
     info                    : PropTypes.string,
     hangupCall              : PropTypes.func,
     mediaPlaying            : PropTypes.func,
+    localMedia              : PropTypes.object,
     callKeepSendDtmf        : PropTypes.func,
     toggleMute              : PropTypes.func,
     toggleSpeakerPhone      : PropTypes.func,

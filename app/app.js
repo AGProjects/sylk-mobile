@@ -191,6 +191,7 @@ class Sylk extends Component {
 
         this._initialState = {
             appState: null,
+            terminatedReason: null,
             inFocus: isFocus,
             accountId: '',
             password: '',
@@ -659,8 +660,8 @@ class Sylk extends Component {
         return;
     }
 
-    async requestMicPermission() {
-        console.log('Request mic permission');
+    async requestMicPermission(requestedBy) {
+        console.log('Request mic permission by', requestedBy);
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.MICROPHONE).then((result) => {
@@ -845,7 +846,7 @@ class Sylk extends Component {
     }
 
     async loadMyKeys() {
-        //utils.timestampedLog('Loading PGP keys...');
+        utils.timestampedLog('Loading PGP keys...');
         let keys = {};
         let lastSyncId;
         let myContacts = this.state.myContacts;
@@ -1788,7 +1789,6 @@ class Sylk extends Component {
            this.backToForeground();
         }
 
-
         if (route === '/ready' && reason !== 'back to home') {
             Vibration.cancel();
 
@@ -1896,7 +1896,7 @@ class Sylk extends Component {
             if (reason === 'no_more_calls') {
                 this.updateServerHistory(reason);
                 this.updateLoading(null, 'incoming_call');
-                this.setState({incomingCallUUID: null});
+                this.setState({incomingCallUUID: null, terminatedReason: null});
             }
         }
 
@@ -2672,7 +2672,7 @@ class Sylk extends Component {
     }
 
     _handleAppStateChange = nextAppState => {
-        utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
+        //utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
 
         if (nextAppState === this.state.appState) {
             return;
@@ -3234,7 +3234,7 @@ class Sylk extends Component {
 
         let callUUID = call.id;
         const connection = this.getConnection();
-        console.log('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState, data);
+        console.log('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState);
 
         /*
         if (newState === 'established' || newState === 'accepted') {
@@ -3355,6 +3355,7 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
+                InCallManager.start({media: mediaType});
                 //this.callKeeper.setCurrentCallActive(callUUID);
                 this.backToForeground();
 
@@ -3404,8 +3405,6 @@ class Sylk extends Component {
 
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
-
-                InCallManager.start({media: mediaType});
 
                 if (direction === 'outgoing') {
                     this.stopRingback();
@@ -3465,9 +3464,7 @@ class Sylk extends Component {
                 }
 
                 this._terminatedCalls.set(callUUID, true);
-                utils.timestampedLog(callUUID, direction, 'terminated with reason', data.reason);
-
-//                this._notificationCenter.postSystemNotification('Call ended:', {body: data.reason});
+                utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason);
 
                 if (direction === 'incoming' && this.timeoutIncomingTimer) {
                     clearTimeout(this.timeoutIncomingTimer);
@@ -3493,11 +3490,11 @@ class Sylk extends Component {
 
                 if (!reason || reason.match(/200/)) {
                     if (oldState === 'progress' && direction === 'outgoing') {
-                        reason = 'Cancelled';
+                        reason = 'Call cancelled';
                         cancelled = true;
                         play_busy_tone = false;
-                    } else if (oldState === 'incoming') {
-                        reason = 'Cancelled';
+                    } else if (oldState === 'incoming' || oldState === 'proceeding') {
+                        reason = 'Call cancelled';
                         missed = true;
                         play_busy_tone = false;
                         CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
@@ -3510,7 +3507,7 @@ class Sylk extends Component {
                     reason = 'Payment required';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/403/)) {
-                    //reason = 'Forbidden';
+                    reason = 'Call forbidden';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/404/)) {
                     reason = 'User not found';
@@ -3522,22 +3519,13 @@ class Sylk extends Component {
                     reason = 'Loop detected';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/480/)) {
-                    reason = 'Is not online';
+                    reason = 'Not online';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.UNANSWERED;
                 } else if (reason.match(/486/)) {
-                    reason = 'Is busy';
+                    reason = 'Busy';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
-                    if (direction === 'outgoing') {
-                        play_busy_tone = false;
-                    }
-                } else if (reason.match(/603/)) {
-                    reason = 'Cannot answer now';
-                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
-                    if (direction === 'outgoing') {
-                        play_busy_tone = false;
-                    }
                 } else if (reason.match(/487/)) {
-                    reason = 'Cancelled';
+                    reason = 'Call cancelled';
                     play_busy_tone = false;
                     cancelled = true;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
@@ -3545,14 +3533,22 @@ class Sylk extends Component {
                     reason = 'Unacceptable media';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else if (reason.match(/4\d\d/)) {
-                    reason = 'Call failure: ' + reason;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                } else if (reason.match(/DNS/)) {
+                    reason = 'Domain not found';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                    server_failure = true;
+                    // this does not pass Janus, so the SIP Proxy does not save the CDR
+                    this.addHistoryEntry(call.remoteIdentity.uri.toLowerCase(), callUUID);
+                } else if (reason.match(/603/)) {
+                    reason = 'Cannot answer now';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else if (reason.match(/[5|6]\d\d/)) {
                     reason = 'Server failure: ' + reason;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                     server_failure = true;
                 } else if (reason.match(/904/)) {
-                    // Sofia SIP: WAT
+                    // Sofia SIP: What is this!?
                     reason = 'Wrong account or password';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else {
@@ -3560,7 +3556,10 @@ class Sylk extends Component {
                 }
 
                 if (play_busy_tone) {
-                    this.playBusyTone();
+                    utils.timestampedLog('Play busy tone now');
+                    InCallManager.stop({busytone: '_BUNDLE_'});
+                } else {
+                    InCallManager.stop();
                 }
 
                 this.stopRingback();
@@ -3581,16 +3580,21 @@ class Sylk extends Component {
 
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
                     this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
+                    reason = "Call ended after " + duration;
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
-                    if (!server_failure) {
-                        this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
-                        if (reason.indexOf('PSTN calls forbidden') > -1) {
-                            setTimeout(() => {
-                                this.renderPurchasePSTNCredit(call.remoteIdentity.uri.toLowerCase());
-                            }, 2000);
-                        }
+                    this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
+                    if (reason.indexOf('PSTN calls forbidden') > -1) {
+                        setTimeout(() => {
+                            this.renderPurchasePSTNCredit(call.remoteIdentity.uri.toLowerCase());
+                        }, 2000);
                     }
+                }
+
+                if (this.currentRoute !== '/call') {
+                    this._notificationCenter.postSystemNotification(reason);
+                } else {
+                    this.setState({terminatedReason: reason});
                 }
 
                 this.terminateSsiConnections(call.remoteIdentity.uri.toLowerCase());
@@ -4080,7 +4084,7 @@ class Sylk extends Component {
 
     generateKeysIfNecessary(account) {
         let keyStatus = this.state.keyStatus;
-        //console.log('PGP key generation...');
+        console.log('PGP key generation...');
 
         if ('existsOnServer' in keyStatus) {
             //console.log('PGP key server was already queried');
@@ -4099,7 +4103,7 @@ class Sylk extends Component {
                         console.log('My PGP key is the same as the one on server');
                     }
                 } else {
-                    //console.log('My local PGP key does not exist', keyStatus);
+                    console.log('My local PGP key does not exist', keyStatus);
                     setTimeout(() => {
                         this.showImportPrivateKeyModal();
                     }, 10);
@@ -4113,22 +4117,22 @@ class Sylk extends Component {
                 }
             }
         } else {
-            //console.log('PGP key server was not yet queried');
+            console.log('PGP key server was not yet queried');
             account.checkIfKeyExists((key) => {
                 keyStatus.serverPublicKey = key;
 
                 if (key) {
                     //console.log('My server public key:', key);
-                    //console.log('Key status:', keyStatus);
+                    //console.log('Keys status:', keyStatus.keys);
 
                     keyStatus.existsOnServer = true;
                     //console.log('PGP public key on server', key);
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== key) {
-                            //console.log('My PGP key on server is different than local');
+                            console.log('My PGP key on server is different than local');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            //console.log('My PGP keys are the same');
+                            console.log('My PGP keys are the same');
                             keyStatus.existsLocal = true;
                         }
                         this.setState({keyStatus: keyStatus});
@@ -4353,7 +4357,7 @@ class Sylk extends Component {
             utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri);
         }
 
-        const micAllowed = await this.requestMicPermission();
+        const micAllowed = await this.requestMicPermission('callKeepStartConference');
         if (!micAllowed) {
             this._notificationCenter.postSystemNotification('Microphone permission denied');
             this.changeRoute('/ready');
@@ -4446,7 +4450,7 @@ class Sylk extends Component {
             }
         }
 
-        const micAllowed = await this.requestMicPermission();
+        const micAllowed = await this.requestMicPermission('callKeepStartCall');
 
         if (!micAllowed) {
             this._notificationCenter.postSystemNotification('Microphone permission denied');
@@ -4532,7 +4536,7 @@ class Sylk extends Component {
             }
         }
 
-        const micAllowed = await this.requestMicPermission();
+        const micAllowed = await this.requestMicPermission('callKeepAcceptCall');
         if (!micAllowed) {
             this.setState({loading: null});
             this.changeRoute('/ready', 'mic_permission_denied');
@@ -4638,6 +4642,7 @@ class Sylk extends Component {
             reason === 'escalate_to_conference' ||
             reason === 'user_hangup_conference_confirmed' ||
             reason === 'timeout' ||
+            reason === 'local_media_timeout' ||
             reason === 'outgoing_connection_failed'
             ) {
             this.setState({inviteContacts: false});
@@ -4648,6 +4653,9 @@ class Sylk extends Component {
                     clearTimeout(this.conferenceEndedTimer);
                     this.conferenceEndedTimer = null;
                 }
+            }
+            if (reason === 'local_media_timeout') {
+                this._notificationCenter.postSystemNotification('Cannot get local media');
             }
         } else if (reason === 'user_hangup_conference') {
             if (!this.conferenceEndedTimer ) {
@@ -4669,11 +4677,6 @@ class Sylk extends Component {
                  this.changeRoute('/ready', reason);
             }, 6000);
         }
-    }
-
-    playBusyTone() {
-        utils.timestampedLog('Play busy tone');
-        InCallManager.stop({busytone: '_BUNDLE_'});
     }
 
     callKeepSendDtmf(digits) {
@@ -9142,10 +9145,12 @@ class Sylk extends Component {
     }
 
     async insertPendingMessages() {
+        //console.log('insertPendingMessages');
+
         let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state) VALUES "
 
         //if (this.pendingNewSQLMessages.length > 0) {
-        //console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
+            //console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
         //}
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
@@ -10856,6 +10861,7 @@ class Sylk extends Component {
                 ssiRequired = {this.state.ssiRequired}
                 ssiRoles = {this.state.ssiRoles}
                 postSystemNotification = {this.postSystemNotification}
+                terminatedReason = {this.state.terminatedReason}
             />
         )
     }

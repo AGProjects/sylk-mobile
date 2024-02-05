@@ -34,6 +34,7 @@ class CallOverlay extends React.Component {
             direction: this.props.call ? this.props.call.direction: null,
             startTime: this.props.callState ? this.props.callState.startTime : null,
             remoteUri: this.props.remoteUri,
+            localMedia: this.props.localMedia,
             remoteDisplayName: this.props.remoteDisplayName,
             reconnectingCall: this.props.reconnectingCall
         }
@@ -88,13 +89,14 @@ class CallOverlay extends React.Component {
         this.setState({remoteDisplayName: nextProps.remoteDisplayName,
                        remoteUri: nextProps.remoteUri,
                        media: nextProps.media,
+                       localMedia: nextProps.localMedia,
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
                        terminatedReason: nextProps.terminatedReason
                        });
     }
 
     callStateChanged(oldState, newState, data) {
-        //console.log('allStateChanged', oldState, newState);
+        // console.log('callStateChanged', oldState, newState);
         if (newState === 'established' && this._isMounted) {
             this.startTimer();
         }
@@ -154,7 +156,7 @@ class CallOverlay extends React.Component {
         }
 
         if (this.props.show) {
-            let callDetail = '';
+            let callDetail = 'Connecting...';
 
             if (this.duration) {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
@@ -163,11 +165,10 @@ class CallOverlay extends React.Component {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting call...';
                 } else if (this.state.callState === 'terminated') {
-                    callDetail = 'Call ended';
                     if (this.finalDuration) {
-                        callDetail = callDetail + ' after ' + this.finalDuration;
+                        callDetail = 'Call ended after ' + this.finalDuration;
                     } else if (this.state.terminatedReason) {
-                        callDetail = callDetail + ': ' + this.state.terminatedReason;
+                        callDetail = this.state.terminatedReason;
                     }
                 } else if (this.state.callState === 'incoming') {
                     callDetail = 'Connecting...';
@@ -176,16 +177,21 @@ class CallOverlay extends React.Component {
                 } else if (this.state.callState === 'progress') {
                     if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;
-                    } else {
-                        callDetail = 'Connecting...';
                     }
                 } else if (this.state.callState === 'established') {
                     callDetail = 'Media established';
                 } else if (this.state.callState) {
                     callDetail = toTitleCase(this.state.callState);
+                } else if (!this.state.localMedia) {
+                    if (this.state.terminatedReason) {
+                        callDetail = this.state.terminatedReason;
+                    } else {
+                        callDetail = 'Getting local media...';
+                    }
                 }
             }
 
+            //console.log(' --- render overlay', this.state.callState, this.state.terminatedReason);
             if (this.props.info) {
                 callDetail = callDetail + ' - ' + this.props.info;
             }
@@ -225,6 +231,7 @@ class CallOverlay extends React.Component {
 CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
     remoteUri: PropTypes.string,
+    localMedia: PropTypes.object,
     remoteDisplayName: PropTypes.string,
     call: PropTypes.object,
     connection: PropTypes.object,

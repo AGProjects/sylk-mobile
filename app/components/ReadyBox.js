@@ -832,7 +832,7 @@ class ReadyBox extends Component {
     }
 
     async recordAudio() {
-        const micAllowed = await this.props.requestMicPermission();
+        const micAllowed = await this.props.requestMicPermission('recordAudio');
         console.log('micAllowed', micAllowed);
 
         if (!micAllowed) {
@@ -957,7 +957,7 @@ class ReadyBox extends Component {
 
     async recordAudio() {
         /*
-        const micAllowed = await this.props.requestMicPermission();
+        const micAllowed = await this.props.requestMicPermission('recordAudio');
         console.log('micAllowed', micAllowed);
 
         if (!micAllowed) {
