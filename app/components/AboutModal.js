@@ -28,6 +28,7 @@ const AboutModal = (props) => {
                     <Text style={styles.body}>Sylk is part of Sylk Suite, a set of real-time
                     communications applications using IETF SIP protocol and WebRTC specifications</Text>
                     <Text style={styles.version}>Version {props.currentVersion}</Text>
+                    <Text style={styles.version}>Build Id {props.buildId}</Text>
                     { props.appStoreVersion && props.appStoreVersion.version > props.currentVersion ?
                         <Text onPress={() => handleUpdate()} style={styles.link}>Update Sylk...</Text>
                     :
@@ -45,7 +46,8 @@ AboutModal.propTypes = {
     show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     currentVersion: PropTypes.string,
-    appStoreVersion: PropTypes.object
+    appStoreVersion: PropTypes.object,
+    buildId: PropTypes.string,
 };
 
 export default AboutModal;

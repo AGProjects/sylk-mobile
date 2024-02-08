@@ -156,7 +156,7 @@ class CallOverlay extends React.Component {
         }
 
         if (this.props.show) {
-            let callDetail = 'Connecting...';
+            let callDetail = 'Contacting server...';
 
             if (this.duration) {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
@@ -177,6 +177,8 @@ class CallOverlay extends React.Component {
                 } else if (this.state.callState === 'progress') {
                     if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;
+                    } else {
+                        callDetail = "Call in progress..."
                     }
                 } else if (this.state.callState === 'established') {
                     callDetail = 'Media established';

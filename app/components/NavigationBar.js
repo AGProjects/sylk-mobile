@@ -544,6 +544,8 @@ class NavigationBar extends Component {
                     close={this.toggleAboutModal}
                     currentVersion={VersionNumber.appVersion}
                     appStoreVersion={this.state.appStoreVersion}
+                    buildId={this.props.buildId}
+                    
                 />
 
                 <CallMeMaybeModal
@@ -692,7 +694,8 @@ NavigationBar.propTypes = {
     canSend: PropTypes.func,
     sharingAction: PropTypes.bool,
     dnd: PropTypes.bool,
-    toggleDnd: PropTypes.func
+    toggleDnd: PropTypes.func,
+    buildId: PropTypes.string
 };
 
 export default NavigationBar;

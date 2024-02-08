@@ -192,7 +192,7 @@ class Sylk extends Component {
         this._initialState = {
             appState: null,
             terminatedReason: null,
-            inFocus: isFocus,
+            inFocus: true,
             accountId: '',
             password: '',
             displayName: '',
@@ -305,7 +305,9 @@ class Sylk extends Component {
             headsetIsPlugged: false
         };
 
-        utils.timestampedLog('Init app');
+        this.buildId = "20240208d";
+
+        utils.timestampedLog('Init app with id', this.buildId);
 
         this.timeoutIncomingTimer = null;
 
@@ -865,10 +867,10 @@ class Sylk extends Component {
                     keyStatus.existsLocal = true;
                     if ('existsOnServer' in keyStatus) {
                         if (keyStatus.serverPublicKey !== item.public_key) {
-                            //console.log('My PGP public key local', item.public_key);
+                            utils.timestampedLog('showImportPrivateKeyModal 1');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            //console.log('My PGP keys are the same');
+                            utils.timestampedLog('Local and server PGP keys are the same');
                             this.setState({showImportPrivateKeyModal: false});
                         }
                     } else {
@@ -1745,7 +1747,7 @@ class Sylk extends Component {
 
     changeRoute(route, reason) {
         //console.log('Route', route, 'with reason', reason);
-        console.log('Change route', this.currentRoute, '->', route, 'with reason:', reason);
+        utils.timestampedLog('Change route', this.currentRoute, '->', route, 'with reason:', reason);
         let messages = this.state.messages;
 
         if (this.currentRoute === route) {
@@ -3181,7 +3183,7 @@ class Sylk extends Component {
     }
 
     stopRingback() {
-        utils.timestampedLog('Stop ringback');
+        //utils.timestampedLog('Stop ringback');
         this.ringbackActive = false;
         InCallManager.stopRingback();
     }
@@ -3234,7 +3236,7 @@ class Sylk extends Component {
 
         let callUUID = call.id;
         const connection = this.getConnection();
-        console.log('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState);
+        utils.timestampedLog('Sylkrtc call', callUUID, 'state change:', oldState, '->', newState);
 
         /*
         if (newState === 'established' || newState === 'accepted') {
@@ -3464,7 +3466,6 @@ class Sylk extends Component {
                 }
 
                 this._terminatedCalls.set(callUUID, true);
-                utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason);
 
                 if (direction === 'incoming' && this.timeoutIncomingTimer) {
                     clearTimeout(this.timeoutIncomingTimer);
@@ -3489,10 +3490,8 @@ class Sylk extends Component {
                 CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
 
                 if (!reason || reason.match(/200/)) {
-                    if (oldState === 'progress' && direction === 'outgoing') {
-                        reason = 'Call cancelled';
-                        cancelled = true;
-                        play_busy_tone = false;
+                    if (oldState === 'progress') {
+                        reason = 'Call timeout';
                     } else if (oldState === 'incoming' || oldState === 'proceeding') {
                         reason = 'Call cancelled';
                         missed = true;
@@ -3525,7 +3524,7 @@ class Sylk extends Component {
                     reason = 'Busy';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else if (reason.match(/487/)) {
-                    reason = 'Call cancelled';
+                    reason = 'Cancelled';
                     play_busy_tone = false;
                     cancelled = true;
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
@@ -3555,8 +3554,9 @@ class Sylk extends Component {
                     server_failure = true;
                 }
 
+                utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason, '->', reason);
                 if (play_busy_tone) {
-                    utils.timestampedLog('Play busy tone now');
+                    utils.timestampedLog('Play busy tone');
                     InCallManager.stop({busytone: '_BUNDLE_'});
                 } else {
                     InCallManager.stop();
@@ -3626,17 +3626,11 @@ class Sylk extends Component {
             this.speakerphoneOn();
 
             if (!this.state.reconnectingCall) {
-                if (this.state.inFocus) {
-                    if (this.currentRoute !== '/ready') {
-                        utils.timestampedLog('Will go to ready in', readyDelay/1000, 'seconds (terminated)', callUUID);
-                        this.goToReadyTimer = setTimeout(() => {
-                            this.changeRoute('/ready', 'no_more_calls');
-                        }, readyDelay);
-                    }
-                } else {
-                    if (this.currentRoute !== '/conference') {
+                if (this.currentRoute !== '/ready') {
+                    utils.timestampedLog('Will go to ready in', readyDelay/1000, 'seconds (terminated)', callUUID);
+                    this.goToReadyTimer = setTimeout(() => {
                         this.changeRoute('/ready', 'no_more_calls');
-                    }
+                    }, readyDelay);
                 }
             }
         }
@@ -4094,13 +4088,14 @@ class Sylk extends Component {
                 if (keyStatus.existsLocal) {
                     // key exists in both places
                     if (this.state.keys && keyStatus.serverPublicKey !== this.state.keys.public) {
-                        console.log('PGP key is different than the one on server');
+                        utils.timestampedLog('Local and server PGP keys are different');
                         this.setState({keyDifferentOnServer: true});
+                        utils.timestampedLog('showImportPrivateKeyModal 6');
                         setTimeout(() => {
                             this.showImportPrivateKeyModal();
                         }, 10);
                     } else {
-                        console.log('My PGP key is the same as the one on server');
+                        utils.timestampedLog('Local and server PGP keys are the same');
                     }
                 } else {
                     console.log('My local PGP key does not exist', keyStatus);
@@ -4117,22 +4112,23 @@ class Sylk extends Component {
                 }
             }
         } else {
-            console.log('PGP key server was not yet queried');
             account.checkIfKeyExists((key) => {
                 keyStatus.serverPublicKey = key;
 
                 if (key) {
-                    //console.log('My server public key:', key);
+                    utils.timestampedLog('PGP key exists on server');
+
+                    //utils.timestampedLog('My server public key:', key);
                     //console.log('Keys status:', keyStatus.keys);
 
                     keyStatus.existsOnServer = true;
                     //console.log('PGP public key on server', key);
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== key) {
-                            console.log('My PGP key on server is different than local');
+                            utils.timestampedLog('showImportPrivateKeyModal 2');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            console.log('My PGP keys are the same');
+                            utils.timestampedLog('Local and server PGP keys are the same');
                             keyStatus.existsLocal = true;
                         }
                         this.setState({keyStatus: keyStatus});
@@ -4151,7 +4147,7 @@ class Sylk extends Component {
                 } else {
                     keyStatus.existsOnServer = false;
                     this.setState({keyStatus: keyStatus});
-                    console.log('My PGP key does not exist on server');
+                    console.log('PGP key does not exist on server');
                     if (this.state.contactsLoaded) {
                         if (this.state.keys && this.state.keys.private) {
                             console.log('My PGP public key sent to server');
@@ -4247,7 +4243,7 @@ class Sylk extends Component {
         })
         .then((localStream) => {
             clearTimeout(this.loadScreenTimer);
-            utils.timestampedLog('Local media acquired');
+            //utils.timestampedLog('Local media acquired');
             this.setState({localMedia: localStream});
             if (nextRoute !== null) {
                 this.setState({loading: null});
@@ -4476,7 +4472,7 @@ class Sylk extends Component {
 
         setTimeout(() => {
             if (this.state.currentCall && this.state.currentCall.id === callUUID && this.state.currentCall.state === 'progress') {
-                this.hangupCall(callUUID, 'cancelled_call');
+                this.hangupCall(callUUID, 'timeout');
             }
         }, 60000);
     }
@@ -4671,6 +4667,13 @@ class Sylk extends Component {
                      this.changeRoute('/ready', 'conference_really_ended');
                 }, 15000);
             }
+        } else if (reason === 'cancelled_call') {
+            utils.timestampedLog('Will go to ready in 6 seconds (cancel)');
+            this.setState({terminatedReason: 'Call cancelled'});
+
+            setTimeout(() => {
+                 this.changeRoute('/ready', reason);
+            }, 6000);
         } else {
             utils.timestampedLog('Will go to ready in 6 seconds (hangup)');
             setTimeout(() => {
@@ -4719,12 +4722,13 @@ class Sylk extends Component {
     async showImportPrivateKeyModal(force=false) {
         let keyStatus = this.state.keyStatus;
         if (force) {
-            console.log('Force show PGP key import');
+            utils.timestampedLog('showImportPrivateKeyModal 3');
             this.setState({showImportPrivateKeyModal: true});
         } else {
             if ('existsOnServer' in keyStatus) {
                 if ('existsLocal' in keyStatus) {
                     if (!keyStatus.existsLocal) {
+                        utils.timestampedLog('showImportPrivateKeyModal 4');
                         this.setState({showImportPrivateKeyModal: true});
                     } else {
                         console.log('PGP key exists locally');
@@ -5626,13 +5630,14 @@ class Sylk extends Component {
         //console.log('Local public_key', this.state.keys.public);
 
         if (public_key && this.state.keys && this.state.keys.public === public_key) {
-            console.log('Private key is the same');
+            console.log('Private key is the same as on server');
             this.setState({showImportPrivateKeyModal: false});
             this._notificationCenter.postSystemNotification('Private key is the same');
             this.sendPublicKey(null, true);
             return;
         }
 
+        utils.timestampedLog('showImportPrivateKeyModal 5');
         this.setState({showImportPrivateKeyModal: true,
                        privateKey: keyPair});
     }
@@ -10682,6 +10687,7 @@ class Sylk extends Component {
                     sharingAction = {this.sharingAction}
                     toggleDnd = {this.toggleDnd}
                     dnd = {this.state.dnd}
+                    buildId ={this.buildId}
                 />
 
                 <ReadyBox

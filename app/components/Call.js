@@ -152,7 +152,7 @@ class Call extends Component {
         this.samples = 30;
         this.sampleInterval = 3;
 
-        this.defaultWaitInterval = 90; // until we can connect or reconnect
+        this.defaultWaitInterval = 60; // until we can connect or reconnect
         this.waitCounter = 0;
         this.waitInterval = this.defaultWaitInterval;
 
@@ -562,7 +562,6 @@ class Call extends Component {
         this.setState({registrationState: nextProps.registrationState});
 
         if (nextProps.localMedia && !this.state.localMedia) {
-            utils.timestampedLog('Call: media has been added');
             let audioOnly = nextProps.localMedia.getVideoTracks().length === 0 ? true : false;
             this.setState({localMedia: nextProps.localMedia, audioOnly: audioOnly});
             this.mediaPlaying(nextProps.localMedia);
@@ -805,7 +804,6 @@ class Call extends Component {
      };
 
     mediaPlaying(localMedia) {
-        utils.timestampedLog('mediaPlaying', this.state.direction);
         if (this.state.direction === 'incoming') {
             const media = localMedia ? localMedia : this.state.localMedia;
             this.answerCall(media);
@@ -1026,21 +1024,22 @@ class Call extends Component {
 
     canConnect() {
         if (!this.state.connection) {
-            console.log('Call: no connection yet');
+            utils.timestampedLog('Call: no connection yet');
             return false;
         }
 
         if (this.state.connection.state !== 'ready') {
-            console.log('Call: connection is not ready');
+            utils.timestampedLog('Call: connection is not ready');
             return false;
         }
 
         if (this.props.registrationState !== 'registered') {
-            console.log('Call: account not ready yet');
+            utils.timestampedLog('Call: account not ready yet');
             return false;
         }
 
         if (!this.mediaIsPlaying) {
+            utils.timestampedLog('Local media is not playing')
             if (this.waitCounter > 0) {
                 console.log('Call: media is not yet playing');
                 if (this.waitCounter == 10) {
@@ -1079,13 +1078,13 @@ class Call extends Component {
             }
 
             if (!this.canConnect()) {
-                //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 if (this.state.call && this.state.call.id === callUUID && this.state.call.state !== 'terminated') {
                     return;
                 }
 
                 if (this.waitCounter > 0 && this.waitCounter % 10 === 0) {
-                    console.log('Wait', this.waitCounter);
+                    utils.timestampedLog('Wait', this.waitCounter);
                 }
                 await this._sleep(1000);
             } else {
@@ -1279,6 +1278,7 @@ class Call extends Component {
                                 media = 'video'
                                 showLogs = {this.props.showLogs}
                                 goBackFunc = {this.props.goBackFunc}
+                                terminatedReason = {this.state.terminatedReason}
                                 />
                         );
                     }

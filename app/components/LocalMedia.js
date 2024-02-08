@@ -21,7 +21,7 @@ class LocalMedia extends Component {
             historyEntry: this.props.historyEntry,
             participants: this.props.participants,
             reconnectingCall: this.props.reconnectingCall,
-            declineReason: this.props.declineReason
+            terminatedReason: this.props.terminatedReason
         };
 
     }
@@ -41,7 +41,7 @@ class LocalMedia extends Component {
         this.setState({historyEntry: nextProps.historyEntry,
                       participants: nextProps.participants,
                       reconnectingCall: nextProps.reconnectingCall,
-                      declineReason: nextProps.declineReason});
+                      terminatedReason: nextProps.terminatedReason});
     }
 
     saveConference(event) {
@@ -78,14 +78,15 @@ class LocalMedia extends Component {
             <Fragment>
                 <CallOverlay
                     show = {true}
-                    remoteUri={this.props.remoteUri}
-                    remoteDisplayName={this.props.remoteDisplayName}
+                    remoteUri = {this.props.remoteUri}
+                    remoteDisplayName = {this.props.remoteDisplayName}
                     call = {this.props.call}
-                    connection={this.props.connection}
-                    reconnectingCall={this.state.reconnectingCall}
-                    media={this.props.media}
-                    declineReason={this.state.declineReason}
-                    goBackFunc={this.props.goBackFunc}
+                    terminatedReason = {this.state.terminatedReason}
+                    localMedia = {this.props.localMedia}
+                    connection = {this.props.connection}
+                    reconnectingCall = {this.state.reconnectingCall}
+                    media = {this.props.media}
+                    goBackFunc = {this.props.goBackFunc}
                 />
 
                 {this.showSaveDialog() ?
@@ -151,10 +152,9 @@ LocalMedia.propTypes = {
     connection          : PropTypes.object,
     participants        : PropTypes.array,
     media               : PropTypes.string,
-    declineReason       : PropTypes.string,
     showLogs            : PropTypes.func,
-    goBackFunc          : PropTypes.func
-
+    goBackFunc          : PropTypes.func,
+    terminatedReason    : PropTypes.string
 };
 
 
