@@ -66,28 +66,28 @@ import storage from './storage';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
-import {
-  Agent,
-  AutoAcceptCredential,
-  AutoAcceptProof,
-  BasicMessageEventTypes,
-  ConnectionEventTypes,
-  ConnectionInvitationMessage,
-  ConnectionRecord,
-  ConnectionStateChangedEvent,
-  ConsoleLogger,
-  CredentialEventTypes,
-  CredentialRecord,
-  CredentialState,
-  CredentialStateChangedEvent,
-  HttpOutboundTransport,
-  WsOutboundTransport,
-  InitConfig,
-  LogLevel,
-} from '@aries-framework/core';
+// import {
+//   Agent,
+//   AutoAcceptCredential,
+//   AutoAcceptProof,
+//   BasicMessageEventTypes,
+//   ConnectionEventTypes,
+//   ConnectionInvitationMessage,
+//   ConnectionRecord,
+//   ConnectionStateChangedEvent,
+//   ConsoleLogger,
+//   CredentialEventTypes,
+//   CredentialRecord,
+//   CredentialState,
+//   CredentialStateChangedEvent,
+//   HttpOutboundTransport,
+//   WsOutboundTransport,
+//   InitConfig,
+//   LogLevel,
+// } from '@aries-framework/core';
 
-import { AgentEventTypes } from "@aries-framework/core/build/agent/Events";
-import {agentDependencies} from '@aries-framework/react-native';
+// import { AgentEventTypes } from "@aries-framework/core/build/agent/Events";
+// import {agentDependencies} from '@aries-framework/react-native';
 
 var randomString = require('random-string');
 

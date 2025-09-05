@@ -12,14 +12,14 @@ import VideoBox from './VideoBox';
 import config from '../config';
 import utils from '../utils';
 
-import {
-  ConnectionStateChangedEvent,
-  ConnectionEventTypes,
-  ProofAttributeInfo,
-  ProofEventTypes,
-  AttributeFilter
-} from '@aries-framework/core';
-
+// import {
+//   ConnectionStateChangedEvent,
+//   ConnectionEventTypes,
+//   ProofAttributeInfo,
+//   ProofEventTypes,
+//   AttributeFilter
+// } from '@aries-framework/core';
+//
 // Used for SSI credentials
 const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:3:CL:394132:default';
 
