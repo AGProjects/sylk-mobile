@@ -1,0 +1,13 @@
+diff --git a/node_modules/metro-cache/src/stableHash.js b/node_modules/metro-cache/src/stableHash.js
+index ca071c0..696fc2f 100644
+--- a/node_modules/metro-cache/src/stableHash.js
++++ b/node_modules/metro-cache/src/stableHash.js
+@@ -16,7 +16,7 @@ const crypto = require("crypto");
+ function stableHash(value) {
+   return (
+     crypto
+-      .createHash("md4")
++      .createHash("sha256")
+       /* $FlowFixMe(>=0.95.0 site=react_native_fb) This comment suppresses an
+        * error found when Flow v0.95 was deployed. To see the error, delete this
+        * comment and run Flow. */
