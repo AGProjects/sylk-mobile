@@ -17,10 +17,31 @@
 // };
 
 const { getDefaultConfig } = require("metro-config");
+const path = require('path');
+
+
+const fs = require('fs');
+
+const logFile = path.resolve(__dirname, 'metro-debug.log');
+
+function log(message) {
+      fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+}
+
+const moduleName = '@babel/runtime';
+const modulePath = path.resolve(__dirname, 'node_modules', moduleName);
+log(`Checking if ${modulePath} exists: ${fs.existsSync(modulePath)}`);
+
 
 module.exports = (async () => {
   const {
-    resolver: { sourceExts }
+    resolver: {
+        sourceExts,
+        assetExts,
+        extraNodeModules: {
+            [moduleName]: modulePath,
+        },
+    }
   } = await getDefaultConfig();
   return {
     transformer: {
@@ -28,6 +49,9 @@ module.exports = (async () => {
     },
     resolver: {
       sourceExts: [...sourceExts, "scss", "sass"]
-    }
+    },
+      watchFolders: [
+          path.resolve(__dirname, 'node_modules')
+      ]
   };
 })();
