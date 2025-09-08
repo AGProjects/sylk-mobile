@@ -1,4 +1,4 @@
-﻿import React, { Component, Fragment} from 'react';
+import React, { Component, Fragment} from 'react';
 import { View, SafeAreaView, FlatList, Platform } from 'react-native';
 import { Badge } from 'react-native-elements'
 import autoBind from 'auto-bind';
@@ -27,7 +27,7 @@ function toTitleCase(str) {
 
 const Item = ({ nr, uri, name }) => (
   <View style={styles.participantView}>
-    {name !==  uri?
+    {name !==  uri ?
     <Text style={styles.participant}>{name} ({uri})</Text>
     :
     <Text style={styles.participant}>{uri}</Text>
@@ -41,10 +41,10 @@ const renderItem = ({ item }) => (
 );
 
 function isIp(ipaddress) {
-  if (/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ipaddress)) {
-    return (true)
-  }
-  return (false)
+    if (/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ipaddress)) {
+        return (true);
+    }
+    return (false);
 }
 
 
@@ -386,7 +386,7 @@ class ContactCard extends Component {
                         </View>
 
                         <View style={styles.mainContent}>
-                            <Title numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Title>
+                            <Text variant="titleLarge" numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Text>
                         </View>
                     </Card.Content>
 
@@ -400,37 +400,44 @@ class ContactCard extends Component {
             );
 
         } else {
-        return (
-            <Fragment>
-                <Card style={[cardContainerClass, {height: cardHeight}]}
-                    onPress={() => {this.setTargetUri(uri, this.state.contact)}}
-                    >
+            return (
+                <Fragment>
+                    <Card
+                        style={[cardContainerClass, {height: cardHeight}]}
+                        onPress={() => {
+                            this.setTargetUri(uri, this.state.contact)
+                        }}>
 
-                <View style={styles.rowContent}>
-                    <Card.Content style={styles.cardContent}>
-                        <View style={styles.avatarContent}>
-                            { this.state.contact.photo || !this.state.contact.email ?
-                            <UserIcon size={50} identity={this.state.contact} unread={unread}/>
-                            :
-                             <Gravatar options={{email: this.state.contact.email, parameters: { "size": "50", "d": "mm" }, secure: true}} style={styles.gravatar} />
-                             }
+                        <View style={styles.rowContent}>
+                            <Card.Content style={styles.cardContent}>
+                                <View style={styles.avatarContent}>
+                                    {this.state.contact.photo ||
+                                    !this.state.contact.email ? (
+                                        <UserIcon size={50} identity={this.state.contact} unread={unread}/>
+                                    ) : (
+                                        <Gravatar options={{email: this.state.contact.email, parameters: { "size": "50", "d": "mm" }, secure: true}} style={styles.gravatar} />
+                                    )}
+                                </View>
 
-                        </View>
+                                <View style={styles.mainContent}>
+                                    <Text variant="titleLarge" numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Text>
+                                    <Text variant="titleMedium" numberOfLines={1} style={styles.subtitle}>{subtitle}</Text>
 
-                        <View style={styles.mainContent}>
-                            <Title numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Title>
-                           <Subheading numberOfLines={1} style={styles.subtitle}>{subtitle}</Subheading>
+                                    { this.state.fontScale <= 0.85
+                                        && !this.state.callButtonsEnabled
+                                        && <Text
+                                                variant="bodySmall"
+                                                numberOfLines={1}
+                                                style={styles.description}>
+                                            {this.state.contact.direction &&
+                                                <Icon
+                                                    name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
+                                            }
+                                            {description}
+                                            </Text>
+                                    }
 
-                            {this.state.fontScale <= 0.85 && !this.state.callButtonsEnabled ?
-                            <Caption numberOfLines={1} style={styles.description}>
-                                {this.state.contact.direction ?
-                                <Icon name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
-                                : null}
-                                {description}
-                            </Caption>
-                            : null}
-
-                            {participantsData && participantsData.length && showActions && false?
+                            {participantsData && participantsData.length && showActions && false ?
 
                             <View style={styles.participants}>
                                 <SafeAreaView style={styles.participant}>

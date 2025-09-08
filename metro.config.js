@@ -38,9 +38,6 @@ module.exports = (async () => {
     resolver: {
         sourceExts,
         assetExts,
-        extraNodeModules: {
-            [moduleName]: modulePath,
-        },
     }
   } = await getDefaultConfig();
   return {
@@ -50,8 +47,6 @@ module.exports = (async () => {
     resolver: {
       sourceExts: [...sourceExts, "scss", "sass"]
     },
-      watchFolders: [
-          path.resolve(__dirname, 'node_modules')
-      ]
+    watchFolders: [path.resolve('node_modules')],
   };
 })();

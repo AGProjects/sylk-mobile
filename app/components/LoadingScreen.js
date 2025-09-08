@@ -5,6 +5,8 @@ import { Title, Modal, Portal, ActivityIndicator, Colors } from 'react-native-pa
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import styles from '../assets/styles/blink/_LoadingScreen.scss';
 
+import red from 'material-ui/colors/red';
+
 const LoadingScreen = (props) => {
     let containerClass;
 
@@ -18,7 +20,7 @@ const LoadingScreen = (props) => {
         <Portal>
             <Modal dismissable={false} visible={props.show}>
                 <View style={containerClass}>
-                    <ActivityIndicator animating={true} size={'large'} color={Colors.red800} />
+                    <ActivityIndicator animating={true} size={'large'} color={red[800]} />
                     {props.text ?
                         <Title style={styles.title}>{props.text}</Title>
                     : null }

@@ -1,6 +1,6 @@
 import React, { memo, useState, useEffect } from 'react';
 import { View, Dimensions } from 'react-native';
-import { Dialog, Colors } from 'react-native-paper';
+import { Dialog } from 'react-native-paper';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 
 const windowHeight = Dimensions.get('window').height;
@@ -26,7 +26,7 @@ export default memo(({ children, ...rest }) => {
       {...rest}
       style={{ backgroundColor: 'transparent' }}
     >
-      <View onLayout={onLayout} style={{ backgroundColor: Colors.white }}>
+      <View onLayout={onLayout} style={{ backgroundColor: '#fff' }}>
         {children}
       </View>
       <KeyboardSpacer topSpacing={topSpacing} />

@@ -20,6 +20,7 @@
 #import <RNCPushNotificationIOS.h>
 #import <RNBackgroundDownloader.h>
 #import <React/RCTLinkingManager.h>
+#import <React/RCTAppSetupUtils.h>
 
 @implementation AppDelegate
 
@@ -28,9 +29,11 @@
   [RNBackgroundDownloader setCompletionHandlerWithIdentifier:identifier completionHandler:completionHandler];
 }
 
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
 
+  RCTAppSetupPrepareApp(application);
   // RCTSetLogThreshold(RCTLogLevelInfo - 1);
   // RTCSetMinDebugLogLevel(RTCLoggingSeverityInfo);
   if ([FIRApp defaultApp] == nil) {
@@ -42,9 +45,11 @@
   center.delegate = self;
 
   RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
-  RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
-                                                   moduleName:@"Sylk"
-                                            initialProperties:nil];
+  NSDictionary *initProps = [self prepareInitialProps];
+  UIView *rootView = RCTAppSetupDefaultRootView(bridge, @"Sylk", initProps);
+  //RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
+  //                                                 moduleName:@"Sylk"
+  //                                          initialProperties:nil];
 
   rootView.backgroundColor = [[UIColor alloc] initWithRed:1.0f green:1.0f blue:1.0f alpha:1];
 
@@ -55,6 +60,18 @@
   [self.window makeKeyAndVisible];
   return YES;
 }
+
+- (NSDictionary *)prepareInitialProps
+{
+      NSMutableDictionary *initProps = [NSMutableDictionary new];
+
+#ifdef RCT_NEW_ARCH_ENABLED
+        initProps[kRNConcurrentRoot] = @([self concurrentRootEnabled]);
+#endif
+
+          return initProps;
+}
+
 
 - (BOOL)application:(UIApplication *)application
             openURL:(NSURL *)url
@@ -90,7 +107,8 @@ continueUserActivity:(NSUserActivity *)userActivity
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge
 {
 #if DEBUG
-  return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@"index" fallbackResource:nil];
+  //return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@"index" fallbackResource:nil];
+  return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@"index"];
 #else
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif
