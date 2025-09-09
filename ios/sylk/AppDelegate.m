@@ -7,9 +7,7 @@
 
 #import "AppDelegate.h"
 
-#import <React/RCTBridge.h>
 #import <React/RCTBundleURLProvider.h>
-#import <React/RCTRootView.h>
 #import <WebRTC/RTCLogging.h>
 #import <React/RCTLog.h>
 #import <PushKit/PushKit.h>
@@ -20,7 +18,6 @@
 #import <RNCPushNotificationIOS.h>
 #import <RNBackgroundDownloader.h>
 #import <React/RCTLinkingManager.h>
-#import <React/RCTAppSetupUtils.h>
 
 @implementation AppDelegate
 
@@ -32,8 +29,8 @@
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
-
-  RCTAppSetupPrepareApp(application);
+  self.moduleName = @"Sylk";
+  //RCTAppSetupPrepareApp(application);
   // RCTSetLogThreshold(RCTLogLevelInfo - 1);
   // RTCSetMinDebugLogLevel(RTCLoggingSeverityInfo);
   if ([FIRApp defaultApp] == nil) {
@@ -44,33 +41,25 @@
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = self;
 
-  RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
-  NSDictionary *initProps = [self prepareInitialProps];
-  UIView *rootView = RCTAppSetupDefaultRootView(bridge, @"Sylk", initProps);
+  //RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
+  //NSDictionary *initProps = [self prepareInitialProps];
+  //UIView *rootView = RCTAppSetupDefaultRootView(bridge, @"Sylk", initProps);
   //RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
   //                                                 moduleName:@"Sylk"
   //                                          initialProperties:nil];
 
-  rootView.backgroundColor = [[UIColor alloc] initWithRed:1.0f green:1.0f blue:1.0f alpha:1];
+  //rootView.backgroundColor = [[UIColor alloc] initWithRed:1.0f green:1.0f blue:1.0f alpha:1];
 
-  self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-  UIViewController *rootViewController = [UIViewController new];
-  rootViewController.view = rootView;
-  self.window.rootViewController = rootViewController;
-  [self.window makeKeyAndVisible];
-  return YES;
+  //self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+  //UIViewController *rootViewController = [UIViewController new];
+  //rootViewController.view = rootView;
+ // self.window.rootViewController = rootViewController;
+  //self.window makeKeyAndVisible];
+  //return YES;
+  return [super application:application didFinishLaunchingWithOptions:launchOptions];
 }
 
-- (NSDictionary *)prepareInitialProps
-{
-      NSMutableDictionary *initProps = [NSMutableDictionary new];
 
-#ifdef RCT_NEW_ARCH_ENABLED
-        initProps[kRNConcurrentRoot] = @([self concurrentRootEnabled]);
-#endif
-
-          return initProps;
-}
 
 
 - (BOOL)application:(UIApplication *)application
@@ -105,6 +94,11 @@ continueUserActivity:(NSUserActivity *)userActivity
 }
 
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge
+{
+    return [self getBundleURL];
+}
+
+- (NSURL *)getBundleURL
 {
 #if DEBUG
   //return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@"index" fallbackResource:nil];
