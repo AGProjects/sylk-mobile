@@ -29,7 +29,7 @@ import moment from 'moment';
 import momenttz from 'moment-timezone';
 import Video from 'react-native-video';
 const RNFS = require('react-native-fs');
-import CameraRoll from "@react-native-community/cameraroll";
+import CameraRoll from "@react-native-camera-roll/camera-roll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
