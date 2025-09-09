@@ -371,7 +371,7 @@ class ContactCard extends Component {
 
         return (
             <Fragment>
-                <Card style={[cardContainerClass, {height: cardHeight}]}
+                <Card style={[cardContainerClass, {minHeight: cardHeight}]}
                     onPress={() => {this.setTargetUri(uri, this.state.contact)}}
                     >
 
@@ -403,7 +403,7 @@ class ContactCard extends Component {
             return (
                 <Fragment>
                     <Card
-                        style={[cardContainerClass, {height: cardHeight}]}
+                        style={[cardContainerClass, {minHeight: cardHeight}]}
                         onPress={() => {
                             this.setTargetUri(uri, this.state.contact)
                         }}>
