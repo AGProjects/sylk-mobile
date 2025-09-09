@@ -1985,7 +1985,7 @@ class ConferenceBox extends Component {
 
      if (this.state.videoEnabled && this.state.isLandscape) {
        floatingButtons.push(
-          <View style={styles.hangupButtonVideoContainerLandscape}>
+          <View style={styles.hangupButtonVideoContainerLandscape} key='leavec'>
           <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
@@ -2002,7 +2002,7 @@ class ConferenceBox extends Component {
 
         if (!this.state.chatView && !this.state.showDrawer && speakerSelectionParticipants.length > 2 && this.state.videoEnabled) {
             floatingButtons.push(
-              <View style={styles.buttonContainer}>
+              <View style={styles.buttonContainer} key="selects">
                   <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={25}
@@ -2019,7 +2019,7 @@ class ConferenceBox extends Component {
 
         if (this.state.videoEnabled) {
             floatingButtons.push(
-              <View style={styles.buttonContainer}>
+              <View style={styles.buttonContainer} key="chat">
                 <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={this.state.videoEnabled ? 25 : 25}
@@ -2036,7 +2036,7 @@ class ConferenceBox extends Component {
 
      if (!this.state.videoEnabled ) {
        floatingButtons.push(
-          <View style={styles.hangupButtonAudioContainer}>
+          <View style={styles.hangupButtonAudioContainer} key="leave">
           <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
@@ -2072,7 +2072,7 @@ class ConferenceBox extends Component {
 
        if (this.state.videoEnabled && !this.state.chatView) {
             floatingButtons.push(
-              <View style={styles.buttonContainer}>
+              <View style={styles.buttonContainer} key="mutev">
                   <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={25}
@@ -2088,7 +2088,7 @@ class ConferenceBox extends Component {
         }
 
         floatingButtons.push(
-              <View style={styles.buttonContainer}>
+              <View style={styles.buttonContainer} key="Mute">
                   <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
@@ -2104,7 +2104,7 @@ class ConferenceBox extends Component {
 
         if (this.state.videoEnabled && !this.state.chatView) {
             floatingButtons.push(
-              <View style={styles.buttonContainer}>
+              <View style={styles.buttonContainer} key='toggleCamerag'>
                   <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={25}
@@ -2121,7 +2121,7 @@ class ConferenceBox extends Component {
 
         if (!this.state.reconnectingCall) {
             floatingButtons.push(
-              <View style={styles.buttonContainer}>
+              <View style={styles.buttonContainer} key='recon'>
                 <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={this.state.videoEnabled ? 25 : 25}
