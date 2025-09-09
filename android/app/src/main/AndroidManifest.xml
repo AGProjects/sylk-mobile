@@ -1,5 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  package="com.agprojects.sylk">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
   <queries>
     <intent>
@@ -19,7 +18,7 @@
       <data android:scheme="google.navigation" />
     </intent>
   </queries>
-  
+
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" />
@@ -44,13 +43,13 @@
     <uses-permission android:name="android.permission.BIND_TELECOM_CONNECTION_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="29" />  
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
 
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-	
+
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -95,7 +94,7 @@
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
-        android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
         android:windowSoftInputMode="adjustResize"
         android:exported="true"
         android:launchMode="singleTask"
@@ -137,7 +136,7 @@
               <category android:name="android.intent.category.DEFAULT" />
               <data android:mimeType="text/*" />
           </intent-filter>
-          
+
           <intent-filter>
               <action android:name="android.intent.action.SEND" />
               <category android:name="android.intent.category.DEFAULT" />
@@ -149,7 +148,7 @@
               <category android:name="android.intent.category.DEFAULT" />
               <data android:mimeType="image/*" />
           </intent-filter>
-          
+
           <intent-filter>
               <action android:name="android.intent.action.SEND" />
               <category android:name="android.intent.category.DEFAULT" />
@@ -160,7 +159,7 @@
               <category android:name="android.intent.category.DEFAULT" />
               <data android:mimeType="video/*" />
           </intent-filter>
- 
+
            <intent-filter>
               <action android:name="android.intent.action.SEND" />
               <category android:name="android.intent.category.DEFAULT" />
@@ -171,7 +170,7 @@
               <category android:name="android.intent.category.DEFAULT" />
               <data android:mimeType="*/*" />
           </intent-filter>
-                   
+
       </activity>
 
       <activity android:name="com.facebook.react.devsupport.DevSettingsActivity"/>
