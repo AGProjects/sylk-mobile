@@ -1,0 +1,12 @@
+diff --git a/node_modules/react-native-dtmf/android/build.gradle b/node_modules/react-native-dtmf/android/build.gradle
+index b025dcd..d420274 100644
+--- a/node_modules/react-native-dtmf/android/build.gradle
++++ b/node_modules/react-native-dtmf/android/build.gradle
+@@ -31,6 +31,6 @@ repositories {
+ }
+ 
+ dependencies {
+-    compile 'com.facebook.react:react-native:+'
++    implementation 'com.facebook.react:react-native:+'
+ }
+   
