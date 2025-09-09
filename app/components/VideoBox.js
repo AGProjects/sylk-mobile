@@ -17,7 +17,7 @@ import styles from '../assets/styles/blink/_VideoBox.scss';
 import utils from '../utils';
 
 const DEBUG = debug('blinkrtc:Video');
-debug.enable('*');
+//debug.enable('*');
 
 
 class VideoBox extends Component {

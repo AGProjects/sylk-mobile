@@ -8,7 +8,7 @@ import dtmf from 'react-native-dtmf';
 import styles from '../assets/styles/blink/_DTMFModal.scss';
 
 const DEBUG = debug('blinkrtc:DTMF');
-debug.enable('*');
+//debug.enable('*');
 
 class DTMFModal extends Component {
     sendDtmf(tone) {

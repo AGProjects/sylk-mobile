@@ -49,7 +49,7 @@ import {StatusBar} from 'react-native';
 
 
 const DEBUG = debug('blinkrtc:ConferenceBox');
-debug.enable('*');
+//debug.enable('*');
 
 
 function toTitleCase(str) {

@@ -12,7 +12,7 @@ import VolumeBar from './VolumeBar';
 import styles from '../assets/styles/blink/_Preview.scss';
 
 const DEBUG = debug('blinkrtc:Preview');
-debug.enable('*');
+//debug.enable('*');
 
 class Preview extends Component {
     constructor(props) {

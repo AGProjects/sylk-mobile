@@ -11,7 +11,7 @@ import config from '../config';
 import utils from '../utils';
 
 const DEBUG = debug('blinkrtc:Conference');
-debug.enable('*');
+//debug.enable('*');
 
 
 class Conference extends React.Component {
