@@ -9,7 +9,7 @@ import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
 import Logger from "../Logger";
 import autoBind from 'auto-bind';
-import { firebase } from '@react-native-firebase/messaging';
+import { getMessaging } from '@react-native-firebase/messaging';
 import VoipPushNotification from 'react-native-voip-push-notification';
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
@@ -2266,11 +2266,7 @@ class Sylk extends Component {
         Linking.addEventListener('url', this.updateLinkingURL);
 
         if (Platform.OS === 'android') {
-            firebase.messaging().setBackgroundMessageHandler(async message => {
-                this.handleFirebasePush(message);
-            });
-
-            firebase.messaging().getToken()
+            getMessaging().getToken()
             .then(fcmToken => {
                 if (fcmToken) {
                     this._onPushRegistered(fcmToken);
@@ -2323,8 +2319,8 @@ class Sylk extends Component {
             AppState.addEventListener('focus', this._handleAndroidFocus);
             AppState.addEventListener('blur', this._handleAndroidBlur);
 
-            firebase
-                .messaging()
+
+            getMessaging()
                 .requestPermission()
                 .then(() => {
                     // User has authorised
@@ -2333,8 +2329,7 @@ class Sylk extends Component {
                     // User has rejected permissions
                 });
 
-            this.messageListener = firebase
-                .messaging()
+            this.messageListener = getMessaging()
                 .onMessage((message: RemoteMessage) => {
                     // this will just wake up the app to receive
                     // the web-socket invite handled by this.incomingCall()
