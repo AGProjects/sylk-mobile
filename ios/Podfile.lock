@@ -1335,7 +1335,7 @@ PODS:
     - FirebaseCoreExtension
     - React-Core
     - RNFBApp
-  - RNFileViewer (2.1.4):
+  - RNFileViewer (2.1.5):
     - React-Core
   - RNFS (2.20.0):
     - React-Core
@@ -1350,8 +1350,8 @@ PODS:
     - RNSound/Core (= 0.11.2)
   - RNSound/Core (0.11.2):
     - React-Core
-  - RNSoundPlayer (0.10.8):
-    - React
+  - RNSoundPlayer (0.14.5):
+    - React-Core
   - RNSVG (12.1.0):
     - React
   - RNVectorIcons (10.3.0):
@@ -1823,13 +1823,13 @@ SPEC CHECKSUMS:
   RNFastImage: 5c9c9fed9c076e521b3f509fe79e790418a544e8
   RNFBApp: b67ded6e4b0a6c0fee5e4f8e75e3a31567949a08
   RNFBMessaging: 7202ad4c49bdcdc7fd3634d85827a6305049c148
-  RNFileViewer: 83cc066ad795b1f986791d03b56fe0ee14b6a69f
+  RNFileViewer: ce7ca3ac370e18554d35d6355cffd7c30437c592
   RNFS: 4ac0f0ea233904cb798630b3c077808c06931688
   RNPermissions: 4b54095940aea8c03fa3e6c92d4ac3647b31ed4e
   RNSha1: 6de589cd0b0397d0f6248a2e5ee9e5f0d7da38dc
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
   RNSound: 6c156f925295bdc83e8e422e7d8b38d33bc71852
-  RNSoundPlayer: aa3c998a1f9beaa0f9fdd4485846a74a53df7d07
+  RNSoundPlayer: 95b72e12a6990e4fabfd71b1c7fac579f9e60e75
   RNSVG: ce9d996113475209013317e48b05c21ee988d42e
   RNVectorIcons: 48c158e45647a2072579db62f704c09b1dd4ca0f
   RNVoipPushNotification: 6b38227bbbb2359dc11cbf826044f8ed4bd8de36
