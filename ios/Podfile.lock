@@ -1094,8 +1094,8 @@ PODS:
   - react-native-background-downloader (3.2.6):
     - MMKV (~> 2.0.2)
     - React-Core
-  - react-native-background-timer (2.1.1):
-    - React
+  - react-native-background-timer (2.4.1):
+    - React-Core
   - react-native-camera (4.2.1):
     - React-Core
     - react-native-camera/RCT (= 4.2.1)
@@ -1337,8 +1337,8 @@ PODS:
     - RNFBApp
   - RNFileViewer (2.1.4):
     - React-Core
-  - RNFS (2.18.0):
-    - React
+  - RNFS (2.20.0):
+    - React-Core
   - RNPermissions (3.1.0):
     - React-Core
   - RNSha1 (1.2.3):
@@ -1776,7 +1776,7 @@ SPEC CHECKSUMS:
   React-logger: 6c1170f7bc315878ef4bd3b918e09130cf632798
   React-Mapbuffer: 41c166b84fc479afc78097cd51404109ec9edf68
   react-native-background-downloader: 3d0700cbefea2c34d84adea26333424b0ba2819b
-  react-native-background-timer: 1b6e6b4e10f1b74c367a1fdc3c72b67c619b222b
+  react-native-background-timer: 17ea5e06803401a379ebf1f20505b793ac44d0fe
   react-native-camera: 3eae183c1d111103963f3dd913b65d01aef8110f
   react-native-cameraroll: ad058a108ca3858002840796ac4319376ffe2150
   react-native-contacts: e342f93e42bbaac13729e551ffa35ad4a5b90a45
@@ -1824,7 +1824,7 @@ SPEC CHECKSUMS:
   RNFBApp: b67ded6e4b0a6c0fee5e4f8e75e3a31567949a08
   RNFBMessaging: 7202ad4c49bdcdc7fd3634d85827a6305049c148
   RNFileViewer: 83cc066ad795b1f986791d03b56fe0ee14b6a69f
-  RNFS: 3ab21fa6c56d65566d1fb26c2228e2b6132e5e32
+  RNFS: 4ac0f0ea233904cb798630b3c077808c06931688
   RNPermissions: 4b54095940aea8c03fa3e6c92d4ac3647b31ed4e
   RNSha1: 6de589cd0b0397d0f6248a2e5ee9e5f0d7da38dc
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
