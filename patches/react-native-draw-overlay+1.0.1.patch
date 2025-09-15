@@ -1,12 +1,42 @@
-diff --git a/node_modules/react-native-draw-overlay/android/build.gradle b/node_modules/react-native-draw-overlay/android/build.gradle
+diff --git a/node_modules/react-native-draw-overlay/android/src/main/java/com/toyberman/drawOverlay/RNDrawOverlayModule.java b/node_modules/react-native-draw-overlay/android/src/main/java/com/toyberman/drawOverlay/RNDrawOverlayModule.java
+index 4109d78..fb4d05c 100644
+--- a/node_modules/react-native-draw-overlay/android/src/main/java/com/toyberman/drawOverlay/RNDrawOverlayModule.java
++++ b/node_modules/react-native-draw-overlay/android/src/main/java/com/toyberman/drawOverlay/RNDrawOverlayModule.java
+@@ -58,7 +58,7 @@ public class RNDrawOverlayModule extends ReactContextBaseJavaModule {
+
+
+     @ReactMethod
+-    public void askForDispalayOverOtherAppsPermission(Promise promise) {
++    public void askForDisplayOverOtherAppsPermission(Promise promise) {
+         mPromise = promise;
+         if (!Settings.canDrawOverlays(this.reactContext)) {
+             Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + this.reactContext.getPackageName()));
+@@ -67,4 +67,16 @@ public class RNDrawOverlayModule extends ReactContextBaseJavaModule {
+             promise.resolve(true);
+         }
+     }
++
++    @ReactMethod
++    public void checkForDisplayOverOtherAppsPermission(Promise promise) {
++        mPromise = promise;
++        if (!Settings.canDrawOverlays(this.reactContext)) {
++            mPromise.reject(new Throwable(error));
++        } else {
++            promise.resolve(true);
++        }
++    }
++
++
+ }
+
 index a28f0dd..a155531 100644
 --- a/node_modules/react-native-draw-overlay/android/build.gradle
 +++ b/node_modules/react-native-draw-overlay/android/build.gradle
 @@ -31,6 +31,6 @@ repositories {
  }
- 
+
  dependencies {
 -    compile 'com.facebook.react:react-native:+'
 +    implementation 'com.facebook.react:react-native:+'
  }
-   
+
