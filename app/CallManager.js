@@ -112,15 +112,26 @@ export default class CallManager extends events.EventEmitter {
             this._RNCallKeep.addEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
         }
 
-        this._RNCallKeep.setup(options);
         this.selfManaged = options.android.selfManaged && Platform.OS === 'android';
-
+        this.setup();
         this._RNCallKeep.canMakeMultipleCalls(false);
 
         this._RNCallKeep.addEventListener('checkReachability', () => {
             this._RNCallKeep.setReachable();
         });
 
+    }
+
+    async setup() {
+        await this._RNCallKeep.setup(options);
+        this._RNCallKeep.setAvailable(true);
+        if (this.isSimulator()) {
+            console.log("Not starting callkit, we have a simulator");
+        }
+    }
+
+    isSimulator() {
+        return Platform.OS === 'ios' && !process.env.REACT_NATIVE_DEVICE_REAL;
     }
 
     get callKeep() {
@@ -180,6 +191,9 @@ export default class CallManager extends events.EventEmitter {
             hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
         }
 
+        if (this.isSimulator()) {
+            return;
+        }
         //utils.timestampedLog('Callkeep: will start call', callUUID, 'to', targetUri);
         this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
     }
@@ -240,6 +254,7 @@ export default class CallManager extends events.EventEmitter {
             }
         }
         this.callKeep.endCall(callUUID);
+        this.terminateCall(callUUID);
     }
 
     terminateCall(callUUID) {
