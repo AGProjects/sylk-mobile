@@ -3,6 +3,7 @@ import { ProgressBar, Colors, Snackbar } from 'react-native-paper';
 import moment from 'moment';
 import autoBind from 'auto-bind';
 import styles from '../assets/styles/blink/_StatusBox.scss';
+import { Text, withTheme } from 'react-native-paper';
 
 import config from '../config';
 
@@ -166,7 +167,8 @@ class NotificationCenter extends Component {
     }
 
     render() {
-        //console.log('showing snackbar');
+        const theme = this.props.theme;
+        // console.log('showing snackbar', this.state.title, this.state.message);
         return (
             <Snackbar
                 style={styles.snackbar}
@@ -175,11 +177,11 @@ class NotificationCenter extends Component {
                 onDismiss={() => this.setState({ visible: false, message: null, title: null })}
                 action={this.state.action}
             >
-                {this.state.title} {this.state.message}
+                <Text style={{color: theme.colors.inverseOnSurface}}>{this.state.title} {this.state.message}</Text>
             </Snackbar>
         );
     }
 }
 
 
-export default NotificationCenter;
+export default withTheme(NotificationCenter);
