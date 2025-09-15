@@ -21,6 +21,7 @@ import DeleteHistoryModal from './DeleteHistoryModal';
 import VersionNumber from 'react-native-version-number';
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
 import {openSettings} from 'react-native-permissions';
+import SylkAppbarContent from './SylkAppbarContent';
 
 
 class NavigationBar extends Component {
@@ -404,12 +405,12 @@ class NavigationBar extends Component {
         }
 
         return (
-            <Appbar.Header style={{backgroundColor: 'black'}}>
+            <Appbar.Header style={{backgroundColor: 'black'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
                 {showBackButton ?
                 <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                 : <Image source={blinkLogo} style={styles.logo}/>}
 
-                <Appbar.Content
+                <SylkAppbarContent
                     title={title}
                     subtitle={subtitle}
                     titleStyle={titleStyle}
@@ -545,7 +546,7 @@ class NavigationBar extends Component {
                     currentVersion={VersionNumber.appVersion}
                     appStoreVersion={this.state.appStoreVersion}
                     buildId={this.props.buildId}
-                    
+
                 />
 
                 <CallMeMaybeModal

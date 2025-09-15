@@ -9,6 +9,7 @@ import { Appbar } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { Colors } from 'react-native-paper';
 import styles from '../assets/styles/blink/_AudioCallBox.scss';
+import SylkAppbarContent from './SylkAppbarContent';
 
 
 function toTitleCase(str) {
@@ -208,17 +209,17 @@ class CallOverlay extends React.Component {
                 displayName = this.state.remoteUri.split('@')[0];
 
                 header = (
-                    <Appbar.Header style={{backgroundColor: 'black'}}>
-                        <Appbar.Content
+                    <Appbar.Header style={{backgroundColor: 'black'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
+                        <SylkAppbarContent
                             title={`Conference: ${displayName}`} subtitle={callDetail}
                         />
                     </Appbar.Header>
                 );
             } else {
                 header = (
-                    <Appbar.Header style={styles.appbarContainer}>
+                    <Appbar.Header style={styles.appbarContainer} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
                         <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
-                        <Appbar.Content
+                        <SylkAppbarContent
                             title={mediaLabel} subtitle={callDetail}
                         />
                     </Appbar.Header>
