@@ -915,7 +915,7 @@ class Call extends Component {
             const currentCall = this.state.call;
 
             if (this.state.direction === 'outgoing' && this.ssiRemoteRoles.length > 0) {
-                this.initSSIConnection();
+                // this.initSSIConnection();
             }
 
             if (this.state.direction === 'outgoing') {
