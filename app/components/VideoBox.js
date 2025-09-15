@@ -376,8 +376,8 @@ class VideoBox extends Component {
                     terminatedReason={this.state.terminatedReason}
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
-                    <View style={[styles.container, styles.remoteVideoContainer]}>
                         <TouchableWithoutFeedback onPress={this.toggleCallOverlay}>
+                    <View style={[styles.container, styles.remoteVideoContainer]}>
                             <RTCView
                                 objectFit='cover'
                                 style={[styles.video, styles.remoteVideo]}
@@ -385,12 +385,12 @@ class VideoBox extends Component {
                                 ref={this.remoteVideo}
                                 streamURL={remoteStreamUrl}
                             />
-                        </TouchableWithoutFeedback>
                     </View>
+                        </TouchableWithoutFeedback>
                     : null }
                 { this.state.localVideoShow ?
-                    <View style={[styles.localVideoContainer]}>
                         <TouchableWithoutFeedback onPress={this.toggleCamera}>
+                    <View style={[styles.localVideoContainer]}>
                             <RTCView
                                 objectFit='cover'
                                 style={[styles.video, styles.localVideo]}
@@ -398,8 +398,8 @@ class VideoBox extends Component {
                                 streamURL={this.state.localStream ? this.state.localStream.toURL() : null}
                                 mirror={this.state.mirror}
                             />
-                        </TouchableWithoutFeedback>
                     </View>
+                        </TouchableWithoutFeedback>
                     : null }
 
                 {this.state.reconnectingCall
