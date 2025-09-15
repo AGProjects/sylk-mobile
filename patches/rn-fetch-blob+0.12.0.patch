@@ -1,0 +1,21 @@
+diff --git a/node_modules/rn-fetch-blob/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin b/node_modules/rn-fetch-blob/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin
+new file mode 100644
+index 0000000..d3fbf2c
+Binary files /dev/null and b/node_modules/rn-fetch-blob/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin differ
+diff --git a/node_modules/rn-fetch-blob/android/src/main/java/com/RNFetchBlob/RNFetchBlobReq.java b/node_modules/rn-fetch-blob/android/src/main/java/com/RNFetchBlob/RNFetchBlobReq.java
+index a8abd71..3cfd84d 100644
+--- a/node_modules/rn-fetch-blob/android/src/main/java/com/RNFetchBlob/RNFetchBlobReq.java
++++ b/node_modules/rn-fetch-blob/android/src/main/java/com/RNFetchBlob/RNFetchBlobReq.java
+@@ -196,7 +196,11 @@ public class RNFetchBlobReq extends BroadcastReceiver implements Runnable {
+                 DownloadManager dm = (DownloadManager) appCtx.getSystemService(Context.DOWNLOAD_SERVICE);
+                 downloadManagerId = dm.enqueue(req);
+                 androidDownloadManagerTaskTable.put(taskId, Long.valueOf(downloadManagerId));
+-                appCtx.registerReceiver(this, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
++                if (Build.VERSION.SDK_INT >= 34 && appCtx.getApplicationInfo().targetSdkVersion >= 34) {
++                    appCtx.registerReceiver(this, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_EXPORTED);
++                } else {
++                    appCtx.registerReceiver(this, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
++                }
+                 return;
+             }
+
