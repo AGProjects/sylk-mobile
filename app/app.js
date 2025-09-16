@@ -1909,7 +1909,7 @@ class Sylk extends Component {
 
     componentWillUnmount() {
         utils.timestampedLog('App will unmount');
-        AppState.removeEventListener('change', this._handleAppStateChange);
+        this.appStateSubscription.remove();
 
         this._onFinishedPlayingSubscription.remove();
         this._onFinishedLoadingSubscription.remove();
@@ -2305,7 +2305,7 @@ class Sylk extends Component {
         DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
         DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
 
-        AppState.addEventListener('change', this._handleAppStateChange);
+        this.appStateSubscription = AppState.addEventListener('change', this._handleAppStateChange);
 
         if (Platform.OS === 'ios') {
             this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
