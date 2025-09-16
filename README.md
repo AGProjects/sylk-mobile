@@ -64,7 +64,6 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 
 * NGI Assure Fund, https://nlnet.nl/assure
 * NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement [No 825310](https://nlnet.nl/project/SylkMobile/)
-* NGI eSSIF-Lab program, in collaboration with [Bloqzone](https://bloqzone.com) [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
 
 ### People
 
@@ -76,61 +75,46 @@ SSI support is based on Hyperledger provided by Indy and Animo SDKs.
 * Alexander Blom - SSIcomms partnership
 * Karim Stekelenburg - Animo SDK integration
 
+### Old contributions
+
+SSI functionality has been removed due to unmaintained dependencies.
+
+* NGI eSSIF-Lab program, in collaboration with [Bloqzone](https://bloqzone.com) [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
+
 
 ## Running dependencies
 
-* Generic SIP infrastructure
+* Generic SIP infrastructure (SIP proxy server) is required
 
 
 ## Developing dependencies
 
 * [Janus](https://github.com/meetecho/janus-gateway) Gateway
-* [Animo SDK for SSI support](https://github.com/animo/aries-mobile-sdk)
 
 
 ## Getting Started
 
 ### Building dependencies
 
-* Java from http://java.com
-* NVM from https://heynode.com/tutorial/install-nodejs-locally-nvm/
-* Using nvm install Node.js version 12
+* NVM from https://heynode.com/tutorial/install-nodejs-locally-nvm/ 
+* Using nvm install Node.js version 21
 * Yarn (for package management)
   curl -o- -L https://yarnpkg.com/install.sh | bash 
-* XCode
-* Android Studio (Or at least the Android SDK)
-  export JAVA_HOME="/Library/Internet\ Plug-Ins/JavaAppletPlugin.plugin/Contents/Home"
-  export PATH=$JAVA_HOME/bin:$PATH
+* XCode 16
+* Android Studio (or at least the Android SDK)
+  Go to Studio settings and install SDK version 36 and command line tools
   export ANDROID_SDK_ROOT=/Users/example/Library/Android/sdk
-
-  On Mac Copy tools.jar to the following location:
-  sudo cp /Applications/Android\ Studio.app/Contents/jre/jdk/Contents/Home/lib/tools.jar \
-  /Library/Internet\ Plug-Ins/JavaAppletPlugin.plugin/Contents/Home/lib/
-
 * Gem (for installing gem files)
 * Fastlane (for deploying to testflight/google play store)
 * Cocoapods (for handling iOS Pods) 
   - Install RVM: curl -L https://get.rvm.io | bash -s stable
-  - Update ruby: rvm install rvm install ruby
   - Add to .bash_profile
     export LANG=en_US.UTF-8
     export LANGUAGE=en_US.UTF-8
     export LC_ALL=en_US.UTF-8
+
+  - sudo gem install concurrent-ruby -v 1.3.4
   - sudo gem install cocoapods
-* watchman (for helping watch files during development)
-  brew install watchman or port install watchman
-* Hyperledger Indy SDK from https://github.com/hyperledger/indy-sdk
-
-  Download libindy libraries from https://repo.sovrin.org/android/libindy/main/
-
-  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_arm64_1.16.0.zip
-  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_arm_1.16.0.zip
-  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_armv7_1.16.0.zip
-  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_x86_1.16.0.zip
-  https://repo.sovrin.org/android/libindy/main/1.16.0-1/libindy_android_x86_64_1.16.0.zip
-
-  To ./android/app/src/main/jniLibs$
-
 
 ### Install
 
@@ -167,12 +151,6 @@ git clean -d -x --dry-run
 ```bash
 git clean -d -x -f
 ```
-
-### XCODE 12.5 fixes
-
-1. https://infinitbility.com/build-failed-after-update-xcode-12.5
-
-2. https://github.com/foundation/foundation-cli/issues/98
 
 npm rebuild node-sass
 
@@ -236,7 +214,7 @@ To run the app on your device without tethering it to USB:
 On Android:
 
 ```bash
-yarn react-native run-android --variant=release
+yarn react-native run-android --mode=release
 
 ``` 
 On iOS:
