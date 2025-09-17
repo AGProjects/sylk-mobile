@@ -34,7 +34,6 @@ class MainActivity : ReactActivity() {
     super.onCreate(savedInstanceState)
     try {
       Os.setenv("EXTERNAL_STORAGE", getExternalFilesDir(null)?.absolutePath, true)
-      System.loadLibrary("indy")
     } catch (e: ErrnoException) {
       e.printStackTrace()
     }
