@@ -11,6 +11,7 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@notifee/react-native": "^9.1.8",
     "@react-native-camera-roll/camera-roll": "^7.10.2",
     "@react-native-community/async-storage": "^1.6.3",
     "@react-native-community/push-notification-ios": "^1.2.0",
