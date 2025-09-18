@@ -20,9 +20,6 @@ import utils from '../utils';
 //   AttributeFilter
 // } from '@aries-framework/core';
 //
-// Used for SSI credentials
-const credDefId = 'EwAf16U6ZphXsZq6E5qmPz:3:CL:394132:default';
-
 function randomIntFromInterval(min,max)
 {
     return Math.floor(Math.random()*(max-min+1)+min);
@@ -172,14 +169,6 @@ class Call extends Component {
         this.videoBandwidthQueue = FixedQueue(this.samples);
 
         this.mediaLost = false;
-        this.ssiRoles = []; // can be holder, verifier and issuer
-        this.ssiRemoteRoles = []; // can be holder, verifier or issuer
-        let ssiRequired = false;
-        this.cancelVerifyIdentityTimer = null;
-
-        if (this.props.ssiRoles) {
-            this.ssiRoles = this.props.ssiRoles;
-        }
 
         let callUUID;
         let remoteUri = '';
@@ -201,33 +190,11 @@ class Call extends Component {
             direction = this.props.call.direction;
             callUUID = this.props.call.id;
 
-            if (this.props.ssiAgent) {
-                this.props.call.headers.forEach((header) => {
-                    if (header.name === 'SSI-roles') {
-                        this.ssiRemoteRoles = header.value.split(',');
-                        if (this.ssiRemoteRoles.indexOf('holder') > -1) {
-                            console.log('Remote party is an SSI holder');
-                            if (this.ssiRoles.indexOf('verifier') === -1) {
-                                this.ssiRoles.push('verifier'); //we can verify the remote party
-                            }
-                        }
-
-                        if (this.ssiRemoteRoles.indexOf('issuer') > -1) {
-                            console.log('Remote party is an SSI issuer');
-                        }
-
-                        if (this.ssiRemoteRoles.indexOf('verifier') > -1) {
-                            console.log('Remote party is an SSI verifier');
-                        }
-                    }
-                });
-            }
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
             callUUID = this.props.callUUID;
             direction = callUUID ? 'outgoing' : 'incoming';
-            ssiRequired = this.props.ssiRequired;
         }
 
         if (this.props.connection) {
@@ -265,13 +232,6 @@ class Call extends Component {
                       selectedContact: this.props.selectedContact,
                       callContact: this.props.callContact,
                       selectedContacts: this.props.selectedContacts,
-                      ssiRequired: ssiRequired,
-                      ssiAgent: this.props.ssiAgent,
-                      ssiInvitationUrl: null,
-                      ssiRemoteIdentity: null,
-                      ssiVerified: null,
-                      ssiVerifyInProgress: false,
-                      ssiCanVerify: false,
                       callEndReason: null
                       }
 
@@ -282,10 +242,6 @@ class Call extends Component {
     }
 
     componentDidMount() {
-        if (this.props.ssiAgent) {
-            this.props.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
-            this.props.ssiAgent.events.on(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
-        }
 
         this.resetStats();
 
@@ -313,186 +269,10 @@ class Call extends Component {
         if (this.state.connection) {
             this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
         }
-
-        if (this.props.ssiAgent) {
-            this.props.ssiAgent.events.off(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
-            this.props.ssiAgent.events.off(ProofEventTypes.ProofStateChanged, this.handleSSIAgentProofStateChange);
-        }
-    }
-
-    async handleSSIAgentConnectionStateChange(event) {
-        const connectionRecord = event.payload.connectionRecord;
-        utils.timestampedLog('SSI session connection', connectionRecord.id, event.payload.previousState, '->', connectionRecord.state);
-        //utils.timestampedLog('SSI connection event', connectionRecord);
-        if (connectionRecord.state === 'responded' || connectionRecord.state === 'complete' && !this.state.ssiCanVerify) {
-            this.setState({ssiCanVerify: true});
-            utils.timestampedLog('SSI connection established, we can now verify the remote party');
-            this.props.postSystemNotification('You may now verify the remote party');
-        }
-    }
-
-    async handleSSIAgentProofStateChange(event) {
-        const proofRecord = event.payload.proofRecord;
-        utils.timestampedLog('SSI proof event', proofRecord.id, 'new state:', proofRecord.state);
-        //utils.timestampedLog('SSI proof event', proofRecord);
-        if (this.ssiRoles.indexOf('verifier') > -1) {
-            if (proofRecord.state === 'done') {
-                this.cancelSSIVerify();
-
-                if (proofRecord.isVerified === undefined) {
-                    // the other party did the verification
-                    this.props.postSystemNotification('We were verified');
-                    utils.timestampedLog('The other party verified our SSI credential');
-                } else if (proofRecord.isVerified === true) {
-                    // the verification was successful --> call is authorized
-
-                    const proofData = proofRecord.presentationMessage.presentationAttachments[0].getDataAsJson();
-                    const proofValues = proofData.requested_proof.revealed_attr_groups.name.values;
-                    const _credDefId = proofData.identifiers[0].cred_def_id;
-
-                    if (_credDefId !== credDefId) {
-                        utils.timestampedLog('SSI credential definition id', _credDefId, 'is not supported');
-                        this.props.postSystemNotification('SSI credential id' + _credDefId + ' is invalid');
-                        return;
-                    }
-
-                    const initials = proofValues.initials.raw;
-                    const legalName = proofValues.legalName.raw;
-                    const birthDate = proofValues.birthDate.raw;
-
-                    let verifiedDisplayName = initials + ' ' + legalName + ' (' + birthDate + ')';
-                    utils.timestampedLog('SSI verify proof succeeded for:', verifiedDisplayName);
-
-                    const credentialAttributes = proofRecord.presentationMessage.indyProof;
-                    //console.log(credentialAttributes.proof.proofs);
-                    this.setState({ssiRemoteIdentity: credentialAttributes,
-                                   ssiVerified: true,
-                                   remoteDisplayName: verifiedDisplayName
-                                   });
-                } else if (proofRecord.isVerified === false) {
-                    utils.timestampedLog('SSI verify proof failed');
-                    this.setState({ssiVerified: false});
-                } else {
-                    console.log('Invalid proof record isVerified value', proofRecord.isVerified);
-                }
-                this.setState({ssiVerifyInProgress: false});
-            }
-        }
-    }
-
-    cancelSSIVerify() {
-        if (!this.cancelVerifyIdentityTimer) {
-            return;
-        }
-
-        clearTimeout(this.cancelVerifyIdentityTimer);
-        this.cancelVerifyIdentityTimer = null;
-        this.setState({ssiVerifyInProgress: false});
-    }
-
-    async verifySSIIdentity() {
-        if (this.state.ssiConnectionRecord) {
-            this.requestSSIProof(this.state.ssiConnectionRecord.id);
-        } else {
-            this.initSSIConnection();
-        }
-    }
-
-    async requestSSIProof(connectionRecordId) {
-        if (this.state.ssiVerifyInProgress) {
-            utils.timestampedLog('SSI proof verify in progress')
-        }
-
-        const attributes = {
-            name: new ProofAttributeInfo({
-                names: ['legalName', 'initials', 'birthDate'],
-                restrictions: [
-                    new AttributeFilter({ credentialDefinitionId: credDefId })
-                ]
-            })
-        }
-
-        const proofRequestOptions = {
-            name: "Proof Request Title",
-            requestedAttributes: attributes
-        }
-
-        this.setState({ssiVerifyInProgress: true});
-        this.cancelSSIVerify();
-        this.cancelVerifyIdentityTimer = setTimeout(() => {
-            this.cancelSSIVerify();
-            this.props.postSystemNotification('SSI proof request timeout');
-        }, 15000);
-
-        try {
-            utils.timestampedLog('Request SSI proof over connection', connectionRecordId, 'for schema', credDefId);
-            const proofRequest = await this.state.ssiAgent.proofs.requestProof(connectionRecordId, proofRequestOptions);
-            //console.log(proofRequestOptions);
-        } catch (error) {
-            utils.timestampedLog('SSI proof request error', error);
-            this.props.postSystemNotification('SSI proof ' + error);
-            this.setState({ssiVerifyInProgress: false});
-        }
-    }
-
-    async initSSIConnection() {
-        if (!this.state.ssiAgent) {
-            console.log('No SSI Agent available');
-            return;
-        }
-
-        if (this.state.ssiConnectionRecord) {
-            utils.timestampedLog('SSI connection already active');
-            return;
-        }
-
-        try {
-            utils.timestampedLog('Creating SSI connection...');
-            const ssiConnection = await this.state.ssiAgent.connections.createConnection();
-            const invitationUrl = ssiConnection.invitation.toUrl({domain: "http://example.com"});
-            this.setState({ssiInvitationUrl: invitationUrl, ssiConnectionRecord: ssiConnection.connectionRecord});
-
-            this.sendSSIInvitation();
-        } catch (error) {
-            utils.timestampedLog('SSI create connection', error);
-            this.props.postSystemNotification('SSI connection ' + error);
-            this.setState({ssiVerified: false});
-        }
-    }
-
-    sendSSIInvitation() {
-        if (!this.state.call) {
-            return;
-        }
-
-        utils.timestampedLog('SSI invitation sent');
-        this.props.postSystemNotification('SSI invitation sent');
-        let message = this.state.call.sendMessage(this.state.ssiInvitationUrl, 'text/ssi-invitation-url', {id: uuid.v4()}, (error) => {
-            if (error) {
-                console.log('Message', id, 'sending error:', error);
-            }
-        });
     }
 
     incomingMessage(message) {
         console.log('Session message', message.id, message.contentType, 'received');
-        if (message.contentType === 'text/ssi-invitation-url' && this.state.ssiAgent && !this.state.ssiInvitationUrl) {
-            this.receiveSSIInvitation(message.content);
-        }
-    }
-
-    async receiveSSIInvitation(url) {
-        utils.timestampedLog('SSI received invitation URL', url);
-        try {
-            const ssiConnectionRecord = await this.state.ssiAgent.connections.receiveInvitationFromUrl(url);
-            utils.timestampedLog('SSI invitation accepted', ssiConnectionRecord.id);
-            this.props.postSystemNotification('SSI invitation accepted');
-            this.setState({ssiInvitationUrl: url, ssiConnectionRecord: ssiConnectionRecord});
-        } catch (error) {
-            this.setState({ssiVerified: false});
-            utils.timestampedLog('SSI accept invitation error', error);
-            this.props.postSystemNotification('SSI accept ' + error);
-        }
     }
 
     resetStats() {
@@ -567,24 +347,10 @@ class Call extends Component {
             this.mediaPlaying(nextProps.localMedia);
         }
 
-        if (nextProps.hasOwnProperty('ssiCanVerify')) {
-            this.setState({ssiCanVerify: nextProps.ssiCanVerify});
-        }
-
         this.setState({messages: nextProps.messages,
                          selectedContacts: nextProps.selectedContacts,
-                         ssiVerifyInProgress: nextProps.ssiVerifyInProgress,
                          speakerPhoneEnabled: nextProps.speakerPhoneEnabled
                          });
-
-        if (nextProps.ssiConnectionRecord) {
-            this.setState({ssiConnectionRecord: nextProps.ssiConnectionRecord});
-        }
-
-        if (nextProps.ssiInvitationUrl) {
-            this.setState({ssiInvitationUrl: nextProps.ssiInvitationUrl});
-        }
-
     }
 
     getConnectionStats() {
@@ -819,11 +585,6 @@ class Call extends Component {
             options.localStream = media;
             utils.timestampedLog('Answering call...');
 
-            if (this.state.ssiAgent) {
-                options.headers = [{name: 'SSI-roles', value: this.ssiRoles.toString()}];
-                //console.log('Call answer extra headers:', options.headers);
-            }
-
             if (!this.answering) {
                 this.answering = true;
                 const connectionState = this.state.connection.state ? this.state.connection.state : null;
@@ -914,26 +675,6 @@ class Call extends Component {
             this.setState({reconnectingCall: false});
             const currentCall = this.state.call;
 
-            if (this.state.direction === 'outgoing' && this.ssiRemoteRoles.length > 0) {
-                // this.initSSIConnection();
-            }
-
-            if (this.state.direction === 'outgoing') {
-                if (this.ssiRemoteRoles.length > 0) {
-                    utils.timestampedLog('SSI local roles:', this.ssiRoles.toString());
-                    utils.timestampedLog('SSI remote roles:', this.ssiRemoteRoles.toString());
-                } else {
-                    //console.log('Remote party does not support SSI');
-                }
-            } else {
-                if (this.ssiRemoteRoles.length > 0) {
-                    utils.timestampedLog('SSI local roles:', this.ssiRoles.toString());
-                    utils.timestampedLog('SSI remote roles:', this.ssiRemoteRoles.toString());
-                } else {
-                    //console.log('Remote party does not support SSI');
-                }
-            }
-
             if (currentCall) {
                 remoteStreams = currentCall.getRemoteStreams();
                 if (remoteStreams) {
@@ -966,27 +707,8 @@ class Call extends Component {
                 this.setState({audioOnly: false});
             }
 
-            data.headers.forEach((header) => {
-                if (header.name === 'SSI-roles') {
-                    this.ssiRemoteRoles = header.value.split(',');
-
-                    if (this.ssiRemoteRoles.indexOf('holder') > -1) {
-                        utils.timestampedLog('Remote party is an SSI holder');
-                    }
-
-                    if (this.ssiRemoteRoles.indexOf('issuer') > -1) {
-                        utils.timestampedLog('Remote party is an SSI issuer');
-                    }
-
-                    if (this.ssiRemoteRoles.indexOf('verifier') > -1) {
-                        utils.timestampedLog('Remote party is an SSI verifier');
-                    }
-                }
-            });
-        }
-
-        if (newState !== 'established') {
-            this.cancelSSIVerify();
+            //data.headers.forEach((header) => {
+            //});
         }
 
         if (newState === 'terminated') {
@@ -1115,11 +837,6 @@ class Call extends Component {
                        localStream: this.state.localMedia
                        };
 
-        if (this.state.ssiAgent) {
-            options.headers = [{name: 'SSI-roles', value: this.ssiRoles.toString()}];
-            //console.log('Outgoing call extra headers:', options.headers);
-        }
-
         let call = this.state.account.call(this.state.targetUri, options);
         this.setState({call: call});
     }
@@ -1196,11 +913,6 @@ class Call extends Component {
                         callContact = {this.state.callContact}
                         inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                         finishInvite = {this.props.finishInvite}
-                        ssiRemoteIdentity = {this.state.ssiRemoteIdentity}
-                        ssiVerifyFunc = {this.verifySSIIdentity}
-                        ssiVerified = {this.state.ssiVerified}
-                        ssiCanVerify = {this.state.ssiCanVerify}
-                        ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
                         terminatedReason = {this.state.terminatedReason}
                         />
                 );
@@ -1249,11 +961,6 @@ class Call extends Component {
                             callContact = {this.state.callContact}
                             inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                             finishInvite = {this.props.finishInvite}
-                            ssiRemoteIdentity = {this.state.ssiRemoteIdentity}
-                            ssiVerifyFunc = {this.verifySSIIdentity}
-                            ssiVerified = {this.state.ssiVerified}
-                            ssiCanVerify = {this.state.ssiCanVerify}
-                            ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
                             terminatedReason = {this.state.terminatedReason}
                             />
                     );
@@ -1311,11 +1018,6 @@ class Call extends Component {
                     callContact = {this.state.callContact}
                     inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                     finishInvite = {this.props.finishInvite}
-                    ssiRemoteIdentity = {this.state.ssiRemoteIdentity}
-                    ssiVerifyFunc = {this.verifySSIIdentity}
-                    ssiVerified = {this.state.ssiVerified}
-                    ssiCanVerify = {this.state.ssiCanVerify}
-                    ssiVerifyInProgress = {this.state.ssiVerifyInProgress}
                     terminatedReason = {this.state.terminatedReason}
                     />
             );
@@ -1365,9 +1067,6 @@ Call.propTypes = {
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
-    ssiRequired             : PropTypes.bool,
-    ssiAgent                : PropTypes.object,
-    ssiRoles                : PropTypes.array,
     postSystemNotification  : PropTypes.func
 };
 

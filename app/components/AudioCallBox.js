@@ -49,10 +49,6 @@ class AudioCallBox extends Component {
             callContact                 : this.props.callContact,
             selectedContact             : this.props.selectedContact,
             audioCodec                  : this.props.audioCodec,
-            ssiRemoteIdentity           : this.props.ssiRemoteIdentity,
-            ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
-            ssiVerified                 : this.props.ssiVerified,
-            ssiCanVerify                : this.props.ssiCanVerify,
             terminatedReason            : this.props.terminatedReason,
             speakerPhoneEnabled         : this.props.speakerPhoneEnabled
         };
@@ -131,10 +127,6 @@ class AudioCallBox extends Component {
             this.setState({latencyQueue: nextProps.latencyQueue});
         }
 
-        if (nextProps.hasOwnProperty('ssiVerifyInProgress')) {
-            this.setState({ssiVerifyInProgress: nextProps.ssiVerifyInProgress});
-        }
-
         this.setState({remoteUri: nextProps.remoteUri,
                        remoteDisplayName: nextProps.remoteDisplayName,
                        photo: nextProps.photo ? nextProps.photo : this.state.photo,
@@ -143,9 +135,6 @@ class AudioCallBox extends Component {
                        audioCodec: nextProps.audioCodec,
                        selectedContacts: nextProps.selectedContacts,
                        selectedContact: nextProps.selectedContact,
-                       ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
-                       ssiVerified: nextProps.ssiVerified,
-                       ssiCanVerify: nextProps.ssiCanVerify,
                        terminatedReason: nextProps.terminatedReason,
                        speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
                        localMedia: nextProps.localMedia
@@ -192,13 +181,6 @@ class AudioCallBox extends Component {
 
     showDtmfModal() {
         this.setState({showDtmfModal: true});
-    }
-
-    verifyIdentity() {
-        if (this.state.ssiVerified) {
-            return;
-        }
-        this.props.ssiVerifyFunc();
     }
 
     hideDtmfModal() {
@@ -273,27 +255,6 @@ class AudioCallBox extends Component {
         let hangupButtonClass        = Platform.OS === 'ios' ? styles.hangupButtoniOS        : styles.hangupButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
 
-        let verifyIcon = 'account-question';
-        if (this.state.ssiVerified) {
-            verifyIcon = 'shield-account';
-        } else {
-            if (this.state.ssiVerified === false) {
-            } else {
-                if (this.state.ssiVerifyInProgress) {
-                    verifyIcon = 'account-search';
-                }
-            }
-        }
-
-        let showVerifyButton = false;
-
-        if ((this.props.orientation === 'portrait' ||  this.props.isTablet) &&
-             this.state.ssiCanVerify &&
-             this.state.call && (this.state.call.state === 'accepted' || this.state.call.state === 'established') &&
-             !this.state.reconnectingCall) {
-            showVerifyButton = true;
-        }
-
         return (
             <View style={styles.container}>
                 <CallOverlay style={styles.callStatus}
@@ -321,44 +282,11 @@ class AudioCallBox extends Component {
                 <Text style={styles.uri}>{this.state.remoteUri}</Text>
                 </TouchableWithoutFeedback>
 
-                {this.props.orientation !== 'landscape' && (this.state.reconnectingCall || this.state.ssiVerifyInProgress) ?
+                {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
                 <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
                 :
                 null
                 }
-
-                {showVerifyButton ?
-                    <View style={styles.verifyContainerClass}>
-                        <View style={styles.buttonContainer}>
-                        {!this.state.ssiVerifyInProgress ?
-                            <TouchableHighlight style={styles.roundshape}>
-                                <IconButton
-                                    size={buttonSize}
-                                    style={whiteButtonClass}
-                                    icon={verifyIcon}
-                                    onPress={this.verifyIdentity} />
-                            </TouchableHighlight>
-                        :
-                        <Text style={styles.uri}>Verifying identity...</Text>
-                        }
-                        {this.state.ssiVerified ?
-                            <Text style={styles.ssiSucceeded}>Verified account</Text>
-                        : null}
-
-                        </View>
-                    </View>
-
-                : null}
-
-                {this.state.ssiVerified === false ?
-                    <View style={styles.verifyContainerClass}>
-                        <View style={styles.buttonContainer}>
-                        <Text style={styles.ssiFailed}>SSI verification failed</Text>
-                        </View>
-                    </View>
-                : null}
-
-                {!this.state.ssiVerifyInProgress ?
 
                 <TrafficStats
                     packetLossQueue = {this.state.packetLossQueue}
@@ -370,7 +298,6 @@ class AudioCallBox extends Component {
                     orientation = {this.props.orientation}
                     media = 'audio'
                 />
-                : null}
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
@@ -543,11 +470,6 @@ AudioCallBox.propTypes = {
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
     audioCodec              : PropTypes.string,
-    ssiRemoteIdentity       : PropTypes.object,
-    ssiVerifyFunc           : PropTypes.func,
-    ssiVerified             : PropTypes.bool,
-    ssiCanVerify            : PropTypes.bool,
-    ssiVerifyInProgress     : PropTypes.bool,
     terminatedReason        : PropTypes.string
 };
 

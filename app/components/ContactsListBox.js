@@ -283,8 +283,6 @@ class ContactsListBox extends Component {
             fontScale: this.props.fontScale,
             call: this.props.call,
             isTablet: this.props.isTablet,
-            ssiCredentials: this.props.ssiCredentials,
-            ssiConnections: this.props.ssiConnections,
             keys: this.props.keys,
             recording: false,
             playing: false,
@@ -461,8 +459,6 @@ class ContactsListBox extends Component {
                        pinned: nextProps.pinned,
                        isTyping: nextProps.isTyping,
                        periodFilter: nextProps.periodFilter,
-                       ssiCredentials: nextProps.ssiCredentials,
-                       ssiConnections: nextProps.ssiConnections,
                        messagesCategoryFilter: nextProps.messagesCategoryFilter,
                        targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : nextProps.targetUri,
                        keys: nextProps.keys,
@@ -1485,10 +1481,9 @@ class ContactsListBox extends Component {
         let icons = [];
         //console.log('currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
-            let isSsiMessage = this.state.selectedContact && this.state.selectedContact.tags.indexOf('ssi') > -1;
             let options = []
             if (currentMessage.metadata && !currentMessage.metadata.error) {
-                if (!isSsiMessage && this.isMessageEditable(currentMessage)) {
+                if (this.isMessageEditable(currentMessage)) {
                     options.push('Edit');
                     icons.push(<Icon name="file-document-edit" size={20} />);
                 }
@@ -1502,10 +1497,8 @@ class ContactsListBox extends Component {
                 }
             }
 
-            if (!isSsiMessage) {
-                options.push('Delete');
-                icons.push(<Icon name="delete" size={20} />);
-            }
+			options.push('Delete');
+			icons.push(<Icon name="delete" size={20} />);
 
             let showResend = currentMessage.failed || (currentMessage.direction === 'outgoing' && !currentMessage.sent && !currentMessage.received && !currentMessage.pending);
             if (currentMessage.metadata && currentMessage.metadata.error) {
@@ -1525,19 +1518,19 @@ class ContactsListBox extends Component {
                 options.push('Unpin');
                 icons.push(<Icon name="pin-off" size={20} />);
             } else {
-                if (!isSsiMessage && !currentMessage.metadata.error) {
+                if (!currentMessage.metadata.error) {
                     options.push('Pin');
                     icons.push(<Icon name="pin" size={20} />);
                 }
             }
 
             //options.push('Info');
-            if (!isSsiMessage && !currentMessage.metadata.error) {
+            if (!currentMessage.metadata.error) {
                 options.push('Forward');
                 icons.push(<Icon name="arrow-right" size={20} />);
             }
 
-            if (!isSsiMessage && !currentMessage.metadata.error) {
+            if (!currentMessage.metadata.error) {
                 options.push('Share');
                 icons.push(<Icon name="share" size={20} />);
             }
@@ -1850,109 +1843,10 @@ class ContactsListBox extends Component {
        return false;
     }
 
-    ssi2GiftedChat(from_uri, content, timestamp) {
-        let id = uuid.v4();
-
-        let msg;
-
-        msg = {
-            _id: id,
-            key: id,
-            text: content,
-            createdAt: timestamp,
-            direction: 'incoming',
-            sent: false,
-            received: true,
-            pending: false,
-            system: false,
-            failed: false,
-            user: {_id: from_uri, name: from_uri}
-            }
-        return msg;
-    }
-
-    getSsiContacts() {
-        //console.log('Get SSI contacts');
-        let contacts = [];
-        if (this.state.ssiCredentials) {
-            this.state.ssiCredentials.forEach((item) => {
-                let contact = this.props.newContactFunc(item.id, 'Credential');
-                contact.ssiCredential = item;
-                contact.credential = new Object();
-
-                const schemaId = item.metadata.data['_internal/indyCredential'].schemaId;
-
-                if (schemaId === 'EwAf16U6ZphXsZq6E5qmPz:2:Bloqzone_IDIN_ver5:5.0') {
-                    contact.schemaId = schemaId;
-
-                    item.credentialAttributes.forEach((attribute) => {
-                        contact.credential[attribute.name] = attribute.value;
-                        if (attribute.value.length > 0) {
-                            if (attribute.name === 'legalName') {
-                                contact.name = attribute.value;
-                            } else if (attribute.name === 'acceptDateTime') {
-                                contact.timestamp = attribute.value.toDate("dd-mm-yy hh:ii:ss");
-                            } else if (attribute.name === 'createdAt') {
-                                contact.timestamp = attribute.value;
-                            } else if (attribute.name === 'emailAddress') {
-                                contact.email = attribute.value;
-                            }
-                        }
-                    });
-                }
-
-                if (contact.credential.initials) {
-                    contact.name = contact.credential.initials;
-                }
-
-                if (contact.credential.legalName) {
-                    contact.name = contact.name  + ' ' + contact.credential.legalName;
-                }
-
-                if (contact.credential.dob) {
-                    contact.name = contact.name  + ' (' + contact.credential.dob + ')';
-                }
-
-                if (contact.credential.birthDate) {
-                    contact.name = contact.name  + ' (' + contact.credential.birthDate + ')';
-                }
-
-                if (contact.credential.acceptDateTime && item.state === 'done') {
-                    contact.lastMessage = 'Credential issued at ' + contact.credential.acceptDateTime + ' (' + item.state + ')';
-                }
-
-                contact.tags.push('ssi');
-                contact.tags.push('ssi-credential');
-                contact.tags.push('readonly');
-                contacts.push(contact);
-            });
-        }
-
-        if (this.state.ssiConnections) {
-            this.state.ssiConnections.forEach((item) => {
-                //console.log('Contacts SSI connection', item);
-                let uri = item.id;
-                let contact = this.props.newContactFunc(uri, item.theirLabel);
-                contact.credential = new Object();
-
-                contact.timestamp = item.createdAt;
-
-                contact.lastMessage = 'Connection is ' + item.state;
-                contact.tags.push('ssi');
-                contact.tags.push('ssi-connection');
-                contact.ssiConnection = item;
-                contacts.push(contact);
-            });
-        }
-
-        return contacts;
-    }
-
     render() {
         let searchExtraItems = [];
         let items = [];
         let matchedContacts = [];
-        let ssiContacts = [];
         let messages = this.state.renderMessages;
         let contacts = [];
         //console.log('----');
@@ -1961,13 +1855,9 @@ class ContactsListBox extends Component {
         //console.log('--- Render contacts', this.state.selectedContact);
         //console.log(this.state.renderMessages);
 
-        if (this.state.filter === 'ssi') {
-            contacts = this.getSsiContacts();
-        } else {
-            Object.keys(this.state.myContacts).forEach((uri) => {
-                contacts.push(this.state.myContacts[uri]);
-            });
-        }
+		Object.keys(this.state.myContacts).forEach((uri) => {
+			contacts.push(this.state.myContacts[uri]);
+		});
 
         let chatInputClass = this.customInputToolbar;
 
@@ -2112,88 +2002,6 @@ class ContactsListBox extends Component {
 
         if (items.length === 1) {
             items[0].showActions = true;
-            if (items[0].tags.indexOf('ssi-credential') > -1) {
-                let content = '';
-                let m;
-
-                chatInputClass = this.noChatInputToolbar;
-
-                items[0].ssiCredential.credentialAttributes.forEach((attribute) => {
-                    content = content + attribute.name + ": " + attribute.value + '\n';
-                });
-
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                m = this.ssi2GiftedChat(items[0].uri, 'SSI credential body' , items[0].timestamp);
-                m.system = true;
-                messages.push(m);
-
-                content = '';
-                content = content + 'Id: ' + items[0].ssiCredential.id;
-                content = content + '\nState: ' + items[0].ssiCredential.state;
-                content = content + '\nSchema Id:' + items[0].schemaId;
-
-                let issuer = this.state.ssiConnections.filter(x => x.id === items[0].ssiCredential.connectionId);
-
-                if (issuer.length === 1) {
-                    content = content + '\nIssuer: ' + issuer[0].theirLabel;
-                } else {
-                    content = content + '\nIssuer: : ' + items[0].ssiCredential.connectionId;
-                }
-
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                m = this.ssi2GiftedChat(items[0].uri, 'SSI credential details' , items[0].timestamp);
-                m.system = true;
-                messages.push(m);
-            }
-
-            if (items[0].tags.indexOf('ssi-connection') > -1) {
-                let content = '';
-                let m;
-
-                m = this.ssi2GiftedChat(items[0].uri, 'SSI messages' , items[0].timestamp);
-                m.system = true;
-                messages.push(m);
-
-                chatInputClass = this.noChatInputToolbar;
-
-                content = 'Role: ' + items[0].ssiConnection.role;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                content = 'State: ' + items[0].ssiConnection.state;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                content = 'Multiple use: ' + items[0].ssiConnection.multiUseInvitation;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                if (items[0].ssiConnection.mediatorId) {
-                    content = 'Mediator: ' + items[0].ssiConnection.mediatorId;
-                    m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                    messages.push(m);
-                }
-
-                content = 'Id: ' + items[0].ssiConnection.id;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                content = 'Did: ' + items[0].ssiConnection.did;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                content = 'From: ' + items[0].ssiConnection.theirLabel;
-                m = this.ssi2GiftedChat(items[0].uri, content.trim(), items[0].timestamp);
-                messages.push(m);
-
-                m = this.ssi2GiftedChat(items[0].uri, 'SSI connection details' , items[0].timestamp);
-                m.system = true;
-                messages.push(m);
-            }
         }
 
         let columns = 1;
@@ -2388,8 +2196,6 @@ ContactsListBox.propTypes = {
     isTyping        : PropTypes.bool,
     fontScale       : PropTypes.number,
     call            : PropTypes.object,
-    ssiCredentials  : PropTypes.array,
-    ssiConnections  : PropTypes.array,
     keys            : PropTypes.object,
     downloadFunc    : PropTypes.func,
     decryptFunc     : PropTypes.func,

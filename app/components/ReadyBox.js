@@ -60,8 +60,6 @@ class ReadyBox extends Component {
             isTablet: this.props.isTablet,
             myContacts: this.props.myContacts,
             showQRCodeScanner: this.props.showQRCodeScanner,
-            ssiCredentials: this.props.ssiCredentials,
-            ssiConnections: this.props.ssiConnections,
             keys: this.props.keys,
             isTexting: this.props.isTexting,
             keyboardVisible: this.props.keyboardVisible,
@@ -105,13 +103,6 @@ class ReadyBox extends Component {
             this.filterHistory(null);
         }
 
-        if (nextProps.historyFilter === 'ssi' && !nextProps.selectedContact) {
-            this.setState({'historyCategoryFilter': 'ssi'});
-            if (this.navigationRef && !this.state.selectedContact) {
-                this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
-            }
-        }
-
         if (nextProps.missedCalls.length === 0 && this.state.historyCategoryFilter === 'missed') {
             this.setState({'historyCategoryFilter': null});
         }
@@ -151,8 +142,6 @@ class ReadyBox extends Component {
                         isTablet: nextProps.isTablet,
                         showQRCodeScanner: nextProps.showQRCodeScanner,
                         isLandscape: nextProps.isLandscape,
-                        ssiCredentials: nextProps.ssiCredentials,
-                        ssiConnections: nextProps.ssiConnections,
                         keys: nextProps.keys,
                         isTexting: nextProps.isTexting,
                         keyboardVisible: nextProps.keyboardVisible,
@@ -309,10 +298,6 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.historyCategoryFilter === 'ssi') {
-            return false;
-        }
-
         if (this.state.showQRCodeScanner) {
             return false;
         }
@@ -349,22 +334,6 @@ class ReadyBox extends Component {
              const uri = contact.uri;
              this.props.updateSelection(uri);
              return;
-        }
-
-        // This URLs are used to request SSI credentials
-        if (new_uri && new_uri.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
-            this.props.handleSSIEnrolment(new_uri);
-            return;
-        }
-
-        // This URLs are used to request SSI credentials
-        if (new_uri && new_uri.startsWith('https://ssimandate.vismaconnect.nl/api/acapy?c_i=')) {
-            this.props.handleSSIEnrolment(new_uri);
-            return;
-        }
-
-        if (contact && contact.tags.indexOf('ssi') > -1 && this.state.selectedContact !== contact) {
-            this.setState({'historyCategoryFilter': 'ssi'});
         }
 
         if (this.state.selectedContact === contact) {
@@ -788,7 +757,6 @@ class ReadyBox extends Component {
               {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
               {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
-              {key: 'ssi', title: 'SSI', enabled: (this.state.ssiConnections && this.state.ssiConnections.length > 0) || (this.state.ssiCredentials && this.state.ssiCredentials.length > 0), selected: this.state.historyCategoryFilter === 'ssi'},
               ];
     }
 
@@ -1388,8 +1356,6 @@ class ReadyBox extends Component {
                             messageZoomFactor = {this.state.messageZoomFactor}
                             isTyping = {this.state.isTyping}
                             call = {this.state.call}
-                            ssiCredentials = {this.state.ssiCredentials}
-                            ssiConnections = {this.state.ssiConnections}
                             keys = {this.state.keys}
                             downloadFunc = {this.props.downloadFunc}
                             decryptFunc = {this.props.decryptFunc}
@@ -1530,9 +1496,6 @@ ReadyBox.propTypes = {
     inviteToConferenceFunc: PropTypes.func,
     toggleQRCodeScannerFunc: PropTypes.func,
     myContacts: PropTypes.object,
-    handleSSIEnrolment:  PropTypes.func,
-    ssiCredentials:  PropTypes.array,
-    ssiConnections:  PropTypes.array,
     keys            : PropTypes.object,
     downloadFunc    : PropTypes.func,
     decryptFunc     : PropTypes.func,

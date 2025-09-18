@@ -58,7 +58,6 @@ class NavigationBar extends Component {
             messages: this.props.messages,
             userClosed: false,
             blockedUris: this.props.blockedUris,
-            ssiRequired: this.props.ssiRequired,
             filteredMessageIds: this.props.filteredMessageIds,
             contentTypes: this.props.contentTypes,
             sharingAction: this.props.sharingAction,
@@ -100,7 +99,6 @@ class NavigationBar extends Component {
                        messages: nextProps.messages,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
                        blockedUris: nextProps.blockedUris,
-                       ssiRequired: nextProps.ssiRequired,
                        filteredMessageIds: nextProps.filteredMessageIds,
                        contentTypes: nextProps.contentTypes,
                        sharingAction: nextProps.sharingAction,
@@ -136,9 +134,6 @@ class NavigationBar extends Component {
             case 'proximity':
                 this.props.toggleProximity();
                 break;
-            case 'ssi':
-                this.props.toggleSSIFunc();
-                break;
             case 'logOut':
                 this.props.logout();
                 break;
@@ -147,12 +142,6 @@ class NavigationBar extends Component {
                 break;
             case 'refetchMessages':
                 this.props.refetchMessages(this.state.selectedContact);
-                break;
-            case 'deleteSsiCredential':
-                this.props.deleteSsiCredential(this.state.selectedContact);
-                break;
-            case 'deleteSsiConnection':
-                this.props.deleteSsiConnection(this.state.selectedContact);
                 break;
             case 'preview':
                 this.props.preview();
@@ -386,15 +375,12 @@ class NavigationBar extends Component {
         let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
         let isAnonymous = this.state.selectedContact && (this.state.selectedContact.uri.indexOf('@guest.') > -1 || this.state.selectedContact.uri.indexOf('anonymous@') > -1);
-        let isCallableUri = !isConference && !this.state.inCall && !isAnonymous && tags.indexOf('ssi') === -1;
+        let isCallableUri = !isConference && !this.state.inCall && !isAnonymous;
 
         let blockedTitle = (this.state.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
         if (isAnonymous && this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
             blockedTitle = 'Allow anonymous callers';
         }
-
-        let ssiTitle = this.state.ssiRequired ? 'Disable SSI' : 'Enable SSI';
-        let enableSsi = false;
 
         let subtitle = this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId;
         let title = this.state.selectedContact ? this.state.selectedContact.name : this.state.myDisplayName;
@@ -446,20 +432,20 @@ class NavigationBar extends Component {
                         }
                     >
 
-                        {tags.indexOf('ssi') === -1 ? <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit contact..."/> : null}
+                        <Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit contact..."/>
 
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
                         {this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
 
-                        { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 ?
+                        { hasMessages && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
                         {<Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> }
 
-                        { hasMessages && !this.state.inCall && tags.indexOf('ssi') === -1 && 'paused' in this.state.contentTypes ?
+                        { hasMessages && !this.state.inCall && 'paused' in this.state.contentTypes ?
                         <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
                         : null
                         }
@@ -471,26 +457,17 @@ class NavigationBar extends Component {
                         {this.props.publicKey && false?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('ssi') === -1 ?
+                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
-                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1  && !this.state.inCall && tags.indexOf('ssi') === -1 ?
+                        {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1 && tags.indexOf('ssi') === -1?
+                        {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
-
-                        {this.state.selectedContact && tags.indexOf('ssi-credential') > -1?
-                        <Menu.Item onPress={() => this.handleMenu('deleteSsiCredential')} icon="delete" title="Delete SSI credential..."/>
-                        : null}
-
-                        {this.state.selectedContact && tags.indexOf('ssi-connection') > -1 && tags.indexOf('readonly') === -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('deleteSsiConnection')} icon="delete" title="Delete SSI connection..."/>
-                        : null}
-
 
                     </Menu>
                 :
@@ -526,9 +503,6 @@ class NavigationBar extends Component {
                         </View>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
-                        {enableSsi?
-                        <Menu.Item onPress={() => this.handleMenu('ssi')} icon="key" title={ssiTitle}/>
-                        : null}
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
 
@@ -678,18 +652,14 @@ NavigationBar.propTypes = {
     showConferenceModalFunc : PropTypes.func,
     appStoreVersion : PropTypes.object,
     checkVersionFunc: PropTypes.func,
-    toggleSSIFunc: PropTypes.func,
-    ssiRequired: PropTypes.bool,
     refetchMessages: PropTypes.func,
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,
     hideExportPrivateKeyModalFunc: PropTypes.func,
     blockedUris: PropTypes.array,
     myuuid: PropTypes.string,
-    deleteSsiCredential: PropTypes.func,
     resumeTransfers: PropTypes.func,
     generateKeysFunc: PropTypes.func,
-    deleteSsiConnection: PropTypes.func,
     filteredMessageIds: PropTypes.array,
     contentTypes: PropTypes.object,
     canSend: PropTypes.func,

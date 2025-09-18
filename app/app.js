@@ -296,12 +296,7 @@ class Sylk extends Component {
             navigationItems: {today: false,
                               yesterday: false,
                               conference: false},
-            ssiRequired: false,
-            ssiAgent: null,
-            ssiRoles: [],
             myuuid: null,
-            ssiCredentials: null,
-            ssiConnections: null,
             deletedContacts: {},
             isTexting: false,
             filteredMessageIds: [],
@@ -373,8 +368,6 @@ class Sylk extends Component {
         this.outgoing_sound_ts = null;
         this.initialChatContact = null;
         this.mustPlayIncomingSoundAfterSync = false;
-        this.ssiAgent = null;
-        this.pendingSsiUrl = null;
         this.ringbackActive = false;
 
         this.callKeeper = new CallManager(RNCallKeep,
@@ -442,20 +435,6 @@ class Sylk extends Component {
 
         }).catch((err) => {
             console.log("PGP keys loading error:", err);
-        });
-
-        storage.get('ssi').then((ssi) => {
-            if (ssi) {
-                //console.log("Loaded SSI settings", ssi);
-                this.setState({ssiRequired: ssi.required});
-            } else {
-                console.log("Init SSI settings", ssi);
-                storage.set('ssi', {required: false});
-                this.setState({ssiRequired: false});
-            }
-
-        }).catch((err) => {
-            //console.log("SSI settings loading error:", err);
         });
 
         storage.get('myParticipants').then((myParticipants) => {
@@ -843,9 +822,6 @@ class Sylk extends Component {
         await this.ExecuteQuery("update keys set my_uuid = ? where account = ?", params).then((result) => {
             utils.timestampedLog('My device UUID was updated', my_uuid);
             this.setState({myuuid: my_uuid});
-            setTimeout(() => {
-                    this.initSSIAgent();
-            }, 100);
 
         }).catch((error) => {
             console.log('SQL update uuid error:', error);
@@ -892,9 +868,6 @@ class Sylk extends Component {
                 } else {
                     //utils.timestampedLog('My device UUID', my_uuid);
                     this.setState({myuuid: my_uuid});
-                    setTimeout(() => {
-                        this.initSSIAgent();
-                    }, 100);
                 }
 
                 keys.private = item.private_key;
@@ -3624,8 +3597,6 @@ class Sylk extends Component {
                     this.setState({terminatedReason: reason});
                 }
 
-                this.terminateSsiConnections(call.remoteIdentity.uri.toLowerCase());
-
                 this.updateHistoryEntry(call.remoteIdentity.uri.toLowerCase(), callUUID, diff);
 
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
@@ -3668,23 +3639,6 @@ class Sylk extends Component {
         if (this.state.incomingCall) {
             //console.log('Incoming:', this.state.incomingCall.id);
         }
-    }
-
-    async terminateSsiConnections(uri) {
-        if (!this.ssiAgent) {
-            return;
-        }
-
-        let allConnections = await this.ssiAgent.connections.getAll();
-        let callConnections = allConnections.filter(x => x.theirLabel.startsWith(uri));
-
-        for (const x of callConnections) {
-            utils.timestampedLog('SSI connection', x.id, 'to', uri, 'removed');
-            await this.ssiAgent.connections.deleteById(x.id);
-        }
-
-        allConnections = await this.ssiAgent.connections.getAll();
-        this.setState({ssiConnections: allConnections});
     }
 
     finishInviteToConference() {
@@ -3824,8 +3778,7 @@ class Sylk extends Component {
         const options = {
             account: accountId,
             password: password,
-            displayName: displayName || '',
-            incomingHeaderPrefixes: ['SSI']
+            displayName: displayName || ''
         };
 
         if (this.state.connection._accounts.has(options.account)) {
@@ -3867,240 +3820,11 @@ class Sylk extends Component {
 
                 account.register();
 
-                this.initSSIAgent();
-
             } else {
                 //console.log('Adding account failed');
                 this.showRegisterFailure(408);
             }
         });
-    }
-
-    async initSSIAgent() {
-        // SSI wallet - init agent with wallet Id this.state.accountId
-        return;
-
-        if (this.ssiAgent) {
-            // already initialized
-            return;
-        }
-
-        if (!this.state.ssiRequired) {
-            return;
-        }
-
-        if (!this.state.accountId) {
-            utils.timestampedLog('Init SSI wallet failed because missing device account id');
-            return;
-        }
-
-        if (!this.state.myuuid) {
-            utils.timestampedLog('Init SSI wallet failed because missing device id');
-            return;
-        }
-
-        let walletId = this.state.accountId + '_' + this.state.myuuid.replace(/-/g, '_');
-
-        //let mediatorUrl = 'wss://ws.didcomm.mediator.bloqzone.com?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiZTUzYWRkMzMtYjZiYS00NWFlLWEwN2MtNTA3NzkxY2YzMjFlIiwgInNlcnZpY2VFbmRwb2ludCI6ICJ3c3M6Ly93cy5kaWRjb21tLm1lZGlhdG9yLmJsb3F6b25lLmNvbSIsICJsYWJlbCI6ICJCbG9xem9uZSBNZWRpYXRvciBBZ2VudCIsICJyZWNpcGllbnRLZXlzIjogWyIzQ2JieUYyVE43RVVTamtTZ3YyNHc2VHZZSGNSZk5yQ3I3eXVTNEJRc1U2RyJdfQ==';
-        let mediatorUrl = 'https://http.mediator.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiZmFmODZiMjAtZWM4ZC00ZjMzLWI1OGUtN2NmMTAwMzQwZDM5IiwgImxhYmVsIjogIkFuaW1vIENvbW11bml0eSBNZWRpYXRvciIsICJyZWNpcGllbnRLZXlzIjogWyIySzhqUUxaVE15ZkRhcDJnYlczclFMRUhrSml0WjVrQ3R6MVF3NTdWVmlHbSJdLCAic2VydmljZUVuZHBvaW50IjogImh0dHBzOi8vaHR0cC5tZWRpYXRvci5jb21tdW5pdHkuYW5pbW8uaWQifQ==';
-
-        utils.timestampedLog('Init SSI wallet id', walletId,  'init via mediator', mediatorUrl);
-
-        const BCOVRIN_TEST_GENESIS = `{"reqSignature":{},"txn":{"data":{"data":{"alias":"Node1","blskey":"4N8aUNHSgjQVgkpm8nhNEfDf6txHznoYREg9kirmJrkivgL4oSEimFF6nsQ6M41QvhM2Z33nves5vfSn9n1UwNFJBYtWVnHYMATn76vLuL3zU88KyeAYcHfsih3He6UHcXDxcaecHVz6jhCYz1P2UZn2bDVruL5wXpehgBfBaLKm3Ba","blskey_pop":"RahHYiCvoNCtPTrVtP7nMC5eTYrsUA8WjXbdhNc8debh1agE9bGiJxWBXYNFbnJXoXhWFMvyqhqhRoq737YQemH5ik9oL7R4NTTCz2LEZhkgLJzB3QRQqJyBNyv7acbdHrAT8nQ9UkLbaVL9NBpnWXBTw4LEMePaSHEw66RzPNdAX1","client_ip":"138.197.138.255","client_port":9702,"node_ip":"138.197.138.255","node_port":9701,"services":["VALIDATOR"]},"dest":"Gw6pDLhcBcoQesN72qfotTgFa7cbuqZpkX3Xo6pLhPhv"},"metadata":{"from":"Th7MpTaRZVRYnPiabds81Y"},"type":"0"},"txnMetadata":{"seqNo":1,"txnId":"fea82e10e894419fe2bea7d96296a6d46f50f93f9eeda954ec461b2ed2950b62"},"ver":"1"}
-{"reqSignature":{},"txn":{"data":{"data":{"alias":"Node2","blskey":"37rAPpXVoxzKhz7d9gkUe52XuXryuLXoM6P6LbWDB7LSbG62Lsb33sfG7zqS8TK1MXwuCHj1FKNzVpsnafmqLG1vXN88rt38mNFs9TENzm4QHdBzsvCuoBnPH7rpYYDo9DZNJePaDvRvqJKByCabubJz3XXKbEeshzpz4Ma5QYpJqjk","blskey_pop":"Qr658mWZ2YC8JXGXwMDQTzuZCWF7NK9EwxphGmcBvCh6ybUuLxbG65nsX4JvD4SPNtkJ2w9ug1yLTj6fgmuDg41TgECXjLCij3RMsV8CwewBVgVN67wsA45DFWvqvLtu4rjNnE9JbdFTc1Z4WCPA3Xan44K1HoHAq9EVeaRYs8zoF5","client_ip":"138.197.138.255","client_port":9704,"node_ip":"138.197.138.255","node_port":9703,"services":["VALIDATOR"]},"dest":"8ECVSk179mjsjKRLWiQtssMLgp6EPhWXtaYyStWPSGAb"},"metadata":{"from":"EbP4aYNeTHL6q385GuVpRV"},"type":"0"},"txnMetadata":{"seqNo":2,"txnId":"1ac8aece2a18ced660fef8694b61aac3af08ba875ce3026a160acbc3a3af35fc"},"ver":"1"}
-{"reqSignature":{},"txn":{"data":{"data":{"alias":"Node3","blskey":"3WFpdbg7C5cnLYZwFZevJqhubkFALBfCBBok15GdrKMUhUjGsk3jV6QKj6MZgEubF7oqCafxNdkm7eswgA4sdKTRc82tLGzZBd6vNqU8dupzup6uYUf32KTHTPQbuUM8Yk4QFXjEf2Usu2TJcNkdgpyeUSX42u5LqdDDpNSWUK5deC5","blskey_pop":"QwDeb2CkNSx6r8QC8vGQK3GRv7Yndn84TGNijX8YXHPiagXajyfTjoR87rXUu4G4QLk2cF8NNyqWiYMus1623dELWwx57rLCFqGh7N4ZRbGDRP4fnVcaKg1BcUxQ866Ven4gw8y4N56S5HzxXNBZtLYmhGHvDtk6PFkFwCvxYrNYjh","client_ip":"138.197.138.255","client_port":9706,"node_ip":"138.197.138.255","node_port":9705,"services":["VALIDATOR"]},"dest":"DKVxG2fXXTU8yT5N7hGEbXB3dfdAnYv1JczDUHpmDxya"},"metadata":{"from":"4cU41vWW82ArfxJxHkzXPG"},"type":"0"},"txnMetadata":{"seqNo":3,"txnId":"7e9f355dffa78ed24668f0e0e369fd8c224076571c51e2ea8be5f26479edebe4"},"ver":"1"}
-{"reqSignature":{},"txn":{"data":{"data":{"alias":"Node4","blskey":"2zN3bHM1m4rLz54MJHYSwvqzPchYp8jkHswveCLAEJVcX6Mm1wHQD1SkPYMzUDTZvWvhuE6VNAkK3KxVeEmsanSmvjVkReDeBEMxeDaayjcZjFGPydyey1qxBHmTvAnBKoPydvuTAqx5f7YNNRAdeLmUi99gERUU7TD8KfAa6MpQ9bw","blskey_pop":"RPLagxaR5xdimFzwmzYnz4ZhWtYQEj8iR5ZU53T2gitPCyCHQneUn2Huc4oeLd2B2HzkGnjAff4hWTJT6C7qHYB1Mv2wU5iHHGFWkhnTX9WsEAbunJCV2qcaXScKj4tTfvdDKfLiVuU2av6hbsMztirRze7LvYBkRHV3tGwyCptsrP","client_ip":"138.197.138.255","client_port":9708,"node_ip":"138.197.138.255","node_port":9707,"services":["VALIDATOR"]},"dest":"4PS3EDQ3dW1tci1Bp6543CfuuebjFrg36kLAUcskGfaA"},"metadata":{"from":"TWwCRQRZ2ZHMJFn9TzLp7W"},"type":"0"},"txnMetadata":{"seqNo":4,"txnId":"aa5e817d7cc626170eca175822029339a444eb0ee8f0bd20d3b0b76e566fb008"},"ver":"1"}`
-
-        const agentConfig = {
-            // The label is used for communication with other agents
-            label: walletId,
-            mediatorConnectionsInvite: mediatorUrl,
-            autoAcceptConnections: true,
-            // logger: new ConsoleLogger(LogLevel.debug),
-            autoAcceptCredentials: AutoAcceptCredential.Always,
-            autoAcceptProofs: AutoAcceptProof.Always,
-            walletConfig: {
-                id: walletId,
-                key: 'demo', // this must be autogenerated and stored for each sip account
-            },
-            indyLedgers: [
-                {
-                    id: 'BCovrin Test',
-                    genesisTransactions: BCOVRIN_TEST_GENESIS,
-                    isProduction: false,
-                },
-            ]
-        };
-
-        this.ssiAgent = new Agent(agentConfig, agentDependencies);
-
-        const httpOutboundTransporter = new HttpOutboundTransport();
-        this.ssiAgent.registerOutboundTransport(httpOutboundTransporter);
-
-        const WsOutboundTransporter = new WsOutboundTransport();
-        this.ssiAgent.registerOutboundTransport(WsOutboundTransporter);
-
-        try {
-            await this.ssiAgent.initialize();
-            utils.timestampedLog('SSI wallet initialised');
-            let ssiRoles = this.state.ssiRoles;
-
-            this.ssiAgent.events.on(CredentialEventTypes.CredentialStateChanged, this.handleSSIAgentCredentialStateChange);
-            this.ssiAgent.events.on(ConnectionEventTypes.ConnectionStateChanged, this.handleSSIAgentConnectionStateChange);
-            this.ssiAgent.events.on(AgentEventTypes.AgentMessageProcessed, this.incomingSsiMessage);
-
-            if (ssiRoles.indexOf('verifier') === -1) {
-                ssiRoles.push('verifier');
-            }
-
-            const credentials = await this.ssiAgent.credentials.getAll();
-            let hm = credentials.length > 0 ? credentials.length : "no";
-            utils.timestampedLog('SSI wallet has', hm, 'credentials');
-
-            //console.log(credentials);
-            if (credentials.length > 0) {
-                utils.timestampedLog('SSI added holder role');
-                if (ssiRoles.indexOf('holder') === -1) {
-                    ssiRoles.push('holder');
-                }
-            }
-
-            this.setState({ssiRoles: ssiRoles});
-
-            const allConnections = await this.ssiAgent.connections.getAll();
-            utils.timestampedLog('SSI wallet has', allConnections.length, 'connections');
-            //console.log(allConnections);
-
-            if (self.pendingSsiUrl) {
-                this.handleSSIEnrolment(self.pendingSsiUrl);
-                self.pendingSsiUrl = null;
-            }
-
-            this.setState({ssiConnections: allConnections});
-
-            allConnections.forEach((item) => {
-                utils.timestampedLog('SSI connection', item.id, 'to', item.theirLabel, 'in state', item.state);
-            });
-
-            let noCred = credentials.length > 0 ? credentials.length : "no";
-
-            //this._notificationCenter.postSystemNotification("SSI wallet initialised with " + noCred + " credentials");
-
-            this.setState({ssiCredentials: credentials});
-
-            const rmCommunityConnection = async () => {
-                let connections = allConnections.filter(x => x.theirLabel === 'Animo Community Agent')
-
-                for (const x of connections) {
-                    await this.ssiAgent.connections.deleteById(x.id)
-                }
-
-                connections = allConnections.filter(x => x.theirLabel === 'Animo Community Mediator')
-
-                for (const x of connections) {
-                    await this.ssiAgent.connections.deleteById(x.id)
-                }
-            }
-
-            //await rmCommunityConnection(); // run only once
-
-            if (!allConnections.map((x) => x.theirLabel).includes('Animo Community Agent')) {
-                // create a connection to Animo credential issuer, must be done once
-                // connection is saved and reused later when we recreate de agent
-                // once we do have a credential, we don't need to connect anymore
-                await this.initSSIConnection();
-            }
-        } catch (error) {
-            utils.timestampedLog('SSI wallet init error:', error);
-            this._notificationCenter.postSystemNotification('SSI init' + error);
-        }
-    }
-
-    async initSSIConnection() {
-        // replaced by the QR code reader
-        return;
-
-        utils.timestampedLog('SSI connection init');
-        // this invitation should be obtained from a QR code from the issuer website
-        // this is still demo with hardwired values -adi
-        let url = 'https://didcomm.agent.community.animo.id?c_i=eyJAdHlwZSI6ICJkaWQ6c292OkJ6Q2JzTlloTXJqSGlxWkRUVUFTSGc7c3BlYy9jb25uZWN0aW9ucy8xLjAvaW52aXRhdGlvbiIsICJAaWQiOiAiNDdiNDE1ZjEtNDk3OS00OGM0LWI5YTMtYWM2OWZlMGM0ZjZiIiwgInJlY2lwaWVudEtleXMiOiBbIkJBMmt1N3FCQ2toZE5ud3N1cU5GS0ZQa2dNejZoMnA2TENDd2hIaEE3U0twIl0sICJsYWJlbCI6ICJBbmltbyBDb21tdW5pdHkgQWdlbnQiLCAic2VydmljZUVuZHBvaW50IjogImh0dHBzOi8vZGlkY29tbS5hZ2VudC5jb21tdW5pdHkuYW5pbW8uaWQifQ==';
-
-        try {
-            const result = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
-            utils.timestampedLog('SSI connection cached');
-            // now we can receive a credential from the issuer
-
-        } catch (error) {
-            utils.timestampedLog('SSI connection error', error);
-        }
-    }
-
-    async handleSSIAgentCredentialStateChange(event) {
-        utils.timestampedLog('SSI wallet Credential State Change', event.payload.credentialRecord.id, event.payload.previousState, '->', event.payload.credentialRecord.state);
-        if (event.payload.credentialRecord.state === CredentialState.OfferReceived) {
-            utils.timestampedLog('SSI credential received:', event.payload.credentialRecord);
-            this._notificationCenter.postSystemNotification("New SSI credential received");
-            // this is not needed if we are configured to auto accept
-            // this.ssiAgent.credentials.acceptOffer(event.payload.credentialRecord.id);
-        } else if (event.payload.credentialRecord.state === CredentialState.Done) {
-            utils.timestampedLog('SSI wallet credential saved');
-            this.postSystemNotification('SSI credential saved');
-            const credentials = await this.ssiAgent.credentials.getAll();
-            this.setState({ssiCredentials: credentials});
-            setTimeout(() => {
-                this.filterHistory('ssi');
-            }, 1000);
-        }
-    }
-
-    async handleSSIAgentConnectionStateChange(event) {
-        utils.timestampedLog('SSI wallet connection', event.payload.connectionRecord.id, 'state changed to', event.payload.connectionRecord.state);
-        const allConnections = await this.ssiAgent.connections.getAll();
-        utils.timestampedLog('SSI wallet has', allConnections.length, 'connections');
-        //console.log(allConnections);
-        this.setState({ssiConnections: allConnections});
-        if (event.payload.connectionRecord.state === 'complete') {
-            setTimeout(() => {
-                this.filterHistory('ssi');
-            }, 1000);
-        }
-    }
-
-    async incomingSsiMessage(event) {
-        if (event.payload.message.type === "https://didcomm.org/basicmessage/1.0/message") {
-            let content = event.payload.message.content;
-            let uri = event.payload.connection.id;
-            let ssiName = uri;
-
-            let message = new Object();
-
-            if (this.state.ssiConnections) {
-                this.state.ssiConnections.forEach((item) => {
-                    //console.log('Contacts SSI connection', item);
-                    let uri = item.id;
-                    if (event.payload.connection.id === item.id) {
-                        ssiName = item.theirLabel;
-                        return;
-                    }
-                });
-            }
-
-            console.log('SSI message from', ssiName, ':', content);
-
-            message.id = event.payload.message.id;
-            message.type = 'normal';
-            message.contentType = 'text/plain';
-            message.content = content;
-            message.account = this.state.account;
-            message.ssiName = ssiName;
-            message.timestamp = event.payload.message.sentTime;
-            message.dispositionNotification = [];
-            message.state = 'received';
-            message.sender = new Object();
-            message.sender.uri = uri;
-            message.sender.displayName = null;
-            this.incomingMessage(message);
-        }
     }
 
     generateKeysIfNecessary(account) {
@@ -4786,19 +4510,6 @@ class Sylk extends Component {
         }
     }
 
-    toggleSSI() {
-        // user setting to enable/disable ssiAgent
-        let ssiRequired = !this.state.ssiRequired;
-        console.log('toggleSSI to', ssiRequired);
-        this.setState({ssiRequired: ssiRequired});
-        if (ssiRequired) {
-            this.initSSIAgent();
-        } else {
-            this.setState({ssiAgent: null});
-        }
-        storage.set('ssi', {required: ssiRequired});
-    }
-
     toggleSpeakerPhone() {
         if (this.state.speakerPhoneEnabled === true) {
             this.speakerphoneOff();
@@ -4814,30 +4525,6 @@ class Sylk extends Component {
     toggleQRCodeScanner() {
         //utils.timestampedLog('Toggle QR code scanner');
         this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
-    }
-
-    async handleSSIEnrolment(url) {
-        utils.timestampedLog('SSI enrolment invitation URL', url);
-
-        if (!this.ssiAgent) {
-            console.log('No SSI agent available yet for handling enrolment to', url);
-            self.pendingSsiUrl = url;
-            return;
-        }
-
-        try {
-            const ssiConnectionRecord = await this.ssiAgent.connections.receiveInvitationFromUrl(url);
-            utils.timestampedLog('SSI enrolment requested', ssiConnectionRecord.id);
-            setTimeout(() => {
-                this._notificationCenter.postSystemNotification('SSI enrolment requested');
-            }, 2000);
-
-        } catch (error) {
-            utils.timestampedLog('SSI enrolment error', error);
-            setTimeout(() => {
-                this._notificationCenter.postSystemNotification('SSI enrolment ' + error);
-            }, 2000);
-        }
     }
 
     async speakerphoneOn() {
@@ -5088,13 +4775,6 @@ class Sylk extends Component {
                 //  * android/app/src/main/AndroidManifest.xml
                 //  * ios/sylk/sylk.entitlements
 
-                if (url.startsWith('https://didcomm.issuer.bloqzone.com/?c_i=')) {
-                    this.handleSSIEnrolment(url);
-                }
-
-                if (url.startsWith('https://ssimandate.vismaconnect.nl/api/acapy?c_i=')) {
-                    this.handleSSIEnrolment(url);
-                }
 
                 direction = 'outgoing';
                 event = url_parts[3];
@@ -7882,34 +7562,6 @@ class Sylk extends Component {
 
     }
 
-    async deleteSsiCredential(contact) {
-        this.setState({
-            selectedContact: null,
-            targetUri: ''
-            });
-
-        if (this.ssiAgent) {
-            await this.ssiAgent.credentials.deleteById(contact.uri);
-            utils.timestampedLog('Deleted SSI credential', contact.uri);
-            const credentials = await this.ssiAgent.credentials.getAll();
-            this.setState({ssiCredentials: credentials});
-        }
-    }
-
-    async deleteSsiConnection(contact) {
-        this.setState({
-            selectedContact: null,
-            targetUri: ''
-            });
-
-        if (this.ssiAgent) {
-            await this.ssiAgent.connections.deleteById(contact.uri);
-            utils.timestampedLog('Deleted SSI connection', contact.uri);
-            const connections = await this.ssiAgent.connections.getAll();
-            this.setState({ssiConnections: connections});
-        }
-    }
-
     async deleteMessages(uri, remote=false) {
         console.log('Delete messages for', uri);
 
@@ -8658,13 +8310,6 @@ class Sylk extends Component {
             console.log('Received PGP private key from another device');
             this.handleRemotePrivateKey(message.content);
             return;
-        }
-
-        // This URLs are used to request SSI credentials
-        if (message.content.startsWith('https://didcomm.issuer.bloqzone.com?c_i=')) {
-            this.handleSSIEnrolment(message.content);
-            this.saveSystemMessage(message.sender.uri, 'SSI enrolment proposal received', 'incoming');
-            //return;
         }
 
         const is_encrypted =  message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
@@ -10702,11 +10347,7 @@ class Sylk extends Component {
                     generateKeysFunc={this.generateKeys}
                     refetchMessages = {this.refetchMessagesForContact}
                     blockedUris = {this.state.blockedUris}
-                    toggleSSIFunc = {this.toggleSSI}
-                    ssiRequired = {this.state.ssiRequired}
                     myuuid={this.state.myuuid}
-                    deleteSsiCredential = {this.deleteSsiCredential}
-                    deleteSsiConnection = {this.deleteSsiConnection}
                     filteredMessageIds = {this.state.filteredMessageIds}
                     resumeTransfers = {this.resumeTransfers}
                     contentTypes = {this.state.contentTypes}
@@ -10782,9 +10423,6 @@ class Sylk extends Component {
                     inviteToConferenceFunc = {this.inviteToConference}
                     showQRCodeScanner = {this.state.showQRCodeScanner}
                     toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
-                    handleSSIEnrolment = {this.handleSSIEnrolment}
-                    ssiCredentials = {this.state.ssiCredentials}
-                    ssiConnections = {this.state.ssiConnections}
                     keys = {this.state.keys}
                     downloadFunc = {this.downloadFile}
                     decryptFunc = {this.decryptFile}
@@ -11150,8 +10788,6 @@ class Sylk extends Component {
 
         this.changeRoute('/login', 'user logout');
 
-        // SSI wallet - cleanup
-
         if (!this.signOut && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
             // remove token from server
             console.log('Remove push token');
@@ -11172,8 +10808,6 @@ class Sylk extends Component {
                 }
             });
         }
-
-        this.ssiAgent = null;
 
         this.setState({account: null,
                        displayName: '',

@@ -51,10 +51,6 @@ class VideoBox extends Component {
             packetLossQueue             : [],
             audioBandwidthQueue         : [],
             latencyQueue                : [],
-            ssiRemoteIdentity           : this.props.ssiRemoteIdentity,
-            ssiVerifyInProgress         : this.props.ssiVerifyInProgress,
-            ssiVerified                 : this.props.ssiVerified,
-            ssiCanVerify                : this.props.ssiCanVerify,
             localMedia                  : this.props.localMedia
         };
 
@@ -102,14 +98,6 @@ class VideoBox extends Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
-        if (nextProps.hasOwnProperty('ssiCanVerify')) {
-            this.setState({ssiCanVerify: nextProps.ssiCanVerify});
-        }
-
-        if (nextProps.hasOwnProperty('ssiVerifyInProgress')) {
-            this.setState({ssiVerifyInProgress: nextProps.ssiVerifyInProgress});
-        }
-
         this.setState({
                        callContact: nextProps.callContact,
                        remoteUri: nextProps.remoteUri,
@@ -117,8 +105,6 @@ class VideoBox extends Component {
                        remoteDisplayName: nextProps.remoteDisplayName,
                        selectedContact: nextProps.selectedContact,
                        selectedContacts: nextProps.selectedContacts,
-                       ssiRemoteIdentity: nextProps.ssiRemoteIdentity,
-                       ssiVerified: nextProps.ssiVerified,
                        localMedia: nextProps.localMedia,
                        terminatedReason: nextProps.terminatedReason
                        });
@@ -466,11 +452,6 @@ VideoBox.propTypes = {
     finishInvite            : PropTypes.func,
     audioCodec              : PropTypes.string,
     videoCodec              : PropTypes.string,
-    ssiRemoteIdentity       : PropTypes.object,
-    ssiVerifyFunc           : PropTypes.func,
-    ssiVerified             : PropTypes.bool,
-    ssiCanVerify            : PropTypes.bool,
-    ssiVerifyInProgress     : PropTypes.bool,
     terminatedReason        : PropTypes.string
 };
 
