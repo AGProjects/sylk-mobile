@@ -66,6 +66,9 @@ import storage from './storage';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
+import { registerForegroundListener } from '../firebase-messaging';
+import { checkPendingActions } from '../firebase-messaging';
+
 // import {
 //   Agent,
 //   AutoAcceptCredential,
@@ -188,6 +191,8 @@ class Sylk extends Component {
         this._loaded = false;
         let isFocus = Platform.OS === 'ios';
         this.startTimestamp = new Date();
+        
+        registerForegroundListener(this);
 
         this._initialState = {
             appState: null,
@@ -1966,6 +1971,8 @@ class Sylk extends Component {
     async componentDidMount() {
         utils.timestampedLog('App did mount');
 
+        await checkPendingActions(this);
+
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
         });
@@ -2152,6 +2159,32 @@ class Sylk extends Component {
         console.log("Handle iOS push notification:", notification);
     }
 
+    // Example: handle incoming call
+    handleIncomingCall(payload) {
+        console.log('[Sylk] ------ Incoming call from push at start:', payload);
+        // Your logic: open call screen, update state, etc.
+        let data = payload.data;
+        let event = data.event;
+        let action = payload.accept;
+        console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
+
+        const callUUID = data['session-id'];
+        const media = {audio: true, video: data['media-type'] === 'video'};
+
+        if (event === 'incoming_conference_request') {
+            if (action === 'accept') {
+                this.callKeepAcceptCall(callUUID);
+            }
+        } else if (event === 'incoming_session') {
+            if (action === 'video') {
+                this.callKeepAcceptCall(callUUID, media);
+            } else {
+                media.video = false;
+                this.callKeepAcceptCall(callUUID, media);
+            }
+        }
+    }
+        
     postAndroidIncomingCallNotification(data) {
         //console.log('postAndroidIncomingCallNotification', data);
 
@@ -2319,7 +2352,6 @@ class Sylk extends Component {
             AppState.addEventListener('focus', this._handleAndroidFocus);
             AppState.addEventListener('blur', this._handleAndroidBlur);
 
-
             getMessaging()
                 .requestPermission()
                 .then(() => {
@@ -2341,7 +2373,7 @@ class Sylk extends Component {
     handleFirebasePushInteraction(notification) {
         let data = notification.data;
         let event = data.event;
-        //console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
+        console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
 
         const callUUID = data['session-id'];
         const media = {audio: true, video: data['media-type'] === 'video'};
