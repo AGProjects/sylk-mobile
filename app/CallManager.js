@@ -546,10 +546,10 @@ export default class CallManager extends events.EventEmitter {
     }
 
     incomingCallFromPush(callUUID, from, displayName, mediaType, force=false, skipNativePanel=false) {
+        utils.timestampedLog('Callkeep: incoming', mediaType, 'push call', callUUID, 'from', from);
         if (this.unmounted()) {
             return;
         }
-        //utils.timestampedLog('Callkeep: incoming', mediaType, 'push call', callUUID, 'from', from);
         const hasVideo = mediaType === 'video' ? true : false;
 
         if (this._pushCalls.has(callUUID)) {
@@ -730,7 +730,7 @@ export default class CallManager extends events.EventEmitter {
         if (this._calls.has(data.callUUID)) {
             console.log('Callkeep: show incoming call UI', data.callUUID);
             let call = this._calls.get(data.callUUID);
-            this.showInternetAlertPanel(call);
+            this.showInternetAlertPanel(call, 'callkeep');
         }
     }
 
@@ -746,7 +746,7 @@ export default class CallManager extends events.EventEmitter {
 			try {
 				if (handler) this._RNCallKeep.removeEventListener(event, handler);
 			} catch (e) {
-				console.warn('Failed to remove RNCallKeep listener', event, e);
+				//console.warn('Failed to remove RNCallKeep listener', event, e);
 			}
 		};
 	

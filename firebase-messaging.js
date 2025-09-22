@@ -33,6 +33,11 @@ function clearRingtoneTimeout(callUUID) {
   }
 }
 
+function stopRingtone(callUUID) {
+    InCallManager.stopRingtone();
+    clearRingtoneTimeout(callUUID);
+}
+
 // ----------------------
 // 1️⃣ Initialize Firebase
 // ----------------------
@@ -51,45 +56,47 @@ if (!getApps().length) {
   console.log('[Firebase] Using existing app:', firebaseApp.name);
 }
 
-async function processPendingAction(appInstance, callUUID) {
-  const pendingJson = await AsyncStorage.getItem(`pendingAction:${callUUID}`);
-  if (!pendingJson) return;
+// ----------------------
+// Firebase background handler
+// ----------------------
+messaging().setBackgroundMessageHandler(async remoteMessage => {
+  if (!remoteMessage?.data) return;
+  const event = remoteMessage.data.event;
+  const data = remoteMessage.data;
 
-  const { payload, choice } = JSON.parse(pendingJson);
+  console.log('[FCM BG] Push received:', remoteMessage.data);
 
-  if (choice === 'accept_audio') {
-    appInstance.handleIncomingCall({ accept: 'audio', data: payload['data'] });
-  } else if (choice === 'accept_video') {
-    appInstance.handleIncomingCall({ accept: 'video', data: payload['data'] });
+  if (event === 'incoming_session' || event === 'incoming_conference_request') {
+    const { ['session-id']: callUUID } = data;
+	  // Start ringtone
+      InCallManager.stopRingtone();
+	  InCallManager.startRingtone('_BUNDLE_', 'default', true);
+	  // Start the auto-stop timer
+	  startRingtoneTimeout(callUUID);
+
+    // Save full payload for later
+    await AsyncStorage.setItem(`incomingCall:${callUUID}`, JSON.stringify({ data }));
+    await postIncomingCallNotification(data);
+  } else if (event === 'cancel') {
+    const { ['session-id']: callUUID } = data;
+    console.log('[FCM BG] Cancel event received', callUUID);
+    stopRingtone(callUUID);
+    await notifee.cancelNotification(callUUID.toString());
+    await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
+  } else if (event === 'message') {
+    console.log('[FCM BG] message event received');
+    await AsyncStorage.setItem(`incomingMessage`, JSON.stringify(data));
+    await postIncomingMessageNotification(data);
   }
+});
 
-  await AsyncStorage.removeItem(`pendingAction:${callUUID}`);
-  await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
-}
+// --------------------------------
+// Post incoming call notification
+// --------------------------------
+export async function postIncomingCallNotification(data) {
+  console.log('[IncomingCall] Posting notification', data);
 
-// ----------------------
-// 🔎 Check for Pending Actions
-// ----------------------
-async function checkPendingActions(appInstance) {
-  const keys = await AsyncStorage.getAllKeys();
-  const pendingKeys = keys.filter(k => k.startsWith('pendingAction:'));
-
-  for (const key of pendingKeys) {
-    const callUUID = key.split(':')[1];
-    await processPendingAction(appInstance, callUUID);
-  }
-}
-
-export { processPendingAction, checkPendingActions };
-// ----------------------
-// 2️⃣ Post incoming call notification
-// ----------------------
-export async function postIncomingCallNotification(callUUID, from, mediaType, data) {
-  console.log('[IncomingCall] Posting notification', callUUID, from, mediaType);
-
-  // Start ringtone
-  InCallManager.stopRingtone();
-  InCallManager.startRingtone('incallmanager_ringtone.mp3', 'default', true);
+  const { ['session-id']: callUUID, from_display_name: from, from_uri: from_uri, ['media-type']: mediaType, event } = data;
 
   // Ensure channel exists
   await notifee.createChannel({
@@ -114,74 +121,88 @@ export async function postIncomingCallNotification(callUUID, from, mediaType, da
     actions.push({ title: 'Accept Video', pressAction: { id: 'accept_video', launchActivity: 'default' } });
   }
 
-  // Save call info for killed app
-  await AsyncStorage.setItem(`incomingCall:${callUUID}`, JSON.stringify({ data }));
-
-  // Start the auto-stop timer
-  startRingtoneTimeout(callUUID);
-
-await notifee.displayNotification({
-  id: callUUID.toString(),
-  title: 'Incoming Call',
-  body: `${from} is calling you`,
-  android: {
-    channelId: 'incoming-call',
-    smallIcon: 'ic_notification',
-    color: AndroidColor.WHITE,
-    importance: AndroidImportance.HIGH,  // heads-up
-    priority: 2,                         // "max" priority
-    ongoing: true,                       // keep it pinned
-    fullScreenAction: {                  // 👈 keeps it on screen
-      id: 'default',
-      launchActivity: 'default',
-    },
-    pressAction: { id: 'default' },
-    actions,
-  },
-});
+	await notifee.displayNotification({
+	  id: callUUID.toString(),
+	  title: 'Incoming Sylk call',
+	  body: `${from_uri} is calling you`,
+	  android: {
+		channelId: 'incoming-call',
+		smallIcon: 'ic_notification',
+		color: AndroidColor.WHITE,
+		importance: AndroidImportance.HIGH,  // heads-up
+		priority: 2,                         // "max" priority
+		ongoing: true,                       // keep it pinned
+		fullScreenAction: {                  // 👈 keeps it on screen
+		  id: 'default',
+		  launchActivity: 'default',
+		},
+		pressAction: { id: 'default' },
+		actions,
+	  },
+	});
 
   console.log('[IncomingCall] Notification displayed', callUUID);
 }
+
+export async function postIncomingMessageNotification(data) {
+  console.log('[IncomingMessage] notification', data);
+}
+
 
 // ----------------------
 // 3️⃣ Handle notification interactions
 // ----------------------
 async function handleNotificationInteraction(notification, pressAction, eventType, appInstance) {
-  console.log('handleNotificationInteraction...', notification)
+	/*
+	EventType.PRESS	1	Notification was tapped / pressed.
+	EventType.DISMISSED	2	Notification was dismissed by the user.
+	EventType.ACTION_PRESS	3	An action button on the notification was pressed.
+	EventType.CANCELLED	4	Notification was programmatically cancelled (not user action).
+	EventType.APP_BLOCKED	5	
+	*/
+
   if (!notification) return;
+
+  if (!pressAction) return;
+
+  console.log('FCM handleNotificationInteraction ', notification)
+
+  console.log('FCM interaction event type', eventType);
+  console.log('FCM press action', pressAction);
 
   const callUUID = notification.id;
   const callInfoJson = await AsyncStorage.getItem(`incomingCall:${callUUID}`);
   const callInfo = callInfoJson ? JSON.parse(callInfoJson) : null;
-  if (!callInfo) return;
 
+  if (!callInfo) {
+      //console.log('No call info found');
+      return;
+  }
 
   // Ignore / Dismiss
   if (eventType === EventType.DISMISSED || pressAction?.id === 'ignore') {
     console.log('[Notifee] Call ignored', callUUID);
-    InCallManager.stopRingtone();
+    stopRingtone(callUUID)
     await notifee.cancelNotification(callUUID);
     await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
-    clearRingtoneTimeout(callUUID);
     return;
   }
 
   // Accept Audio
   if (pressAction?.id === 'accept_audio' || pressAction?.id === 'accept_video') {
     console.log('[Notifee] Accepting audio call', callUUID);
-    InCallManager.stopRingtone();
-    clearRingtoneTimeout(callUUID);
+    stopRingtone(callUUID);
     // Save action + payload for replay
     // Save action + original FCM payload for replay
-    await AsyncStorage.setItem(
-    `pendingAction:${callUUID}`,
-    JSON.stringify({ payload: callInfo, choice: pressAction.id })
-    );
+    await AsyncStorage.setItem(`pendingAction:${callUUID}`, JSON.stringify({ payload: callInfo, choice: pressAction.id }));
   
     // If app is alive, process immediately
     if (appInstance) {
       await processPendingAction(appInstance, callUUID);
     }
+  } else {
+    console.log('Other FCM interaction');
+    //await AsyncStorage.setItem(`pendingAction:message`,JSON.stringify({ payload: callInfo, choice: pressAction.id }));
   }
 }
 
@@ -203,27 +224,3 @@ notifee.onBackgroundEvent(async ({ type, detail = {} }) => {
   await handleNotificationInteraction(notification, pressAction, type);
 });
 
-// ----------------------
-// 6️⃣ Firebase background handler
-// ----------------------
-messaging().setBackgroundMessageHandler(async remoteMessage => {
-  if (!remoteMessage?.data) return;
-
-  const { ['session-id']: callUUID, from_display_name: from, ['media-type']: mediaType, event } = remoteMessage.data;
-  console.log('[FCM BG] Message received:', event, callUUID, from, mediaType);
-
-  if (event === 'incoming_session' || event === 'incoming_conference_request') {
-    // Save full payload for later
-    await AsyncStorage.setItem(
-      `incomingCall:${callUUID}`,
-      JSON.stringify(remoteMessage.data)
-    );
-    await postIncomingCallNotification(callUUID, from, mediaType, remoteMessage.data);
-  } else if (event === 'cancel') {
-    console.log('[FCM BG] Cancel event received', callUUID);
-    InCallManager.stopRingtone();
-    clearRingtoneTimeout(callUUID);
-    await notifee.cancelNotification(callUUID.toString());
-    await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
-  }
-});

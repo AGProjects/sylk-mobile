@@ -9,13 +9,18 @@ import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
 import Logger from "../Logger";
 import autoBind from 'auto-bind';
-import { getMessaging } from '@react-native-firebase/messaging';
+
+import messaging from '@react-native-firebase/messaging';
+import notifee from '@notifee/react-native';
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import PushNotification , {Importance} from "react-native-push-notification";
 import VoipPushNotification from 'react-native-voip-push-notification';
+import { getApp } from '@react-native-firebase/app';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
 import RNDrawOverlay from 'react-native-draw-overlay';
-import PushNotificationIOS from "@react-native-community/push-notification-ios";
-import PushNotification , {Importance} from "react-native-push-notification";
 import Contacts from 'react-native-contacts';
 import BackgroundTimer from 'react-native-background-timer';
 import DeepLinking from 'react-native-deep-linking';
@@ -67,7 +72,6 @@ import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
 import { registerForegroundListener } from '../firebase-messaging';
-import { checkPendingActions } from '../firebase-messaging';
 
 // import {
 //   Agent,
@@ -192,8 +196,6 @@ class Sylk extends Component {
         let isFocus = Platform.OS === 'ios';
         this.startTimestamp = new Date();
         
-        registerForegroundListener(this);
-
         this._initialState = {
             appState: null,
             terminatedReason: null,
@@ -1885,19 +1887,62 @@ class Sylk extends Component {
 
     }
 
-    componentWillUnmount() {
-        utils.timestampedLog('App will unmount');
+componentWillUnmount() {
+    utils.timestampedLog('App will unmount');
+
+    if (this.appStateSubscription) {
         this.appStateSubscription.remove();
-
-        this._onFinishedPlayingSubscription.remove();
-        this._onFinishedLoadingSubscription.remove();
-        this._onFinishedLoadingURLSubscription.remove();
-        this._onFinishedLoadingFileSubscription.remove();
-
-        this.callKeeper.destroy();
-        this.closeConnection();
-        this._loaded = false;
+        this.appStateSubscription = null;
     }
+
+    if (this._onFinishedPlayingSubscription) {
+        this._onFinishedPlayingSubscription.remove();
+        this._onFinishedPlayingSubscription = null;
+    }
+
+    if (this._onFinishedLoadingSubscription) {
+        this._onFinishedLoadingSubscription.remove();
+        this._onFinishedLoadingSubscription = null;
+    }
+
+    if (this._onFinishedLoadingURLSubscription) {
+        this._onFinishedLoadingURLSubscription.remove();
+        this._onFinishedLoadingURLSubscription = null;
+    }
+
+    if (this._onFinishedLoadingFileSubscription) {
+        this._onFinishedLoadingFileSubscription.remove();
+        this._onFinishedLoadingFileSubscription = null;
+    }
+
+    if (this.callKeeper) {
+        this.callKeeper.destroy();
+        this.callKeeper = null;
+    }
+
+    // --- Firebase foreground listener ---
+    if (this.messageListener) this.messageListener(); // unsubscribe function
+
+    // --- iOS VoIP ---
+    if (Platform.OS === 'ios') {
+      VoipPushNotification.removeEventListener('register', this._boundOnPushkitRegistered);
+      VoipPushNotification.removeEventListener(
+        'notification',
+        this._onNotificationReceivedBackground,
+      );
+      VoipPushNotification.removeEventListener(
+        'localNotification',
+        this._onLocalNotificationReceivedBackground,
+      );
+
+      PushNotificationIOS.removeEventListener('register', this._boundOnPushRegistered);
+      PushNotificationIOS.removeEventListener('localNotification', this.onLocalNotification);
+      PushNotificationIOS.removeEventListener('notification', this.onRemoteNotification);
+      }
+    
+		this.closeConnection();
+		this._loaded = false;
+	}
 
     get unmounted() {
         return !this._loaded;
@@ -1944,8 +1989,6 @@ class Sylk extends Component {
     async componentDidMount() {
         utils.timestampedLog('App did mount');
 
-        await checkPendingActions(this);
-
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
         });
@@ -1969,7 +2012,7 @@ class Sylk extends Component {
 
         try {
             await RNCallKeep.supportConnectionService();
-            //utils.timestampedLog('Connection service is enabled');
+            utils.timestampedLog('Connection service is enabled');
         } catch(err) {
             utils.timestampedLog(err);
         }
@@ -1984,13 +2027,120 @@ class Sylk extends Component {
             this.setState({myPhoneNumber: myPhoneNumber});
         });
 
-        this.listenforPushNotifications();
+
+        registerForegroundListener(this);
+
+ 		await this.listenForPushNotifications();
         this.listenforSoundNotifications();
         this._loaded = true;
-
         this.checkVersion();
     }
 
+  listenForPushNotifications = async () => {
+    //console.log('listenForPushNotifications');
+
+    if (!this.state.appState) this.setState({ appState: 'active' });
+
+    // --- Handle initial deep link ---
+    try {
+      const url = await Linking.getInitialURL();
+      if (url) this.eventFromUrl(url);
+    } catch (err) {
+      console.log('Error getting initial URL:', err.message);
+    }
+    Linking.addEventListener('url', this.updateLinkingURL);
+
+    // --- Request permissions ---
+    if (Platform.OS === 'ios') {
+      const authStatus = await messaging().requestPermission();
+      const enabled =
+        authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+        authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+      if (!enabled) console.log('Push notifications not enabled');
+    } else {
+      await messaging().requestPermission();
+    }
+
+    // --- Get FCM token using modular API ---
+    const app = getApp(); // default app
+    const fcmToken = await messaging(app).getToken();
+    if (fcmToken) this._onPushRegistered(fcmToken);
+
+    // --- Foreground messages ---
+    this.messageListener = messaging(app).onMessage(async remoteMessage => {
+      console.log('FCM app foreground message:', remoteMessage);
+
+      if (Platform.OS === 'ios') {
+        PushNotificationIOS.presentLocalNotification({
+          alertTitle: remoteMessage.notification?.title,
+          alertBody: remoteMessage.notification?.body,
+          userInfo: remoteMessage.data,
+        });
+      } else {
+        const msg = normalizeMessage(remoteMessage);
+        this.handleFirebasePush(msg);
+      }
+    });
+
+    // --- Background messages ---
+    messaging(app).setBackgroundMessageHandler(async remoteMessage => {
+      console.log('FCM app background message:', remoteMessage);
+      const msg = normalizeMessage(remoteMessage);
+      this.handleFirebasePush(msg);
+    });
+
+	// Killed / app launched from notification
+	const initialNotification = await messaging(app).getInitialNotification();
+	if (initialNotification) {
+      console.log('FCM app initial message:', initialNotification);
+	  const msg = normalizeMessage(initialNotification);
+	  this.handleFirebasePush(msg);
+	}
+
+	const normalizeMessage = (remoteMessage) => {
+	  // RemoteMessage may have .data or .notification
+	  if (!remoteMessage) return null;
+	  const data = remoteMessage.data || {};
+	  const notification = remoteMessage.notification || {};
+	  return { ...data, notification };
+	};
+
+    messaging(app).onNotificationOpenedApp(remoteMessage => {
+      const msg = normalizeMessage(remoteMessage);
+      this.handleFirebasePush(msg);
+    });
+
+    // --- iOS VoIP ---
+    if (Platform.OS === 'ios') {
+      this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
+      VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
+      VoipPushNotification.registerVoipToken();
+
+      this._onNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
+      this._onLocalNotificationReceivedBackground =
+        this._onLocalNotificationReceivedBackground.bind(this);
+
+      VoipPushNotification.addEventListener(
+        'notification',
+        this._onNotificationReceivedBackground,
+      );
+      VoipPushNotification.addEventListener(
+        'localNotification',
+        this._onLocalNotificationReceivedBackground,
+      );
+    }
+
+    // --- DeviceEventEmitter ---
+    this.boundProximityDetect = this._proximityDetect.bind(this);
+    this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
+
+    DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
+    DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
+
+    // --- AppState listener ---
+    this.appStateSubscription = AppState.addEventListener('change', this._handleAppStateChange);
+  };
+  
     _keyboardDidShow(e) {
        this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
     }
@@ -2027,6 +2177,7 @@ class Sylk extends Component {
     }
 
     listenforSoundNotifications() {
+      // console.log('listenforSoundNotifications...');
      // Subscribe to event(s) you want when component mounted
         this._onFinishedPlayingSubscription = SoundPlayer.addEventListener('FinishedPlaying', ({ success }) => {
           //console.log('finished playing', success)
@@ -2042,91 +2193,6 @@ class Sylk extends Component {
         })
     }
 
-    handleFirebasePushInForeground(parent) {
-        // Must be outside of any component LifeCycle (such as `componentDidMount`).
-        //console.log('handleFirebasePushInForeground');
-        PushNotification.configure({
-          // (optional) Called when Token is generated (iOS and Android)
-          onRegister: function (token) {
-            //console.log("TOKEN:", token);
-          },
-
-          // (required) Called when a remote is received or opened, or local notification is opened
-          onNotification: function (notification) {
-            // process the notification
-            if (notification.userInteraction) {
-                parent.handleFirebasePushInteraction(notification);
-            } else {
-                parent.handleFirebasePush(notification);
-            }
-
-            // (required) Called when a remote is received or opened, or local notification is opened
-            notification.finish(PushNotificationIOS.FetchResult.NoData);
-          },
-
-          // (optional) Called when Registered Action is pressed and invokeApp is false, if true onNotification will be called (Android)
-          onAction: function (notification) {
-            console.log("ACTION:", notification.action);
-            console.log("NOTIFICATION:", notification);
-
-            // process the action
-          },
-
-          // (optional) Called when the user fails to register for remote notifications. Typically occurs when APNS is having issues, or the device is a simulator. (iOS)
-          onRegistrationError: function(err) {
-            console.error(err.message, err);
-          },
-        });
-
-        PushNotification.createChannel(
-        {
-          channelId: "sylk-messages", // (required)
-          channelName: "My Sylk silent stream", // (required)
-          channelDescription: "A channel to receive Sylk Message", // (optional) default: undefined.
-          playSound: false, // (optional) default: true
-          importance: Importance.HIGH, // (optional) default: Importance.HIGH. Int value of the Android notification importance
-          vibrate: true, // (optional) default: true. Creates the default vibration pattern if true.
-        },
-        (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
-      );
-
-        PushNotification.createChannel(
-        {
-          channelId: "sylk-messages-sound", // (required)
-          channelName: "My Sylk stream", // (required)
-          channelDescription: "A channel to receive Sylk Message", // (optional) default: undefined.
-          playSound: true, // (optional) default: true
-          soundName: "default", // (optional) See `soundName` parameter of `localNotification` function
-          importance: Importance.HIGH, // (optional) default: Importance.HIGH. Int value of the Android notification importance
-          vibrate: true, // (optional) default: true. Creates the default vibration pattern if true.
-        },
-        (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
-      );
-
-        PushNotification.deleteChannel("sylk-alert-panel");
-
-        PushNotification.createChannel(
-        {
-          channelId: "sylk-alert-panel", // (required)
-          channelName: "Sylk Incoming Calls", // (required)
-          channelDescription: "Display alert panel for incoming calls", // (optional) default: undefined.
-          importance: Importance.MAX, // (optional) default: Importance.HIGH. Int value of the Android notification importance
-          vibrate: true, // (optional) default: true. Creates the default vibration pattern if true.
-          playSound: true,
-          isRingtone: true //          soundName: "incallmanager_ringtone.mp3"
-        },
-        (created) => null // (optional) callback returns whether the channel was created, false means it already existed.
-        );
-
-        return;
-
-        console.log('Available Sylk channels:');
-
-        PushNotification.getChannels(function (channel_ids) {
-        console.log(channel_ids); // ['channel_id_1']
-        });
-    }
-
     handleiOSNotification(notification) {
         // when user touches the system notification and app launches...
         console.log("Handle iOS push notification:", notification);
@@ -2134,32 +2200,29 @@ class Sylk extends Component {
 
     // Example: handle incoming call
     handleIncomingCall(payload) {
-        console.log('[Sylk] ------ Incoming call from push at start:', payload);
+        console.log('FCM app incoming call from push at start:', payload);
         // Your logic: open call screen, update state, etc.
         let data = payload.data;
         let event = data.event;
         let action = payload.accept;
-        console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
-
+ 
         const callUUID = data['session-id'];
-        const media = {audio: true, video: data['media-type'] === 'video'};
-
+		const mediaType = data['media-type'] || 'audio';
+        const displayName = data['from_display_name'];
+        const from = data['from_uri'];
+        const to = data['to_uri'];
+ 
+        /*
         if (event === 'incoming_conference_request') {
-            if (action === 'accept') {
-                this.callKeepAcceptCall(callUUID);
-            }
+			this.incomingConference(callUUID, to, from, displayName, media);
         } else if (event === 'incoming_session') {
-            if (action === 'video') {
-                this.callKeepAcceptCall(callUUID, media);
-            } else {
-                media.video = false;
-                this.callKeepAcceptCall(callUUID, media);
-            }
+			this.incomingCallFromPush(callUUID, from, displayName, mediaType);
         }
+        */
     }
-        
+
     postAndroidIncomingCallNotification(data) {
-        //console.log('postAndroidIncomingCallNotification', data);
+        console.log('postAndroidIncomingCallNotification', data);
 
         if (Platform.OS !== 'android') {
             return;
@@ -2211,7 +2274,7 @@ class Sylk extends Component {
 
     postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
-        //console.log('postAndroidMessageNotification', content);
+        console.log('postAndroidMessageNotification', content);
         if (Platform.OS !== 'android') {
             return;
         }
@@ -2249,102 +2312,8 @@ class Sylk extends Component {
         });
     }
 
-    listenforPushNotifications() {
-        //console.log('listenforPushNotifications');
-        if (this.state.appState === null) {
-            this.setState({appState: 'active'});
-        } else {
-            return;
-        }
-
-        Linking.getInitialURL().then((url) => {
-            if (url) {
-              utils.timestampedLog('Initial external URL: ' + url);
-              this.eventFromUrl(url);
-            } else {
-              //utils.timestampedLog('No external URL');
-            }
-
-        }).catch(err => {
-              utils.timestampedLog('Error getting initial external URL: ', err.message);
-        });
-
-        Linking.addEventListener('url', this.updateLinkingURL);
-
-        if (Platform.OS === 'android') {
-            getMessaging().getToken()
-            .then(fcmToken => {
-                if (fcmToken) {
-                    this._onPushRegistered(fcmToken);
-                }
-            });
-
-        } else if (Platform.OS === 'ios') {
-            VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
-            VoipPushNotification.registerVoipToken();
-
-            PushNotificationIOS.addEventListener('register', this._boundOnPushRegistered);
-            PushNotificationIOS.addEventListener('localNotification', this.onLocalNotification);
-            PushNotificationIOS.addEventListener('notification', this.onRemoteNotification);
-            PushNotificationIOS.getInitialNotification().then(notification => {
-                if (!notification) {
-                    console.log('No initial notification');
-                    return;
-                }
-                const data = notification.getData();
-                if (data.data && data.data.event === 'message' && data.data.from_uri && data.data.to_uri) {
-                    this.selectChatContact(data.data.from_uri, data.data.to_uri);
-                }
-
-            });
-
-
-            //let permissions = await checkIosPermissions();
-            //if (!permissions.alert) {
-                PushNotificationIOS.requestPermissions();
-            //}
-        }
-
-        this.boundProximityDetect = this._proximityDetect.bind(this);
-        this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
-
-        DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
-        DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
-
-        this.appStateSubscription = AppState.addEventListener('change', this._handleAppStateChange);
-
-        if (Platform.OS === 'ios') {
-            this._boundOnNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
-            this._boundOnLocalNotificationReceivedBackground = this._onLocalNotificationReceivedBackground.bind(this);
-            VoipPushNotification.addEventListener('localNotification', this._boundOnLocalNotificationReceivedBackground);
-            VoipPushNotification.addEventListener('notification', this._boundOnNotificationReceivedBackground);
-            this.fetchSharedItems('ios');
-        } else if (Platform.OS === 'android') {
-            this.handleFirebasePushInForeground(this);
-
-            AppState.addEventListener('focus', this._handleAndroidFocus);
-            AppState.addEventListener('blur', this._handleAndroidBlur);
-
-            getMessaging()
-                .requestPermission()
-                .then(() => {
-                    // User has authorised
-                })
-                .catch(error => {
-                    // User has rejected permissions
-                });
-
-            this.messageListener = getMessaging()
-                .onMessage((message: RemoteMessage) => {
-                    // this will just wake up the app to receive
-                    // the web-socket invite handled by this.incomingCall()
-                    this.handleFirebasePush(message);
-                });
-        }
-    }
-
     handleFirebasePushInteraction(notification) {
-        let data = notification.data;
+        let data = notification;
         let event = data.event;
         console.log("handleFirebasePushInteraction", event, data, 'in route', this.currentRoute);
 
@@ -2378,43 +2347,43 @@ class Sylk extends Component {
     }
 
     handleFirebasePush(notification) {
-        let event = notification.data.event;
-        //console.log("Firebase Push notification", event);
-        const callUUID = notification.data['session-id'];
-        const from = notification.data['from_uri'];
-        const to = notification.data['to_uri'];
-        const displayName = notification.data['from_display_name'];
-        const outgoingMedia = {audio: true, video: notification.data['media-type'] === 'video'};
-        const mediaType = notification.data['media-type'] || 'audio';
+        console.log("FCM app handle notification", notification);
+        let event = notification.event;
+        const callUUID = notification['session-id'];
+        const from = notification['from_uri'];
+        const to = notification['to_uri'];
+        const displayName = notification['from_display_name'];
+        const outgoingMedia = {audio: true, video: notification['media-type'] === 'video'};
+        const mediaType = notification['media-type'] || 'audio';
 
         if (this.unmounted) {
             //return;
         }
 
         if (event === 'incoming_conference_request') {
-            utils.timestampedLog('Firebase push notification: incoming conference', callUUID);
+            utils.timestampedLog('FCM app event: incoming conference', callUUID);
             if (!from || !to) {
                 return;
             }
             if (to !== this.state.accountId) {
                 return
             }
-            this.postAndroidIncomingCallNotification(notification.data);
+            this.postAndroidIncomingCallNotification(notification);
             this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
         } else if (event === 'incoming_session') {
-            utils.timestampedLog('Firbase push notification: incoming call', callUUID);
+            utils.timestampedLog('FCM app event: incoming call', callUUID);
             if (!from) {
                 return;
             }
             if (to !== this.state.accountId) {
                 return
             }
-            this.postAndroidIncomingCallNotification(notification.data);
+            this.postAndroidIncomingCallNotification(notification);
             this.incomingCallFromPush(callUUID, from, displayName, mediaType);
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
         } else if (event === 'message') {
-            //console.log('Firebase push notification: new message from', from);
+            console.log('FCP app event: new message from', from);
         }
     }
 
@@ -2992,7 +2961,7 @@ class Sylk extends Component {
     }
 
     async showAlertPanel(data, source) {
-        console.log('Show alert panel', source);
+        console.log('Show alert panel requested by', source);
 
         if (this.callKeeper._cancelledCalls.has(data.callUUID)) {
             console.log('Show internal alert panel cancelled');
@@ -4273,7 +4242,6 @@ class Sylk extends Component {
         this.changeRoute('/call', 'accept_call');
         this.backToForeground();
 
-
         if (Platform.OS === 'android') {
             const phoneAllowed = await this.requestPhonePermission();
             if (!phoneAllowed) {
@@ -4906,6 +4874,36 @@ class Sylk extends Component {
         return false;
     }
 
+	// --------------------------------
+	// Post incoming call notification
+	// --------------------------------
+	async processPendingAction(callUUID) {
+	  console.log('processPendingAction') 
+	  const pendingJson = await AsyncStorage.getItem(`pendingAction:${callUUID}`);
+	  if (!pendingJson) return;
+	
+	  const { payload, choice } = JSON.parse(pendingJson);
+	
+   	  console.log('choice', choice);
+	  if (choice === 'accept_audio') {
+	      console.log('We must accept call', callUUID, payload);
+	  }
+	
+	  await AsyncStorage.removeItem(`pendingAction:${callUUID}`);
+	  await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
+	}
+	
+	async checkPendingActions(appInstance) {
+	  const keys = await AsyncStorage.getAllKeys();
+	  const pendingKeys = keys.filter(k => k.startsWith('pendingAction:'));
+	  console.log('---- checkPendingActions', pendingKeys);
+	
+	  for (const key of pendingKeys) {
+		const callUUID = key.split(':')[1];
+		await this.processPendingAction(callUUID);
+	  }
+	}
+
     autoAcceptIncomingCall(callUUID, from) {
         // TODO: handle ping pong where we call each other back
         if (this.state.currentCall &&
@@ -4924,7 +4922,7 @@ class Sylk extends Component {
     }
 
     async incomingCallFromPush(callUUID, from, displayName, mediaType, force) {
-        //utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
+        utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.unmounted) {
             return;
@@ -5024,6 +5022,7 @@ class Sylk extends Component {
         // we cannot have two incoming calls, second one is automatically rejected by sylkrtc.js
 
         if (this.autoRejectIncomingCall(callUUID, from)) {
+            console.log('autoRejectIncomingCall')
             return;
         }
 
@@ -5032,7 +5031,25 @@ class Sylk extends Component {
             return;
         }
 
-        const autoAccept = this.autoAcceptIncomingCall(callUUID, from);
+        let autoAccept = this.autoAcceptIncomingCall(callUUID, from);
+		const pendingJson = await AsyncStorage.getItem(`pendingAction:${callUUID}`);
+		if (pendingJson) {
+		    const { payload, choice } = JSON.parse(pendingJson);
+		    console.log('choice', choice);
+		    if (choice === 'accept_audio') {
+				if ('video' in mediaTypes) {
+				  delete mediaTypes.video;
+				}
+			    console.log('We must accept audio call', callUUID);
+			    autoAccept = true;
+		    } else if (choice === 'accept_video') {
+			    console.log('We must accept video call', callUUID);
+			    autoAccept = true;
+		    }
+		}
+
+	    await AsyncStorage.removeItem(`pendingAction:${callUUID}`);
+		await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
 
         this.goToReadyNowAndCancelTimer();
 
@@ -5044,11 +5061,14 @@ class Sylk extends Component {
 
         let skipNativePanel = false;
 
-        if (Platform.OS === 'android' && this.callKeeper.selfManaged) {
-            this.showAlertPanel(call, 'websocket_call');
-            skipNativePanel = true;
-        }
-
+        if (autoAccept) {
+			this.changeRoute('/call', 'accept_call');
+		} else {
+			if (Platform.OS === 'android' && this.callKeeper.selfManaged) {
+				this.showAlertPanel(call, 'websocket_call');
+				skipNativePanel = true;
+			}
+		}
         this.callKeeper.incomingCallFromWebSocket(call, autoAccept, skipNativePanel);
     }
 
