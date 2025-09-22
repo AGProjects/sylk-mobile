@@ -388,11 +388,13 @@ class VideoBox extends Component {
                         </TouchableWithoutFeedback>
                     : null }
 
-                {this.state.reconnectingCall
-                    ? <ActivityIndicator style={styles.reconnectContainer} animating={true} size={'large'} color={Colors.red800} />
+                {this.state.reconnectingCall ?
+                    <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
                     : null
                 }
+
                 {buttons}
+
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
