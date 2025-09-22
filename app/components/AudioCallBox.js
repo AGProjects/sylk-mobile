@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { View, Platform, TouchableWithoutFeedback, TouchableHighlight } from 'react-native';
-import { IconButton, Dialog, Text, ActivityIndicator, Colors } from 'react-native-paper';
+import { IconButton, Dialog, Text, ActivityIndicator } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
@@ -82,70 +82,57 @@ class AudioCallBox extends Component {
     }
 
     componentWillUnmount() {
-        if (this.state.call != null) {
+        if (this.state.call != null && this.state.call.removeListener) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
+        }
+        if (this.callTimer) {
+            clearTimeout(this.callTimer);
         }
     }
 
-    //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
+        // Safe listener handling
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
+            // Remove previous listener safely
+            if (this.state.call != null && this.state.call.removeListener) {
+                this.state.call.removeListener('stateChanged', this.callStateChanged);
+            }
+
+            // Attach new listener if available
+            if (nextProps.call && nextProps.call.on) {
+                nextProps.call.on('stateChanged', this.callStateChanged);
+            }
+
             if (nextProps.call.state === 'established') {
                 this.attachStream(nextProps.call);
                 this.setState({reconnectingCall: false});
             }
 
-            nextProps.call.on('stateChanged', this.callStateChanged);
-
-            if (this.state.call !== null) {
-                this.state.call.removeListener('stateChanged', this.callStateChanged);
-            }
-            this.setState({call: nextProps.call});
+            this.setState({ call: nextProps.call });
         }
 
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
-        if (nextProps.hasOwnProperty('muted')) {
-            this.setState({audioMuted: nextProps.muted});
-        }
-
-        if (nextProps.hasOwnProperty('info')) {
-            this.setState({info: nextProps.info});
-        }
-
-        if (nextProps.hasOwnProperty('packetLossQueue')) {
-            this.setState({packetLossQueue: nextProps.packetLossQueue});
-        }
-
-        if (nextProps.hasOwnProperty('audioBandwidthQueue')) {
-            this.setState({audioBandwidthQueue: nextProps.audioBandwidthQueue});
-        }
-
-        if (nextProps.hasOwnProperty('latencyQueue')) {
-            this.setState({latencyQueue: nextProps.latencyQueue});
-        }
-
-        this.setState({remoteUri: nextProps.remoteUri,
-                       remoteDisplayName: nextProps.remoteDisplayName,
-                       photo: nextProps.photo ? nextProps.photo : this.state.photo,
-                       declineReason: nextProps.declineReason,
-                       callContact: nextProps.callContact,
-                       audioCodec: nextProps.audioCodec,
-                       selectedContacts: nextProps.selectedContacts,
-                       selectedContact: nextProps.selectedContact,
-                       terminatedReason: nextProps.terminatedReason,
-                       speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
-                       localMedia: nextProps.localMedia
-                       });
-    }
-
-    componentWillUnmount() {
-        if (this.state.call != null) {
-            this.state.call.removeListener('stateChanged', this.callStateChanged);
-        }
-        clearTimeout(this.callTimer);
+        this.setState({
+            audioMuted: nextProps.muted,
+            info: nextProps.info,
+            packetLossQueue: nextProps.packetLossQueue,
+            audioBandwidthQueue: nextProps.audioBandwidthQueue,
+            latencyQueue: nextProps.latencyQueue,
+            remoteUri: nextProps.remoteUri,
+            remoteDisplayName: nextProps.remoteDisplayName,
+            photo: nextProps.photo ? nextProps.photo : this.state.photo,
+            declineReason: nextProps.declineReason,
+            callContact: nextProps.callContact,
+            audioCodec: nextProps.audioCodec,
+            selectedContacts: nextProps.selectedContacts,
+            selectedContact: nextProps.selectedContact,
+            terminatedReason: nextProps.terminatedReason,
+            speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
+            localMedia: nextProps.localMedia,
+        });
     }
 
     callStateChanged(oldState, newState, data) {
@@ -211,10 +198,11 @@ class AudioCallBox extends Component {
         let buttonContainerClass;
         let userIconContainerClass;
 
-        let remoteIdentity = {uri: this.state.remoteUri || '',
-                              name: this.state.remoteDisplayName || '',
-                              photo: this.state.photo
-                              };
+        const remoteIdentity = {
+            uri: this.state.remoteUri || '',
+            name: this.state.remoteDisplayName || '',
+            photo: this.state.photo
+        };
 
         const username = this.state.remoteUri.split('@')[0];
         const isPhoneNumber = utils.isPhoneNumber(this.state.remoteUri);
@@ -237,17 +225,9 @@ class AudioCallBox extends Component {
 
         let disablePlus = false;
         if (this.state.callContact) {
-            if (isPhoneNumber) {
-                disablePlus = true;
-            }
-
-            if (this.state.callContact.tags.indexOf('test') > -1) {
-                disablePlus = true;
-            }
-
-            if (this.state.callContact.tags.indexOf('conference') > -1) {
-                disablePlus = true;
-            }
+            if (isPhoneNumber) disablePlus = true;
+            if (this.state.callContact.tags.indexOf('test') > -1) disablePlus = true;
+            if (this.state.callContact.tags.indexOf('conference') > -1) disablePlus = true;
         }
 
         let whiteButtonClass         = Platform.OS === 'ios' ? styles.whiteButtoniOS         : styles.whiteButton;
@@ -273,31 +253,30 @@ class AudioCallBox extends Component {
                     terminatedReason={this.state.terminatedReason}
                 />
 
-                <View style={userIconContainerClass}>
-                    <UserIcon identity={remoteIdentity} size={150} active={this.state.active} />
-                </View>
-
-                <Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
-                <TouchableWithoutFeedback onPress={this.handleDoubleTap}>
-                <Text style={styles.uri}>{this.state.remoteUri}</Text>
-                </TouchableWithoutFeedback>
+				<View style={userIconContainerClass}>
+					<UserIcon identity={remoteIdentity} size={150} active={this.state.active} />
+				</View>
+				
+				<Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
+				<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+					<Text style={styles.uri}>{this.state.remoteUri}</Text>
+				</TouchableWithoutFeedback>
+				
+				<TrafficStats
+					packetLossQueue={this.state.packetLossQueue}
+					latencyQueue={this.state.latencyQueue}
+					audioBandwidthQueue={this.state.audioBandwidthQueue}
+					videoBandwidthQueue={this.state.videoBandwidthQueue}
+					isTablet={this.props.isTablet}
+					orientation={this.props.orientation}
+					audioCodec={this.state.audioCodec}
+					media="audio"
+				/>
 
                 {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
-                <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={Colors.red800} />
-                :
-                null
+                    <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
+                    : null
                 }
-
-                <TrafficStats
-                    packetLossQueue = {this.state.packetLossQueue}
-                    latencyQueue = {this.state.latencyQueue}
-                    audioBandwidthQueue = {this.state.audioBandwidthQueue}
-                    videoBandwidthQueue = {this.state.videoBandwidthQueue}
-                    isTablet = {this.props.isTablet}
-                    audioCodec = {this.props.audioCodec}
-                    orientation = {this.props.orientation}
-                    media = 'audio'
-                />
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
@@ -404,12 +383,6 @@ class AudioCallBox extends Component {
                     </View>
                 }
 
-                <LoadingScreen
-                            text={'Verify identity'}
-                            show={false}
-                            orientation={this.state.orientation}
-                            isTablet={this.state.isTablet}
-                            />
                 <DTMFModal
                     show={this.state.showDtmfModal}
                     hide={this.hideDtmfModal}
@@ -429,48 +402,48 @@ class AudioCallBox extends Component {
 }
 
 AudioCallBox.propTypes = {
-    remoteUri               : PropTypes.string,
-    remoteDisplayName       : PropTypes.string,
-    photo                   : PropTypes.string,
-    call                    : PropTypes.object,
-    connection              : PropTypes.object,
-    accountId               : PropTypes.string,
-    escalateToConference    : PropTypes.func,
-    info                    : PropTypes.string,
-    hangupCall              : PropTypes.func,
-    mediaPlaying            : PropTypes.func,
-    localMedia              : PropTypes.object,
-    callKeepSendDtmf        : PropTypes.func,
-    toggleMute              : PropTypes.func,
-    toggleSpeakerPhone      : PropTypes.func,
-    speakerPhoneEnabled     : PropTypes.bool,
-    orientation             : PropTypes.string,
-    isTablet                : PropTypes.bool,
-    reconnectingCall        : PropTypes.bool,
-    muted                   : PropTypes.bool,
-    packetLossQueue         : PropTypes.array,
-    videoBandwidthQueue     : PropTypes.array,
-    audioBandwidthQueue     : PropTypes.array,
-    latencyQueue            : PropTypes.array,
-    showLogs                : PropTypes.func,
-    goBackFunc              : PropTypes.func,
-    callState               : PropTypes.object,
-    messages                : PropTypes.object,
-    sendMessage             : PropTypes.func,
-    reSendMessage           : PropTypes.func,
-    confirmRead             : PropTypes.func,
-    deleteMessage           : PropTypes.func,
-    expireMessage           : PropTypes.func,
-    getMessages             : PropTypes.func,
-    pinMessage              : PropTypes.func,
-    unpinMessage            : PropTypes.func,
-    callContact             : PropTypes.object,
-    selectedContact         : PropTypes.object,
-    selectedContacts        : PropTypes.array,
-    inviteToConferenceFunc  : PropTypes.func,
-    finishInvite            : PropTypes.func,
-    audioCodec              : PropTypes.string,
-    terminatedReason        : PropTypes.string
+    remoteUri: PropTypes.string,
+    remoteDisplayName: PropTypes.string,
+    photo: PropTypes.string,
+    call: PropTypes.object,
+    connection: PropTypes.object,
+    accountId: PropTypes.string,
+    escalateToConference: PropTypes.func,
+    info: PropTypes.string,
+    hangupCall: PropTypes.func,
+    mediaPlaying: PropTypes.func,
+    localMedia: PropTypes.object,
+    callKeepSendDtmf: PropTypes.func,
+    toggleMute: PropTypes.func,
+    toggleSpeakerPhone: PropTypes.func,
+    speakerPhoneEnabled: PropTypes.bool,
+    orientation: PropTypes.string,
+    isTablet: PropTypes.bool,
+    reconnectingCall: PropTypes.bool,
+    muted: PropTypes.bool,
+    packetLossQueue: PropTypes.array,
+    videoBandwidthQueue: PropTypes.array,
+    audioBandwidthQueue: PropTypes.array,
+    latencyQueue: PropTypes.array,
+    showLogs: PropTypes.func,
+    goBackFunc: PropTypes.func,
+    callState: PropTypes.object,
+    messages: PropTypes.object,
+    sendMessage: PropTypes.func,
+    reSendMessage: PropTypes.func,
+    confirmRead: PropTypes.func,
+    deleteMessage: PropTypes.func,
+    expireMessage: PropTypes.func,
+    getMessages: PropTypes.func,
+    pinMessage: PropTypes.func,
+    unpinMessage: PropTypes.func,
+    callContact: PropTypes.object,
+    selectedContact: PropTypes.object,
+    selectedContacts: PropTypes.array,
+    inviteToConferenceFunc: PropTypes.func,
+    finishInvite: PropTypes.func,
+    audioCodec: PropTypes.string,
+    terminatedReason: PropTypes.string
 };
 
 export default AudioCallBox;

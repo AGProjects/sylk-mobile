@@ -1,145 +1,109 @@
 import React, { Component } from 'react';
-
-import { View } from 'react-native'
+import { View } from 'react-native';
 import { Text } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { BarChart, Grid, XAxis } from 'react-native-svg-charts'
-import * as scale from 'd3-scale'
+import { BarChart } from 'react-native-svg-charts';
 
 import styles from '../assets/styles/blink/_TrafficStats.scss';
-
 
 class TrafficStats extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
         this.state = {
-            audioBandwidthQueue: this.props.audioBandwidthQueue,
-            videoBandwidthQueue: this.props.videoBandwidthQueue,
-            packetLossQueue: this.props.packetLossQueue,
-            latencyQueue: this.props.latencyQueue
-        }
+            audioBandwidthQueue: props.audioBandwidthQueue || [],
+            videoBandwidthQueue: props.videoBandwidthQueue || [],
+            packetLossQueue: props.packetLossQueue || [],
+            latencyQueue: props.latencyQueue || []
+        };
     }
 
-    //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.hasOwnProperty('packetLossQueue')) {
-            this.setState({packetLossQueue: nextProps.packetLossQueue});
-        }
-
-        if (nextProps.hasOwnProperty('latencyQueue')) {
-            this.setState({latencyQueue: nextProps.latencyQueue});
-        }
-
-        if (nextProps.hasOwnProperty('audioBandwidthQueue')) {
-            this.setState({audioBandwidthQueue: nextProps.audioBandwidthQueue});
-        }
-
-        if (nextProps.hasOwnProperty('videoBandwidthQueue')) {
-            this.setState({videoBandwidthQueue: nextProps.videoBandwidthQueue});
-        }
+        this.setState({
+            audioBandwidthQueue: nextProps.audioBandwidthQueue || [],
+            videoBandwidthQueue: nextProps.videoBandwidthQueue || [],
+            packetLossQueue: nextProps.packetLossQueue || [],
+            latencyQueue: nextProps.latencyQueue || []
+        });
     }
 
     render() {
-        let showBv = false;
-        this.state.audioBandwidthQueue.forEach(val => {
-            if (val > 0) {
-                showBv = true;
-            }
-        });
+        const { audioBandwidthQueue, packetLossQueue, latencyQueue } = this.state;
 
-        let showLoss = false;
-        this.state.packetLossQueue.forEach(val => {
-            if (val > 0) {
-                showLoss = true;
-            }
-        });
+        // Safety: don't crash if undefined
+        if (!audioBandwidthQueue || !packetLossQueue || !latencyQueue) {
+            return <View style={styles.container} />;
+        }
 
+        // Only hide charts in tablet landscape
         if (!this.props.isTablet && this.props.orientation === 'landscape') {
-            return (null);
+            return <View style={styles.container} />;
         }
 
-        if (this.state.audioBandwidthQueue.length === 0) {
-            //console.log('No bandwidth information...');
-            return (null);
+        // Determine if we have data
+        const showBv = audioBandwidthQueue.some(val => val > 0);
+        const showLoss = packetLossQueue.some(val => val > 0);
+
+        if (audioBandwidthQueue.length === 0) {
+            return <View style={styles.container} />; // preserve layout
         }
 
-        const currentBandwidth = this.state.audioBandwidthQueue[this.state.audioBandwidthQueue.length-1] + ' kbit/s';
+        // Current bandwidth, loss, latency calculations
+        const currentBandwidth = audioBandwidthQueue[audioBandwidthQueue.length - 1] + ' kbit/s';
+        let currentLoss = packetLossQueue.slice(-3).reduce((a, b) => a + b, 0) / Math.min(3, packetLossQueue.length);
+        let latency = latencyQueue.slice(-3).reduce((a, b) => a + b, 0) / Math.min(3, latencyQueue.length);
 
-        let currentLoss = (this.state.packetLossQueue[this.state.packetLossQueue.length-1] +
-                          this.state.packetLossQueue[this.state.packetLossQueue.length-2] +
-                          this.state.packetLossQueue[this.state.packetLossQueue.length-3]
-                          ) / 3;
-
-        let latency = (this.state.latencyQueue[this.state.latencyQueue.length-1] +
-                          this.state.latencyQueue[this.state.latencyQueue.length-2] +
-                          this.state.latencyQueue[this.state.latencyQueue.length-3]
-                          ) / 3;
-
+        // Colors
         let lossColor = 'orange';
-
-        if (currentLoss < 3) {
-            currentLoss = 'No packet loss';
-        } else {
-            currentLoss = 'Packet loss ' + Math.ceil(currentLoss) + '%';
-            if (currentLoss > 10) {
-                lossColor = 'red';
-            }
-        }
-
         let latencyColor = 'green';
 
+        if (currentLoss < 3) currentLoss = 'No packet loss';
+        else {
+            currentLoss = 'Packet loss ' + Math.ceil(currentLoss) + '%';
+            if (currentLoss > 10) lossColor = 'red';
+        }
+
         if (latency) {
-            if (latency > 175 && latency < 400) {
-                latencyColor = 'orange';
-            } else if (latency >= 400) {
-                latencyColor = 'red';
-            }
+            if (latency > 175 && latency < 400) latencyColor = 'orange';
+            else if (latency >= 400) latencyColor = 'red';
             latency = Math.ceil(latency);
         } else {
-            //console.log('No latency information...');
-            return (null);
+            return <View style={styles.container} />;
         }
 
         return (
-                <View style={styles.container}>
+            <View style={styles.container}>
                 <BarChart
-                style = {{ height: 60}}
-                data = { this.state.latencyQueue }
-                svg = {{ fill: latencyColor }}
-                contentInset={{ top: 5, bottom: 5 }}
-                >
-                </BarChart>
+                    style={{ height: 60 }}
+                    data={latencyQueue}
+                    svg={{ fill: latencyColor }}
+                    contentInset={{ top: 5, bottom: 5 }}
+                />
                 <Text style={styles.text}>{this.props.audioCodec} latency {latency} ms</Text>
 
                 <BarChart
-                style = {{ height: 60}}
-                data = { this.state.packetLossQueue }
-                svg = {{ fill: lossColor }}
-                contentInset={{ top: 5, bottom: 5 }}
-                >
-                </BarChart>
-                { showLoss ?
-                <Text style={styles.text}>{currentLoss}</Text>
-                : null}
-
-                </View>
-
+                    style={{ height: 60 }}
+                    data={packetLossQueue}
+                    svg={{ fill: lossColor }}
+                    contentInset={{ top: 5, bottom: 5 }}
+                />
+                {showLoss && <Text style={styles.text}>{currentLoss}</Text>}
+            </View>
         );
     }
-
 }
 
 TrafficStats.propTypes = {
-    packetLossQueue         : PropTypes.array,
-    videoBandwidthQueue     : PropTypes.array,
-    audioBandwidthQueue     : PropTypes.array,
-    latencyQueue            : PropTypes.array,
-    orientation             : PropTypes.string,
-    isTablet                : PropTypes.bool,
-    media                   : PropTypes.string,
-    audioCodec                   : PropTypes.string
+    packetLossQueue: PropTypes.array,
+    videoBandwidthQueue: PropTypes.array,
+    audioBandwidthQueue: PropTypes.array,
+    latencyQueue: PropTypes.array,
+    orientation: PropTypes.string,
+    isTablet: PropTypes.bool,
+    media: PropTypes.string,
+    audioCodec: PropTypes.string
 };
 
-export default TrafficStats
+export default TrafficStats;
+
