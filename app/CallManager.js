@@ -99,18 +99,21 @@ export default class CallManager extends events.EventEmitter {
         this.boundRnDisplayIncomingCall = this._displayIncomingCall.bind(this);
         this.boundRnShowIncomingCallUi = this._showIncomingCallUi.bind(this);
 
-        this._RNCallKeep.addEventListener('answerCall', this._boundRnAccept);
-        this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
-        this._RNCallKeep.addEventListener('didPerformSetMutedCallAction', this._boundRnMute);
-        this._RNCallKeep.addEventListener('didActivateAudioSession', this._boundRnActiveAudioCall);
-        this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
-        this._RNCallKeep.addEventListener('didPerformDTMFAction', this._boundRnDTMF);
-        this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
-        this._RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
-        this._RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
-        if (Platform.OS === 'android') {
-            this._RNCallKeep.addEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
-        }
+		// Safe listener setup in constructor
+		if (this._RNCallKeep && this._RNCallKeep.addEventListener) {
+			this._RNCallKeep.addEventListener('answerCall', this._boundRnAccept);
+			this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);
+			this._RNCallKeep.addEventListener('didPerformSetMutedCallAction', this._boundRnMute);
+			this._RNCallKeep.addEventListener('didActivateAudioSession', this._boundRnActiveAudioCall);
+			this._RNCallKeep.addEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
+			this._RNCallKeep.addEventListener('didPerformDTMFAction', this._boundRnDTMF);
+			this._RNCallKeep.addEventListener('didResetProvider', this._boundRnProviderReset);
+			this._RNCallKeep.addEventListener('didReceiveStartCallAction', this.boundRnStartAction);
+			this._RNCallKeep.addEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+			if (Platform.OS === 'android') {
+				this._RNCallKeep.addEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
+			}
+		}
 
         this.selfManaged = options.android.selfManaged && Platform.OS === 'android';
         this.setup();
@@ -735,18 +738,29 @@ export default class CallManager extends events.EventEmitter {
         this.emit('sessionschange', countChanged);
     }
 
-    destroy() {
-        this._RNCallKeep.removeEventListener('acceptCall', this._boundRnAccept);
-        this._RNCallKeep.removeEventListener('endCall', this._boundRnEnd);
-        this._RNCallKeep.removeEventListener('didPerformSetMutedCallAction', this._boundRnMute);
-        this._RNCallKeep.removeEventListener('didActivateAudioSession',  this._boundRnActiveAudioCall);
-        this._RNCallKeep.removeEventListener('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
-        this._RNCallKeep.removeEventListener('didPerformDTMFAction', this._boundRnDTMF);
-        this._RNCallKeep.removeEventListener('didResetProvider', this._boundRnProviderReset);
-        this._RNCallKeep.removeEventListener('didReceiveStartCallAction', this.boundRnStartAction);
-        this._RNCallKeep.removeEventListener('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
-        if (Platform.OS === 'android') {
-            this._RNCallKeep.removeEventListener('showIncomingCallUi', this.boundRnShowIncomingCallUi);
-        }
-    }
+	// Safe destroy()
+	destroy() {
+		if (!this._RNCallKeep || !this._RNCallKeep.removeEventListener) return;
+	
+		const safeRemove = (event, handler) => {
+			try {
+				if (handler) this._RNCallKeep.removeEventListener(event, handler);
+			} catch (e) {
+				console.warn('Failed to remove RNCallKeep listener', event, e);
+			}
+		};
+	
+		safeRemove('answerCall', this._boundRnAccept);
+		safeRemove('endCall', this._boundRnEnd);
+		safeRemove('didPerformSetMutedCallAction', this._boundRnMute);
+		safeRemove('didActivateAudioSession', this._boundRnActiveAudioCall);
+		safeRemove('didDeactivateAudioSession', this._boundRnDeactiveAudioCall);
+		safeRemove('didPerformDTMFAction', this._boundRnDTMF);
+		safeRemove('didResetProvider', this._boundRnProviderReset);
+		safeRemove('didReceiveStartCallAction', this.boundRnStartAction);
+		safeRemove('didDisplayIncomingCall', this.boundRnDisplayIncomingCall);
+		if (Platform.OS === 'android') {
+			safeRemove('showIncomingCallUi', this.boundRnShowIncomingCallUi);
+		}
+	}
 }
