@@ -14,8 +14,8 @@ const TrafficStats = (props) => {
         return <View style={styles.container} />;
     }
 
-    const latencyQueue = data.map(item => item.latency);
-    const packetLossQueue = data.map(item => item.packetsLostInbound + item.packetsLostOutbound);
+    const latencyQueue = [...Array(30).fill(0), ...data.map(item => item.latency)].slice(-30);
+    const packetLossQueue = [...Array(30).fill(0), ...data.map(item => item.packetsLostInbound + item.packetsLostOutbound)].slice(-30);
     const audioCodec = data[0].audioCodec;
 
     if (!packetLossQueue || !latencyQueue) {
