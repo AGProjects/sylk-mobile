@@ -8,6 +8,7 @@ import momentFormat from 'moment-duration-format';
 import { Text, Appbar, Menu } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
+import SylkAppbarContent from './SylkAppbarContent';
 import styles from '../assets/styles/blink/_ConferenceHeader.scss';
 
 
@@ -213,9 +214,9 @@ class ConferenceHeader extends React.Component {
 
         return (
         <View style={styles.container}>
-            <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}}>
+            <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
                 <Appbar.BackAction onPress={() => {this.goBack()}} />
-                 <Appbar.Content
+                 <SylkAppbarContent
                     title={displayName}
                     subtitle={callDetail}
                 />
