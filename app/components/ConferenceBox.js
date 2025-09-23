@@ -2137,7 +2137,7 @@ class ConferenceBox extends Component {
 
      if (this.state.videoEnabled && !this.state.isLandscape) {
        floatingButtons.push(
-          <View style={styles.hangupButtonVideoContainer}>
+          <View style={styles.hangupButtonVideoContainer} key='leavec'>
           <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
