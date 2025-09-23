@@ -30,7 +30,6 @@
     "react-native-audio-record": "^0.2.2",
     "react-native-audio-recorder-player": "^3.6.5",
     "react-native-autocomplete-input": "^5.5.6",
-    "react-native-background-downloader": "kesha-antonov/react-native-background-downloader#ffca4f8",
     "react-native-background-timer": "2.4.1",
     "react-native-base64": "^0.2.1",
     "react-native-callkeep": "^4.3.16",

@@ -10060,10 +10060,6 @@ react-native-autocomplete-input@^5.5.6:
   resolved "https://registry.yarnpkg.com/react-native-autocomplete-input/-/react-native-autocomplete-input-5.5.6.tgz#df2700877bbaad8c22ebd551b82a8cd9dabbe76d"
   integrity sha512-cUTzZpz9BseWff0RuSPAp+d+3C5NRl6kLUTIqNuwDoZuTqrxbOz87d0zP4M2Ncnv1KcPkm4Hs1T6Qdj4reM9Tg==
 
-react-native-background-downloader@kesha-antonov/react-native-background-downloader#ffca4f8:
-  version "3.2.6"
-  resolved "https://codeload.github.com/kesha-antonov/react-native-background-downloader/tar.gz/ffca4f891cf4f2d39785396fef06d727f07d5c43"
-
 react-native-background-timer@2.4.1:
   version "2.4.1"
   resolved "https://registry.yarnpkg.com/react-native-background-timer/-/react-native-background-timer-2.4.1.tgz#a3bc1cafa8c1e3aeefd0611de120298b67978a0f"
