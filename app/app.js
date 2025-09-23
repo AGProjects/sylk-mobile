@@ -309,7 +309,7 @@ class Sylk extends Component {
             headsetIsPlugged: false
         };
 
-        this.buildId = "20240208d";
+        this.buildId = "20250923";
 
         utils.timestampedLog('Init app with id', this.buildId);
 
