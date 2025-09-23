@@ -1,4 +1,4 @@
-// copyright AG Projects 2020-2023
+// copyright AG Projects 2020-2025
 
 import React, { Component, Fragment } from 'react';
 import { Alert, View, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration, PermissionsAndroid} from 'react-native';
