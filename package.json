@@ -11,6 +11,7 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@kesha-antonov/react-native-background-downloader": "^3.2.6",
     "@notifee/react-native": "^9.1.8",
     "@react-native-camera-roll/camera-roll": "^7.10.2",
     "@react-native-community/async-storage": "^1.6.3",

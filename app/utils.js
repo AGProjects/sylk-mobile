@@ -5,8 +5,9 @@ import { Clipboard, Dimensions } from 'react-native';
 import Contacts from 'react-native-contacts';
 import xss from 'xss';
 import {decode as atob, encode as btoa} from 'base-64';
+import RNFS from 'react-native-fs';
+import { Platform } from 'react-native';
 
-const RNFS = require('react-native-fs');
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
@@ -14,6 +15,23 @@ let ENCRYPTABLE_FILE_SIZE = 20 * 1000 * 1000;
 
 
 let polycrc = require('polycrc');
+
+/**
+ * Get the expected partial download file path for a RNBackgroundDownloader task.
+ * @param {string} taskId - The id used in RNBackgroundDownloader.download()
+ * @returns {string} - Path to the temporary/partial file
+ */
+function getPartialDownloadPath(taskId) {
+    if (Platform.OS === 'android') {
+        // Android: partial files are in cache directory with taskId as filename
+        return `${RNFS.CachesDirectoryPath}/${taskId}.download`;
+    } else if (Platform.OS === 'ios') {
+        // iOS: partial files are in the temporary directory with taskId as filename
+        return `${RNFS.TemporaryDirectoryPath}${taskId}.download`;
+    } else {
+        throw new Error('Unsupported platform');
+    }
+}
 
 function log2file(text) {
     // append to logfile
@@ -746,6 +764,7 @@ function getPGPCheckSum(base64_content) {
         return radix64(str);
 }
 
+exports.getPartialDownloadPath = getPartialDownloadPath;
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
 exports.generateSillyName = generateSillyName;

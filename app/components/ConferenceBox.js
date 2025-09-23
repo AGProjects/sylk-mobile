@@ -40,7 +40,8 @@ import VideoPlayer from 'react-native-video-player';
 import xss from 'xss';
 import * as RNFS from 'react-native-fs';
 import styles from '../assets/styles/blink/_ConferenceBox.scss';
-import RNBackgroundDownloader from 'react-native-background-downloader';
+import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
+
 import md5 from "react-native-md5";
 import FileViewer from 'react-native-file-viewer';
 import _ from 'lodash'; import { produce } from "immer"
@@ -1047,12 +1048,18 @@ class ConferenceBox extends Component {
                 id: metadata.transfer_id,
                 url: metadata.url,
                 destination: metadata.local_url
-            }).begin((expectedBytes) => {
-                this.updateFileMessage(metadata.transfer_id, 0);
-                console.log(metadata.name, 'will download', expectedBytes, 'bytes');
-            }).progress((percent) => {
-                const progress = Math.ceil(percent * 100);
-                this.updateFileMessage(metadata.transfer_id, progress);
+            }).begin((tinfo) => {
+	            if (tinfo.expectedBytes) {
+                    this.updateFileMessage(metadata.transfer_id, 0);
+                    console.log(metadata.name, 'will download', expectedBytes, 'bytes');
+                }
+            }).progress((pdata) => {
+				if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
+					const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
+					const progress = Math.ceil(percent);
+					file_transfer.progress = progress;
+                    this.updateFileMessage(metadata.transfer_id, progress);
+				}
             }).done(() => {
                 this.updateFileMessage(metadata.transfer_id, 100);
                 delete this.downloadRequests[metadata.transfer_id];
