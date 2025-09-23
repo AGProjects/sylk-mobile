@@ -1534,6 +1534,10 @@ class ContactsListBox extends Component {
                 options.push('Share');
                 icons.push(<Icon name="share" size={20} />);
             }
+            
+            if  (currentMessage.metadata) {
+				//console.log('mesage metadata:', currentMessage.metadata);
+            }
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {
                 if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {

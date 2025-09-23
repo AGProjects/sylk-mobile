@@ -5858,7 +5858,9 @@ componentWillUnmount() {
 
         xhr.open('POST', remote_url);
         xhr.setRequestHeader('content-type', file_transfer.filetype);
-        this.updateFileTransferBubble(file_transfer, 'Uploading file...');
+        this.updateFileTransferBubble(file_transfer, 'Uploading file...', file_transfer);
+        console.log('Uploading file', file_transfer.filename, 'of', file_transfer.filesize, 'bytes');
+
         xhr.send({ uri: 'file://'+ local_url });
         if (xhr.upload) {
             xhr.upload.onprogress = (event) => {
@@ -6468,12 +6470,12 @@ componentWillUnmount() {
         });
     }
 
-    async updateRenderMessageState(id, state) {
+    async updateRenderMessageState(id, state, url) {
         let query;
         let uri;
         let changes = false;
 
-        //console.log('updateMessage', id, state);
+        //console.log('updateRenderMessageState', id, state, url);
 
         query = "SELECT * from messages where msg_id = ? and account = ?";
         //console.log(query);
@@ -6481,7 +6483,6 @@ componentWillUnmount() {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
-                //console.log(item);
                 uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
                 //console.log('Message', id, 'new state is', state);
                 if (uri in this.state.messages) {
@@ -6489,6 +6490,9 @@ componentWillUnmount() {
 
                     renderedMessages[uri].forEach((m) => {
                         if (m._id === id) {
+                            if (url && m.metadata) {
+                                m.metadata.url = url;
+                            }
                             if (state === 'accepted') {
                                 m.pending = false;
                                 m.failed = false;
@@ -6903,6 +6907,7 @@ componentWillUnmount() {
 
     async downloadFile(file_transfer, force=false) {
         const res = await RNFS.getFSInfo();
+        console.log('Download file', file_transfer.url);
         console.log('Available space', Math.ceil(res.freeSpace/1024/1024), 'MB');
 
         if (res.freeSpace < file_transfer.filesize) {
@@ -6920,7 +6925,7 @@ componentWillUnmount() {
 
             try {
                 await RNFS.unlink(dir_path);
-                utils.timestampedLog('File transfer directory deleted', dir_path);
+                //utils.timestampedLog('File transfer directory deleted', dir_path);
             } catch (err) {
                 console.log('Error removing directory', err.message);
             };
@@ -6937,7 +6942,7 @@ componentWillUnmount() {
 
         await RNFS.mkdir(dir_path);
 
-        //console.log('Made directory', dir_path);
+        console.log('Made directory', dir_path);
 
         let file_path = dir_path + "/" + file_transfer.filename;
         let tmp_file_path = file_path + '.tmp';
@@ -6953,7 +6958,6 @@ componentWillUnmount() {
             return;
         }
 
-        console.log('Downloading file', file_transfer);
         // add a timer to cancel the download
         //console.log('To local storage:', tmp_file_path);
 
@@ -6972,39 +6976,47 @@ componentWillUnmount() {
             id: id,
             url: file_transfer.url,
             destination: tmp_file_path,
-        }).begin((size) => {
-            filesize = size;
-            console.log('File', file_transfer.filename, 'has', size, 'bytes');
+        }).begin((tinfo) => {
+            console.log('Server headers:', tinfo.headers);
+            console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
             this.updateFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
         }).progress((percent) => {
+            if (typeof percent === 'number' && !isNaN(percent)) {
             const progress = Math.ceil(percent * 100);
-            //console.log('File', file_transfer.filename, 'download', progress, '%');
+            console.log('File', file_transfer.filename, 'download', progress, '%');
             file_transfer.progress = progress;
             this.updateFileTransferBubble(file_transfer, 'Downloaded ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
-        }).done(() => {
-            console.log('File', file_transfer.filename, 'downloaded');
-            delete this.downloadRequests[id];
-
-            if (file_transfer.filesize !== filesize) {
-                console.log('File', file_transfer.filename, 'size is wrong', filesize, file_transfer.filesize);
-                this.deleteMessage(id, remote_party, false);
-                return;
             }
+        }).done(() => {
+			RNFetchBlob.fs.stat(tmp_file_path).then(stat => {
+			    filesize = stat.size;
+				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
+				delete this.downloadRequests[id];
+	
+				if (file_transfer.filesize !== filesize) {
+					console.log('File', file_transfer.filename, 'size is wrong', filesize, 'must be', file_transfer.filesize);
+					//this.deleteMessage(id, remote_party, false);
+					//return;
+				}
+	
+				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
+					this.updateFileTransferBubble(file_transfer, 'Download finished');
+					this.saveDownloadTask(id, file_transfer.url, file_path);
+					if (this.state.callContact) {
+						this.getMessages(this.state.callContact.uri);
+					}
+				})
+				.catch((err) => {
+					console.log("Error moving temp file: " + err.message);
+					console.log("Source: ", tmp_file_path);
+					console.log("Destination: ", file_path);
+					file_transfer.local_url = null;
+					this.fileTransferStateChanged(id, 'failed', file_transfer);
+				});
 
-            RNFS.moveFile(tmp_file_path, file_path).then((success) => {
-                this.updateFileTransferBubble(file_transfer, 'Download finished');
-                this.saveDownloadTask(id, file_transfer.url, file_path);
-                if (this.state.callContact) {
-                    this.getMessages(this.state.callContact.uri);
-                }
-            })
-            .catch((err) => {
-                console.log("Error moving temp file: " + err.message);
-                console.log("Source: ", tmp_file_path);
-                console.log("Destination: ", file_path);
-                file_transfer.local_url = null;
-                this.fileTransferStateChanged(id, 'failed', file_transfer);
-            });
+			}).catch(err => {
+				console.log('Getting file size error:', err);
+			});
 
         }).error((error) => {
             console.log('File', file_transfer.filename, 'download failed:', error);
@@ -7130,7 +7142,7 @@ componentWillUnmount() {
             return;
         }
 
-        utils.timestampedLog('Decrypting file', file_path_binary, this.state.keys.private.length);
+        utils.timestampedLog('Decrypting file', file_path_binary);
 
         await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
             utils.timestampedLog('File', file_transfer.transfer_id, 'decrypted');
@@ -8779,7 +8791,7 @@ componentWillUnmount() {
                     console.log('SQL updated file transfer', id, 'received =', received);
                     this.checkFileTransfer(new_metadata);
                     // to do, skip query done below
-                    this.updateRenderMessageState(id, state);
+                    this.updateRenderMessageState(id, state, new_metadata.url);
                 }).catch((error) => {
                     console.log('updateFileTransferMessage SQL error:', error);
                 });
