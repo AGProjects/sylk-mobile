@@ -32,7 +32,7 @@ import { getAppstoreAppMetadata } from "react-native-appstore-version-checker";
 import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
 import {Keyboard} from 'react-native';
 import DeviceInfo from 'react-native-device-info';
-import RNBackgroundDownloader from 'react-native-background-downloader';
+import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 import {check, request, PERMISSIONS, RESULTS, openSettings} from 'react-native-permissions';
 import {decode as atob, encode as btoa} from 'base-64';
 
@@ -116,6 +116,9 @@ const KeyOptions = {
   RSABits: 4096,
 }
 
+const max_size_to_decrypt = 20 * 1000 * 1000;
+const max_transfer_size = 100 * 1000 * 1000;
+
 const incomingCallLabel = 'Incoming call...';
 
 const theme = {
@@ -163,7 +166,6 @@ const mainStyle = StyleSheet.create({
    margin: 0
  }
 });
-
 
 function _parseSQLDate(key, value) {
     return new Date(value);
@@ -6882,7 +6884,7 @@ componentWillUnmount() {
             if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
                 this.downloadFile(file_transfer);
             } else {
-                if (file_transfer.filesize < 1000 * 10000) {
+                if (file_transfer.filesize < max_transfer_size) {
                     this.downloadFile(file_transfer);
                 } else {
                     console.log('File transfer is too large');
@@ -6970,7 +6972,7 @@ componentWillUnmount() {
             await RNFS.unlink(file_path);
         } catch (err) {
         };
-
+        
         //console.log('Adding request id', id, file_transfer.url);
         this.updateFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
         let filesize;
@@ -6979,15 +6981,16 @@ componentWillUnmount() {
             url: file_transfer.url,
             destination: tmp_file_path,
         }).begin((tinfo) => {
-            console.log('Server headers:', tinfo.headers);
-            console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
-            this.updateFileTransferBubble(file_transfer, 'Downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
-        }).progress((percent) => {
-            if (typeof percent === 'number' && !isNaN(percent)) {
-            const progress = Math.ceil(percent * 100);
-            console.log('File', file_transfer.filename, 'download', progress, '%');
-            file_transfer.progress = progress;
-            this.updateFileTransferBubble(file_transfer, 'Downloaded ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
+             if (tinfo.expectedBytes) {
+				 console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
+				 this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
+             }
+        }).progress((pdata) => {
+            if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
+				const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
+				const progress = Math.ceil(percent);
+				file_transfer.progress = progress;
+				this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
             }
         }).done(() => {
 			RNFetchBlob.fs.stat(tmp_file_path).then(stat => {
@@ -7002,7 +7005,7 @@ componentWillUnmount() {
 				}
 	
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
-					this.updateFileTransferBubble(file_transfer, 'Download finished');
+					this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' download finished');
 					this.saveDownloadTask(id, file_transfer.url, file_path);
 					if (this.state.callContact) {
 						this.getMessages(this.state.callContact.uri);
@@ -7032,6 +7035,61 @@ componentWillUnmount() {
             }
         });
     }
+
+	/**
+	 * Stream and decrypt a large PGP .asc file safely
+	 * @param {string} inputPath - Path to the large .asc file
+	 * @param {string} outputPath - Path for the decrypted file
+	 * @param {string} privateKey - Your PGP private key
+	 */
+	async decryptLargePGPFile(inputPath, outputPath, privateKey) {
+	    console.log('decryptLargePGPFile');
+		const CHUNK_SIZE = 1024 * 1024; // 1 MB
+		let position = 0;
+		let insidePGP = false;
+		const tempBase64Path = inputPath + '.bin'; // temporary base64 file
+	
+		// Ensure temp file starts empty
+		await RNFS.writeFile(tempBase64Path, '', 'base64');
+	
+		while (true) {
+			const chunk = await RNFS.read(inputPath, CHUNK_SIZE, position, 'utf8');
+			if (!chunk || chunk.length === 0) break;
+	
+			position += chunk.length;
+			console.log('reading...');
+	
+			// Process the chunk line by line
+			const lines = chunk.split(/\r?\n/);
+			for (let line of lines) {
+				if (line === '-----BEGIN PGP MESSAGE-----') { insidePGP = true; continue; }
+				if (!insidePGP) continue;
+				if (line === '-----END PGP MESSAGE-----') { insidePGP = false; break; }
+	
+				// Skip PGP headers and empty lines
+				if (line === '' || line.startsWith('Version') || line.startsWith('Comment') ||
+					line.startsWith('MessageID') || line.startsWith('Hash') || line.startsWith('Charset') ||
+					line.startsWith('=')) continue;
+	
+				// Append the Base64 line directly to disk
+				await RNFS.appendFile(tempBase64Path, line, 'base64');
+			}
+		}
+	
+		console.log('PGP Base64 extraction complete. Decrypting now...');
+	
+		// Decrypt the tempBase64Path file to outputPath
+		await OpenPGP.decryptFile(tempBase64Path, outputPath, privateKey, null);
+	
+		console.log('Decryption complete:', outputPath);
+	
+		// Clean up temporary file
+		try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
+		try { await RNFS.unlink(inputPath); } catch (e) { /* optional cleanup */ }
+	
+		return outputPath;
+	}
+
 
     async decryptFile(file_transfer) {
         if (!this.state.keys.private) {
@@ -7076,8 +7134,16 @@ componentWillUnmount() {
                 return;
             }
         }
+        
+        if (file_transfer.filesize > max_size_to_decrypt) {
+           this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to decrypt');
+            return;
+        }
 
-        this.updateFileTransferBubble(file_transfer, 'Decrypting...');
+        this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + '...');
+
+		const decryptedPath = RNFS.DocumentDirectoryPath + '/' + file_transfer.filename;
+		console.log('Decrypting ', file_transfer.filename);
 
         try {
             content = await RNFS.readFile(file_path, 'utf8');
