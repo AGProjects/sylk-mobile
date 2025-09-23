@@ -185,7 +185,7 @@ class ContactCard extends Component {
         }
 
         if (uri === this.props.accountId) {
-            name = 'My self';
+            name = 'Myself';
         }
 
         let contact_ts = '';

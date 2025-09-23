@@ -382,13 +382,27 @@ class NavigationBar extends Component {
             blockedTitle = 'Allow anonymous callers';
         }
 
-        let subtitle = this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId;
-        let title = this.state.selectedContact ? this.state.selectedContact.name : this.state.myDisplayName;
+        let subtitle = this.state.accountId;
+        let title = this.state.myDisplayName || 'Myself';
 
-        if (!title) {
-            title = subtitle;
-            subtitle = '';
-        }
+		function capitalizeFirstLetter(str) {
+		  if (!str) return ""; // Handle empty string
+		  return str[0].toUpperCase() + str.slice(1);
+		}
+
+        if (this.state.selectedContact) {
+			if (isConference) {
+				title = capitalizeFirstLetter(this.state.selectedContact.uri.split('@')[0]);
+				subtitle = 'Conference room';
+			} else {
+			    if (this.state.selectedContact.name) {
+					title = this.state.selectedContact.name;
+			    } else {
+					title = capitalizeFirstLetter(this.state.selectedContact.uri.split('@')[0]);
+			    }
+				subtitle = this.state.selectedContact.uri;
+			}
+		}
 
         return (
             <Appbar.Header style={{backgroundColor: 'black'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
