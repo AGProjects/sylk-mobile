@@ -303,6 +303,7 @@ class ContactCard extends Component {
 
         if (title.indexOf('@videoconference') > -1) {
             title = name || username;
+            subtitle = 'Conference room';
         }
 
         if (uri === 'anonymous@anonymous.invalid') {
