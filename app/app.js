@@ -2623,19 +2623,28 @@ componentWillUnmount() {
         let conference = false;
 
         let navigationItems = this.state.navigationItems;
-        Object.keys(this.state.myContacts).forEach((key) => {
-            if (this.state.myContacts[key].tags.indexOf('conference') > -1 || this.state.myContacts[key].conference) {
-                conference = true;
-            }
-
-            if (this.state.myContacts[key].timestamp > todayStart) {
-                today = true;
-            }
-
-            if (this.state.myContacts[key].timestamp > yesterdayStart && this.state.myContacts[key].timestamp < todayStart) {
-                yesterday = true;
-            }
-        });
+		const keys = Object.keys(this.state.myContacts);
+		
+		for (const key of keys) {
+		  const contact = this.state.myContacts[key];
+		
+		  if (!contact) {
+		      continue; // skip this iteration
+		  }
+		
+		  // Check conference flag
+		  if (contact.tags.indexOf('conference') > -1 || contact.conference) {
+			conference = true;
+		  }
+		
+		  if (contact.timestamp > todayStart) {
+			  today = true;
+		  }
+		
+		  if (contact.timestamp > yesterdayStart && contact.timestamp < todayStart) {
+		      yesterday = true;
+		  }
+		}
 
         navigationItems = {today: today, yesterday: yesterday, conference: conference};
         this.setState({navigationItems: navigationItems});
@@ -9400,10 +9409,15 @@ componentWillUnmount() {
     updateTotalUread(myContacts=null) {
         let total_unread = 0;
         myContacts = myContacts || this.state.myContacts;
-        Object.keys(myContacts).forEach((uri) => {
-            total_unread = total_unread + myContacts[uri].unread.length;
-        });
-
+        const keys = Object.keys(this.state.myContacts);
+		for (const key of keys) {
+		    const contact = this.state.myContacts[key];
+		    if (!contact) {
+				continue;
+		    }
+            total_unread = total_unread + contact.unread.length;
+		}
+        
         //console.log('Total unread messages', total_unread)
 
        if (Platform.OS === 'ios') {

@@ -156,7 +156,10 @@ class VideoBox extends Component {
         if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
-        this.props.call.statistics.removeListener('stats', this.statistics);
+
+		if (this.state.call != null && this.state.call.statistics != null) {
+			this.state.call.statistics.removeListener('stats', this.statistics);
+        }
     }
 
     showDtmfModal() {

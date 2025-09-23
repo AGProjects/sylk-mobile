@@ -81,14 +81,16 @@ class AudioCallBox extends Component {
     }
 
     componentWillUnmount() {
-        if (this.state.call != null && this.state.call.removeListener) {
+        if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
+
+        if (this.state.call != null && this.state.call.statistics != null) {
+            this.state.call.statistics.removeListener('stats', this.statistics);
+        }
+
         if (this.callTimer) {
             clearTimeout(this.callTimer);
-        }
-        if (this.state.call != null) {
-            this.props.call.statistics.removeListener('stats', this.statistics);
         }
     }
 
@@ -103,7 +105,7 @@ class AudioCallBox extends Component {
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
             // Remove previous listener safely
             if (this.state.call != null && this.state.call.removeListener) {
-                this.state.call.removeListener('stateChanged', this.callStateChanged);
+                this.state.call.on('stateChanged', this.callStateChanged);
             }
 
             // Attach new listener if available
