@@ -24,6 +24,7 @@ function toTitleCase(str) {
     );
 }
 
+const MAX_POINTS = 30;
 
 class AudioCallBox extends Component {
     constructor(props) {
@@ -42,15 +43,12 @@ class AudioCallBox extends Component {
             reconnectingCall            : this.props.reconnectingCall,
             info                        : this.props.info,
             selectedContacts            : this.props.selectedContacts,
-            packetLossQueue             : [],
-            audioBandwidthQueue         : [],
-            latencyQueue                : [],
             declineReason               : this.props.declineReason,
             callContact                 : this.props.callContact,
             selectedContact             : this.props.selectedContact,
-            audioCodec                  : this.props.audioCodec,
             terminatedReason            : this.props.terminatedReason,
-            speakerPhoneEnabled         : this.props.speakerPhoneEnabled
+            speakerPhoneEnabled         : this.props.speakerPhoneEnabled,
+            audioGraphData              : []
         };
 
         this.remoteAudio = React.createRef();
@@ -74,6 +72,7 @@ class AudioCallBox extends Component {
                     this.state.call.on('stateChanged', this.callStateChanged);
                     break;
             }
+            this.props.call.statistics.on('stats', this.statistics);
         }
 
         if (this.state.selectedContacts && this.state.selectedContacts.length > 0) {
@@ -87,6 +86,15 @@ class AudioCallBox extends Component {
         }
         if (this.callTimer) {
             clearTimeout(this.callTimer);
+        }
+        if (this.state.call != null) {
+            this.props.call.statistics.removeListener('stats', this.statistics);
+        }
+    }
+
+    componentDidUpdate(prevProps, prevState) {
+        if (prevProps.call == null && this.props.call) {
+            this.props.call.statistics.on('stats', this.statistics);
         }
     }
 
@@ -164,7 +172,35 @@ class AudioCallBox extends Component {
     muteAudio(event) {
         event.preventDefault();
         this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
-     }
+    }
+
+    statistics(stats) {
+        const { audio } = stats.data;
+        const { remote: { audio: remoteAudio } } = stats.data;
+
+        const inboundAudio = audio?.inbound?.[0];
+        const outboundAudio = audio?.outbound?.[0];
+        const remoteInbound = remoteAudio?.inbound?.[0];
+
+        if (!remoteInbound || !inboundAudio || !outboundAudio) return;
+
+        const addData = {
+            timestamp: audio.timestamp,
+            incomingBitrate: inboundAudio.bitrate || 0,
+            outgoingBitrate: outboundAudio.bitrate || 0,
+            latency: (remoteInbound.roundTripTime || 0) / 2 * 1000,
+            jitter: inboundAudio.jitter || 0,
+            packetsLostOutbound: remoteInbound.packetLossRate || 0,
+            packetsLostInbound: inboundAudio.packetLossRate || 0,
+            packetRateOutbound: outboundAudio.packetRate || 0,
+            packetRateInbound: inboundAudio.packetRate || 0,
+            audioCodec: (remoteInbound.mimeType?.split?.('/')?.[1]) || ''
+        };
+
+        this.setState(state => ({
+            audioGraphData: [...state.audioGraphData, addData].slice(-MAX_POINTS)
+        }));
+    }
 
     showDtmfModal() {
         this.setState({showDtmfModal: true});
@@ -256,22 +292,18 @@ class AudioCallBox extends Component {
 				<View style={userIconContainerClass}>
 					<UserIcon identity={remoteIdentity} size={150} active={this.state.active} />
 				</View>
-				
+
 				<Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
 				<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
 					<Text style={styles.uri}>{this.state.remoteUri}</Text>
 				</TouchableWithoutFeedback>
-				
-				<TrafficStats
-					packetLossQueue={this.state.packetLossQueue}
-					latencyQueue={this.state.latencyQueue}
-					audioBandwidthQueue={this.state.audioBandwidthQueue}
-					videoBandwidthQueue={this.state.videoBandwidthQueue}
-					isTablet={this.props.isTablet}
-					orientation={this.props.orientation}
-					audioCodec={this.state.audioCodec}
-					media="audio"
-				/>
+
+                <TrafficStats
+                    isTablet={this.props.isTablet}
+                    orientation={this.props.orientation}
+                    data={this.state.audioGraphData}
+                    media="audio"
+                />
 
                 {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
                     <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
@@ -421,10 +453,6 @@ AudioCallBox.propTypes = {
     isTablet: PropTypes.bool,
     reconnectingCall: PropTypes.bool,
     muted: PropTypes.bool,
-    packetLossQueue: PropTypes.array,
-    videoBandwidthQueue: PropTypes.array,
-    audioBandwidthQueue: PropTypes.array,
-    latencyQueue: PropTypes.array,
     showLogs: PropTypes.func,
     goBackFunc: PropTypes.func,
     callState: PropTypes.object,
@@ -442,7 +470,6 @@ AudioCallBox.propTypes = {
     selectedContacts: PropTypes.array,
     inviteToConferenceFunc: PropTypes.func,
     finishInvite: PropTypes.func,
-    audioCodec: PropTypes.string,
     terminatedReason: PropTypes.string
 };
 

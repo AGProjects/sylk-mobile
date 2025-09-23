@@ -25,121 +25,6 @@ function randomIntFromInterval(min,max)
     return Math.floor(Math.random()*(max-min+1)+min);
 }
 
-function FixedQueue( size, initialValues ){
-
-    // If there are no initial arguments, default it to
-    // an empty value so we can call the constructor in
-    // a uniform way.
-    initialValues = (initialValues || []);
-
-    // Create the fixed queue array value.
-    var queue = Array.apply( null, initialValues );
-
-    // Store the fixed size in the queue.
-    queue.fixedSize = size;
-
-    // Add the class methods to the queue. Some of these have
-    // to override the native Array methods in order to make
-    // sure the queue lenght is maintained.
-    queue.push = FixedQueue.push;
-    queue.splice = FixedQueue.splice;
-    queue.unshift = FixedQueue.unshift;
-
-    // Trim any initial excess from the queue.
-    FixedQueue.trimTail.call( queue );
-
-    // Return the new queue.
-    return( queue );
-
-}
-
-
-// I trim the queue down to the appropriate size, removing
-// items from the beginning of the internal array.
-FixedQueue.trimHead = function(){
-
-    // Check to see if any trimming needs to be performed.
-    if (this.length <= this.fixedSize){
-
-        // No trimming, return out.
-        return;
-
-    }
-
-    // Trim whatever is beyond the fixed size.
-    Array.prototype.splice.call(
-        this,
-        0,
-        (this.length - this.fixedSize)
-    );
-
-};
-
-
-// I trim the queue down to the appropriate size, removing
-// items from the end of the internal array.
-FixedQueue.trimTail = function(){
-
-    // Check to see if any trimming needs to be performed.
-    if (this.length <= this.fixedSize){
-
-        // No trimming, return out.
-        return;
-
-    }
-
-    // Trim whatever is beyond the fixed size.
-    Array.prototype.splice.call(
-        this,
-        this.fixedSize,
-        (this.length - this.fixedSize)
-    );
-
-};
-
-// I synthesize wrapper methods that call the native Array
-// methods followed by a trimming method.
-FixedQueue.wrapMethod = function( methodName, trimMethod ){
-
-    // Create a wrapper that calls the given method.
-    var wrapper = function(){
-
-        // Get the native Array method.
-        var method = Array.prototype[ methodName ];
-
-        // Call the native method first.
-        var result = method.apply( this, arguments );
-
-        // Trim the queue now that it's been augmented.
-        trimMethod.call( this );
-
-        // Return the original value.
-        return( result );
-
-    };
-
-    // Return the wrapper method.
-    return( wrapper );
-
-};
-
-
-// Wrap the native methods.
-FixedQueue.push = FixedQueue.wrapMethod(
-    "push",
-    FixedQueue.trimHead
-);
-
-FixedQueue.splice = FixedQueue.wrapMethod(
-    "splice",
-    FixedQueue.trimTail
-);
-
-FixedQueue.unshift = FixedQueue.wrapMethod(
-    "unshift",
-    FixedQueue.trimTail
-);
-
 
 class Call extends Component {
     constructor(props) {
@@ -152,21 +37,6 @@ class Call extends Component {
         this.defaultWaitInterval = 60; // until we can connect or reconnect
         this.waitCounter = 0;
         this.waitInterval = this.defaultWaitInterval;
-
-        this.videoBytesSent = 0;
-        this.audioBytesSent = 0;
-
-        this.videoBytesReceived = 0;
-        this.audioBytesReceived = 0;
-
-        this.packetLoss = 0;
-        this.audioCodec = '';
-        this.videoCodec = '';
-
-        this.packetLossQueue = FixedQueue(this.samples);
-        this.latencyQueue = FixedQueue(this.samples);
-        this.audioBandwidthQueue = FixedQueue(this.samples);
-        this.videoBandwidthQueue = FixedQueue(this.samples);
 
         this.mediaLost = false;
 
@@ -224,27 +94,15 @@ class Call extends Component {
                       reconnectingCall: this.props.reconnectingCall,
                       speakerPhoneEnabled: this.props.speakerPhoneEnabled,
                       info: '',
-                      packetLossQueue: [],
-                      audioBandwidthQueue: [],
-                      videoBandwidthQueue: [],
-                      latencyQueue: [],
                       messages: this.props.messages,
                       selectedContact: this.props.selectedContact,
                       callContact: this.props.callContact,
                       selectedContacts: this.props.selectedContacts,
                       callEndReason: null
                       }
-
-        this.statisticsTimer = setInterval(() => {
-             this.getConnectionStats();
-        }, this.sampleInterval * 1000);
-
     }
 
     componentDidMount() {
-
-        this.resetStats();
-
         this.lookupContact();
 
         if (this.state.direction === 'outgoing' && this.state.callUUID && this.state.callState !== 'established') {
@@ -273,20 +131,6 @@ class Call extends Component {
 
     incomingMessage(message) {
         console.log('Session message', message.id, message.contentType, 'received');
-    }
-
-    resetStats() {
-         if (this.ended) {
-             return;
-         }
-
-         this.setState({
-                      bandwidth: '',
-                      packetLossQueue: [],
-                      audioBandwidthQueue: [],
-                      videoBandwidthQueue: [],
-                      latencyQueue: []
-                      });
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -352,222 +196,6 @@ class Call extends Component {
                          speakerPhoneEnabled: nextProps.speakerPhoneEnabled
                          });
     }
-
-    getConnectionStats() {
-         if (this.ended) {
-             return;
-         }
-
-         let speed = 0;
-         let diff = 0;
-
-         let delay = 0;
-
-         let audioPackets = 0;
-         let videoPackets = 0;
-
-         let audioPacketsLost = 0;
-         let videoPacketsLost = 0;
-
-         let audioPacketLoss = 0;
-         let videoPacketLoss = 0;
-
-         let bandwidthUpload = 0;
-         let bandwidthDownload = 0;
-
-         let mediaType;
-         let foundVideo = false;
-
-         if (!this.state.call || !this.state.call._pc) {
-             this.resetStats();
-             return;
-         }
-
-         this.state.call._pc.getStats(null).then(stats => {
-             stats.forEach(report => {
-
-             if (report.type === "ssrc") {
-                 report.values.forEach(object => { if (object.mediaType) {
-                         mediaType = object.mediaType;
-                     }
-                 });
-
-                 report.values.forEach(object => {
-                     if (object.googCodecName) {
-                        if (mediaType === 'video') {
-                            this.audioCodec = object.googCodecName;
-                        } else {
-                            this.videoCodec = object.googCodecName;
-                        }
-                     } else if (object.bytesReceived) {
-                         const bytesReceived = Math.floor(object.bytesReceived);
-                         if (mediaType === 'audio') {
-                             if (this.audioBytesReceived > 0 && this.audioBytesReceived < bytesReceived) {
-                                 diff = bytesReceived - this.audioBytesReceived;
-                                 diff = bytesReceived - this.audioBytesReceived;
-                                 speed = Math.floor(diff / this.sampleInterval * 8 / 1000);
-                                 //console.log('Audio bandwidth received', speed, 'kbit/s');
-                                 bandwidthDownload = bandwidthDownload + speed;
-                                 if (this.audioBandwidthQueue.length < this.samples) {
-                                     var n = this.samples;
-                                     while (n > 0) {
-                                         this.audioBandwidthQueue.push(0);
-                                         n = n - 1;
-                                     }
-                                 }
-
-                                 this.audioBandwidthQueue.push(speed);
-                             }
-                             this.audioBytesReceived = bytesReceived;
-                         } else if (mediaType === 'video') {
-                             foundVideo = true;
-                             if (this.videoBytesReceived > 0 && this.videoBytesReceived < bytesReceived) {
-                                 diff = bytesReceived - this.videoBytesReceived;
-                                 speed = Math.floor(diff / this.sampleInterval * 8 / 1000);
-                                 //console.log('Video bandwidth received', speed, 'kbit/s');
-                                 bandwidthDownload = bandwidthDownload + speed;
-                                 if (this.videoBandwidthQueue.length < this.samples) {
-                                     var n = this.samples;
-                                     while (n > 0) {
-                                         this.videoBandwidthQueue.push(0);
-                                         n = n - 1;
-                                     }
-                                 }
-                                 this.videoBandwidthQueue.push(speed)
-                             }
-                             this.videoBytesReceived = bytesReceived;
-                         }
-                     } else if (object.bytesSent) {
-                         const bytesSent = Math.floor(object.bytesSent);
-                         if (mediaType === 'audio') {
-                             if (this.audioBytesSent > 0 && bytesSent > this.audioBytesSent) {
-                                 const diff = bytesSent - this.audioBytesSent;
-                                 const speed = Math.floor(diff / this.sampleInterval * 8 / 1000);
-                                 bandwidthUpload = bandwidthUpload + speed;
-                                 //console.log('Audio bandwidth sent', speed, 'kbit/s');
-                             }
-                             this.audioBytesSent = bytesSent;
-                         } else if (mediaType === 'video') {
-                             foundVideo = true;
-                             if (this.videoBytesSent > 0 && bytesSent > this.videoBytesSent) {
-                                 const diff = bytesSent - this.videoBytesSent;
-                                 const speed = Math.floor(diff / this.sampleInterval * 8 / 1000);
-                                 bandwidthUpload = bandwidthUpload + speed;
-                                 //console.log('Video bandwidth sent', speed, 'kbit/s');
-                             }
-                             this.videoBytesSent = bytesSent;
-                         }
-
-                     } else if (object.packetsLost) {
-                         if (mediaType === 'audio') {
-                             audioPackets = audioPackets + Math.floor(object.packetsLost);
-                             audioPacketsLost =  audioPacketsLost + Math.floor(object.packetsLost);
-                         } else if (mediaType === 'video') {
-                             videoPackets = videoPackets + Math.floor(object.packetsLost);
-                             videoPacketsLost = videoPacketsLost + Math.floor(object.packetsLost);
-                         }
-                     } else if (object.packetsReceived) {
-                         if (mediaType === 'audio') {
-                             audioPackets = audioPackets + Math.floor(object.packetsReceived);
-                         } else if (mediaType === 'video') {
-                             videoPackets = videoPackets + Math.floor(object.packetsReceived);
-                         }
-                     } else if (object.googCurrentDelayMs) {
-                         delay = object.googCurrentDelayMs;
-                     }
-                     //console.log(object);
-                 });
-
-             }});
-
-         // packet loss
-
-         videoPacketLoss = 0;
-         if (videoPackets > 0) {
-             videoPacketLoss = Math.floor(videoPacketsLost / videoPackets * 100);
-             if (videoPacketLoss > 1) {
-                 //console.log('Video packet loss', videoPacketLoss, '%');
-             }
-         }
-
-         audioPacketLoss = 0;
-         if (audioPackets > 0) {
-             audioPacketLoss = Math.floor(audioPacketsLost / audioPackets * 100);
-             if (audioPacketLoss > 3) {
-                 //console.log('Audio packet loss', audioPacketLoss, '%');
-             }
-         }
-
-         this.packetLoss = videoPacketLoss > audioPacketLoss ? videoPacketLoss : audioPacketLoss;
-
-         //this.packetLoss = randomIntFromInterval(2, 10);
-
-         if (this.packetLoss < 3) {
-             this.packetLoss = 0;
-         }
-
-         if (this.packetLossQueue.length < this.samples) {
-             var n = this.samples;
-             while (n > 0) {
-                 this.packetLossQueue.push(0);
-                 n = n - 1;
-             }
-         }
-
-         if (this.latencyQueue.length < this.samples) {
-             var n = this.samples;
-             while (n > 0) {
-                 this.latencyQueue.push(0);
-                 n = n - 1;
-             }
-         }
-
-         this.latencyQueue.push(Math.ceil(delay));
-
-         this.packetLossQueue.push(this.packetLoss);
-
-         this.audioPacketLoss = audioPacketLoss;
-         this.videoPacketLoss = videoPacketLoss;
-
-        let info = '';
-        let suffix = 'kbit/s';
-
-        if (foundVideo && (bandwidthUpload > 0 || bandwidthDownload > 0)) {
-            suffix = 'Mbit/s';
-            bandwidthUpload = Math.ceil(bandwidthUpload / 1000 * 100) / 100;
-            bandwidthDownload = Math.ceil(bandwidthDownload / 1000 * 100) / 100;
-        }
-
-        if (bandwidthDownload && bandwidthUpload) {
-            if (bandwidthDownload > 0 && bandwidthUpload > 0) {
-                info = '⇣' + bandwidthDownload + ' ⇡' + bandwidthUpload;
-            } else if (bandwidthDownload > 0) {
-                info = '⇣' + bandwidthDownload;
-            } else if (bandwidthUpload > 0) {
-                info = '⇡' + this.bandwidthUpload;
-            }
-
-            if (info) {
-                info = info + ' ' + suffix;
-            }
-        }
-
-        if (this.packetLoss > 2) {
-            info = info + ' - ' + Math.ceil(this.packetLoss) + '% loss';
-        }
-
-        if (delay > 150) {
-            info = info + ' - ' + Math.ceil(delay) + ' ms';
-        }
-
-        this.setState({packetLossQueue: this.packetLossQueue,
-                       latencyQueue: this.latencyQueue,
-                       videoBandwidthQueue: this.videoBandwidthQueue,
-                       audioBandwidthQueue: this.audioBandwidthQueue,
-                       info: info
-                        });
-         });
-     };
 
     mediaPlaying(localMedia) {
         if (this.state.direction === 'incoming') {
@@ -890,12 +518,6 @@ class Call extends Component {
                         isTablet = {this.props.isTablet}
                         reconnectingCall = {this.state.reconnectingCall}
                         muted = {this.props.muted}
-                        packetLossQueue = {this.state.packetLossQueue}
-                        videoBandwidthQueue = {this.state.videoBandwidthQueue}
-                        audioBandwidthQueue = {this.state.audioBandwidthQueue}
-                        latencyQueue = {this.state.latencyQueue}
-                        audioCodec = {this.audioCodec}
-                        info = {this.state.info}
                         showLogs = {this.props.showLogs}
                         goBackFunc = {this.props.goBackFunc}
                         callState = {this.props.callState}
@@ -940,10 +562,7 @@ class Call extends Component {
                             orientation = {this.props.orientation}
                             isTablet = {this.props.isTablet}
                             reconnectingCall = {this.state.reconnectingCall}
-                            audioCodec = {this.audioCodec}
-                            videoCodec = {this.videoCodec}
                             muted = {this.props.muted}
-                            info = {this.state.info}
                             showLogs = {this.props.showLogs}
                             goBackFunc = {this.props.goBackFunc}
                             callState = {this.props.callState}
@@ -1011,7 +630,6 @@ class Call extends Component {
                     isTablet = {this.props.isTablet}
                     reconnectingCall = {this.state.reconnectingCall}
                     muted = {this.props.muted}
-                    info = {this.state.info}
                     showLogs = {this.props.showLogs}
                     goBackFunc = {this.props.goBackFunc}
                     selectedContact = {this.state.selectedContact}

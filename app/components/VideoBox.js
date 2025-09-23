@@ -19,6 +19,18 @@ import utils from '../utils';
 const DEBUG = debug('blinkrtc:Video');
 //debug.enable('*');
 
+const MAX_POINTS = 30;
+
+function appendBits(bits) {
+    let i = -1;
+    const byteUnits = 'kMGTPEZY';
+    do {
+        bits = bits / 1000;
+        i++;
+    } while (bits > 1000);
+
+    return `${Math.max(bits, 0.1).toFixed(bits < 100 ? 1 : 0)} ${byteUnits[i]}bits/s`;
+};
 
 class VideoBox extends Component {
     constructor(props) {
@@ -45,19 +57,19 @@ class VideoBox extends Component {
             selectedContacts: this.props.selectedContacts,
             localStream: this.props.call.getLocalStreams()[0],
             remoteStream: this.props.call.getRemoteStreams()[0],
-            info: this.props.info,
             showDtmfModal: false,
             doorOpened: false,
-            packetLossQueue             : [],
-            audioBandwidthQueue         : [],
-            latencyQueue                : [],
-            localMedia                  : this.props.localMedia
+            localMedia                  : this.props.localMedia,
+            statistics: []
         };
 
         this.overlayTimer = null;
         this.localVideo = React.createRef();
         this.remoteVideo = React.createRef();
         this.userHangup = false;
+        if (this.props.call) {
+            this.props.call.statistics.on('stats', this.statistics);
+        }
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -203,6 +215,75 @@ class VideoBox extends Component {
             track._switchCamera();
             this.setState({mirror: !this.state.mirror});
         }
+    }
+
+    statistics(stats) {
+        const { audio: audioData, video: videoData, remote } = stats.data;
+        const { audio: audioRemoteData, video: videoRemoteData } = remote;
+
+        const audioInbound = audioData?.inbound?.[0];
+        const audioOutbound = audioData?.outbound?.[0];
+        const videoInbound = videoData?.inbound?.[0];
+        const videoOutbound = videoData?.outbound?.[0];
+
+        const remoteAudioInbound = audioRemoteData?.inbound?.[0];
+        const remoteVideoInbound = videoRemoteData?.inbound?.[0];
+
+        const audioRemoteExists = !!remoteAudioInbound;
+        const videoRemoteExists = !!remoteVideoInbound;
+
+        if (!audioRemoteExists && !videoRemoteExists) return;
+
+        const videoRTT = remoteVideoInbound?.roundTripTime || 0;
+        const audioRTT = remoteAudioInbound?.roundTripTime || 0;
+        const finalVideoRTT = videoRTT || audioRTT;
+
+        const addData = {
+            audio: {
+                timestamp: audioData?.timestamp,
+                incomingBitrate: audioInbound?.bitrate || 0,
+                outgoingBitrate: audioOutbound?.bitrate || 0,
+                latency: (audioRTT / 2) || 0,
+                jitter: audioInbound?.jitter || 0,
+                packetsLostOutbound: remoteAudioInbound?.packetLossRate || 0,
+                packetsLostInbound: audioInbound?.packetLossRate || 0,
+                packetRateOutbound: audioOutbound?.packetRate || 0,
+                packetRateInbound: audioInbound?.packetRate || 0,
+                audioCodec: (remoteAudioInbound?.mimeType?.split?.('/')?.[1]) || ''
+            },
+            video: {
+                timestamp: videoData?.timestamp,
+                incomingBitrate: videoInbound?.bitrate || 0,
+                outgoingBitrate: videoOutbound?.bitrate || 0,
+                latency: (finalVideoRTT / 2) || 0,
+                jitter: videoInbound?.jitter || 0,
+                packetsLostOutbound: remoteVideoInbound?.packetLossRate || 0,
+                packetsLostInbound: videoInbound?.packetLossRate || 0,
+                packetRateOutbound: videoOutbound?.packetRate || 0,
+                packetRateInbound: videoInbound?.packetRate || 0,
+                videoCodec: (remoteVideoInbound?.mimeType?.split?.('/')?.[1]) || ''
+            }
+        };
+
+        let info = '';
+        let bandwidthUpload, bandwidthDownload;
+        if (addData.video.incomingBitrate > 0 || addData.video.outgoingBitrate > 0) {
+            bandwidthUpload = addData.video.outgoingBitrate;
+            bandwidthDownload = addData.video.incomingBitrate;
+        }
+
+        if (bandwidthDownload > 0 && bandwidthUpload > 0) {
+            info = '⇣' + appendBits(bandwidthDownload) + ' ⇡' + appendBits(bandwidthUpload);
+        } else if (bandwidthDownload > 0) {
+            info = '⇣' + appendBits(bandwidthDownload);
+        } else if (bandwidthUpload > 0) {
+            info = '⇡' + appendBits(bandwidthUpload);
+        }
+
+        this.setState(state => ({
+            statistics: [...state.statistics, addData].slice(-MAX_POINTS),
+            info: info
+        }));
     }
 
     hangupCall(event) {
@@ -452,8 +533,6 @@ VideoBox.propTypes = {
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
-    audioCodec              : PropTypes.string,
-    videoCodec              : PropTypes.string,
     terminatedReason        : PropTypes.string
 };
 
