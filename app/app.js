@@ -2061,54 +2061,56 @@ componentWillUnmount() {
       await messaging().requestPermission();
     }
 
-    // --- Get FCM token using modular API ---
-    const app = getApp(); // default app
-    const fcmToken = await messaging(app).getToken();
-    if (fcmToken) this._onPushRegistered(fcmToken);
+    if (Platform.OS === 'android') {
+		// --- Get FCM token using modular API ---
+		const app = getApp(); // default app
+		const fcmToken = await messaging(app).getToken();
+		if (fcmToken) this._onPushRegistered(fcmToken);
+	
+		// --- Foreground messages ---
+		this.messageListener = messaging(app).onMessage(async remoteMessage => {
+		  console.log('FCM app foreground message:', remoteMessage);
+	
+		  if (Platform.OS === 'ios') {
+			PushNotificationIOS.presentLocalNotification({
+			  alertTitle: remoteMessage.notification?.title,
+			  alertBody: remoteMessage.notification?.body,
+			  userInfo: remoteMessage.data,
+			});
+		  } else {
+			const msg = normalizeMessage(remoteMessage);
+			this.handleFirebasePush(msg);
+		  }
+		});
 
-    // --- Foreground messages ---
-    this.messageListener = messaging(app).onMessage(async remoteMessage => {
-      console.log('FCM app foreground message:', remoteMessage);
-
-      if (Platform.OS === 'ios') {
-        PushNotificationIOS.presentLocalNotification({
-          alertTitle: remoteMessage.notification?.title,
-          alertBody: remoteMessage.notification?.body,
-          userInfo: remoteMessage.data,
-        });
-      } else {
-        const msg = normalizeMessage(remoteMessage);
-        this.handleFirebasePush(msg);
-      }
-    });
-
-    // --- Background messages ---
-    messaging(app).setBackgroundMessageHandler(async remoteMessage => {
-      console.log('FCM app background message:', remoteMessage);
-      const msg = normalizeMessage(remoteMessage);
-      this.handleFirebasePush(msg);
-    });
-
-	// Killed / app launched from notification
-	const initialNotification = await messaging(app).getInitialNotification();
-	if (initialNotification) {
-      console.log('FCM app initial message:', initialNotification);
-	  const msg = normalizeMessage(initialNotification);
-	  this.handleFirebasePush(msg);
-	}
-
-	const normalizeMessage = (remoteMessage) => {
-	  // RemoteMessage may have .data or .notification
-	  if (!remoteMessage) return null;
-	  const data = remoteMessage.data || {};
-	  const notification = remoteMessage.notification || {};
-	  return { ...data, notification };
-	};
-
-    messaging(app).onNotificationOpenedApp(remoteMessage => {
-      const msg = normalizeMessage(remoteMessage);
-      this.handleFirebasePush(msg);
-    });
+		// --- Background messages ---
+		messaging(app).setBackgroundMessageHandler(async remoteMessage => {
+		  console.log('FCM app background message:', remoteMessage);
+		  const msg = normalizeMessage(remoteMessage);
+		  this.handleFirebasePush(msg);
+		});
+	
+		// Killed / app launched from notification
+		const initialNotification = await messaging(app).getInitialNotification();
+		if (initialNotification) {
+		  console.log('FCM app initial message:', initialNotification);
+		  const msg = normalizeMessage(initialNotification);
+		  this.handleFirebasePush(msg);
+		}
+	
+		const normalizeMessage = (remoteMessage) => {
+		  // RemoteMessage may have .data or .notification
+		  if (!remoteMessage) return null;
+		  const data = remoteMessage.data || {};
+		  const notification = remoteMessage.notification || {};
+		  return { ...data, notification };
+		};
+	
+		messaging(app).onNotificationOpenedApp(remoteMessage => {
+		  const msg = normalizeMessage(remoteMessage);
+		  this.handleFirebasePush(msg);
+		});
+    }
 
     // --- iOS VoIP ---
     if (Platform.OS === 'ios') {
