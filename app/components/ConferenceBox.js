@@ -52,6 +52,7 @@ import {StatusBar} from 'react-native';
 const DEBUG = debug('blinkrtc:ConferenceBox');
 //debug.enable('*');
 
+const MAX_POINTS = 30;
 
 function appendBits(bits) {
     let i = -1;
@@ -467,7 +468,7 @@ class ConferenceBox extends Component {
         if (peerId !== callId) {
             if (!this.participantStats[peerId]) {
                 this.participantStats[peerId] = {
-                    packetLossData: new Array(30).fill(null) // fill with null to avoid shared refs
+                    packetLossData: new Array(MAX_POINTS).fill(null) // fill with null to avoid shared refs
                 };
             }
 
@@ -608,7 +609,7 @@ class ConferenceBox extends Component {
         }
 
         this.setState(state => {
-            const statistics = [...state.statistics.slice(1), addData];
+            const statistics = [...state.statistics, addData].slice(-MAX_POINTS);
             return {
                 statistics,
                 info
