@@ -1,14 +1,12 @@
 package com.agprojects.sylk.sylk;
 
 import android.app.ActivityManager;
-
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
-
+import android.os.Build;
 import android.os.Bundle;
-
 import android.util.Log;
 
 import com.facebook.react.bridge.Promise;
@@ -18,7 +16,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
-import java.util.List;
+
 import android.app.Activity;
 
 public class SylkNative extends ReactContextBaseJavaModule {
@@ -63,25 +61,37 @@ public class SylkNative extends ReactContextBaseJavaModule {
         Log.d(LOG_TAG, "requestUnlock");
 
         KeyguardManager keyguardManager = (KeyguardManager) reactContext.getSystemService(Context.KEYGUARD_SERVICE);
-        keyguardManager.requestDismissKeyguard(this.getCurrentActivity(), new KeyguardManager.KeyguardDismissCallback() {
-            @Override
-            public void onDismissError() {
-                Log.d(LOG_TAG, "onDismissError");
-                promise.reject("DISMISS_FAILED");
-            }
+        Activity currentActivity = this.getCurrentActivity();
 
-            @Override
-            public void onDismissSucceeded() {
-                Log.d(LOG_TAG, "onDismissSucceeded");
-                promise.resolve(null);
-            }
+        if (currentActivity == null) {
+            promise.reject("NO_ACTIVITY", "Current activity is null");
+            return;
+        }
 
-            @Override
-            public void onDismissCancelled() {
-                Log.d(LOG_TAG, "onDismissCancelled");
-                promise.reject("DISMISS_CANCELLED");
-            }
-        });
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { // API 26+
+            keyguardManager.requestDismissKeyguard(currentActivity, new KeyguardManager.KeyguardDismissCallback() {
+                @Override
+                public void onDismissError() {
+                    Log.d(LOG_TAG, "onDismissError");
+                    promise.reject("DISMISS_FAILED");
+                }
+
+                @Override
+                public void onDismissSucceeded() {
+                    Log.d(LOG_TAG, "onDismissSucceeded");
+                    promise.resolve(null);
+                }
+
+                @Override
+                public void onDismissCancelled() {
+                    Log.d(LOG_TAG, "onDismissCancelled");
+                    promise.reject("DISMISS_CANCELLED");
+                }
+            });
+        } else {
+            Log.w(LOG_TAG, "requestDismissKeyguard requires API 26+. Skipping.");
+            promise.reject("UNSUPPORTED_API", "requestDismissKeyguard requires API 26+");
+        }
     }
 
     @ReactMethod
@@ -89,7 +99,13 @@ public class SylkNative extends ReactContextBaseJavaModule {
         Log.d(LOG_TAG, "isKeyguardLocked");
 
         KeyguardManager keyguardManager = (KeyguardManager) reactContext.getSystemService(Context.KEYGUARD_SERVICE);
-        return keyguardManager.isKeyguardLocked();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) { // API 23+
+            return keyguardManager.isKeyguardLocked();
+        } else {
+            Log.w(LOG_TAG, "isKeyguardLocked requires API 23+. Returning false.");
+            return false;
+        }
     }
 
     @ReactMethod
