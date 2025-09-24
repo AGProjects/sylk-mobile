@@ -322,6 +322,75 @@ class ConferenceBox extends Component {
         }, 1000);
     }
 
+    componentDidMount() {
+        for (let p of this.state.participants) {
+            p.on('stateChanged', this.onParticipantStateChanged);
+            p.attach();
+        }
+
+        this.keyboardDidShowListener = Keyboard.addListener(
+              'keyboardDidShow',
+              this._keyboardDidShow
+            );
+        this.keyboardDidHideListener = Keyboard.addListener(
+              'keyboardDidHide',
+              this._keyboardDidHide
+            );
+
+        this.props.call.on('participantJoined', this.onParticipantJoined);
+        this.props.call.on('participantLeft', this.onParticipantLeft);
+        this.props.call.on('roomConfigured', this.onConfigureRoom);
+        this.props.call.on('fileSharing', this.onFileSharing);
+        this.props.call.on('composingIndication', this.composingIndicationReceived);
+        this.props.call.on('message', this.messageReceived);
+
+        this.armOverlayTimer();
+
+        // attach to ourselves first if there are no other participants
+        if (this.state.participants.length === 0) {
+            setTimeout(() => {
+                const item = {
+                    stream: this.props.call.getLocalStreams()[0],
+                    identity: this.props.call.localIdentity
+                };
+                this.selectVideo(item);
+            });
+        } else {
+            this.state.participants.forEach((p) => {
+                if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri) {
+                    // used for history item
+                    this.props.saveParticipant(this.props.call.id, this.state.remoteUri, p.identity._uri);
+                    this.lookupContact(p.identity._uri, p.identity._displayName);
+                }
+            });
+            // this.changeResolution();
+        }
+
+        if (this.state.videoMuted) {
+            this._muteVideo();
+        }
+
+        //let msg = "Others can join the conference using a web browser at " + this.conferenceUrl;
+        //this.postChatSystemMessage(msg, false);
+
+        if (this.state.selectedContacts) {
+            this.inviteParticipants(this.state.selectedContacts);
+        }
+        this.props.call.statistics.on('stats', this.statistics);
+    }
+
+    componentWillUnmount() {
+        clearTimeout(this.overlayTimer);
+        clearTimeout(this.participantsTimer);
+        this.uploads.forEach((upload) => {
+            this.props.notificationCenter().removeNotification(upload[1]);
+            upload[0].abort();
+        })
+        this.keyboardDidShowListener.remove();
+        this.keyboardDidHideListener.remove();
+        this.props.call.statistics.removeListener('stats', this.statistics);
+    }
+
     get chatViewHeight() {
         const wh = Dimensions.get('window').height;
         const kh = this.state.keyboardHeight;
@@ -1334,75 +1403,6 @@ class ConferenceBox extends Component {
         if (save) {
             this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
         }
-    }
-
-    componentDidMount() {
-        for (let p of this.state.participants) {
-            p.on('stateChanged', this.onParticipantStateChanged);
-            p.attach();
-        }
-
-        this.keyboardDidShowListener = Keyboard.addListener(
-              'keyboardDidShow',
-              this._keyboardDidShow
-            );
-        this.keyboardDidHideListener = Keyboard.addListener(
-              'keyboardDidHide',
-              this._keyboardDidHide
-            );
-
-        this.props.call.on('participantJoined', this.onParticipantJoined);
-        this.props.call.on('participantLeft', this.onParticipantLeft);
-        this.props.call.on('roomConfigured', this.onConfigureRoom);
-        this.props.call.on('fileSharing', this.onFileSharing);
-        this.props.call.on('composingIndication', this.composingIndicationReceived);
-        this.props.call.on('message', this.messageReceived);
-
-        this.armOverlayTimer();
-
-        // attach to ourselves first if there are no other participants
-        if (this.state.participants.length === 0) {
-            setTimeout(() => {
-                const item = {
-                    stream: this.props.call.getLocalStreams()[0],
-                    identity: this.props.call.localIdentity
-                };
-                this.selectVideo(item);
-            });
-        } else {
-            this.state.participants.forEach((p) => {
-                if (p.identity._uri.search('guest.') === -1 && p.identity._uri !== this.props.call.localIdentity._uri) {
-                    // used for history item
-                    this.props.saveParticipant(this.props.call.id, this.state.remoteUri, p.identity._uri);
-                    this.lookupContact(p.identity._uri, p.identity._displayName);
-                }
-            });
-            // this.changeResolution();
-        }
-
-        if (this.state.videoMuted) {
-            this._muteVideo();
-        }
-
-        //let msg = "Others can join the conference using a web browser at " + this.conferenceUrl;
-        //this.postChatSystemMessage(msg, false);
-
-        if (this.state.selectedContacts) {
-            this.inviteParticipants(this.state.selectedContacts);
-        }
-        this.props.call.statistics.on('stats', this.statistics);
-    }
-
-    componentWillUnmount() {
-        clearTimeout(this.overlayTimer);
-        clearTimeout(this.participantsTimer);
-        this.uploads.forEach((upload) => {
-            this.props.notificationCenter().removeNotification(upload[1]);
-            upload[0].abort();
-        })
-        this.keyboardDidShowListener.remove();
-        this.keyboardDidHideListener.remove();
-        this.props.call.statistics.removeListener('stats', this.statistics);
     }
 
     _keyboardDidShow(e) {
