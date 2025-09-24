@@ -1339,6 +1339,11 @@ PODS:
     - React-Core
   - RNFS (2.20.0):
     - React-Core
+  - RNNotifee (9.1.8):
+    - React-Core
+    - RNNotifee/NotifeeCore (= 9.1.8)
+  - RNNotifee/NotifeeCore (9.1.8):
+    - React-Core
   - RNPermissions (3.1.0):
     - React-Core
   - RNSha1 (1.2.3):
@@ -1432,7 +1437,7 @@ DEPENDENCIES:
   - React-jsinspector (from `../node_modules/react-native/ReactCommon/jsinspector-modern`)
   - React-logger (from `../node_modules/react-native/ReactCommon/logger`)
   - React-Mapbuffer (from `../node_modules/react-native/ReactCommon`)
-  - react-native-background-downloader (from `../node_modules/react-native-background-downloader`)
+  - "react-native-background-downloader (from `../node_modules/@kesha-antonov/react-native-background-downloader`)"
   - react-native-background-timer (from `../node_modules/react-native-background-timer`)
   - react-native-camera (from `../node_modules/react-native-camera`)
   - "react-native-cameraroll (from `../node_modules/@react-native-camera-roll/camera-roll`)"
@@ -1482,6 +1487,7 @@ DEPENDENCIES:
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
   - RNFileViewer (from `../node_modules/react-native-file-viewer`)
   - RNFS (from `../node_modules/react-native-fs`)
+  - "RNNotifee (from `../node_modules/@notifee/react-native`)"
   - RNPermissions (from `../node_modules/react-native-permissions`)
   - RNSha1 (from `../node_modules/react-native-sha1`)
   - RNShare (from `../node_modules/react-native-share`)
@@ -1595,7 +1601,7 @@ EXTERNAL SOURCES:
   React-Mapbuffer:
     :path: "../node_modules/react-native/ReactCommon"
   react-native-background-downloader:
-    :path: "../node_modules/react-native-background-downloader"
+    :path: "../node_modules/@kesha-antonov/react-native-background-downloader"
   react-native-background-timer:
     :path: "../node_modules/react-native-background-timer"
   react-native-camera:
@@ -1694,6 +1700,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-file-viewer"
   RNFS:
     :path: "../node_modules/react-native-fs"
+  RNNotifee:
+    :path: "../node_modules/@notifee/react-native"
   RNPermissions:
     :path: "../node_modules/react-native-permissions"
   RNSha1:
@@ -1825,6 +1833,7 @@ SPEC CHECKSUMS:
   RNFBMessaging: 7202ad4c49bdcdc7fd3634d85827a6305049c148
   RNFileViewer: ce7ca3ac370e18554d35d6355cffd7c30437c592
   RNFS: 4ac0f0ea233904cb798630b3c077808c06931688
+  RNNotifee: 4a6ee5c7deaf00e005050052d73ee6315dff7ec9
   RNPermissions: 4b54095940aea8c03fa3e6c92d4ac3647b31ed4e
   RNSha1: 6de589cd0b0397d0f6248a2e5ee9e5f0d7da38dc
   RNShare: f4ec422e27904e0dc9310038d1110460a59ad30d
