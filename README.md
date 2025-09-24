@@ -106,6 +106,11 @@ SSI functionality has been removed due to unmaintained dependencies.
   export ANDROID_SDK_ROOT=/Users/example/Library/Android/sdk
 * Gem (for installing gem files)
 * Fastlane (for deploying to testflight/google play store)
+  brew update
+  brew install ruby
+  gem install bundler
+  gem install fastlane -NV
+
 * Cocoapods (for handling iOS Pods) 
   - Install RVM: curl -L https://get.rvm.io | bash -s stable
   - Add to .bash_profile
@@ -115,6 +120,8 @@ SSI functionality has been removed due to unmaintained dependencies.
 
   - sudo gem install concurrent-ruby -v 1.3.4
   - sudo gem install cocoapods
+
+
 
 ### Install
 
