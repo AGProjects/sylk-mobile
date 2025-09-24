@@ -138,12 +138,19 @@ class ConferenceMatrixParticipant extends Component {
             }
         }
 
+        const remoteStreamUrl = this.state.stream ? this.state.stream.toURL() : null
         return (
             <View style={[styles.container, this.props.large ? styles.soloContainer : null, this.props.pauseVideo ? {display: 'none'} : null, style]}>
                 {activeIcon}
                 {participantInfo}
                 <View style={styles.videoContainer}>
-                    <RTCView objectFit="cover" style={styles.video} poster="assets/images/transparent-1px.png" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} />
+                    <RTCView
+                        objectFit='cover'
+                        style={styles.video}
+                        poster="assets/images/transparent-1px.png"
+                        ref={this.videoElement}
+                        streamURL={remoteStreamUrl}
+                    />
                 </View>
             </View>
         );
