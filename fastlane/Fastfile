@@ -65,7 +65,55 @@ platform :android do
       "android.useAndroidX" => "true"
     })
 
-    upload_to_play_store(track: 'beta', package_name: 'com.agprojects.sylk', skip_upload_apk: true, timeout: 5000)
+    upload_to_play_store(
+      track: 'open',        # 'internal', 'alpha', 'beta', 'production' are also options
+      skip_upload_metadata: true,    # skip metadata editing
+      skip_upload_changelogs: true,  # skip changelogs
+      skip_upload_images: true,      # skip screenshots
+      skip_upload_screenshots: true  # just in case
+    )
+  end
+end
 
+platform :android do
+  desc "Push a new beta build to Google Play Store"
+  lane :release do
+
+    gradle(task: 'clean', project_dir: "android/") # <- Fixes it
+
+    next_version_code = increment_version_code(
+      app_project_dir: '**/app',
+      version_code: File.read("../android/VERSION_CODE")
+    )
+    UI.message(next_version_code)
+    set_value_in_build(
+      key: 'versionCode',
+      value: next_version_code
+    )
+
+    next_version_name = increment_version_name(
+      app_project_dir: '**/app',
+      bump_type: 'major',
+      version_name: File.read("../android/VERSION_NAME")
+    )
+    UI.message(next_version_name)
+    set_value_in_build(
+      key: 'versionName',
+      value: next_version_name
+    )
+
+    gradle(task: 'bundle', build_type: 'Release', project_dir: './android/', properties: {
+      "android.enableJetifier" => "true",
+      "android.useAndroidX" => "true"
+    })
+
+    upload_to_play_store(
+      track: 'production',   
+      package_name: 'com.agprojects.sylk',
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
   end
 end
