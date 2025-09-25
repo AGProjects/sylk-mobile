@@ -1,0 +1,1 @@
+ * Fix chat input scrolling when keyboard shows up
