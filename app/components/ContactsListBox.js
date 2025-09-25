@@ -21,6 +21,7 @@ import VideoPlayer from 'react-native-video-player';
 import { IconButton} from 'react-native-paper';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import path from 'react-native-path';
+import KeyboardSpacer from 'react-native-keyboard-spacer';
 
 import Sound from 'react-native-sound';
 import SoundPlayer from 'react-native-sound-player';
@@ -2094,6 +2095,7 @@ class ContactsListBox extends Component {
                   isTyping={this.state.isTyping}
                   onInputTextChanged={text => this.chatInputChanged(text)}
                 />
+                {Platform.OS === 'android' ? <KeyboardSpacer /> : null }
               </View>
               : (items.length === 1) ?
               <View style={[chatContainer, borderClass]}>
