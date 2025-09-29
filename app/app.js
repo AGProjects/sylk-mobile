@@ -116,7 +116,8 @@ const KeyOptions = {
   RSABits: 4096,
 }
 
-const max_size_to_decrypt = 20 * 1000 * 1000;
+const max_size_to_decrypt = 60 * 1000 * 1000;
+const large_size_to_decrypt = 20 * 1000 * 1000;
 const max_transfer_size = 100 * 1000 * 1000;
 
 const incomingCallLabel = 'Incoming call...';
@@ -7051,52 +7052,95 @@ componentWillUnmount() {
 	 * @param {string} outputPath - Path for the decrypted file
 	 * @param {string} privateKey - Your PGP private key
 	 */
-	async decryptLargePGPFile(inputPath, outputPath, privateKey) {
+	async decryptLargePGPFile(file_transfer, outputPath, privateKey) {
 	    console.log('decryptLargePGPFile');
 		const CHUNK_SIZE = 1024 * 1024; // 1 MB
 		let position = 0;
 		let insidePGP = false;
+        const inputPath = file_transfer.local_url;
 		const tempBase64Path = inputPath + '.bin'; // temporary base64 file
-	
+        let buffer = [];
+        const FLUSH_THRESHOLD = 256 * 1024; // Flush to disk every 64KB of data
+
 		// Ensure temp file starts empty
 		await RNFS.writeFile(tempBase64Path, '', 'base64');
-	
+
+        let leftover = '';
+        let bufferSize = 0;
+
 		while (true) {
 			const chunk = await RNFS.read(inputPath, CHUNK_SIZE, position, 'utf8');
 			if (!chunk || chunk.length === 0) break;
-	
+
 			position += chunk.length;
-			console.log('reading...');
-	
+
+            const combined = leftover + chunk;
 			// Process the chunk line by line
-			const lines = chunk.split(/\r?\n/);
+			const lines = combined.split(/\r?\n/);
+
+            leftover = lines.pop();
+
 			for (let line of lines) {
-				if (line === '-----BEGIN PGP MESSAGE-----') { insidePGP = true; continue; }
+				if (!insidePGP && line === '-----BEGIN PGP MESSAGE-----') { insidePGP = true; continue; }
 				if (!insidePGP) continue;
 				if (line === '-----END PGP MESSAGE-----') { insidePGP = false; break; }
-	
+
 				// Skip PGP headers and empty lines
 				if (line === '' || line.startsWith('Version') || line.startsWith('Comment') ||
 					line.startsWith('MessageID') || line.startsWith('Hash') || line.startsWith('Charset') ||
-					line.startsWith('=')) continue;
-	
-				// Append the Base64 line directly to disk
-				await RNFS.appendFile(tempBase64Path, line, 'base64');
+					line.startsWith('=')) {
+                    continue;
+                }
+                buffer.push(line);
+                bufferSize += line.length;
+
+                // If buffer gets large, flush to disk
+                if (bufferSize >= FLUSH_THRESHOLD) {
+                    await RNFS.appendFile(tempBase64Path, buffer.join(''), 'base64');
+                    buffer = [];
+                    bufferSize = 0;
+                }
 			}
 		}
-	
+
 		console.log('PGP Base64 extraction complete. Decrypting now...');
-	
+
+        // After the loop, process any remaining leftover line
+        if (leftover && insidePGP) {
+            if (leftover === '' || leftover.startsWith('Version') || leftover.startsWith('Comment') ||
+                leftover.startsWith('MessageID') || leftover.startsWith('Hash') || leftover.startsWith('Charset') ||
+                leftover.startsWith('=')) {
+            } else {
+                buffer.push(leftover);
+            }
+        }
+        if (buffer.length > 0) {
+            await RNFS.appendFile(tempBase64Path, buffer.join(), 'base64');
+        }
+
 		// Decrypt the tempBase64Path file to outputPath
-		await OpenPGP.decryptFile(tempBase64Path, outputPath, privateKey, null);
-	
+        try {
+    		await OpenPGP.decryptFile(tempBase64Path, outputPath, this.state.keys.private, null);
+            file_transfer.local_url = outputPath;
+            file_transfer.filename = file_transfer.filename.slice(0, -4);
+
+
+		    try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
+    		try { await RNFS.unlink(inputPath); } catch (e) { /* optional cleanup */ }
+            this.updateFileTransferSql(file_transfer, 2);
+        } catch(e) {
+            let error_message = error.message;
+
+            if (error.message.indexOf('incorrect key') > -1) {
+                error_message = 'Incorrect encryption key, the sender must resent the file';
+            }
+
+            file_transfer.error = 'Error decrypting file ' + file_transfer.filename, + ': ', error_message;
+            file_transfer.progress = null;
+            utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
+            this.updateFileTransferSql(file_transfer, 3);
+        }
 		console.log('Decryption complete:', outputPath);
-	
-		// Clean up temporary file
-		try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
-		try { await RNFS.unlink(inputPath); } catch (e) { /* optional cleanup */ }
-	
-		return outputPath;
 	}
 
 
@@ -7143,9 +7187,14 @@ componentWillUnmount() {
                 return;
             }
         }
-        
+
         if (file_transfer.filesize > max_size_to_decrypt) {
-           this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to decrypt');
+            this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to decrypt');
+            return;
+        }
+        if (file_transfer.filesize > large_size_to_decrypt) {
+            this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + '...');
+            await this.decryptLargePGPFile(file_transfer, file_path_decrypted, this.state.keys.private);
             return;
         }
 
