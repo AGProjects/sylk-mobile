@@ -197,7 +197,7 @@ class Sylk extends Component {
         this._loaded = false;
         let isFocus = Platform.OS === 'ios';
         this.startTimestamp = new Date();
-        
+
         this._initialState = {
             appState: null,
             terminatedReason: null,
@@ -1941,7 +1941,7 @@ componentWillUnmount() {
       PushNotificationIOS.removeEventListener('localNotification', this.onLocalNotification);
       PushNotificationIOS.removeEventListener('notification', this.onRemoteNotification);
       }
-    
+
 		this.closeConnection();
 		this._loaded = false;
 	}
@@ -2068,11 +2068,11 @@ componentWillUnmount() {
 		const app = getApp(); // default app
 		const fcmToken = await messaging(app).getToken();
 		if (fcmToken) this._onPushRegistered(fcmToken);
-	
+
 		// --- Foreground messages ---
 		this.messageListener = messaging(app).onMessage(async remoteMessage => {
 		  console.log('FCM app foreground message:', remoteMessage);
-	
+
 		  if (Platform.OS === 'ios') {
 			PushNotificationIOS.presentLocalNotification({
 			  alertTitle: remoteMessage.notification?.title,
@@ -2091,7 +2091,7 @@ componentWillUnmount() {
 		  const msg = normalizeMessage(remoteMessage);
 		  this.handleFirebasePush(msg);
 		});
-	
+
 		// Killed / app launched from notification
 		const initialNotification = await messaging(app).getInitialNotification();
 		if (initialNotification) {
@@ -2099,7 +2099,7 @@ componentWillUnmount() {
 		  const msg = normalizeMessage(initialNotification);
 		  this.handleFirebasePush(msg);
 		}
-	
+
 		const normalizeMessage = (remoteMessage) => {
 		  // RemoteMessage may have .data or .notification
 		  if (!remoteMessage) return null;
@@ -2107,7 +2107,7 @@ componentWillUnmount() {
 		  const notification = remoteMessage.notification || {};
 		  return { ...data, notification };
 		};
-	
+
 		messaging(app).onNotificationOpenedApp(remoteMessage => {
 		  const msg = normalizeMessage(remoteMessage);
 		  this.handleFirebasePush(msg);
@@ -2144,7 +2144,7 @@ componentWillUnmount() {
     // --- AppState listener ---
     this.appStateSubscription = AppState.addEventListener('change', this._handleAppStateChange);
   };
-  
+
     _keyboardDidShow(e) {
        this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
     }
@@ -2209,13 +2209,13 @@ componentWillUnmount() {
         let data = payload.data;
         let event = data.event;
         let action = payload.accept;
- 
+
         const callUUID = data['session-id'];
 		const mediaType = data['media-type'] || 'audio';
         const displayName = data['from_display_name'];
         const from = data['from_uri'];
         const to = data['to_uri'];
- 
+
         /*
         if (event === 'incoming_conference_request') {
 			this.incomingConference(callUUID, to, from, displayName, media);
@@ -2624,23 +2624,23 @@ componentWillUnmount() {
 
         let navigationItems = this.state.navigationItems;
 		const keys = Object.keys(this.state.myContacts);
-		
+
 		for (const key of keys) {
 		  const contact = this.state.myContacts[key];
-		
+
 		  if (!contact) {
 		      continue; // skip this iteration
 		  }
-		
+
 		  // Check conference flag
 		  if (contact.tags.indexOf('conference') > -1 || contact.conference) {
 			conference = true;
 		  }
-		
+
 		  if (contact.timestamp > todayStart) {
 			  today = true;
 		  }
-		
+
 		  if (contact.timestamp > yesterdayStart && contact.timestamp < todayStart) {
 		      yesterday = true;
 		  }
@@ -4891,26 +4891,26 @@ componentWillUnmount() {
 	// Post incoming call notification
 	// --------------------------------
 	async processPendingAction(callUUID) {
-	  console.log('processPendingAction') 
+	  console.log('processPendingAction')
 	  const pendingJson = await AsyncStorage.getItem(`pendingAction:${callUUID}`);
 	  if (!pendingJson) return;
-	
+
 	  const { payload, choice } = JSON.parse(pendingJson);
-	
+
    	  console.log('choice', choice);
 	  if (choice === 'accept_audio') {
 	      console.log('We must accept call', callUUID, payload);
 	  }
-	
+
 	  await AsyncStorage.removeItem(`pendingAction:${callUUID}`);
 	  await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
 	}
-	
+
 	async checkPendingActions(appInstance) {
 	  const keys = await AsyncStorage.getAllKeys();
 	  const pendingKeys = keys.filter(k => k.startsWith('pendingAction:'));
 	  console.log('---- checkPendingActions', pendingKeys);
-	
+
 	  for (const key of pendingKeys) {
 		const callUUID = key.split(':')[1];
 		await this.processPendingAction(callUUID);
@@ -6981,7 +6981,7 @@ componentWillUnmount() {
             await RNFS.unlink(file_path);
         } catch (err) {
         };
-        
+
         //console.log('Adding request id', id, file_transfer.url);
         this.updateFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
         let filesize;
@@ -7006,13 +7006,13 @@ componentWillUnmount() {
 			    filesize = stat.size;
 				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
 				delete this.downloadRequests[id];
-	
+
 				if (file_transfer.filesize !== filesize) {
 					console.log('File', file_transfer.filename, 'size is wrong', filesize, 'must be', file_transfer.filesize);
 					//this.deleteMessage(id, remote_party, false);
 					//return;
 				}
-	
+
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
 					this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' download finished');
 					this.saveDownloadTask(id, file_transfer.url, file_path);
@@ -9417,7 +9417,7 @@ componentWillUnmount() {
 		    }
             total_unread = total_unread + contact.unread.length;
 		}
-        
+
         //console.log('Total unread messages', total_unread)
 
        if (Platform.OS === 'ios') {
