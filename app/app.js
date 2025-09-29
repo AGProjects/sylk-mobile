@@ -7120,7 +7120,7 @@ componentWillUnmount() {
 
         // Decrypt the tempBase64Path file to outputPath
         try {
-            await OpenPGP.decryptFile(tempBase64Path, outputPath, this.state.keys.private, null);
+            await OpenPGP.decryptFile(tempBase64Path, outputPath, privateKey, null);
             file_transfer.local_url = outputPath;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
 
