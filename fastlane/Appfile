@@ -8,3 +8,4 @@ team_id("4DFEFUDLKZ") # Developer Portal Team ID
 #     https://docs.fastlane.tools/advanced/#appfile
 
 json_key_file "fastlane/sylk-8f7a1-17d9c4ec91f8.json"
+package_name "com.agprojects.sylk"

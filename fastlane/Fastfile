@@ -66,7 +66,8 @@ platform :android do
     })
 
     upload_to_play_store(
-      track: 'open',        # 'internal', 'alpha', 'beta', 'production' are also options
+      track: 'beta',        # 'internal', 'alpha', 'beta', 'production' are also options
+      package_name: 'com.agprojects.sylk',
       skip_upload_metadata: true,    # skip metadata editing
       skip_upload_changelogs: true,  # skip changelogs
       skip_upload_images: true,      # skip screenshots
