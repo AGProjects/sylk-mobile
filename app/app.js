@@ -10181,7 +10181,13 @@ componentWillUnmount() {
     render() {
         let footerBox = <View style={styles.footer}><FooterBox /></View>;
 
-        let extraStyles = {};
+		let extraStyles = {paddingBottom: 0};
+        
+        if (Platform.OS === 'android') {
+            if (!this.state.keyboardVisible) {
+				extraStyles = {paddingBottom: 48};
+			}
+        }
 
         if (this.state.localMedia || this.state.registrationState === 'registered') {
            footerBox = null;
@@ -10205,7 +10211,7 @@ componentWillUnmount() {
                                                                         Width_Layout : event.nativeEvent.layout.width,
                                                                         Height_Layout : event.nativeEvent.layout.height
                                                                         }, ()=> this._detectOrientation())}>
-                        <SafeAreaView style={[styles.root, extraStyles]}>
+                        <SafeAreaView style={[styles.root, extraStyles]} edges={['bottom', 'top']}>
                             { Platform.OS === 'android' ?
                             <IncomingCallModal
                                 contact={this.state.incomingContact}
@@ -10235,6 +10241,7 @@ componentWillUnmount() {
                             orientation={this.state.orientation}
                             isTablet={this.state.isTablet}
                             />
+
                             <Switch>
                                 <Route exact path="/" component={this.main} />
                                 <Route exact path="/login" component={this.login} />

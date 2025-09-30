@@ -1110,6 +1110,8 @@ class ReadyBox extends Component {
             }
         }
 
+        let extraStyles = {paddingBottom: Platform.OS === 'android' ? 0 : 0};
+
         return (
             <Fragment>
                 <View style={styles.container}>

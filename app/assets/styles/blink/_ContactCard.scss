@@ -6,25 +6,26 @@
 
 .cardPortraitContainer {
     margin-top: 0.6px;
+    border-radius: 0px;
 }
 
 .cardLandscapeContainer {
     flex: 1;
     margin-left: 1px;
     margin-top: 1px;
-    border-radius: 3px;
+    border-radius: 0px;
 }
 
 .cardLandscapeTabletContainer {
     flex: 1;
     border: 1px;
-    border-radius: 3px;
+    border-radius: 0px;
 }
 
 .cardPortraitTabletContainer {
     flex: 1;
     border: 1px;
-    border-radius: 3px;
+    border-radius: 0px;
 }
 
 .rowContent {
@@ -146,7 +147,7 @@
 }
 
 .button {
-    border-radius: 3px;
+    border-radius: 0px;
     padding-left: 30px;
     padding-right: 30px;
 }
