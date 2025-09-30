@@ -1401,7 +1401,7 @@ class ContactsListBox extends Component {
 
     onMessagePress(context, message) {
         if (message.metadata && message.metadata.filename) {
-            //console.log('File metadata', message.metadata);
+            //console.log('File metadata', message.metadata.filename);
             let file_transfer = message.metadata;
             if (!file_transfer.local_url) {
                 if (!file_transfer.path) {
@@ -1591,7 +1591,7 @@ class ContactsListBox extends Component {
                     this.props.downloadFunc(currentMessage.metadata, true);
                 } else if (action.startsWith('Decrypt')) {
                     console.log('Starting decryption...');
-					this.props.decryptFunc(currentMessage.metadata);
+					this.props.decryptFunc(currentMessage.metadata, true);
                 } else if (action === 'Open') {
                     FileViewer.open(currentMessage.metadata.local_url, { showOpenWithDialog: true })
                     .then(() => {

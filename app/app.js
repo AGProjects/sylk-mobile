@@ -316,6 +316,8 @@ class Sylk extends Component {
 
         this.downloadRequests = {};
         this.uploadRequests = {};
+        this.decryptRequests = {};
+        this.cancelDecryptRequests = {};
 
         this.pendingNewSQLMessages = [];
         this.newSyncMessagesCount = 0;
@@ -6999,7 +7001,7 @@ componentWillUnmount() {
 				const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
 				const progress = Math.ceil(percent);
 				file_transfer.progress = progress;
-				this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
+				this.updateFileTransferBubble(file_transfer, 'Downloading ' + file_transfer.filename + ' ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
             }
         }).done(() => {
 			RNFetchBlob.fs.stat(tmp_file_path).then(stat => {
@@ -7051,8 +7053,9 @@ componentWillUnmount() {
      * @param {string} outputPath - Path for the decrypted file
      * @param {string} privateKey - Your PGP private key
      */
+
     async decryptInChunks(file_transfer, outputPath, privateKey) {
-        const CHUNK_SIZE = 5 * 1024 * 1024; // 1 MB
+        const CHUNK_SIZE = 1024 * 1024; // 1 MB
         let position = 0;
         let insidePGP = false;
         const inputPath = file_transfer.local_url;
@@ -7065,8 +7068,58 @@ componentWillUnmount() {
 
         let leftover = '';
         let bufferSize = 0;
+        
+        let id = file_transfer.hash;
 
+		// Track last printed percentage
+		let lastPercentPrinted = 0;
+		
+		// Function to log progress
+		function logProgress(transferredBytes, totalBytes) {
+		  const percent = Math.floor((transferredBytes / totalBytes) * 100);
+		
+		  // Only print when crossing a 10% boundary
+		  if (percent - lastPercentPrinted >= 10) {
+			// Round down to nearest 10%
+			const roundedPercent = percent - (percent % 10);
+			//console.log(`Progress: ${roundedPercent}%`);
+			lastPercentPrinted = roundedPercent;
+			return roundedPercent;
+		  } else {
+			return;
+
+		  }
+		}
+
+        const delay = ms => new Promise(res => setTimeout(res, ms));
         while (true) {
+			if (id in this.cancelDecryptRequests) {
+			    console.log('Abort decryption for', file_transfer.filename);
+				delete this.decryptRequests[id];
+				delete this.cancelDecryptRequests[id];
+
+				file_transfer.error = 'decryption aborted';
+				file_transfer.progress = null;
+				file_transfer.failed = true;
+				
+				utils.timestampedLog(file_transfer.error);
+				this.updateFileTransferSql(file_transfer, 3);            
+
+				//try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
+				return;
+			} else {
+			    if (position == 0) {
+    			    this.decryptRequests[id] = file_transfer;		
+    			}
+			}
+			
+            await delay(10); // This value is in milliseconds
+
+ 		    const perc = logProgress(position, file_transfer.filesize);
+            if (perc) {
+     			this.updateFileTransferBubble(file_transfer, 'Decrypting ' + perc + '% ' + file_transfer.filename + ', press to cancel...');
+ 			}
+  
             const chunk = await RNFS.read(inputPath, CHUNK_SIZE, position, 'utf8');
             if (!chunk || chunk.length === 0) break;
 
@@ -7089,19 +7142,20 @@ componentWillUnmount() {
                     line.startsWith('=')) {
                     continue;
                 }
+
                 buffer.push(line);
                 bufferSize += line.length;
 
                 // If buffer gets large, flush to disk
                 if (bufferSize >= FLUSH_THRESHOLD) {
                     await RNFS.appendFile(tempBase64Path, buffer.join(''), 'base64');
+                    //this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + ' ', position);
+                    //console.log('Reading ', position);
                     buffer = [];
                     bufferSize = 0;
                 }
             }
         }
-
-        console.log('PGP Base64 extraction complete. Decrypting now...');
 
         // After the loop, process any remaining leftover line
         if (leftover && insidePGP) {
@@ -7118,37 +7172,48 @@ componentWillUnmount() {
 
         // Decrypt the tempBase64Path file to outputPath
         try {
-            console.log('OpenPGP decryptFile...');
+			delete this.decryptRequests[id];
+
+            console.log('PGP Base64 extraction complete. Decrypting now...');
             await OpenPGP.decryptFile(tempBase64Path, outputPath, privateKey, null);
             file_transfer.local_url = outputPath;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
-            console.log('OpenPGP decryptFile done');
 
             try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
             try { await RNFS.unlink(inputPath); } catch (e) { /* optional cleanup */ }
             this.updateFileTransferSql(file_transfer, 2);
+            console.log('Decryption complete:', outputPath);
+
         } catch(error) {
             let error_message = error.message;
 
             if (error.message.indexOf('incorrect key') > -1) {
-                error_message = 'Incorrect encryption key, the sender must resent the file';
+                error_message = 'Incorrect encryption key';
             }
 
-            file_transfer.error = 'Error decrypting file ' + file_transfer.filename, + ': ', error_message;
-            file_transfer.progress = null;
-            utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
-            this.updateFileTransferSql(file_transfer, 3);
-        }
+            if (error.message.indexOf('session key failed') > -1) {
+                error_message = 'Incorrect encryption key';
+            }
 
-        console.log('Decryption complete:', outputPath);
+			delete this.decryptRequests[id];
+
+            console.log(error_message);
+            file_transfer.error = 'failed: ' + error_message;
+            file_transfer.progress = null;
+            file_transfer.failed = true;
+            
+            utils.timestampedLog(file_transfer.error);
+            this.updateFileTransferSql(file_transfer, 3);            
+            try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
+        }
     }
 
-    async decryptFile(file_transfer) {
+    async decryptFile(file_transfer, force=false) {
+        console.log('Decrypting file', file_transfer.filename);
+
         if (!this.state.keys.private) {
             return;
         }
-
-        console.log('Decrypting file', file_transfer.filename);
 
         let content;
         let lines = [];
@@ -7186,9 +7251,20 @@ componentWillUnmount() {
             }
         }
 
-		this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + '...');
-		await this.decryptInChunks(file_transfer, file_path_decrypted, this.state.keys.private);
-		return;
+        if (force) {
+    		await this.updateFileTransferSql(file_transfer, 1, true);
+		}
+
+		this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + ', press to cancel...');
+		console.log('---');
+		console.log(this.decryptRequests);
+		
+		if (file_transfer.hash in this.decryptRequests) {
+		    console.log('canceling');
+			this.cancelDecryptRequests[file_transfer.hash] = file_transfer;
+		} else {
+			await this.decryptInChunks(file_transfer, file_path_decrypted, this.state.keys.private);
+		}
     }
 
     async decryptMessage(message, updateContact=false) {
@@ -8753,17 +8829,22 @@ componentWillUnmount() {
     }
 
     async updateFileTransferSql(file_transfer, encrypted=0, reset=false) {
+        console.log('updateFileTransferSql reset;', reset)
         let query = "SELECT * from messages where msg_id = ? and account = ?";
         await this.ExecuteQuery(query, [file_transfer.transfer_id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
-                if (encrypted === 3 && !file_transfer.error) {
-                    file_transfer.error = 'decryption failed';
+                if (reset) {
+                    file_transfer.error = '';
+                } else {
+					if (encrypted === 3 && !file_transfer.error) {
+						file_transfer.error = 'decryption failed';
+					}
                 }
                 var item = rows.item(0);
                 let received = reset ? '1' : item.received;
 
-                if (this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
+                if (!reset && this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
                     if (encrypted === 2 || encrypted === 0) {
                         this.sendDispositionNotification(file_transfer, 'displayed', true);
                     } else if (encrypted === 3) {
@@ -8775,7 +8856,9 @@ componentWillUnmount() {
                 query = "update messages set metadata = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
                     console.log('SQL updated file transfer', file_transfer.transfer_id, 'received =', received, 'encrypted =', encrypted);
-                    this.updateFileTransferBubble(file_transfer);
+                    if (!reset) {
+						this.updateFileTransferBubble(file_transfer);
+                    }
                 }).catch((error) => {
                     console.log('updateFileTransferSql SQL error:', error);
                 });
@@ -9049,6 +9132,8 @@ componentWillUnmount() {
                 if (metadata.error) {
                     msg.text = msg.text + ' - ' + metadata.error;
                     msg.failed = true;
+                } else {
+                    msg.failed = false;
                 }
 
                 msg.metadata = metadata;
