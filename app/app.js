@@ -2072,7 +2072,7 @@ componentWillUnmount() {
 
 		// --- Foreground messages ---
 		this.messageListener = messaging(app).onMessage(async remoteMessage => {
-		  console.log('FCM app foreground message:', remoteMessage);
+		  console.log('FCM app foreground message:', remoteMessage.data);
 
 		  if (Platform.OS === 'ios') {
 			PushNotificationIOS.presentLocalNotification({
@@ -2088,7 +2088,7 @@ componentWillUnmount() {
 
 		// --- Background messages ---
 		messaging(app).setBackgroundMessageHandler(async remoteMessage => {
-		  console.log('FCM app background message:', remoteMessage);
+		  console.log('FCM app background message:', remoteMessage.data);
 		  const msg = normalizeMessage(remoteMessage);
 		  this.handleFirebasePush(msg);
 		});
