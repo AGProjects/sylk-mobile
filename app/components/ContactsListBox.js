@@ -1537,17 +1537,26 @@ class ContactsListBox extends Component {
             }
             
             if  (currentMessage.metadata) {
-				//console.log('mesage metadata:', currentMessage.metadata);
+				console.log('mesage metadata:', currentMessage.metadata);
+            }
+            if  (currentMessage.metadata.filename) {
+				console.log('mesage metadata filename:', currentMessage.metadata.filename);
             }
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {
                 if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
                     options.push('Download again');
                     icons.push(<Icon name="cloud-download" size={20} />);
+					if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
+						options.push('Decrypt');
+						icons.push(<Icon name="table-key" size={20} />);
+					}
+
                 } else {
                     options.push('Download');
                     icons.push(<Icon name="cloud-download" size={20} />);
                 }
+                
             }
 
             options.push('Cancel');
@@ -1580,6 +1589,9 @@ class ContactsListBox extends Component {
                 } else if (action.startsWith('Download')) {
                     console.log('Starting download...');
                     this.props.downloadFunc(currentMessage.metadata, true);
+                } else if (action.startsWith('Decrypt')) {
+                    console.log('Starting decryption...');
+					this.props.decryptFunc(currentMessage.metadata);
                 } else if (action === 'Open') {
                     FileViewer.open(currentMessage.metadata.local_url, { showOpenWithDialog: true })
                     .then(() => {

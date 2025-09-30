@@ -116,9 +116,7 @@ const KeyOptions = {
   RSABits: 4096,
 }
 
-const max_size_to_decrypt = 60 * 1000 * 1000;
-const large_size_to_decrypt = 20 * 1000 * 1000;
-const max_transfer_size = 100 * 1000 * 1000;
+const max_transfer_size = 40 * 1000 * 1000;
 
 const incomingCallLabel = 'Incoming call...';
 
@@ -6897,6 +6895,7 @@ componentWillUnmount() {
                 if (file_transfer.filesize < max_transfer_size) {
                     this.downloadFile(file_transfer);
                 } else {
+                    this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to download');
                     console.log('File transfer is too large');
                 }
             }
@@ -7052,9 +7051,8 @@ componentWillUnmount() {
      * @param {string} outputPath - Path for the decrypted file
      * @param {string} privateKey - Your PGP private key
      */
-    async decryptLargePGPFile(file_transfer, outputPath, privateKey) {
-        console.log('decryptLargePGPFile');
-        const CHUNK_SIZE = 1024 * 1024; // 1 MB
+    async decryptInChunks(file_transfer, outputPath, privateKey) {
+        const CHUNK_SIZE = 5 * 1024 * 1024; // 1 MB
         let position = 0;
         let insidePGP = false;
         const inputPath = file_transfer.local_url;
@@ -7120,15 +7118,16 @@ componentWillUnmount() {
 
         // Decrypt the tempBase64Path file to outputPath
         try {
+            console.log('OpenPGP decryptFile...');
             await OpenPGP.decryptFile(tempBase64Path, outputPath, privateKey, null);
             file_transfer.local_url = outputPath;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
-
+            console.log('OpenPGP decryptFile done');
 
             try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
             try { await RNFS.unlink(inputPath); } catch (e) { /* optional cleanup */ }
             this.updateFileTransferSql(file_transfer, 2);
-        } catch(e) {
+        } catch(error) {
             let error_message = error.message;
 
             if (error.message.indexOf('incorrect key') > -1) {
@@ -7140,6 +7139,7 @@ componentWillUnmount() {
             utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
             this.updateFileTransferSql(file_transfer, 3);
         }
+
         console.log('Decryption complete:', outputPath);
     }
 
@@ -7148,7 +7148,7 @@ componentWillUnmount() {
             return;
         }
 
-        //console.log('decryptFile', file_transfer);
+        console.log('Decrypting file', file_transfer.filename);
 
         let content;
         let lines = [];
@@ -7167,7 +7167,6 @@ componentWillUnmount() {
         exists = await RNFS.exists(file_path);
 
         if (!exists) {
-            console.log('Encrypted file', file_path, 'does not exist');
             this.updateFileTransferSql(file_transfer, 3);
             return;
         } else {
@@ -7187,121 +7186,9 @@ componentWillUnmount() {
             }
         }
 
-        if (file_transfer.filesize > max_size_to_decrypt) {
-            this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to decrypt');
-            return;
-        }
-        if (file_transfer.filesize > large_size_to_decrypt) {
-            this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + '...');
-            await this.decryptLargePGPFile(file_transfer, file_path_decrypted, this.state.keys.private);
-            return;
-        }
-
-        this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + '...');
-
-		const decryptedPath = RNFS.DocumentDirectoryPath + '/' + file_transfer.filename;
-		console.log('Decrypting ', file_transfer.filename);
-
-        try {
-            content = await RNFS.readFile(file_path, 'utf8');
-        } catch (e) {
-            console.log('Error reading file from PGP envelope', e.message, file_path);
-            file_transfer.error = 'Error reading .asc file: ' + e.message;
-            this.renderSystemMessage(uri, e.message);
-            this.updateFileTransferSql(file_transfer, 3);
-            return;
-        }
-
-        try {
-            lines = content.split("\n");
-            lines.forEach((line) => {
-                if (line === '-----BEGIN PGP MESSAGE-----') {
-                    return;
-                }
-
-                if (line === '') {
-                    return;
-                }
-
-                if (line.indexOf('Version') > -1) {
-                    return;
-                }
-
-                if (line.indexOf('Comment') > -1) {
-                    return;
-                }
-
-                if (line.indexOf('MessageID') > -1) {
-                    return;
-                }
-
-                if (line.indexOf('Hash') > -1) {
-                    return;
-                }
-
-                if (line.indexOf('Charset') > -1) {
-                    return;
-                }
-
-                if (line === '-----END PGP MESSAGE-----') {
-                    return;
-                }
-
-                if (line.startsWith('=')) {
-                    return;
-                }
-                base64_content = base64_content + line;
-            });
-        } catch (e) {
-            utils.timestampedLog('Error parsing PGP envelope', e.message);
-            this.updateFileTransferSql(file_transfer, 3);
-            return;
-        }
-
-        try {
-            await RNFS.writeFile(file_path_binary, base64_content, 'base64');
-        } catch (e) {
-            utils.timestampedLog('Error writing file', e.message);
-            file_transfer.error = 'Error writing file';
-            this.updateFileTransferSql(file_transfer, 3);
-            return;
-        }
-
-        utils.timestampedLog('Decrypting file', file_path_binary);
-
-        await OpenPGP.decryptFile(file_path_binary, file_path_decrypted, this.state.keys.private, null).then((content) => {
-            utils.timestampedLog('File', file_transfer.transfer_id, 'decrypted');
-
-            file_transfer.local_url = file_path_decrypted;
-            file_transfer.filename = file_transfer.filename.slice(0, -4);
-
-            try {
-                RNFS.unlink(file_path_binary);
-            } catch (e) {
-                //
-            }
-
-            try {
-                RNFS.unlink(file_path);
-            } catch (e) {
-                //
-            }
-
-            this.updateFileTransferSql(file_transfer, 2);
-
-        }).catch((error) => {
-            let error_message = error.message;
-
-            if (error.message.indexOf('incorrect key') > -1) {
-                error_message = 'Incorrect encryption key, the sender must resent the file';
-            }
-
-            file_transfer.error = 'Error decrypting file ' + file_transfer.filename, + ': ', error_message;
-            file_transfer.progress = null;
-            utils.timestampedLog('Decrypting file', file_path_binary, 'failed:', error.message);
-            this.updateFileTransferSql(file_transfer, 3);
-            //console.log(content);
-        });
+		this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + '...');
+		await this.decryptInChunks(file_transfer, file_path_decrypted, this.state.keys.private);
+		return;
     }
 
     async decryptMessage(message, updateContact=false) {
