@@ -4,6 +4,7 @@ import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
+import red from 'material-ui/colors/red';
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';
@@ -1381,7 +1382,7 @@ class ReadyBox extends Component {
 
                     { this.state.recording  ?
                         <View style={styles.recordingContainer}>
-                            <ActivityIndicator animating={true} size={'large'} color={Colors.red800} />
+                            <ActivityIndicator animating={true} size={'large'} color={red[800]} />
                             <Title style={styles.activityTitle}>{activityTitle}</Title>
                         </View>
                     : null
