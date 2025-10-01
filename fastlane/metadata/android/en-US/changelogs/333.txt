@@ -1,0 +1,2 @@
+ * Fix missing microphone recording in chat input bar
+ * Fix loading indicator
