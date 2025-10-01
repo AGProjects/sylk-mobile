@@ -561,6 +561,7 @@ class ContactsListBox extends Component {
       return (
         <InputToolbar
           {...props}
+          renderActions={this.renderCustomActions}
           renderComposer={() => {this.renderComposer}}
           containerStyle={styles.chatInsideRightActionsContainer}
         />
