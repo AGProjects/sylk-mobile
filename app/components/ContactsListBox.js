@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, PermissionsAndroid, Switch, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
+import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -1417,7 +1417,6 @@ class ContactsListBox extends Component {
                     if (file_transfer.local_url.endsWith('.asc')) {
                         if (file_transfer.error) {
                             this.onLongMessagePress(context, message);
-
                         } else {
                             this.props.decryptFunc(message.metadata);
                         }
@@ -2058,7 +2057,14 @@ class ContactsListBox extends Component {
         messages.forEach((m) => {
         });
 
-//
+        let addSpacer = false;
+		if (Platform.OS === 'android') {
+		  const androidVersion = Platform.Version;
+		  if (androidVersion >= 34) {
+			  addSpacer = true;
+		  }
+		}
+
         return (
             <SafeAreaView style={container}>
               {items.length === 1 ?
@@ -2108,7 +2114,9 @@ class ContactsListBox extends Component {
                   isTyping={this.state.isTyping}
                   onInputTextChanged={text => this.chatInputChanged(text)}
                 />
-                {Platform.OS === 'android' ? <KeyboardSpacer /> : null }
+
+                {addSpacer ? <KeyboardSpacer /> : null }
+
               </View>
               : (items.length === 1) ?
               <View style={[chatContainer, borderClass]}>

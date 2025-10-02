@@ -10184,7 +10184,14 @@ componentWillUnmount() {
 		let extraStyles = {paddingBottom: 0};
         
         if (Platform.OS === 'android') {
-            if (!this.state.keyboardVisible) {
+            /*
+			Android 11	30
+			Android 12	31-32
+			Android 13	33
+			Android 14	34
+            */
+
+            if (!this.state.keyboardVisible && Platform.Version >= 34) {
 				extraStyles = {paddingBottom: 48};
 			}
         }
