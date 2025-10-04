@@ -701,44 +701,67 @@ class ContactsListBox extends Component {
     }
 
     async handleShare(message) {
-        let local_url;
-        let what = 'message';
+        const { local_url, filename, filetype } = message.metadata;
 
-        if (message.metadata) {
-            local_url = message.metadata.local_url;
-            if (message.image) {
-                what = 'photo';
-                let res = await RNFS.readFile(local_url, 'base64');
-                local_url = `data:${message.metadata.filetype};base64,${res}`;
-            } else if (utils.isAudio(message.metadata.filename)) {
-                what = 'Audio message';
-                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
-            } else if (message.metadata.video) {
-                what = 'Video';
-                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
-            } else {
-                local_url = Platform.OS === 'ios' ? local_url : 'file://' + local_url;
-            }
+        let what = 'File';
+        let newFilename = filename;
+        let newLocalUrl = local_url;
 
+        if (newFilename.endsWith('.asc')) {
+			newFilename = filename.slice(0, -4); // remove last 4 characters
         }
 
-        let options= {
-            title: 'Share via',
-            subject: 'Share ' + what,
-            message: message.text,
-            url: local_url
-        }
+        //console.log('-- handleShare\n', JSON.stringify(message, null, 2));
 
-        if (message.metadata) {
-            options.type = message.metadata.filetype;
-        }
+        const now = new Date();
+        const pad = (num) => String(num).padStart(2, '0');
+		const timestamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const ext = newFilename.substring(newFilename.lastIndexOf('.'));
 
+		if (message.image) {
+			what = 'Photo';
+			newFilename = `${timestamp}-Image${ext}`;
+		} else if (utils.isAudio(newFilename)) {
+			what = 'Audio message';
+			newFilename = `${timestamp}-AudioMessage${ext}`;
+    	} else if (utils.isVideo(newFilename)) {
+			what = 'Video';
+			newFilename = `${timestamp}-Video${ext}`;
+		}
+
+		if (Platform.OS === 'android') {
+			try {
+				const destPath = `${RNFS.CachesDirectoryPath}/${newFilename}`;
+				await RNFS.copyFile(local_url, destPath);
+				newLocalUrl = `file://${destPath}`;
+				//const res = await RNFS.readFile(newLocalUrl, 'base64');
+				//newLocalUrl = `data:${message.metadata.filetype};base64,${res}`;
+			} catch (err) {
+				console.log('Error reading file:', err);
+				this.props.postSystemNotification('Error reading file: ' + err.message);
+				return;
+			}
+		}
+		
+ 	    const options = {
+			title: 'Share via',
+            subject: what + ' ' +newFilename,
+			url: newLocalUrl,
+			type: filetype,
+			filename: newFilename
+		};
+		
+		//console.log('-- options\n', JSON.stringify(options, null, 2));
+  
         Share.open(options)
             .then((res) => {
                 console.log('Sharing finished');
             })
-            .catch((err) => {
-                console.log('Error sharing data', err);
+            .catch((error) => {
+                console.log('Error sharing data', error);
+                if (error.message.indexOf("did not share") === -1) {
+                    this.props.postSystemNotification('Error sharing data: ' + error.message);
+                }   
             });
     }
 
@@ -1537,10 +1560,10 @@ class ContactsListBox extends Component {
             }
             
             if  (currentMessage.metadata) {
-				console.log('mesage metadata:', currentMessage.metadata);
+				//console.log('mesage metadata:', currentMessage.metadata);
             }
             if  (currentMessage.metadata.filename) {
-				console.log('mesage metadata filename:', currentMessage.metadata.filename);
+				//console.log('mesage metadata filename:', currentMessage.metadata.filename);
             }
 
             if (currentMessage.metadata && currentMessage.metadata.filename) {

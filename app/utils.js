@@ -13,7 +13,6 @@ const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
 let ENCRYPTABLE_FILE_SIZE = 20 * 1000 * 1000;
 
-
 let polycrc = require('polycrc');
 
 /**
@@ -558,7 +557,9 @@ function isImage(filename, filetype=null) {
         return false;
     }
 
-    filename = filename.endsWith('.asc') ? filename.slice(0, -4) : filename;
+	if (filename.endsWith('.asc')) {
+		filename = filename.slice(0, -4); // remove last 4 characters
+	}
 
     if (filetype && filetype.startsWith('image/')) {
         return true
@@ -586,6 +587,10 @@ function isAudio(filename) {
         return false;
     }
 
+	if (filename.endsWith('.asc')) {
+		filename = filename.slice(0, -4); // remove last 4 characters
+	}
+
     filename = filename.endsWith('.asc') ? filename.slice(0, -4) : filename;
 
     if (filename.toLowerCase().endsWith('.mp3')) {
@@ -612,6 +617,10 @@ function isVideo(filename, metadata=null) {
         return false;
     }
 
+	if (filename.endsWith('.asc')) {
+		filename = filename.slice(0, -4); // remove last 4 characters
+	}
+
     if (metadata) {
         if (metadata.filetype && metadata.filetype.startsWith('video/')) {
             return true;
@@ -621,9 +630,10 @@ function isVideo(filename, metadata=null) {
             return true;
         }
     }
+    
 
     if (filename.toLowerCase().startsWith('sylk-audio-recording')) {
-        return false
+        return false;
     }
 
     if (filename.toLowerCase().endsWith('.mpeg')) {
@@ -724,12 +734,11 @@ function radix64(t) {
 }
 
 function isFileEncryptable(file_transfer) {
-
     if (file_transfer.filesize > ENCRYPTABLE_FILE_SIZE) {
         return false;
     }
 
-    if (isVideo(file_transfer)) {
+    if (isVideo(file_transfer.filename, file_transfer)) {
         return false;
     }
 

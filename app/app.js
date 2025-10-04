@@ -563,8 +563,16 @@ class Sylk extends Component {
             return;
         }
 
-        const permission = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
-        let granted = await PermissionsAndroid.request(permission);
+        const granted = await PermissionsAndroid.request(
+			PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+			{
+			  title: 'Storage Permission Required',
+			  message: 'App needs access to your storage to share files',
+			  buttonNeutral: 'Ask Me Later',
+			  buttonNegative: 'Cancel',
+			  buttonPositive: 'OK',
+			}
+		);
 
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
             console.log("Storage permission denied");
@@ -5763,7 +5771,7 @@ componentWillUnmount() {
     }
 
     async uploadFile(file_transfer) {
-        //console.log('uploadFile', file_transfer.local_url);
+        //console.log('uploadFile', file_transfer);
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
@@ -8855,7 +8863,7 @@ componentWillUnmount() {
                 let params = [JSON.stringify(file_transfer), encrypted, file_transfer.transfer_id, this.state.accountId];
                 query = "update messages set metadata = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
-                    console.log('SQL updated file transfer', file_transfer.transfer_id, 'received =', received, 'encrypted =', encrypted);
+                    //console.log('SQL updated file transfer', file_transfer.transfer_id, 'received =', received, 'encrypted =', encrypted);
                     if (!reset) {
 						this.updateFileTransferBubble(file_transfer);
                     }
@@ -8883,7 +8891,7 @@ componentWillUnmount() {
                 let params = [content, JSON.stringify(new_metadata), pending, sent, received, id]
                 query = "update messages set content = ?, metadata = ?, pending = ?, sent = ?, received = ? where msg_id = ?"
                 this.ExecuteQuery(query, params).then((results) => {
-                    console.log('SQL updated file transfer', id, 'received =', received);
+                    //console.log('SQL updated file transfer', id, 'received =', received);
                     this.checkFileTransfer(new_metadata);
                     // to do, skip query done below
                     this.updateRenderMessageState(id, state, new_metadata.url);
@@ -9130,6 +9138,7 @@ componentWillUnmount() {
             if (msg._id === id) {
                 msg.text = text || utils.beautyFileNameForBubble(metadata);
                 if (metadata.error) {
+                    console.log(metadata.error)
                     msg.text = msg.text + ' - ' + metadata.error;
                     msg.failed = true;
                 } else {
