@@ -10274,6 +10274,11 @@ react-native-md5@^1.0.0:
   resolved "https://registry.yarnpkg.com/react-native-md5/-/react-native-md5-1.0.0.tgz#2320be24d674938ae5ef4f492698edbbfa0e0205"
   integrity sha1-IyC+JNZ0k4rl709JJpjtu/oOAgU=
 
+react-native-minimize@^1.0.12:
+  version "1.0.12"
+  resolved "https://registry.yarnpkg.com/react-native-minimize/-/react-native-minimize-1.0.12.tgz#dd56197fb3fd6e8553cfa3686f939120309f3324"
+  integrity sha512-hD4Kesa7IJvlm79vDjhQiuvki0viMw4C3dxsw8i3vHzkz0R7aAerrsEDVGgQu6Rc/yRISevQOkh7HqV8mvwvvA==
+
 react-native-paper@^5.14.5:
   version "5.14.5"
   resolved "https://registry.yarnpkg.com/react-native-paper/-/react-native-paper-5.14.5.tgz#7995a2f8171c8355c1cb55c81a6d2074a7dd5abb"

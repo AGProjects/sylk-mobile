@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/incomingCallRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    android:gravity="center"
+    android:padding="24dp">
+
+    <!-- App Logo -->
+    <ImageView
+        android:id="@+id/appLogo"
+        android:layout_width="100dp"
+        android:layout_height="100dp"
+        android:src="@drawable/sylk_logo"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="80dp"
+        android:contentDescription="Sylk Logo"/>
+
+	<!-- Caller Name -->
+	<TextView
+		android:id="@+id/callerNameText"
+		android:layout_width="wrap_content"
+		android:layout_height="wrap_content"
+		android:text="John Doe"
+		android:textColor="@android:color/white"
+		android:textSize="28sp"
+		android:layout_below="@id/appLogo"
+		android:layout_centerHorizontal="true"
+		android:layout_marginTop="32dp"
+		android:gravity="center"/>
+	
+	<!-- "is calling" label below the name -->
+	<TextView
+		android:id="@+id/callingLabelText"
+		android:layout_width="wrap_content"
+		android:layout_height="wrap_content"
+		android:text="is calling"
+		android:textColor="@android:color/white"
+		android:textSize="20sp"
+		android:layout_below="@id/callerNameText"
+		android:layout_centerHorizontal="true"
+		android:layout_marginTop="8dp"
+		android:gravity="center"/>
+		
+    <!-- Audio Call Buttons -->
+    <LinearLayout
+        android:id="@+id/audioButtonContainer"
+        android:orientation="horizontal"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerHorizontal="true"
+        android:layout_alignParentBottom="true"
+        android:layout_marginBottom="100dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/acceptButton"
+            android:layout_width="120dp"
+            android:layout_height="40dp"
+            android:text="Accept"
+            android:textColor="@android:color/white"
+            android:background="@drawable/btn_green_rounded"
+            android:layout_margin="16dp"/>
+
+        <Button
+            android:id="@+id/rejectButtonAudio"
+            android:layout_width="120dp"
+            android:layout_height="40dp"
+            android:text="Reject"
+            android:textColor="@android:color/white"
+            android:background="@drawable/btn_red_rounded"
+            android:layout_margin="16dp"/>
+    </LinearLayout>
+
+    <!-- Video Call Buttons -->
+    <LinearLayout
+        android:id="@+id/videoButtonContainer"
+        android:orientation="vertical"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerHorizontal="true"
+        android:layout_alignParentBottom="true"
+        android:layout_marginBottom="100dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:orientation="horizontal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <Button
+                android:id="@+id/acceptAudioButton"
+                android:layout_width="120dp"
+                android:layout_height="40dp"
+                android:text="Audio only"
+                android:textColor="@android:color/white"
+                android:background="@drawable/btn_green_rounded"
+                android:layout_margin="16dp"/>
+
+            <Button
+                android:id="@+id/acceptVideoButton"
+                android:layout_width="120dp"
+                android:layout_height="40dp"
+                android:text="Video"
+                android:textColor="@android:color/white"
+                android:background="@drawable/btn_blue_rounded"
+                android:layout_margin="16dp"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/rejectButtonVideo"
+            android:layout_width="120dp"
+            android:layout_height="40dp"
+            android:text="Reject"
+            android:textColor="@android:color/white"
+            android:background="@drawable/btn_red_rounded"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="16dp"/>
+    </LinearLayout>
+
+</RelativeLayout>

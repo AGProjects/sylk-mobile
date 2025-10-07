@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.agprojects.sylk">
 
   <queries>
     <intent>
@@ -42,6 +42,8 @@
     <uses-permission android:name="android.permission.CALL_PHONE"/>
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
@@ -51,9 +53,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT "/>
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
 
     <application
       android:name=".MainApplication"
@@ -63,6 +66,21 @@
       android:allowBackup="false"
       android:theme="@style/AppTheme"
       android:requestLegacyExternalStorage="true">
+
+<receiver android:name=".IncomingCallActionReceiver" android:exported="true"/>
+
+<service
+    android:name=".MyFirebaseMessagingService"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+    </intent-filter>
+</service>
+
+      <service
+      android:name=".IncomingCallService"
+      android:exported="true"
+      android:foregroundServiceType="mediaPlayback|phoneCall"/>
 
       <service android:name="io.wazo.callkeep.VoiceConnectionService"
         android:label="@string/app_name"
@@ -164,6 +182,23 @@
           </intent-filter>
 
       </activity>
+
+	<activity
+	  android:name=".IncomingCallActivity"
+	  android:launchMode="singleTask"
+	  android:excludeFromRecents="true"
+	  android:showWhenLocked="true"
+	  android:turnScreenOn="true"
+	  android:allowEmbedded="true"
+	  android:exported="true"
+	  android:taskAffinity=""
+	  android:theme="@style/Theme.Transparent">
+    
+  <intent-filter>
+    <action android:name="android.intent.action.MAIN" />
+    <category android:name="android.intent.category.DEFAULT" />
+  </intent-filter>
+</activity>
 
       <activity android:name="com.facebook.react.devsupport.DevSettingsActivity"/>
       <service android:name="io.wazo.callkeep.RNCallKeepBackgroundMessagingService"/>

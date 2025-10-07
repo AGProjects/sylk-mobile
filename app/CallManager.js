@@ -227,9 +227,9 @@ export default class CallManager extends events.EventEmitter {
         }
 
         if (reason) {
-            //utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
+            utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
         } else {
-            //utils.timestampedLog('Callkeep: end call', callUUID);
+            utils.timestampedLog('Callkeep: end call', callUUID);
         }
 
         if (this._pushCalls.has(callUUID)) {
@@ -261,12 +261,12 @@ export default class CallManager extends events.EventEmitter {
     }
 
     terminateCall(callUUID) {
-        //utils.timestampedLog('Callkeep: call terminated', callUUID);
+        utils.timestampedLog('Callkeep: call terminated', callUUID);
 
         this._terminatedCalls.set(callUUID, Date.now());
 
         if (this._calls.has(callUUID)) {
-            //utils.timestampedLog('Callkeep: removed websocket call', callUUID);
+            utils.timestampedLog('Callkeep: removed websocket call', callUUID);
             this._calls.delete(callUUID);
         }
 
@@ -356,15 +356,13 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        console.log('CallKeep acceptCall', callUUID, options);
         const connection = this.getConnection();
 
         if (this._acceptedCalls.has(callUUID)) {
-            //utils.timestampedLog('Callkeep: already accepted call', callUUID, 'on web socket', connection);
-            this.endCall(callUUID);
+            utils.timestampedLog('Callkeep: already accepted call', callUUID, 'on web socket', connection);
             return;
         } else {
-            //utils.timestampedLog('Callkeep: accept call', callUUID, 'on web socket', connection);
+            utils.timestampedLog('Callkeep: accept call', callUUID, 'on web socket', connection);
         }
 
         if (this._terminatedCalls.has(callUUID)) {

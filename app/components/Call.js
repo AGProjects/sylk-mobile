@@ -230,7 +230,7 @@ class Call extends Component {
         } else {
             if (!this.state.call) {
                 utils.timestampedLog('Call: no Sylkrtc call present');
-                this.hangupCall('answer_failed');
+                //this.hangupCall('answer_failed');
             }
 
             if (!media) {

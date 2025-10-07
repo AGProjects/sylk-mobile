@@ -65,6 +65,7 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
   const data = remoteMessage.data;
 
   console.log('[FCM BG] Push received:', remoteMessage.data);
+  return;
 
   if (event === 'incoming_session' || event === 'incoming_conference_request') {
     const { ['session-id']: callUUID } = data;
@@ -94,6 +95,7 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
 // Post incoming call notification
 // --------------------------------
 export async function postIncomingCallNotification(data) {
+  return;
   console.log('[IncomingCall] Posting notification', data);
 
   const { ['session-id']: callUUID, from_display_name: from, from_uri: from_uri, ['media-type']: mediaType, event } = data;
@@ -120,7 +122,6 @@ export async function postIncomingCallNotification(data) {
     actions.push({ title: 'Accept Audio', pressAction: { id: 'accept_audio', launchActivity: 'default' } });
     actions.push({ title: 'Accept Video', pressAction: { id: 'accept_video', launchActivity: 'default' } });
   }
-
 	await notifee.displayNotification({
 	  id: callUUID.toString(),
 	  title: 'Incoming Sylk call',
@@ -129,12 +130,13 @@ export async function postIncomingCallNotification(data) {
 		channelId: 'incoming-call',
 		smallIcon: 'ic_notification',
 		color: AndroidColor.WHITE,
+		category: 'call',
 		importance: AndroidImportance.HIGH,  // heads-up
 		priority: 2,                         // "max" priority
 		ongoing: true,                       // keep it pinned
 		fullScreenAction: {                  // 👈 keeps it on screen
-		  id: 'default',
-		  launchActivity: 'default',
+		  id: 'incoming_call', launchActivity:
+		  'IncomingCallActivity',
 		},
 		pressAction: { id: 'default' },
 		actions,

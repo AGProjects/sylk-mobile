@@ -180,6 +180,9 @@ class NavigationBar extends Component {
             case 'toggleFavorite':
                 this.props.toggleFavorite(this.state.selectedContact.uri);
                 break;
+            case 'toggleAutoanswer':
+                this.props.toggleAutoanswer(this.state.selectedContact.uri);
+                break;
             case 'toggleBlocked':
                 this.props.toggleBlocked(this.state.selectedContact.uri);
                 break;
@@ -362,6 +365,7 @@ class NavigationBar extends Component {
         }
 
         let favoriteTitle = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
+        let autoanswerTitle = (this.state.selectedContact && tags && tags.indexOf('autoanswer') > -1) ? 'No autoanswer' : 'Auto answer';
         let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
 
         let extraMenu = false;
@@ -403,7 +407,7 @@ class NavigationBar extends Component {
 				subtitle = this.state.selectedContact.uri;
 			}
 		}
-
+				
         return (
             <Appbar.Header style={{backgroundColor: 'black'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
                 {showBackButton ?
@@ -471,7 +475,10 @@ class NavigationBar extends Component {
                         {this.props.publicKey && false?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous ?
+                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
+                        : null}
+                        {tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
@@ -482,6 +489,7 @@ class NavigationBar extends Component {
                         {!this.state.inCall && !hasMessages && tags.indexOf('test') === -1?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
                         : null}
+                        
 
                     </Menu>
                 :
@@ -647,6 +655,7 @@ NavigationBar.propTypes = {
     deleteMessages     : PropTypes.func,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
+    toggleAutoanswer   : PropTypes.func,
     saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,
     favoriteUris       : PropTypes.array,

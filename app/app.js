@@ -9,6 +9,9 @@ import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
 import Logger from "../Logger";
 import autoBind from 'auto-bind';
+import RNMinimize from 'react-native-minimize';
+
+import { NativeEventEmitter, NativeModules } from 'react-native';
 
 import messaging from '@react-native-firebase/messaging';
 import notifee from '@notifee/react-native';
@@ -189,6 +192,7 @@ function _parseSQLDate(key, value) {
     }
 })();
 
+
 class Sylk extends Component {
     constructor() {
         super();
@@ -196,6 +200,7 @@ class Sylk extends Component {
         this._loaded = false;
         let isFocus = Platform.OS === 'ios';
         this.startTimestamp = new Date();
+        this.phoneWasLocked = false;
 
         this._initialState = {
             appState: null,
@@ -242,6 +247,7 @@ class Sylk extends Component {
             refreshFavorites: false,
             myPhoneNumber: '',
             favoriteUris: [],
+            autoanswerUris: [],
             blockedUris: [],
             missedCalls: [],
             initialUrl: null,
@@ -374,6 +380,7 @@ class Sylk extends Component {
         this.initialChatContact = null;
         this.mustPlayIncomingSoundAfterSync = false;
         this.ringbackActive = false;
+        this.callEventListener = null;
 
         this.callKeeper = new CallManager(RNCallKeep,
                                                 this.showAlertPanel,
@@ -660,7 +667,7 @@ class Sylk extends Component {
     }
 
     async requestMicPermission(requestedBy) {
-        console.log('Request mic permission by', requestedBy);
+        //console.log('Request mic permission by', requestedBy);
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.MICROPHONE).then((result) => {
@@ -929,8 +936,9 @@ class Sylk extends Component {
         }
 
         for (let task of lostTasks) {
-            console.log(`Download task ${task.id} was found:`, task.url);
+            console.log(task); 
             if (task.url && task.destination) {
+                console.log(`Download task ${task.id} was found:`, task.url);
                 task.progress((percent) => {
                     console.log(task.url, `Downloaded: ${percent * 100}%`);
                 }).done(() => {
@@ -938,7 +946,10 @@ class Sylk extends Component {
                 }).error((error) => {
                     console.log(task.url, 'download error:', error);
                 });
-            }
+            } else {
+                console.log('Removing broken download', task.id);
+                task.stop() 
+             }
         }
     }
 
@@ -1003,6 +1014,7 @@ class Sylk extends Component {
         let myContacts = {};
         let blockedUris = [];
         let favoriteUris = [];
+        let autoanswerUris = [];
         let missedCalls = [];
         let myInvitedParties = {};
         let localTime;
@@ -1144,6 +1156,10 @@ class Sylk extends Component {
                         favoriteUris.push(item.uri);
                     }
 
+                    if (myContacts[item.uri].tags.indexOf('autoanswer') > -1) {
+                        autoanswerUris.push(item.uri);
+                    }
+
                     if (updated) {
                         this.saveSylkContact(item.uri, myContacts[item.uri], 'update contact at init because of ' + updated);
                     }
@@ -1221,6 +1237,7 @@ class Sylk extends Component {
                 this.setState({myContacts: myContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
+                               autoanswerUris: autoanswerUris,
                                myInvitedParties: myInvitedParties,
                                blockedUris: blockedUris});
 
@@ -1290,6 +1307,7 @@ class Sylk extends Component {
         let myContacts = {};
         let blockedUris = [];
         let favoriteUris = [];
+        let autoanswerUris = [];
         let displayName = null;
 
         storage.get('contactStorage').then((contactStorage) => {
@@ -1320,7 +1338,7 @@ class Sylk extends Component {
 
                     storage.get('favoriteUris').then((favoriteUris) => {
                         favoriteUris = favoriteUris.filter(item => item !== null);
-                        //console.log('My favorites:', favoriteUris);
+                        console.log('My favorites:', favoriteUris);
                         this.setState({favoriteUris: favoriteUris});
                         storage.remove('favoriteUris');
 
@@ -1999,7 +2017,20 @@ componentWillUnmount() {
 
     async componentDidMount() {
         utils.timestampedLog('App did mount');
-
+        const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
+        // Subscribe to the event
+        this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
+            console.log('---- FCM user action received', event);
+            this.phoneWasLocked = event.phoneLocked;
+            //this._notificationCenter.postSystemNotification("Handling incoming call...");
+            const media = {audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO'};
+            if (event.action === 'ACTION_ACCEPT_AUDIO' || event.action === 'ACTION_ACCEPT_VIDEO' || event.action === 'ACTION_ACCEPT') {
+                this.callKeepAcceptCall(event.callUUID, media);
+            } else if (event.action === 'REJECT') {
+                this.callKeepRejectCall(event.callUUID);
+            }
+        });
+        
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
         });
@@ -2080,7 +2111,7 @@ componentWillUnmount() {
 
 		// --- Foreground messages ---
 		this.messageListener = messaging(app).onMessage(async remoteMessage => {
-		  console.log('FCM app foreground message:', remoteMessage.data);
+		  //console.log('FCM app foreground message:', remoteMessage.data);
 
 		  if (Platform.OS === 'ios') {
 			PushNotificationIOS.presentLocalNotification({
@@ -2234,60 +2265,9 @@ componentWillUnmount() {
         */
     }
 
-    postAndroidIncomingCallNotification(data) {
-        console.log('postAndroidIncomingCallNotification', data);
-
-        if (Platform.OS !== 'android') {
-            return;
-        }
-
-        if (this.callKeeper.selfManaged) {
-            this.showAlertPanel(data, 'push');
-            return;
-        }
-
-        let media = {audio: true, video: data['media-type'] === 'video'};
-        let from = data.from_display_name || data.from_uri;
-        if (data.from_display_name && data.from_display_name != data.from_uri) {
-            from = data.from_display_name + ' (' + data.from_uri + ')';
-        }
-
-        console.log('Show Android incoming call notification', from, media);
-
-        let actions = ['Audio'];
-        if (media.video) {
-            actions.push('Video');
-        }
-
-        actions.push('Reject');
-        actions.push('Dismiss');
-
-        PushNotification.localNotification({
-          /* Android Only Properties */
-          channelId: "sylk-alert-panel", // (required) channelId, if the channel doesn't exist, notification will not trigger.
-          vibrate: true, // (optional) default: true
-          priority: "max", // (optional) set notification priority, default: high
-          ongoing: true,
-          autoCancel: false,
-          timeoutAfter: 45000,
-          fullScreen: true,
-          subtitle: 'Somebody is calling',
-          ignoreInForeground: true, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
-          invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
-          actions: actions,
-
-          /* iOS and Android properties */
-          title: 'Incoming call', // (optional)
-          message: 'From ' + from, // (required)
-          //picture: "https://www.example.tld/picture.jpg", // (optional) Display an picture with the notification, alias of `bigPictureUrl` for Android. default: undefined
-          userInfo: data, // (optional) default: {} (using null throws a JSON value '<null>' error)
-          number: 10, // (optional) Valid 32 bit integer specified as string. default: none (Cannot be zero)
-        });
-    }
-
     postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
-        console.log('postAndroidMessageNotification', content);
+        //console.log('postAndroidMessageNotification', content);
         if (Platform.OS !== 'android') {
             return;
         }
@@ -2360,7 +2340,7 @@ componentWillUnmount() {
     }
 
     handleFirebasePush(notification) {
-        console.log("FCM app handle notification", notification);
+        //console.log("FCM app handle notification", notification);
         let event = notification.event;
         const callUUID = notification['session-id'];
         const from = notification['from_uri'];
@@ -2381,7 +2361,6 @@ componentWillUnmount() {
             if (to !== this.state.accountId) {
                 return
             }
-            this.postAndroidIncomingCallNotification(notification);
             this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
         } else if (event === 'incoming_session') {
             utils.timestampedLog('FCM app event: incoming call', callUUID);
@@ -2391,7 +2370,6 @@ componentWillUnmount() {
             if (to !== this.state.accountId) {
                 return
             }
-            this.postAndroidIncomingCallNotification(notification);
             this.incomingCallFromPush(callUUID, from, displayName, mediaType);
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
@@ -2983,6 +2961,17 @@ componentWillUnmount() {
     }
 
     async showAlertPanel(data, source) {
+        if (Platform.OS === 'android') {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (!phoneAllowed) {
+                this._notificationCenter.postSystemNotification('Phone permission denied');
+                this.changeRoute('/ready', 'phone_permission_denied');
+                return;
+            }
+            //console.log('Alert panel is now handled by FCM notification');
+            return;
+        }
+
         console.log('Show alert panel requested by', source);
 
         if (this.callKeeper._cancelledCalls.has(data.callUUID)) {
@@ -3004,16 +2993,7 @@ componentWillUnmount() {
             console.log('Show internal alert panel cancelled');
             return;
         }
-
-        if (Platform.OS === 'android') {
-            const phoneAllowed = await this.requestPhonePermission();
-            if (!phoneAllowed) {
-                this._notificationCenter.postSystemNotification('Phone permission denied');
-                this.changeRoute('/ready', 'phone_permission_denied');
-                return;
-            }
-        }
-
+        
         let contact;
         let media = {audio: true, video: false};
         let callId;
@@ -3212,7 +3192,7 @@ componentWillUnmount() {
         // outgoing accepted: null -> progress -> established -> accepted -> terminated (with early media)
         // incoming accepted: null -> incoming -> accepted -> established -> terminated
         // 2nd incoming call is automatically rejected by sylkrtc library
-
+        
         /*
         utils.timestampedLog('---currentCall start:', this.state.currentCall);
         utils.timestampedLog('---incomingCall start:', this.state.incomingCall);
@@ -3278,7 +3258,13 @@ componentWillUnmount() {
                     newCurrentCall = null;
                     newincomingCall = this.state.incomingCall;
                 }
-
+                
+                if (this.phoneWasLocked) {
+                    console.log('Send to background because phone was locked');
+					this.phoneWasLocked = false;
+					RNMinimize.minimizeApp();                
+                }
+                
             } else if (newState === 'accepted') {
                 if (this.state.incomingCall === this.state.currentCall) {
                     newCurrentCall = this.state.incomingCall;
@@ -3286,7 +3272,6 @@ componentWillUnmount() {
                 } else {
                     newCurrentCall = this.state.currentCall;
                 }
-                this.backToForeground();
             } else if (newState === 'established') {
                 if (this.state.incomingCall === this.state.currentCall) {
                     //utils.timestampedLog("Incoming call media started");
@@ -3312,15 +3297,23 @@ componentWillUnmount() {
                         this.requestSyncConversations(this.state.lastSyncId);
                     }
 
-                    //utils.timestampedLog("Incoming call was cancelled");
+                    utils.timestampedLog("Incoming call was cancelled");
                     this.hideInternalAlertPanel(newState);
                     newincomingCall = null;
                     newCurrentCall = null;
                     readyDelay = 10;
+                    
+                    this.setState({incomingCall: null});
+
+					if (this.phoneWasLocked) {
+						console.log('Send to background because phone was locked');
+						this.phoneWasLocked = false;
+						RNMinimize.minimizeApp();                
+					}
+
                 } else if (newState === 'accepted') {
                     //utils.timestampedLog("Incoming call was accepted");
                     this.hideInternalAlertPanel(newState);
-                    this.backToForeground();
                 } else if (newState === 'established') {
                     //utils.timestampedLog("Incoming call media started");
                     this.hideInternalAlertPanel(newState);
@@ -3328,11 +3321,17 @@ componentWillUnmount() {
             }
 
         } else if (this.state.currentCall) {
-            //utils.timestampedLog('Call state changed: We have one current call');
+            utils.timestampedLog('Call state changed: We have one current call');
             newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
             if (newState !== 'terminated') {
                 this.setState({reconnectingCall: false});
+            } else {
+				if (this.phoneWasLocked) {
+					console.log('Send to background because phone was locked');
+					this.phoneWasLocked = false;
+					RNMinimize.minimizeApp();                
+				}
             }
         } else {
             newincomingCall = null;
@@ -3350,7 +3349,7 @@ componentWillUnmount() {
             case 'progress':
                 InCallManager.start({media: mediaType});
                 //this.callKeeper.setCurrentCallActive(callUUID);
-                this.backToForeground();
+                //this.backToForeground();
 
                 this.resetGoToReadyTimer();
 
@@ -3383,7 +3382,7 @@ componentWillUnmount() {
                 break;
             case 'early-media':
                 //this.callKeeper.setCurrentCallActive(callUUID);
-                this.backToForeground();
+                //this.backToForeground();
                 this.stopRingback();
                 break;
             case 'established':
@@ -3393,7 +3392,7 @@ componentWillUnmount() {
 
                 this.callKeeper.setCurrentCallActive(callUUID);
 
-                this.backToForeground();
+                //this.backToForeground();
                 this.resetGoToReadyTimer();
 
                 tracks = call.getLocalStreams()[0].getVideoTracks();
@@ -3434,7 +3433,7 @@ componentWillUnmount() {
 
                 this.setState({incomingCallUUID: null});
 
-                this.backToForeground();
+                //this.backToForeground();
                 this.resetGoToReadyTimer();
 
                 if (direction === 'outgoing') {
@@ -3546,6 +3545,7 @@ componentWillUnmount() {
                 }
 
                 utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason, '->', reason);
+                this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
                 if (play_busy_tone) {
                     utils.timestampedLog('Play busy tone');
                     InCallManager.stop({busytone: '_BUNDLE_'});
@@ -4253,6 +4253,7 @@ componentWillUnmount() {
             utils.timestampedLog('Close local media');
             sylkrtc.utils.closeMediaStream(this.state.localMedia);
             this.setState({localMedia: null});
+            utils.timestampedLog('Local media closed');
         }
     }
 
@@ -4260,6 +4261,7 @@ componentWillUnmount() {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
         this.hideInternalAlertPanel('accept');
+        
         utils.timestampedLog('Callkeep accept call');
         this.changeRoute('/call', 'accept_call');
         this.backToForeground();
@@ -4315,7 +4317,7 @@ componentWillUnmount() {
     }
 
     acceptCall(callUUID, options={}) {
-        console.log('User accepted call', callUUID, options);
+        utils.timestampedLog('User accepted call', callUUID, options);
         this.hideInternalAlertPanel('accept');
         this.backToForeground();
         this.resetGoToReadyTimer();
@@ -4326,7 +4328,7 @@ componentWillUnmount() {
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
             // call will continue after transition to /ready
         } else {
-            utils.timestampedLog('Will get local media now');
+            //utils.timestampedLog('Will get local media now');
             let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
             if ('video' in options) {
                 hasVideo = hasVideo && options.video;
@@ -4363,6 +4365,8 @@ componentWillUnmount() {
             utils.timestampedLog('Sylkrtc terminate call', callUUID, 'in', call.state, 'state');
             call.terminate();
             this.vibrate();
+        } else {
+            //utils.timestampedLog('Sylkrtc call object is missing');
         }
 
         if (this.busyToneInterval) {
@@ -4626,7 +4630,7 @@ componentWillUnmount() {
     }
 
     backToForeground() {
-        //console.log('backToForeground...');
+        console.log('backToForeground...');
         if (this.state.appState !== 'active') {
             this.callKeeper.backToForeground();
         }
@@ -4810,7 +4814,6 @@ componentWillUnmount() {
                     // allow app to wake up
                     this.backToForeground();
                     const media = {audio: true, video: mediaType === 'video'}
-                    this.postAndroidIncomingCallNotification(data);
                     this.incomingConference(callUUID, to, from, displayName, media);
                 }
 
@@ -4824,8 +4827,6 @@ componentWillUnmount() {
                 } else if (direction === 'incoming') {
                     utils.timestampedLog('Call from external URL:', url);
                     utils.timestampedLog('Incoming', mediaType, 'call from', from);
-                    //this.playIncomingRingtone(callUUID, true);
-                    this.postAndroidIncomingCallNotification(data);
                     this.incomingCallFromPush(callUUID, from, displayName, mediaType, true);
                 } else if (direction === 'cancel') {
                     this.cancelIncomingCall(callUUID);
@@ -4944,6 +4945,7 @@ componentWillUnmount() {
     }
 
     async incomingCallFromPush(callUUID, from, displayName, mediaType, force) {
+        return;
         utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.unmounted) {
@@ -4964,35 +4966,12 @@ componentWillUnmount() {
             return;
         }
 
-        if (this.state.appState === 'background') {
-            RNDrawOverlay.checkForDisplayOverOtherAppsPermission()
-                 .then(res => {
-                    // utils.timestampedLog("Display over other apps was granted");
-                     // res will be true if permission was granted
-                 })
-                 .catch(e => {
-                    utils.timestampedLog("Display over other apps was declined, we must send a notification");
-
-                    let data = {};
-                    data['session-id'] = callUUID;
-                    data['event'] = 'incoming_call';
-                    data['to_uri'] = this.state.accountId;
-                    data['from_uri'] = from;
-                    data['from_display_name'] = displayName;
-                    data['media-type'] = mediaType;
-
-                    this.postAndroidIncomingCallNotification(data);
-                    return;
-                 // permission was declined
-                 });
-        }
-
         const phoneAllowed = await this.requestPhonePermission();
         if (!phoneAllowed) {
             return;
         }
 
-        this.backToForeground();
+        //this.backToForeground();
 
         this.goToReadyNowAndCancelTimer();
 
@@ -5016,7 +4995,7 @@ componentWillUnmount() {
         }
 
         if (this.timeoutIncomingTimer) {
-            console.log('Clear incoming timer');
+            //console.log('Clear incoming timer');
             clearTimeout(this.timeoutIncomingTimer);
             this.timeoutIncomingTimer = null;
         }
@@ -5031,7 +5010,6 @@ componentWillUnmount() {
         }
 
         this.callKeeper.addWebsocketCall(call);
-
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
 
@@ -9788,6 +9766,44 @@ componentWillUnmount() {
         this.setState({favoriteUris: favoriteUris});
     }
 
+    toggleAutoanswer(uri) {
+        console.log('toggleAutoanswer', uri);
+        let autoanswerUris = this.state.autoanswerUris;
+        let myContacts = this.state.myContacts;
+        let selectedContact;
+        let autoanswer;
+
+        if (uri in myContacts) {
+        } else {
+            myContacts[uri] = this.newContact(uri);
+        }
+
+        idx = myContacts[uri].tags.indexOf('autoanswer');
+        if (idx > -1) {
+            myContacts[uri].tags.splice(idx, 1);
+            autoanswer = false;
+        } else {
+            myContacts[uri].tags.push('autoanswer');
+            autoanswer = true;
+        }
+
+        myContacts[uri].timestamp = new Date();
+
+        this.saveSylkContact(uri, myContacts[uri], 'toggleAutoanswer');
+
+        let idx = autoanswerUris.indexOf(uri);
+        if (idx === -1 && autoanswer) {
+            autoanswerUris.push(uri);
+            console.log(uri, 'is favorite');
+        } else if (idx > -1 && !autoanswer) {
+            autoanswerUris.splice(idx, 1);
+            console.log(uri, 'is not autoanswer');
+        }
+
+        this.replicateContact(myContacts[uri]);
+        this.setState({autoanswerUris: autoanswerUris});        
+    }
+
     toggleBlocked(uri) {
         let blockedUris = this.state.blockedUris;
         let myContacts = this.state.myContacts;
@@ -10480,6 +10496,7 @@ componentWillUnmount() {
                     publicKey = {publicKey}
                     deleteMessages = {this.deleteMessages}
                     toggleFavorite = {this.toggleFavorite}
+                    toggleAutoanswer = {this.toggleAutoanswer}
                     toggleBlocked = {this.toggleBlocked}
                     saveConference={this.saveConference}
                     defaultDomain = {this.state.defaultDomain}

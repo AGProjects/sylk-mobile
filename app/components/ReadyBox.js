@@ -1351,6 +1351,7 @@ class ReadyBox extends Component {
                             shareToContacts = {this.state.shareToContacts}
                             selectedContacts = {this.state.selectedContacts}
                             toggleFavorite={this.props.toggleFavorite}
+                            toggleAutoanswer={this.props.toggleAutoanswer}
                             toggleBlocked={this.props.toggleBlocked}
                             togglePinned = {this.props.togglePinned}
                             pinned = {this.state.pinned}
@@ -1456,6 +1457,7 @@ ReadyBox.propTypes = {
     myDisplayName   : PropTypes.string,
     myPhoneNumber   : PropTypes.string,
     toggleFavorite  : PropTypes.func,
+	toggleAutoanswer: PropTypes.func,
     myInvitedParties: PropTypes.object,
     toggleBlocked   : PropTypes.func,
     favoriteUris    : PropTypes.array,

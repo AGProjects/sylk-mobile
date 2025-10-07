@@ -1974,8 +1974,12 @@ class ContactsListBox extends Component {
             }
         });
 
+
+		//console.log('Contacts ----');
+
         items.forEach((item) => {
             item.showActions = false;
+            //console.log(item.uri);
 
             if (item.uri.indexOf('@videoconference.') === -1) {
                 item.conference = false;
@@ -2088,9 +2092,11 @@ class ContactsListBox extends Component {
 		  }
 		}
 
+        //console.log('this.state.selectedContact', this.state.selectedContact);
         return (
             <SafeAreaView style={container}>
-              {items.length === 1 ?
+              {this.state.selectedContact ?
+              
               (null)  // this.renderItem(items[0])
              :
               <FlatList
