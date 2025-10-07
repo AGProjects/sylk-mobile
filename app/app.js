@@ -1907,6 +1907,12 @@ class Sylk extends Component {
             if (reason === 'no_more_calls') {
                 this.updateServerHistory(reason);
                 this.updateLoading(null, 'incoming_call');
+
+				if (this.phoneWasLocked) {
+					console.log('Send to background because phone was locked');
+					this.phoneWasLocked = false;
+					RNMinimize.minimizeApp();                
+				}
                 this.setState({incomingCallUUID: null, terminatedReason: null});
             }
         }
@@ -3258,13 +3264,7 @@ componentWillUnmount() {
                     newCurrentCall = null;
                     newincomingCall = this.state.incomingCall;
                 }
-                
-                if (this.phoneWasLocked) {
-                    console.log('Send to background because phone was locked');
-					this.phoneWasLocked = false;
-					RNMinimize.minimizeApp();                
-                }
-                
+                                
             } else if (newState === 'accepted') {
                 if (this.state.incomingCall === this.state.currentCall) {
                     newCurrentCall = this.state.incomingCall;
@@ -3305,12 +3305,6 @@ componentWillUnmount() {
                     
                     this.setState({incomingCall: null});
 
-					if (this.phoneWasLocked) {
-						console.log('Send to background because phone was locked');
-						this.phoneWasLocked = false;
-						RNMinimize.minimizeApp();                
-					}
-
                 } else if (newState === 'accepted') {
                     //utils.timestampedLog("Incoming call was accepted");
                     this.hideInternalAlertPanel(newState);
@@ -3326,12 +3320,6 @@ componentWillUnmount() {
             newincomingCall = null;
             if (newState !== 'terminated') {
                 this.setState({reconnectingCall: false});
-            } else {
-				if (this.phoneWasLocked) {
-					console.log('Send to background because phone was locked');
-					this.phoneWasLocked = false;
-					RNMinimize.minimizeApp();                
-				}
             }
         } else {
             newincomingCall = null;
