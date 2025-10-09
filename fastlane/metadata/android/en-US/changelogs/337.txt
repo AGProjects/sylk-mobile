@@ -1,0 +1,5 @@
+ * Follow Android system settings for ring, vibrate and do not disturb
+ * Allow Sylk favorites to bypass DND setting
+ * Fixes for waking up when Android phone is locked
+ * Fixes for concurent calls
+ * Added auto answer on Android for contacts

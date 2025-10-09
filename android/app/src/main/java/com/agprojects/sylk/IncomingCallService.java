@@ -63,7 +63,6 @@ public class IncomingCallService extends Service {
 	private Map<String, List<String>> getContactsByTag() {
 		Map<String, List<String>> result = new HashMap<>();
 		List<String> favorites = new ArrayList<>();
-		List<String> blocked = new ArrayList<>();
 		List<String> autoanswer = new ArrayList<>();
 	
 		try {
@@ -72,7 +71,6 @@ public class IncomingCallService extends Service {
 				Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
 				// still put empty lists in the map
 				result.put("favorites", favorites);
-				result.put("blocked", blocked);
 				result.put("autoanswer", autoanswer);
 				return result;
 			}
@@ -95,9 +93,6 @@ public class IncomingCallService extends Service {
 						if (lowerTags.contains("favorite")) {
 							favorites.add(uri);
 						}
-						if (lowerTags.contains("block")) {
-							blocked.add(uri);
-						}
 						if (lowerTags.contains("autoanswer")) {
 							autoanswer.add(uri);
 						}
@@ -107,19 +102,11 @@ public class IncomingCallService extends Service {
 			}
 	
 			db.close();
-	
-			/*
-			Log.d(LOG_TAG, "Favorites: " + favorites.size() +
-					", Blocked: " + blocked.size() +
-					", Autoanswer: " + autoanswer.size());
-					*/
-	
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Failed to read contacts from database", e);
 		}
 	
 		result.put("favorites", favorites);
-		result.put("blocked", blocked);
 		result.put("autoanswer", autoanswer);
 	
 		return result;
@@ -131,12 +118,6 @@ public class IncomingCallService extends Service {
 		return favorites != null && favorites.contains(fromUri);
 	}
 	
-	private boolean isBlocked(String fromUri) {
-		if (fromUri == null) return false;
-		List<String> blocked = contactsByTag.get("blocked");
-		return blocked != null && blocked.contains(fromUri);
-	}
-	
 	private boolean isAutoAnswer(String fromUri) {
 		if (fromUri == null) return false;
 		List<String> autoanswer = contactsByTag.get("autoanswer");
@@ -146,18 +127,7 @@ public class IncomingCallService extends Service {
 	private void startRingtone(String fromUri) {
 		// Start vibration if system setting allows
 		vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-		Log.d(LOG_TAG, "Vibrator object: " + vibrator);
-		Log.d(LOG_TAG, "Has vibrator: " + (vibrator != null && vibrator.hasVibrator()));
 
-        /*
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			vibrator.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE));
-		} else {
-			vibrator.vibrate(500);
-		}
-		Log.d(LOG_TAG, "Vibrator triggered for 500ms");
-		*/
-	
 		if (ringtonePlayer != null && ringtonePlayer.isPlaying()) return;
 	
 		AudioManager audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
@@ -244,7 +214,6 @@ public class IncomingCallService extends Service {
 		}
 	}
 
-
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         contactsByTag = getContactsByTag();
@@ -279,9 +248,7 @@ public class IncomingCallService extends Service {
 		}
 
         if (intent == null || intent.getExtras() == null) {
-            Log.w(LOG_TAG, "Started with null intent");
-			Log.d(LOG_TAG, "Stop");
-            stopSelf();
+            Log.w(LOG_TAG, "Started with null intent, stop now");
             return START_NOT_STICKY;
         }
 
@@ -300,12 +267,6 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (isBlocked(fromUri)) {
-            Log.w(LOG_TAG, "Caller is blocked");
-            handledCalls.add(callUUID);
-            return START_NOT_STICKY;
-        }
-        
         if (handledCalls.contains(callUUID)) {
 			Log.d(LOG_TAG, "Call " + callUUID + " already handled, skipping");
             return START_NOT_STICKY;
@@ -360,8 +321,6 @@ public class IncomingCallService extends Service {
 		
 			cancelNotification(notificationId);
 		
-			//ReactEventEmitter.sendEventToReact(event, callUUID, phoneLocked, (ReactApplication) getApplication());
-		
 			// No need to keep this service alive anymore
 			Log.d(LOG_TAG, "Stop " + callUUID);
 			stopSelf();
@@ -374,19 +333,49 @@ public class IncomingCallService extends Service {
 
 			if (isAutoAnswer(fromUri)) {
     			startAutoAnswerCountdownWithProgress(callUUID, fromUri, mediaType, notificationId, 30);
-				//Log.d(LOG_TAG, "Auto-answer countdown started for " + fromUri);
 			}
 
-			// Full screen intent → opens IncomingCallActivity
-			Intent fullScreenIntent = new Intent(this, IncomingCallActivity.class);
-			fullScreenIntent.putExtras(intent);
-			fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-		
+            // Variant 1. This launches the main app when incoming call arrives (make sure RN app shows the alert panel)
+            /*
+			Intent fullScreenIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+			if (fullScreenIntent != null) {
+				fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+			}
+			
 			PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
 					this, notificationId, fullScreenIntent,
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
-		
+			*/
+			
+            // Variant 2. This launches the fullscreen layout when incoming call arrives
+  			Intent fullScreenIntent = new Intent(this, IncomingCallActivity.class);
+			fullScreenIntent.putExtras(intent);
+			fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+			
+			PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
+				this, notificationId, fullScreenIntent,
+				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+			);
+
+			new Handler(Looper.getMainLooper()).post(() -> {
+				Intent activityIntent = new Intent(this, IncomingCallActivity.class);
+				activityIntent.putExtras(intent);
+				activityIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+				startActivity(activityIntent);
+			});
+			
+            // Variant 3. This launches the notifications bubble when incoming call arrives
+            /*
+			Intent fullScreenIntent = new Intent(this, IncomingCallFullScreenActivity.class);
+			fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+			
+			PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
+					this, notificationId, fullScreenIntent,
+					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+			);
+			*/
+
 			// Reject button
 			PendingIntent rejectPendingIntent = PendingIntent.getBroadcast(
 					this, notificationId + 100,
@@ -434,6 +423,11 @@ public class IncomingCallService extends Service {
 					.setFullScreenIntent(fullScreenPendingIntent, true)
 					.addAction(0, "Reject", rejectPendingIntent);
 		
+			builder.setStyle(new NotificationCompat.BigTextStyle()
+				.bigText(fromUri + " is calling"));
+
+			builder.setGroup(null);
+
 			if ("video".equalsIgnoreCase(mediaType)) {
 				builder.addAction(0, "Audio only", acceptAudioPendingIntent);
 				builder.addAction(0, "Video", acceptVideoPendingIntent);
@@ -446,14 +440,6 @@ public class IncomingCallService extends Service {
 			// Show notification
 			Log.d(LOG_TAG, "Show notification " + notificationId + " for " + callUUID);
 			startForeground(notificationId, fullNotification);
-		
-			// Launch IncomingCallActivity to show UI
-			new Handler(Looper.getMainLooper()).post(() -> {
-				Intent activityIntent = new Intent(this, IncomingCallActivity.class);
-				activityIntent.putExtras(intent);
-				activityIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-				startActivity(activityIntent);
-			});
 		
 			// Auto-cancel fallback after 60s
 			autoCancelHandler = new Handler(Looper.getMainLooper());

@@ -43,7 +43,6 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
@@ -77,10 +76,11 @@
     </intent-filter>
 </service>
 
+    
       <service
       android:name=".IncomingCallService"
       android:exported="true"
-      android:foregroundServiceType="mediaPlayback|phoneCall"/>
+      android:foregroundServiceType="phoneCall"/>
 
       <service android:name="io.wazo.callkeep.VoiceConnectionService"
         android:label="@string/app_name"
@@ -113,6 +113,11 @@
           <data android:scheme="sylk" />
         </intent-filter>
       </activity>
+
+<activity
+    android:name=".IncomingCallFullScreenActivity"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar"
+    android:exported="true"/>
 
       <activity
         android:name=".MainActivity"

@@ -498,7 +498,9 @@ class Sylk extends Component {
 
         this.sqlTableVersions = {'messages': 9,
                                  'contacts': 7,
-                                 'keys': 3}
+                                 'keys': 3,
+                                 'accounts': 1
+                                 }
 
         this.updateTableQueries = {'messages': {1: [],
                                                 2: [{query: 'delete from messages', params: []}],
@@ -1405,7 +1407,7 @@ class Sylk extends Component {
     }
 
     createTables() {
-        //console.log('Create SQL tables...')
+        console.log('Create SQL tables...')
         let create_versions_table = "CREATE TABLE IF NOT EXISTS 'versions' ( \
                                     'id' INTEGER PRIMARY KEY AUTOINCREMENT, \
                                     'table' TEXT UNIQUE, \
@@ -1499,6 +1501,21 @@ class Sylk extends Component {
         }).catch((error) => {
             console.log(create_table_keys);
             console.log('SQL keys table creation error:', error);
+        });
+
+		let create_table_accounts = `
+		  CREATE TABLE IF NOT EXISTS 'accounts' (
+			'account' TEXT PRIMARY KEY,
+			'password' TEXT,
+			'active' TEXT
+		  )
+		`;
+
+        this.ExecuteQuery(create_table_accounts).then((success) => {
+            console.log('SQL accounts table OK');
+        }).catch((error) => {
+            console.log(create_table_accounts);
+            console.log('SQL accounts table creation error:', error);
         });
 
         this.upgradeSQLTables();
@@ -1904,6 +1921,16 @@ class Sylk extends Component {
                 }, 1500);
             }
 
+            if (reason === 'user_hangup_call') {
+                setTimeout(() => {
+					if (this.phoneWasLocked) {
+						console.log('Send to background because phone was locked');
+						this.phoneWasLocked = false;
+						RNMinimize.minimizeApp();                
+					}
+                }, 3000);
+			}
+
             if (reason === 'no_more_calls') {
                 this.updateServerHistory(reason);
                 this.updateLoading(null, 'incoming_call');
@@ -2025,17 +2052,37 @@ componentWillUnmount() {
         utils.timestampedLog('App did mount');
         const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
         // Subscribe to the event
-        this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
-            console.log('---- FCM user action received', event);
-            this.phoneWasLocked = event.phoneLocked;
-            //this._notificationCenter.postSystemNotification("Handling incoming call...");
-            const media = {audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO'};
-            if (event.action === 'ACTION_ACCEPT_AUDIO' || event.action === 'ACTION_ACCEPT_VIDEO' || event.action === 'ACTION_ACCEPT') {
-                this.callKeepAcceptCall(event.callUUID, media);
-            } else if (event.action === 'REJECT') {
-                this.callKeepRejectCall(event.callUUID);
-            }
-        });
+        // Keep track of handled call UUIDs
+        const handledCalls = new Set();
+
+		this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
+			if (!event || !event.callUUID) {
+				console.warn('Received invalid event', event);
+				return;
+			}
+		
+			if (handledCalls.has(event.callUUID)) {
+				console.log('Duplicate event ignored for callUUID:', event.callUUID);
+				return;
+			}
+		
+			// Mark as handled
+			handledCalls.add(event.callUUID);
+		
+			console.log('---- FCM user action received', event);
+			this.phoneWasLocked = event.phoneLocked;
+		
+			const media = { audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO' };
+		
+			if (event.action === 'ACTION_ACCEPT_AUDIO' || event.action === 'ACTION_ACCEPT_VIDEO' || event.action === 'ACTION_ACCEPT') {
+				this.callKeepAcceptCall(event.callUUID, media);
+			} else if (event.action === 'REJECT') {
+				this.callKeepRejectCall(event.callUUID);
+			}
+		
+			// Optional: remove from set after a while to prevent memory leaks
+			setTimeout(() => handledCalls.delete(event.callUUID), 5 * 60 * 1000); // 5 minutes
+		});
         
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
@@ -2936,6 +2983,8 @@ componentWillUnmount() {
                 password: this.state.password,
                 verified: true
             });
+            
+            this.saveSqlAccount(this.state.account.id, 1);
 
             if (!this.state.accountVerified) {
                 this.loadSylkContacts();
@@ -2965,7 +3014,26 @@ componentWillUnmount() {
             this.setState({status: null, registrationState: newState });
         }
     }
+    
+    async saveSqlAccount(account, active) {
+        let params = [active, account];
 
+		await this.ExecuteQuery("INSERT INTO accounts (active, account) VALUES (?, ?)", params).then((result) => {
+            //console.log('SQL insert account OK');
+        }).catch((error) => {
+			this.updateSqlAccount(account, active);
+		});
+    }
+
+    async updateSqlAccount(account, active) {
+        let params = [active, account];
+		await this.ExecuteQuery("update accounts set active = ? where account = ?", params).then((result) => {
+			//console.log('SQL update account OK');
+		}).catch((error) => {
+			console.log('SQL error:', error);
+		});
+    }
+        
     async showAlertPanel(data, source) {
         if (Platform.OS === 'android') {
             const phoneAllowed = await this.requestPhonePermission();
@@ -3530,6 +3598,10 @@ componentWillUnmount() {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                 } else {
                     server_failure = true;
+                }
+                
+                if (reason.indexOf('DTLS alert') > -1) {
+					reason = "TLS media failure";
                 }
 
                 utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason, '->', reason);
@@ -4996,6 +5068,8 @@ componentWillUnmount() {
                 return;
             }
         }
+
+		this._notificationCenter.postSystemNotification("Incoming call...");
 
         this.callKeeper.addWebsocketCall(call);
         const callUUID = call.id;
@@ -10928,6 +11002,8 @@ componentWillUnmount() {
                                 password: this.state.password,
                                 verified: false
                                 });
+
+		this.saveSqlAccount(this.state.accountId, 0);
 
         this.setState({ssiAgent: null,
                        loading: null,

@@ -44,6 +44,14 @@ Push a new beta build to Google Play Store
 
 Push a new beta build to Google Play Store
 
+### android build_aab
+
+```sh
+[bundle exec] fastlane android build_aab
+```
+
+Push a new beta build to Google Play Store
+
 ----
 
 This README.md is auto-generated and will be re-generated every time [_fastlane_](https://fastlane.tools) is run.

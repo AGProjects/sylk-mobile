@@ -14,6 +14,7 @@ import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.agprojects.sylk.ReactEventEmitter;
 
@@ -44,6 +45,11 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
             ReactEventEmitter.sendEventToReact(action, callUUID, phoneLocked, (ReactApplication) context.getApplicationContext());
 
+			// 2. Close the IncomingCallActivity layout
+			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");
+			closeActivityIntent.putExtra("session-id", callUUID);
+			LocalBroadcastManager.getInstance(context).sendBroadcast(closeActivityIntent);
+        
             // Notify IncomingCallService to clean up
             if (notificationId != -1) {
                 Intent cleanupIntent = new Intent(context, IncomingCallService.class);
@@ -56,8 +62,6 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 } else {
                     context.startService(cleanupIntent);
                 }
-
-                //Log.d(LOG_TAG, "Sent cleanup intent to service for notification ID: " + notificationId);
             }
         } else {
                 Log.d(LOG_TAG, "Unknown action received: " + action);
