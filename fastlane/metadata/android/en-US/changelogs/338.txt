@@ -1,0 +1,1 @@
+ * Fix minimizing app when phone is locked
