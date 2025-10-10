@@ -13,7 +13,6 @@ import messaging from '@react-native-firebase/messaging';
 import RNMinimize from 'react-native-minimize';
 import { NativeEventEmitter, NativeModules } from 'react-native';
 const { ScreenLockModule } = NativeModules;
-import notifee from '@notifee/react-native';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import PushNotification , {Importance} from "react-native-push-notification";
 import VoipPushNotification from 'react-native-voip-push-notification';
