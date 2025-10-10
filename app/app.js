@@ -9,11 +9,10 @@ import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
 import Logger from "../Logger";
 import autoBind from 'auto-bind';
-import RNMinimize from 'react-native-minimize';
-
-import { NativeEventEmitter, NativeModules } from 'react-native';
-
 import messaging from '@react-native-firebase/messaging';
+import RNMinimize from 'react-native-minimize';
+import { NativeEventEmitter, NativeModules } from 'react-native';
+const { ScreenLockModule } = NativeModules;
 import notifee from '@notifee/react-native';
 import PushNotificationIOS from "@react-native-community/push-notification-ios";
 import PushNotification , {Importance} from "react-native-push-notification";
@@ -1926,7 +1925,7 @@ class Sylk extends Component {
 					if (this.phoneWasLocked) {
 						console.log('Send to background because phone was locked');
 						this.phoneWasLocked = false;
-						RNMinimize.minimizeApp();                
+						RNMinimize.minimizeApp();
 					}
                 }, 3000);
 			}
@@ -2054,6 +2053,16 @@ componentWillUnmount() {
         // Subscribe to the event
         // Keep track of handled call UUIDs
         const handledCalls = new Set();
+        const screenLockEventEmitter = new NativeEventEmitter(ScreenLockModule);
+
+		screenLockEventEmitter.addListener('onScreenLock', () => {
+		    console.log('minimize app');
+		     RNMinimize.minimizeApp(); // only runs on actual screen lock
+		});
+
+		screenLockEventEmitter.addListener('onScreenUnlock', () => {
+		  console.log('Phone unlocked');
+		});
 
 		this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
 			if (!event || !event.callUUID) {
@@ -2703,7 +2712,7 @@ componentWillUnmount() {
         }
 
         this.setState({appState: nextAppState});
-
+        
         if (nextAppState === 'active') {
             this.respawnConnection(nextAppState);
             this.fetchSharedItems('app_active');
