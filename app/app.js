@@ -1010,7 +1010,7 @@ class Sylk extends Component {
             return;
         }
 
-        //console.log('Loading contacts...');
+        console.log('Loading Sylk contacts...');
         let myContacts = {};
         let blockedUris = [];
         let favoriteUris = [];
@@ -1108,6 +1108,9 @@ class Sylk extends Component {
                         var name_idx = myContacts[item.uri].name.trim().toLowerCase();
                         if (name_idx in this.state.avatarPhotos) {
                             myContacts[item.uri].photo = this.state.avatarPhotos[name_idx];
+                            updated = 'photo';
+                        } else if (item.uri in this.state.avatarPhotos) {
+                            myContacts[item.uri].photo = this.state.avatarPhotos[item.uri];
                             updated = 'photo';
                         }
                     }
@@ -1636,9 +1639,6 @@ class Sylk extends Component {
       }
 
     async loadAddressBook() {
-        //revert
-        return;
-
         console.log('Load system address book');
         Contacts.checkPermission((err, permission) => {
             //console.log('Current contacts permissions is', permission);
@@ -1733,12 +1733,7 @@ class Sylk extends Component {
                                             };
                         var name_idx = name.trim().toLowerCase();
                         if (photo) {
-                            avatarPhotos[name_idx] = photo;
-                        }
-
-                        if (name_idx in avatarEmails) {
-                        } else {
-                            avatarEmails[name_idx] = email_stripped;
+                            avatarPhotos[email_stripped] = photo;
                         }
                         contact_cards.push(contact_card);
                         seen_uris.set(email_stripped, true);
@@ -1748,6 +1743,7 @@ class Sylk extends Component {
 
           this.setState({contacts: contact_cards, avatarPhotos: avatarPhotos, avatarEmails: avatarEmails});
           console.log('Loaded', contact_cards.length, 'addressbook entries');
+          //console.log(avatarPhotos);
       })
     }
 
