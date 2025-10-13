@@ -26,6 +26,7 @@ class EditContactModal extends Component {
         this.state = {
             displayName: this.props.displayName,
             organization: this.props.organization,
+            selectedContact: this.props.selectedContact,
             show: this.props.show,
             email: this.props.email,
             myself: this.props.myself,
@@ -39,6 +40,7 @@ class EditContactModal extends Component {
         this.setState({show: nextProps.show,
                        displayName: nextProps.displayName,
                        email: nextProps.email,
+                       selectedContact: nextProps.selectedContact,
                        uri: nextProps.uri,
                        myself: nextProps.myself,
                        organization: nextProps.organization,
@@ -217,9 +219,15 @@ class EditContactModal extends Component {
 
                         </View>
 
+                        { this.state.myself ?
                         <View>
                         <Text onPress={() => handleUpdate()} style={styles.link}>Delete acount on server...</Text>
                         </View>
+                        : 
+						<View>
+                        <Text>Storage usage: {this.state.selectedContact.prettyStorage}</Text>
+                        </View>
+                        }
 
                         {true ?
                         <View style={{flexDirection: 'row'}}>
@@ -250,6 +258,7 @@ EditContactModal.propTypes = {
     email              : PropTypes.string,
     organization       : PropTypes.string,
     publicKey          : PropTypes.string,
+    selectedContact    : PropTypes.object,
     myself             : PropTypes.bool,
     saveContact        : PropTypes.func,
     deleteContact      : PropTypes.func,

@@ -159,14 +159,18 @@ class DeleteHistoryModal extends Component {
 
                         <View style={styles.buttonRow}>
 
-                        <Button
-                            mode="contained"
-                            style={styles.button}
-                            onPress={this.deleteMessages}
-                            icon="delete"
-                            accessibilityLabel="Delete messages"
-                            > {deleteLabel}
-                        </Button>
+						<Button
+						  mode="contained"
+						  style={[
+							styles.button,
+							deleteLabel === 'Confirm' && { backgroundColor: 'red' } // override color if needed
+						  ]}
+						  onPress={this.deleteMessages}
+						  icon="delete"
+						  accessibilityLabel="Delete messages"
+						>
+						  {deleteLabel}
+						</Button>
                         </View>
                     </Surface>
                 </DialogType>

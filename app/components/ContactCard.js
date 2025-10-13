@@ -207,7 +207,7 @@ class ContactCard extends Component {
             if (this.state.contact.timestamp > todayStart) {
                 contact_ts = moment(this.state.contact.timestamp).format('HH:mm');
             } else {
-                contact_ts = moment(this.state.contact.timestamp).format('DD-MM');
+                contact_ts = moment(this.state.contact.timestamp).format('MMM D');
             }
         }
 
@@ -368,9 +368,9 @@ class ContactCard extends Component {
         //console.log('selectedContact', this.state.selectedContact);
 
         if (this.state.selectMode) {
-        titlePadding = styles.titlePaddingSelect;
+			titlePadding = styles.titlePaddingSelect;
 
-        return (
+			return (
             <Fragment>
                 <Card style={[cardContainerClass, {minHeight: cardHeight}]}
                     onPress={() => {this.setTargetUri(uri, this.state.contact)}}
@@ -401,6 +401,7 @@ class ContactCard extends Component {
             );
 
         } else {
+
             return (
                 <Fragment>
                     <Card
@@ -455,14 +456,25 @@ class ContactCard extends Component {
                         </View>
                     </Card.Content>
 
-                    <View style={styles.rightContent}>
-                        <Text style={styles.timestamp}>{contact_ts}</Text>
-                        {unread ?
-                        <Badge value={unread} status="error" textStyle={styles.badgeTextStyle} containerStyle={styles.badgeContainer}/>
-                        : null
-                        }
-
-                    </View>
+					<View style={styles.rightContent}>
+						{/* Unread badge + timestamp in a row */}
+						<View style={styles.unreadRow}>
+							{unread ? (
+								<Badge
+									value={unread}
+									status="error"
+									textStyle={styles.badgeTextStyle}
+									containerStyle={styles.badgeContainer}
+								/>
+							) : null}
+							<Text style={styles.timestamp}>{contact_ts}</Text>
+						</View>
+					
+						{/* Storage below */}
+						{this.state.contact.prettyStorage && (
+							<Text style={styles.storageText}>{this.state.contact.prettyStorage}</Text>
+						)}
+					</View>
 
                 </View>
                 </Card>

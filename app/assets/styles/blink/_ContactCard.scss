@@ -101,7 +101,10 @@
     margin-top: 10px;
     margin-left: 60px;
     margin-right: 10px;
-    align-items: flex-end;
+    display: flex;
+    flex-direction: column; /* stack items vertically */
+    align-items: flex-end;  /* align content to the right */
+    justify-content: flex-end; /* push content to the bottom */
     border: 0px;
 }
 
@@ -113,17 +116,36 @@
     border: 0px;
 }
 
-.badgeTextStyle {
-    margin-top: -2px;
+.storageText {
     font-size: 12px;
+    color: #777;
+    margin-top: 4px; /* space below timestamp */
+}
+
+.timestamp {
+    font-size: 12px;
+    color: #555;
+}
+
+.unreadRow {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;  /* align the text baseline with the badge */
+    height: 16px;           /* optional: fix the row height */
+    margin-bottom: 4px;
 }
 
 .badgeContainer {
-    position: absolute;
-    bottom: 10px;
-    right: 0px;
-    size: 30px;
+    margin-right: 4px;
+    display: flex;
+    align-items: center;    /* vertically center badge */
+    min-width: 20px;        /* reserve space even if badge is hidden */
 }
+
+.badgeTextStyle {
+    font-size: 10px;
+}
+
 
 .selectedContact {
     margin-top: 15px;
@@ -177,3 +199,10 @@
     flex-direction: row;
     margin-top: -1px;
 }
+
+.storageText {
+    font-size: 12px;
+    color: #777;
+    margin-top: 4px;
+}
+

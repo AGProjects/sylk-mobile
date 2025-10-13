@@ -18,6 +18,7 @@ import EditContactModal from './EditContactModal';
 import GenerateKeysModal from './GenerateKeysModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
+import DeleteFileTransfers from './DeleteFileTransfers';
 import VersionNumber from 'react-native-version-number';
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
 import {openSettings} from 'react-native-permissions';
@@ -36,6 +37,7 @@ class NavigationBar extends Component {
             syncConversations: this.props.syncConversations,
             inCall: this.props.inCall,
             showCallMeMaybeModal: this.props.showCallMeMaybeModal,
+            showDeleteFileTransfers: false,
             contactsLoaded: this.props.contactsLoaded,
             appStoreVersion: this.props.appStoreVersion,
             showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
@@ -62,7 +64,8 @@ class NavigationBar extends Component {
             contentTypes: this.props.contentTypes,
             sharingAction: this.props.sharingAction,
             dnd: this.props.dnd,
-            myuuid: this.props.myuuid
+            myuuid: this.props.myuuid,
+            sharedFiles: this.props.sharedFiles
         }
 
         this.menuRef = React.createRef();
@@ -104,7 +107,8 @@ class NavigationBar extends Component {
                        sharingAction: nextProps.sharingAction,
                        dnd: nextProps.dnd,
                        myuuid: nextProps.myuuid,
-                       myPhoneNumber: nextProps.myPhoneNumber
+                       myPhoneNumber: nextProps.myPhoneNumber,
+ 					   sharedFiles: nextProps.sharedFiles
                        });
 
                     if (nextProps.menuVisible) {
@@ -173,6 +177,10 @@ class NavigationBar extends Component {
                 break;
             case 'deleteMessages':
                 this.setState({showDeleteHistoryModal: true});
+                break;
+            case 'deleteFileTransfers':
+                this.setState({showDeleteFileTransfers: true});
+                this.props.getFiles(this.state.selectedContact.uri);
                 break;
             case 'generatePrivateKey':
                 this.setState({showGenerateKeysModal: true});
@@ -269,6 +277,10 @@ class NavigationBar extends Component {
 
     closeDeleteHistoryModal() {
         this.setState({showDeleteHistoryModal: false});
+    }
+
+    closeDeleteFileTransfers() {
+        this.setState({showDeleteFileTransfers: false});
     }
 
     hideGenerateKeysModal() {
@@ -461,6 +473,10 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
+                        { hasMessages && !this.state.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('deleteFileTransfers')} icon="delete" title="Delete files..."/>
+                        : null
+                        }
                         {<Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> }
 
                         { hasMessages && !this.state.inCall && 'paused' in this.state.contentTypes ?
@@ -563,6 +579,16 @@ class NavigationBar extends Component {
                     filteredMessageIds={this.state.filteredMessageIds}
                 />
 
+                <DeleteFileTransfers
+                    show={this.state.showDeleteFileTransfers}
+                    close={this.closeDeleteFileTransfers}
+                    uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
+                    displayName={this.state.displayName}
+                    deleteFilesFunc={this.props.deleteFiles}
+                    sharedFiles={this.state.sharedFiles}
+                    getFiles={this.props.getFiles}
+                />
+
                 <AddContactModal
                     show={this.state.showAddContactModal}
                     close={this.toggleAddContactModal}
@@ -576,6 +602,7 @@ class NavigationBar extends Component {
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId}
                     displayName={this.state.displayName}
                     edit={this.state.email}
+                    selectedContact={this.state.selectedContact}
                     organization={this.state.organization}
                     email={this.state.email}
                     myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
@@ -653,6 +680,7 @@ NavigationBar.propTypes = {
     publicKeyHash      : PropTypes.string,
     publicKey          : PropTypes.string,
     deleteMessages     : PropTypes.func,
+    deleteFiles        : PropTypes.func,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
     toggleAutoanswer   : PropTypes.func,
@@ -689,7 +717,9 @@ NavigationBar.propTypes = {
     sharingAction: PropTypes.bool,
     dnd: PropTypes.bool,
     toggleDnd: PropTypes.func,
-    buildId: PropTypes.string
+    buildId: PropTypes.string,
+    getFiles: PropTypes.func,
+    sharedFiles: PropTypes.object
 };
 
 export default NavigationBar;

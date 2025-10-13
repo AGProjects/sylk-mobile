@@ -259,6 +259,7 @@ class ContactsListBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             isRefreshing: false,
+            sortBy: this.props.sortBy,
             isLandscape: this.props.isLandscape,
             contacts: this.props.contacts,
             myInvitedParties: this.props.myInvitedParties,
@@ -329,6 +330,10 @@ class ContactsListBox extends Component {
 
         if (nextProps.contacts !== this.state.contacts) {
             this.setState({contacts: nextProps.contacts});
+        }
+
+        if (nextProps.sortBy !== this.state.sortBy) {
+            this.setState({sortBy: nextProps.sortBy});
         }
 
         if (nextProps.favoriteUris !== this.state.favoriteUris) {
@@ -2042,7 +2047,11 @@ class ContactsListBox extends Component {
         });
 
         items = filteredItems;
-        items.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
+        if (this.state.sortBy == 'storage') {
+            items.sort((a, b) => (a.storage < b.storage) ? 1 : -1)
+        } else {
+			items.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
+        }
 
         if (items.length === 1) {
             items[0].showActions = true;
@@ -2263,7 +2272,8 @@ ContactsListBox.propTypes = {
     requestMicPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,
     file2GiftedChat: PropTypes.func,
-    postSystemNotification: PropTypes.func
+    postSystemNotification: PropTypes.func,
+    sortBy: PropTypes.string,
 };
 
 

@@ -190,6 +190,17 @@ class ReadyBox extends Component {
        this.props.filterHistoryFunc(filter);
 
        if (!filter) {
+           if (!this.state.historyPeriodFilter) {
+               let sortBy;
+               if (this.state.sortBy == 'timestamp') {
+				   this.props.postSystemNotification('Sort by used storage');
+				   sortBy = 'storage';
+               } else {
+				   this.props.postSystemNotification('Sort by last message');
+				   sortBy = 'timestamp';
+               }
+			   this.setState({'sortBy': sortBy});
+           }
            this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
        } else if (filter === 'today' || filter === 'yesterday') {
            filter = this.state.historyPeriodFilter === filter ? null : filter;
@@ -199,6 +210,7 @@ class ReadyBox extends Component {
        }
 
        this.handleTargetChange('');
+       
     }
 
     chatDisabledForUri(uri) {
@@ -1374,6 +1386,7 @@ class ReadyBox extends Component {
                             sourceContact = {this.state.sourceContact}
                             file2GiftedChat = {this.file2GiftedChat}
                             postSystemNotification = {this.props.postSystemNotification}
+                            sortBy = {this.state.sortBy}
                         />
                         }
 

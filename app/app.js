@@ -309,7 +309,9 @@ class Sylk extends Component {
             filteredMessageIds: [],
             contentTypes: {},
             dnd: false,
-            headsetIsPlugged: false
+            headsetIsPlugged: false,
+            sortBy: 'timestamp',
+            sharedFiles: {}
         };
 
         this.buildId = "20250923";
@@ -1001,7 +1003,7 @@ class Sylk extends Component {
         this.state.account.register();
     }
 
-    loadSylkContacts() {
+    async loadSylkContacts() {
         if (this.state.contactsLoaded) {
             return;
         }
@@ -1011,6 +1013,7 @@ class Sylk extends Component {
         }
 
         console.log('Loading Sylk contacts...');
+
         let myContacts = {};
         let blockedUris = [];
         let favoriteUris = [];
@@ -1243,6 +1246,8 @@ class Sylk extends Component {
                                autoanswerUris: autoanswerUris,
                                myInvitedParties: myInvitedParties,
                                blockedUris: blockedUris});
+
+				this.getStorageUsage(this.state.accountId);
 
             } else {
                 if (Object.keys(this.state.myContacts).length > 0) {
@@ -2051,7 +2056,7 @@ componentWillUnmount() {
         const screenLockEventEmitter = new NativeEventEmitter(ScreenLockModule);
 
 		screenLockEventEmitter.addListener('onScreenLock', () => {
-		    console.log('minimize app');
+		     // console.log('minimize app');
 		     RNMinimize.minimizeApp(); // only runs on actual screen lock
 		});
 
@@ -3018,6 +3023,123 @@ componentWillUnmount() {
             this.setState({status: null, registrationState: newState });
         }
     }
+    
+    async getStorageUsage(accountId) {
+        //console.log('Getting storage usage...');
+		const sizes = await utils.getRemotePartySizes(accountId);
+		//console.log('Sorted remote_party sizes:', sizes);
+
+        const updatedContacts = { ...this.state.myContacts };
+
+		// Create a quick lookup map for better performance
+		try {
+		const sizeMap = {};
+		sizes.forEach(item => {
+		  sizeMap[item.remote_party] = {
+			size: item.size,
+			prettySize: item.prettySize
+		  };
+		});
+		
+		Object.keys(updatedContacts).forEach(key => {
+		  const contact = updatedContacts[key];
+		  const info = sizeMap[key] || { size: 0, prettySize: "0 B" };
+		  updatedContacts[key] = {
+			...contact,
+			storage: info.size,
+			prettyStorage: info.prettySize
+		  };
+		});
+		} catch (e) {
+		console.log('getStorageUsage error:', e)
+		}
+		
+		this.setState({
+			storageUsage: sizes,
+			myContacts: updatedContacts,
+		  });
+    }
+
+	updateStorageForContact(contactKey, removedSize = 0, addedSize = 0) {
+		console.log('Updating storage for', contactKey, 'Removed:', removedSize, 'Added:', addedSize);
+	
+		// Clone current state to avoid direct mutation
+		const updatedContacts = { ...this.state.myContacts };
+		const updatedStorageUsage = [...this.state.storageUsage];
+	
+		try {
+			// 1️⃣ Update specific contact in myContacts
+			if (updatedContacts[contactKey]) {
+				const prevSize = updatedContacts[contactKey].storage || 0;
+				const newSize = Math.max(prevSize - removedSize + addedSize, 0);
+	
+				updatedContacts[contactKey] = {
+					...updatedContacts[contactKey],
+					storage: newSize,
+					prettyStorage: newSize > 0 ? utils.formatBytes(newSize) : "0 B",
+				};
+			} else if (addedSize > 0) {
+				// If the contact didn't exist but we added size, create it
+				updatedContacts[contactKey] = {
+					storage: addedSize,
+					prettyStorage: utils.formatBytes(addedSize),
+				};
+			}
+	
+			// 2️⃣ Update storageUsage array
+			const idx = updatedStorageUsage.findIndex(item => item.remote_party === contactKey);
+			const netChange = addedSize - removedSize;
+	
+			if (idx >= 0) {
+				const prevSize = updatedStorageUsage[idx].size || 0;
+				const newSize = prevSize + netChange;
+				updatedStorageUsage[idx] = {
+					...updatedStorageUsage[idx],
+					size: newSize,
+					prettySize: utils.formatBytes(newSize),
+				};
+			} else if (netChange !== 0) {
+				updatedStorageUsage.push({
+					remote_party: contactKey,
+					size: netChange,
+					prettySize: utils.formatBytes(netChange),
+				});
+			}
+	
+			// 3️⃣ Update synthetic "all" contact
+			const allIdx = updatedStorageUsage.findIndex(item => item.remote_party === 'all');
+			if (allIdx >= 0) {
+				const prevAll = updatedStorageUsage[allIdx].size || 0;
+				const newAll = prevAll + netChange;
+				updatedStorageUsage[allIdx] = {
+					...updatedStorageUsage[allIdx],
+					size: newAll,
+					prettySize: utils.formatBytes(newAll),
+				};
+			}
+	
+			// 4️⃣ Sort by size descending
+			updatedStorageUsage.sort((a, b) => b.size - a.size);
+	
+			// 5️⃣ Update state
+			this.setState({
+				myContacts: updatedContacts,
+				storageUsage: updatedStorageUsage,
+			}, () => {
+				// ✅ Final log after state is updated
+				const updatedContactStorage = updatedContacts[contactKey]?.prettyStorage || "0 B";
+				const allStorage = updatedContacts['all']?.prettyStorage 
+					|| updatedStorageUsage.find(item => item.remote_party === 'all')?.prettySize 
+					|| "0 B";
+	
+				console.log(`Final storage for ${contactKey}: ${updatedContactStorage}`);
+				console.log(`Final storage for all: ${allStorage}`);
+			});
+	
+		} catch (e) {
+			console.error('Error updating storage:', e);
+		}
+	}
     
     async saveSqlAccount(account, active) {
         let params = [active, account];
@@ -5924,6 +6046,7 @@ componentWillUnmount() {
 
         xhr.open('POST', remote_url);
         xhr.setRequestHeader('content-type', file_transfer.filetype);
+		this.updateStorageForContact(uri, 0, file_transfer.filesize);
         this.updateFileTransferBubble(file_transfer, 'Uploading file...', file_transfer);
         console.log('Uploading file', file_transfer.filename, 'of', file_transfer.filesize, 'bytes');
 
@@ -6286,7 +6409,7 @@ componentWillUnmount() {
 
         for (let j = 0; j < message_ids.length; j++) {
             var _id = message_ids[j];
-            this.removeFilesForMessage(_id, uri);
+            this.deleteFilesForMessage(_id, uri);
             if (remote) {
                this.addJournal(_id, 'removeMessage', {uri: uri});
             }
@@ -6334,7 +6457,7 @@ componentWillUnmount() {
         });
     }
 
-    removeFilesForMessage(id, uri) {
+    deleteFilesForMessage(id, uri) {
         let query = "SELECT * from messages where msg_id = ? and account = ?";
         this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -6345,7 +6468,7 @@ componentWillUnmount() {
                     this.deleteRenderMessage(id, uri);
                     //console.log('SQL deleted', results.rowsAffected, 'messages');
                 }).catch((error) => {
-                    console.log('removeFilesForMessage SQL error:', error);
+                    console.log('deleteFilesForMessage SQL error:', error);
                 });
 
                 if (item.metadata) {
@@ -6355,6 +6478,8 @@ componentWillUnmount() {
                         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
                         RNFS.unlink(dir_path).then((success) => {
                             console.log('Removed directory', dir_path);
+                            // TODO: update storage usage:
+                            this.updateStorageForContact(remote_party, file_transfer.filesize, 0);                              
                         }).catch((err) => {
                             if (err.message.indexOf('File does not exist') === -1) {
                                 console.log('Error deleting directory', dir_path, err.message);
@@ -6365,14 +6490,14 @@ componentWillUnmount() {
             }
 
         }).catch((error) => {
-            console.log('removeFilesForMessage SQL error:', error);
+            console.log('deleteFilesForMessage SQL error:', error);
         });
     }
 
     async deleteMessageSync(id, uri) {
         //console.log('Sync message', id, 'is deleted');
         let query;
-        this.removeFilesForMessage(id, uri);
+        this.deleteFilesForMessage(id, uri);
         query = "DELETE from messages where msg_id = ?";
         this.ExecuteQuery(query, [id]).then((results) => {
             this.deleteRenderMessageSync(id, uri);
@@ -7088,7 +7213,7 @@ componentWillUnmount() {
 
         }).error((error) => {
             console.log('File', file_transfer.filename, 'download failed:', error);
-            file_transfer.error = error;
+            file_transfer.error = utils.getErrorMessage(error);
             this.fileTransferStateChanged(id, 'failed', file_transfer);
             delete this.downloadRequests[id];
             if (error === 'not found') {
@@ -7652,8 +7777,6 @@ componentWillUnmount() {
 
                     msg = utils.sql2GiftedChat(item, content, filter);
 
-                    //console.log(msg);
-
                     if (!msg) {
                         myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
                         continue;
@@ -7732,6 +7855,101 @@ componentWillUnmount() {
             console.log('getMessages SQL error:', error);
         });
 
+    }
+
+    async getFiles(uri, incoming=true, outgoing=true, today=true) {
+        //console.log('Get files for', uri, 'incoming', incoming, 'outgoing', outgoing, 'today', today);
+        let sharedFiles = this.state.sharedFiles;
+        let metadata;
+        let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
+       
+		var todayStart = new Date();
+        todayStart.setHours(0,0,0,0);
+ 
+        let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";       
+        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+            let rows = results.rows;
+            console.log(rows.length, 'transfers found');
+            for (let i = 0; i < rows.length; i++) {
+               var item = rows.item(i);
+			   const cleanedTs = item.timestamp.replace(/^"(.*)"$/, '$1');
+			   const tsDate = new Date(cleanedTs);
+			   const isToday = tsDate >= todayStart;
+			   
+			   if (today && !isToday) {
+				   continue;
+			   }
+
+               if (!incoming && item.direction === 'incoming') {
+				   continue;
+               }
+
+               if (!outgoing && item.direction === 'outgoing') {
+				   continue;
+               }
+
+               try {
+                   metadata = JSON.parse(item.metadata);
+                   if (!metadata.local_url) {
+					   continue;
+                   }
+				   const filename = metadata.local_url.split('/').pop();
+				   
+				   if (metadata.filetype.toLowerCase().startsWith('image/')) {
+					   message_ids['photos'].push(item.msg_id);
+					   continue;
+				   } else if (metadata.filetype.toLowerCase().startsWith('audio/')) {
+					   message_ids['audios'].push(item.msg_id);
+					   continue;
+				   } else if (metadata.filetype.toLowerCase().startsWith('video/')) {
+					   message_ids['videos'].push(item.msg_id);
+					   continue;
+				   } else {
+					   message_ids['others'].push(item.msg_id);
+				   }
+	
+               } catch (e) {
+                   console.log('deleteFiles error:', e);
+                   continue;
+               }
+
+            }
+
+        }).catch((error) => {
+            console.log('deleteFiles SQL error:', error);
+        });
+        
+        sharedFiles[uri] = message_ids;
+        this.setState({sharedFiles: sharedFiles});
+        
+        return message_ids;  
+    }
+    
+    async deleteFiles(uri, ids=[], remote=false, filter={}) {
+        console.log('Delete files for', uri, ids, filter);
+        let metadata;
+        let message_ids = [];
+  	    var todayStart = new Date();
+        todayStart.setHours(0,0,0,0);
+        
+        let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";       
+        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+            let rows = results.rows;
+            //console.log(rows.length, 'transfers found');
+            for (let i = 0; i < rows.length; i++) {
+               var item = rows.item(i);
+               if (ids.indexOf(item.msg_id) === -1) {
+                   continue;
+               }
+
+			   //console.log('Delete file transfer id', item.msg_id);
+			   this.deleteMessage(item.msg_id, uri, remote);
+	
+            }
+
+        }).catch((error) => {
+            console.log('deleteFiles SQL error:', error);
+        });
     }
 
     async deleteMessages(uri, remote=false) {
@@ -9182,8 +9400,7 @@ componentWillUnmount() {
             if (msg._id === id) {
                 msg.text = text || utils.beautyFileNameForBubble(metadata);
                 if (metadata.error) {
-                    console.log(metadata.error)
-                    msg.text = msg.text + ' - ' + metadata.error;
+                    msg.text = msg.text + ' - ' + utils.getErrorMessage(metadata.error);
                     msg.failed = true;
                 } else {
                     msg.failed = false;
@@ -9450,6 +9667,8 @@ componentWillUnmount() {
                           organization: data.organization || '',
                           unread: [],
                           tags: [],
+                          storage: 0,
+                          prettyStorage: null,
                           lastCallMedia: [],
                           participants: [],
                           timestamp: current_datetime
@@ -10561,6 +10780,7 @@ componentWillUnmount() {
                     replicateKey = {this.replicatePrivateKey}
                     publicKey = {publicKey}
                     deleteMessages = {this.deleteMessages}
+                    deleteFiles = {this.deleteFiles}
                     toggleFavorite = {this.toggleFavorite}
                     toggleAutoanswer = {this.toggleAutoanswer}
                     toggleBlocked = {this.toggleBlocked}
@@ -10595,7 +10815,9 @@ componentWillUnmount() {
                     sharingAction = {this.sharingAction}
                     toggleDnd = {this.toggleDnd}
                     dnd = {this.state.dnd}
-                    buildId ={this.buildId}
+                    buildId = {this.buildId}
+                    getFiles = {this.getFiles}
+                    sharedFiles = {this.state.sharedFiles}
                 />
 
                 <ReadyBox
@@ -10676,6 +10898,7 @@ componentWillUnmount() {
                     requestMicPermission = {this.requestMicPermission}
                     requestStoragePermission = {this.requestStoragePermission}
                     postSystemNotification = {this.postSystemNotification}
+                    sortBy = {this.state.sortBy}
                 />
 
                 <ImportPrivateKeyModal

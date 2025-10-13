@@ -773,6 +773,103 @@ function getPGPCheckSum(base64_content) {
         return radix64(str);
 }
 
+
+/**
+ * Returns a list of { remote_party, size, prettySize } sorted by folder size (desc),
+ * including a synthetic 'all' entry with the total size of all remote_party folders.
+ * @param {string} accountId
+ * @returns {Promise<Array<{ remote_party: string, size: number, prettySize: string }>>}
+ */
+async function getRemotePartySizes(accountId) {
+  const accountPath = `${RNFS.DocumentDirectoryPath}/${accountId}`;
+  try {
+    const remoteParties = await RNFS.readDir(accountPath);
+    const results = [];
+    let totalSize = 0;
+
+    for (const item of remoteParties) {
+      if (item.isDirectory()) {
+        const remoteParty = item.name;
+        const remotePartyPath = item.path;
+        const size = await getFolderSize(remotePartyPath);
+        totalSize += size;
+        results.push({
+          remote_party: remoteParty,
+          size,
+          prettySize: formatBytes(size),
+        });
+      }
+    }
+
+    // Sort descending by size
+    results.sort((a, b) => b.size - a.size);
+
+    // Add synthetic 'all' entry at the top
+    results.unshift({
+      remote_party: 'all',
+      size: totalSize,
+      prettySize: formatBytes(totalSize),
+    });
+
+    return results;
+  } catch (error) {
+    console.error('Error reading remote parties:', error);
+    return [];
+  }
+}
+
+/**
+ * Recursively calculates the total size of a folder in bytes.
+ */
+async function getFolderSize(folderPath) {
+  let totalSize = 0;
+  try {
+    const items = await RNFS.readDir(folderPath);
+    for (const item of items) {
+      if (item.isFile()) {
+        totalSize += Number(item.size);
+      } else if (item.isDirectory()) {
+        totalSize += await getFolderSize(item.path);
+      }
+    }
+  } catch (error) {
+    console.error(`Error calculating size for ${folderPath}:`, error);
+  }
+  return totalSize;
+}
+
+/**
+ * Converts bytes to a human-readable string (B, KB, MB, GB, TB).
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const value = Math.ceil(bytes / Math.pow(k, i));
+  return `${value} ${sizes[i]}`;
+}
+
+function getErrorMessage(error) {
+  if (typeof error === 'string') {
+    // error is a plain string
+    return error;
+  } else if (error && typeof error === 'object') {
+    // error is an object
+    const message = error.error || 'Unknown error';
+    if (error.errorCode !== undefined) {
+      return `${message} (${error.errorCode})`;
+    }
+    return message;
+  } else {
+    // fallback if error is null or some other type
+    return 'Unknown error';
+  }
+}
+
+exports.getErrorMessage = getErrorMessage;
+exports.formatBytes = formatBytes;
+exports.getRemotePartySizes = getRemotePartySizes;
 exports.getPartialDownloadPath = getPartialDownloadPath;
 exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
