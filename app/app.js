@@ -499,7 +499,7 @@ class Sylk extends Component {
         this.sqlTableVersions = {'messages': 9,
                                  'contacts': 7,
                                  'keys': 3,
-                                 'accounts': 1
+                                 'accounts': 3
                                  }
 
         this.updateTableQueries = {'messages': {1: [],
@@ -530,12 +530,13 @@ class Sylk extends Component {
                                                 },
                                    'keys': {2: [{query: 'alter table keys add column last_sync_id TEXT', params: []}],
                                             3: [{query: 'alter table keys add column my_uuid TEXT', params: []}]
-                                            }
+                                            },
+                                   'accounts': {3: [{query: 'alter table accounts add column dnd TEXT', params: []}]
+                                               }
                                    };
 
         this.db = null;
         this.initSQL();
-
     }
 
     async requestPermissions() {
@@ -1001,6 +1002,15 @@ class Sylk extends Component {
         this.setState({dnd: !this.state.dnd})
         this._sendPushToken(this.state.account, !this.state.dnd);
         this.state.account.register();
+        
+        const dnd = (!this.state.dnd) ? '1': '0';
+		let params = [dnd, this.state.account.id];
+		await this.ExecuteQuery("update accounts set dnd = ? where account = ?", params).then((result) => {
+			//console.log('SQL update account OK');
+		}).catch((error) => {
+			console.log('SQL error:', error);
+		});
+
     }
 
     async loadSylkContacts() {
@@ -1410,6 +1420,7 @@ class Sylk extends Component {
         this.ExecuteQuery("DROP TABLE if exists 'recipients';");
         this.ExecuteQuery("DROP TABLE 'messages';");
         this.ExecuteQuery("DROP TABLE 'versions';");
+        this.ExecuteQuery("DROP TABLE 'accounts';");
     }
 
     createTables() {
@@ -1513,7 +1524,8 @@ class Sylk extends Component {
 		  CREATE TABLE IF NOT EXISTS 'accounts' (
 			'account' TEXT PRIMARY KEY,
 			'password' TEXT,
-			'active' TEXT
+			'active' TEXT,
+			'dnd' TEXT
 		  )
 		`;
 
