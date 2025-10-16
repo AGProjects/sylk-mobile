@@ -17,6 +17,7 @@ import android.content.Context;
 
 import java.util.Map;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.io.File;
 import java.util.Set;
 import java.util.ArrayList;
@@ -27,6 +28,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
     private static final String LOG_TAG = "[SYLK FCM SERVICE]";
 	private Map<String, List<String>> contactsByTag = new HashMap<>();
+	public static final Set<String> incomingCalls = new HashSet<>();
 
 	private Map<String, List<String>> getContactsByTag() {
 		Map<String, List<String>> result = new HashMap<>();
@@ -88,30 +90,32 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		SQLiteDatabase db = null;
 		Cursor cursor = null;
 		boolean isActive = false;
+		boolean isDnd = false;
 	
 		try {
 			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
 	
 			// Parameterized query to prevent SQL injection
-			cursor = db.rawQuery("SELECT active FROM accounts WHERE account = ?", new String[]{account});
+			cursor = db.rawQuery("SELECT active, dnd FROM accounts WHERE account = ?", new String[]{account});
 	
 			if (cursor != null && cursor.moveToFirst()) {
 				String activeValue = cursor.getString(cursor.getColumnIndexOrThrow("active"));
+				String dndValue = cursor.getString(cursor.getColumnIndexOrThrow("dnd"));
+				
 				isActive = "1".equals(activeValue);
-			} else {
-				// Account not found
-				isActive = false;
+				isDnd = "1".equals(dndValue);
 			}
+
+			Log.e(LOG_TAG, "DND: " + isDnd);
 	
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Failed to read account status", e);
-			isActive = false;
 		} finally {
 			if (cursor != null) cursor.close();
 			if (db != null) db.close();
 		}
 	
-		return isActive;
+		return isActive && !isDnd;
 	}
 
 	private boolean isBlocked(String fromUri) {
@@ -140,35 +144,41 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         //Log.d(LOG_TAG, "Remote message data: " + data.toString());
 
         String event = data.get("event");
-        String callId = data.get("session-id");
         
         if (event == null || event.trim().isEmpty()) {
 			Log.w(LOG_TAG, "Missing event");
 			return;
         }
 
-		if (callId == null || callId.trim().isEmpty()) {
-			Log.w(LOG_TAG, "Missing call id");
-			return;
-        }
-
-        Log.d(LOG_TAG, event + " " + callId);
-
         if (event.equals("incoming_session") || event.equals("incoming_conference_request")) {
+
+			String callId = data.get("session-id");
+			incomingCalls.add(callId);
+
+			if (callId == null || callId.trim().isEmpty()) {
+				Log.w(LOG_TAG, "Missing call id");
+				return;
+			}
+	
+			Log.d(LOG_TAG, event + " " + callId);
+
 			String toUri = data.get("to_uri");
 			if (toUri == null || toUri.trim().isEmpty()) {
+				IncomingCallService.handledCalls.add(callId);
 				Log.w(LOG_TAG, "Missing toUri");
 				return;
 			}
 
 			if (!isAccountActive(toUri)) {
 				Log.w(LOG_TAG, "Account is not active: " + toUri);
+				IncomingCallService.handledCalls.add(callId);
 				return;
 			}
 
 			String fromUri = data.get("from_uri");
 			if (fromUri == null || fromUri.trim().isEmpty()) {
 				Log.w(LOG_TAG, "Missing fromUri");
+				IncomingCallService.handledCalls.add(callId);
 				return;
 			}
 
@@ -176,6 +186,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	
 			if (isBlocked(fromUri)) {
 				Log.w(LOG_TAG, "Caller is blocked");
+				IncomingCallService.handledCalls.add(callId);
 				return;
 			}
 			
@@ -195,6 +206,17 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             }
 
         } else if (event.equals("cancel")) {
+			String callId = data.get("session-id");
+			if (callId == null || callId.trim().isEmpty()) {
+				Log.w(LOG_TAG, "Missing call id");
+				return;
+			}
+
+			if (!incomingCalls.contains(callId)) {
+				Log.d(LOG_TAG, "missing corresponding incoming call " + callId);
+				return;
+			}
+
 			if (IncomingCallService.handledCalls.contains(callId)) {
 				Log.d(LOG_TAG, "cancel already handled: " + callId);
 				return;
@@ -214,9 +236,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			} else {
 				startService(stopIntent);
 			}
+        } else if (event.equals("message")) {
+			Log.d(LOG_TAG, event);
     
         } else {
-            //Log.d(LOG_TAG, "Unhandled event: " + event);
+            Log.d(LOG_TAG, "Unhandled event: " + event);
         }
     }
 }

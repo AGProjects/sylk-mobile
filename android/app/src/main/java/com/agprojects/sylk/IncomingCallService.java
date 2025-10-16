@@ -253,51 +253,51 @@ public class IncomingCallService extends Service {
         }
 
         String event = intent.getStringExtra("event");
-        String callUUID = intent.getStringExtra("session-id");
+        String callId = intent.getStringExtra("session-id");
         String fromUri = intent.getStringExtra("from_uri");
         String mediaType = intent.getStringExtra("media-type");
-		int notificationId = Math.abs(callUUID.hashCode());
+		int notificationId = Math.abs(callId.hashCode());
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
-		Log.w(LOG_TAG, "onStartCommand " + event + " " + callUUID);
+		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId);
 		Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
 
-        if (callUUID == null || event == null) {
-            Log.w(LOG_TAG, "Missing callUUID or event");
+        if (callId == null || event == null) {
+            Log.w(LOG_TAG, "Missing callId or event");
             return START_NOT_STICKY;
         }
 
-        if (handledCalls.contains(callUUID)) {
-			Log.d(LOG_TAG, "Call " + callUUID + " already handled, skipping");
+        if (handledCalls.contains(callId)) {
+			Log.d(LOG_TAG, "Call " + callId + " already handled, skipping");
             return START_NOT_STICKY;
 		}
 
         if ("cancel".equals(event) || "ACTION_REJECT_CALL".equals(event)) {
-            Log.d(LOG_TAG, "action received: " + event + " for " + callUUID);
+            Log.d(LOG_TAG, "action received: " + event + " for " + callId);
 			stopRingtone(); // <-- stop ringing
-	        handledCalls.add(callUUID);
+	        handledCalls.add(callId);
 			// Cancel auto-answer if scheduled
-			Runnable scheduled = autoAnswerRunnables.remove(callUUID);
+			Runnable scheduled = autoAnswerRunnables.remove(callId);
 			if (scheduled != null) {
 				mainHandler.removeCallbacks(scheduled);
-				Log.d(LOG_TAG, "Canceled auto-answer for call: " + callUUID);
+				Log.d(LOG_TAG, "Canceled auto-answer for call: " + callId);
 			}
 
 			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");
-			closeActivityIntent.putExtra("session-id", callUUID);
+			closeActivityIntent.putExtra("session-id", callId);
 			LocalBroadcastManager.getInstance(this).sendBroadcast(closeActivityIntent);
     
             cancelNotification(notificationId);
-			Log.d(LOG_TAG, "Stop " + callUUID);
+			Log.d(LOG_TAG, "Stop " + callId);
             stopSelf();
             return START_NOT_STICKY;
         }
            
 		if ("ACTION_ACCEPT_AUDIO".equals(event) || "ACTION_ACCEPT_VIDEO".equals(event)) {		 
-			Log.d(LOG_TAG, "Starting app for accepted call " + callUUID);
+			Log.d(LOG_TAG, "Starting app for accepted call " + callId);
 			stopRingtone();
 	 
-	        handledCalls.add(callUUID);
+	        handledCalls.add(callId);
 
 			Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
 			if (launchIntent != null) {
@@ -308,13 +308,13 @@ public class IncomingCallService extends Service {
 				);
 		
 				// Optional: pass call info to React Native if needed
-				launchIntent.putExtra("session-id", callUUID);
+				launchIntent.putExtra("session-id", callId);
 				launchIntent.putExtra("media-type", "ACTION_ACCEPT_AUDIO".equals(event) ? "audio" : "video");
 				launchIntent.putExtra("event", event);
 		
 				// 2. Start the app (if dead, this brings it up; if alive, brings it to foreground)
 				startActivity(launchIntent);
-				Log.d(LOG_TAG, "App launch intent sent for call: " + callUUID);
+				Log.d(LOG_TAG, "App launch intent sent for call: " + callId);
 			} else {
 				Log.w(LOG_TAG, "Launch intent is null");
 			}
@@ -322,7 +322,7 @@ public class IncomingCallService extends Service {
 			cancelNotification(notificationId);
 		
 			// No need to keep this service alive anymore
-			Log.d(LOG_TAG, "Stop " + callUUID);
+			Log.d(LOG_TAG, "Stop " + callId);
 			stopSelf();
 			return START_NOT_STICKY;
 		}
@@ -332,7 +332,7 @@ public class IncomingCallService extends Service {
             startRingtone(fromUri); // <-- start ringing
 
 			if (isAutoAnswer(fromUri)) {
-    			startAutoAnswerCountdownWithProgress(callUUID, fromUri, mediaType, notificationId, 30);
+    			startAutoAnswerCountdownWithProgress(callId, fromUri, mediaType, notificationId, 30);
 			}
 
             // Variant 1. This launches the main app when incoming call arrives (make sure RN app shows the alert panel)
@@ -381,7 +381,7 @@ public class IncomingCallService extends Service {
 					this, notificationId + 100,
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_REJECT_CALL")
-							.putExtra("session-id", callUUID)
+							.putExtra("session-id", callId)
 							.putExtra("phoneLocked", false)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -393,7 +393,7 @@ public class IncomingCallService extends Service {
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_ACCEPT_AUDIO")
 							.putExtra("phoneLocked", false)
-							.putExtra("session-id", callUUID)
+							.putExtra("session-id", callId)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -404,7 +404,7 @@ public class IncomingCallService extends Service {
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_ACCEPT_VIDEO")
 							.putExtra("phoneLocked", false)
-							.putExtra("session-id", callUUID)
+							.putExtra("session-id", callId)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -438,7 +438,7 @@ public class IncomingCallService extends Service {
 			Notification fullNotification = builder.build();
 		
 			// Show notification
-			Log.d(LOG_TAG, "Show notification " + notificationId + " for " + callUUID);
+			Log.d(LOG_TAG, "Show notification " + notificationId + " for " + callId);
 			startForeground(notificationId, fullNotification);
 		
 			// Auto-cancel fallback after 60s
@@ -446,7 +446,7 @@ public class IncomingCallService extends Service {
 			autoCancelRunnable = () -> {
 				stopRingtone();
 				cancelNotification(notificationId);
-				Log.d(LOG_TAG, "Stop " + callUUID);
+				Log.d(LOG_TAG, "Stop " + callId);
 				stopSelf();
 			};
 			autoCancelHandler.postDelayed(autoCancelRunnable, 60_000);
@@ -455,24 +455,24 @@ public class IncomingCallService extends Service {
 		return START_STICKY;
     }
 
-	private void handleAcceptCall(String callUUID, String mediaType, int notificationId) {
-		if (callUUID == null) return;
+	private void handleAcceptCall(String callId, String mediaType, int notificationId) {
+		if (callId == null) return;
 	
-		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callUUID);
+		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId);
 	
 		// Stop ringtone
 		stopRingtone();
 	
 		// Cancel any scheduled auto-answer countdown
-		Runnable scheduled = autoAnswerRunnables.remove(callUUID);
+		Runnable scheduled = autoAnswerRunnables.remove(callId);
 		if (scheduled != null) {
 			new Handler(Looper.getMainLooper()).removeCallbacks(scheduled);
-			Log.d(LOG_TAG, "Canceled scheduled auto-answer for call: " + callUUID);
+			Log.d(LOG_TAG, "Canceled scheduled auto-answer for call: " + callId);
 		}
 	
 		// Mark call handled
-		handledCalls.add(callUUID);
-		Log.d(LOG_TAG, "Call " + callUUID + " marked as handled");
+		handledCalls.add(callId);
+		Log.d(LOG_TAG, "Call " + callId + " marked as handled");
 	
 		// Cancel notification
 		cancelNotification(notificationId);
@@ -481,26 +481,26 @@ public class IncomingCallService extends Service {
 		Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
 		if (launchIntent != null) {
 			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-			launchIntent.putExtra("session-id", callUUID);
+			launchIntent.putExtra("session-id", callId);
 			launchIntent.putExtra("media-type", mediaType);
 			launchIntent.putExtra("event", "auto_accept");
 			startActivity(launchIntent);
-			Log.d(LOG_TAG, "App launched for call: " + callUUID);
+			Log.d(LOG_TAG, "App launched for call: " + callId);
 		} else {
-			Log.w(LOG_TAG, "Launch intent is null for call: " + callUUID);
+			Log.w(LOG_TAG, "Launch intent is null for call: " + callId);
 		}
 	
 		// Notify React Native
 		if (getApplication() instanceof ReactApplication) {
-			ReactEventEmitter.sendEventToReact("ACTION_ACCEPT_AUDIO", callUUID, false, (ReactApplication) getApplication());
-			Log.d(LOG_TAG, "Sent React Native event for call: " + callUUID);
+			ReactEventEmitter.sendEventToReact("ACTION_ACCEPT_AUDIO", callId, false, (ReactApplication) getApplication());
+			Log.d(LOG_TAG, "Sent React Native event for call: " + callId);
 		}
 	
 		stopSelf();
 	}
 
 	private void startAutoAnswerCountdownWithProgress(
-			String callUUID, String fromUri, String mediaType, int notificationId, int seconds
+			String callId, String fromUri, String mediaType, int notificationId, int seconds
 	) {
 		final Handler handler = new Handler(Looper.getMainLooper());
 		final long endTime = System.currentTimeMillis() + seconds * 1000L;
@@ -509,16 +509,16 @@ public class IncomingCallService extends Service {
 			@Override
 			public void run() {
 				// STOP if the call has been handled externally
-				if (handledCalls.contains(callUUID)) {
-					Log.d(LOG_TAG, "Countdown stopped because call " + callUUID + " is already handled");
-					autoAnswerRunnables.remove(callUUID);
+				if (handledCalls.contains(callId)) {
+					Log.d(LOG_TAG, "Countdown stopped because call " + callId + " is already handled");
+					autoAnswerRunnables.remove(callId);
 					return;
 				}
 
 				long remaining = (endTime - System.currentTimeMillis()) / 1000;
 				if (remaining < 0) remaining = 0;
 	
-				//Log.d(LOG_TAG, "Auto-answer countdown for call " + callUUID + ": " + remaining + "s remaining");
+				//Log.d(LOG_TAG, "Auto-answer countdown for call " + callId + ": " + remaining + "s remaining");
 	
 				// Accept / Reject PendingIntents
 				PendingIntent acceptIntent = PendingIntent.getBroadcast(
@@ -526,7 +526,7 @@ public class IncomingCallService extends Service {
 						new Intent(IncomingCallService.this, IncomingCallActionReceiver.class)
 								.setAction("ACTION_ACCEPT_AUDIO")
 								.putExtra("phoneLocked", false)
-								.putExtra("session-id", callUUID)
+								.putExtra("session-id", callId)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 				);
@@ -535,7 +535,7 @@ public class IncomingCallService extends Service {
 						IncomingCallService.this, notificationId + 100,
 						new Intent(IncomingCallService.this, IncomingCallActionReceiver.class)
 								.setAction("ACTION_REJECT_CALL")
-								.putExtra("session-id", callUUID)
+								.putExtra("session-id", callId)
 								.putExtra("phoneLocked", false)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -570,14 +570,14 @@ public class IncomingCallService extends Service {
 				if (remaining > 0) {
 					handler.postDelayed(this, 1000); // update every second
 				} else {
-					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callUUID);
-					handleAcceptCall(callUUID, mediaType, notificationId);
+					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callId);
+					handleAcceptCall(callId, mediaType, notificationId);
 				}
 			}
 		};
 	
-		autoAnswerRunnables.put(callUUID, countdownRunnable);
-		Log.d(LOG_TAG, "Scheduled auto-answer countdown for call " + callUUID + " (" + seconds + "s)");
+		autoAnswerRunnables.put(callId, countdownRunnable);
+		Log.d(LOG_TAG, "Scheduled auto-answer countdown for call " + callId + " (" + seconds + "s)");
 		handler.post(countdownRunnable);
 	}
 
