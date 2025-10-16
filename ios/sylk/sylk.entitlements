@@ -7,8 +7,6 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:webrtc.sipthor.net</string>
-		<string>applinks:didcomm.issuer.bloqzone.com</string>
-		<string>applinks:ssimandate.vismaconnect.nl</string>
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
