@@ -469,11 +469,9 @@ class ContactCard extends Component {
 							) : null}
 							<Text style={styles.timestamp}>{contact_ts}</Text>
 						</View>
-					
-						{/* Storage below */}
-						{this.state.contact.prettyStorage && (
-							<Text style={styles.storageText}>{this.state.contact.prettyStorage}</Text>
-						)}
+
+						<Text style={styles.storageText}>{this.state.contact.prettyStorage}</Text>
+
 					</View>
 
                 </View>

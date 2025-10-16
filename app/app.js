@@ -991,7 +991,7 @@ class Sylk extends Component {
         this.saveLastSyncId(null);
     }
 
-    toggleDnd () {
+    async toggleDnd () {
         console.log('Toggle DND to', !this.state.dnd);
         if (!this.state.dnd) {
             this._notificationCenter.postSystemNotification('Do not disturb with new calls');
@@ -2060,50 +2060,56 @@ componentWillUnmount() {
     }
 
     async componentDidMount() {
-        utils.timestampedLog('App did mount');
-        const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
+        utils.timestampedLog('-- App did mount');
+        
+		if (Platform.OS === 'android') {
+			const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
+		
+			this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
+				if (!event || !event.callUUID) {
+					console.warn('Received invalid event', event);
+					return;
+				}
+			
+				if (handledCalls.has(event.callUUID)) {
+					console.log('Duplicate event ignored for callUUID:', event.callUUID);
+					return;
+				}
+			
+				// Mark as handled
+				handledCalls.add(event.callUUID);
+			
+				console.log('---- FCM user action received', event);
+				this.phoneWasLocked = event.phoneLocked;
+			
+				const media = { audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO' };
+			
+				if (event.action === 'ACTION_ACCEPT_AUDIO' || event.action === 'ACTION_ACCEPT_VIDEO' || event.action === 'ACTION_ACCEPT') {
+					this.callKeepAcceptCall(event.callUUID, media);
+				} else if (event.action === 'REJECT') {
+					this.callKeepRejectCall(event.callUUID);
+				}
+			
+				// Optional: remove from set after a while to prevent memory leaks
+				setTimeout(() => handledCalls.delete(event.callUUID), 5 * 60 * 1000); // 5 minutes
+			});
+
+		   const screenLockEventEmitter = new NativeEventEmitter(ScreenLockModule);
+	
+			screenLockEventEmitter.addListener('onScreenLock', () => {
+				 // console.log('minimize app');
+				 RNMinimize.minimizeApp(); // only runs on actual screen lock
+			});
+	
+			screenLockEventEmitter.addListener('onScreenUnlock', () => {
+			  console.log('Phone unlocked');
+			}); 
+		}
+		  
         // Subscribe to the event
         // Keep track of handled call UUIDs
         const handledCalls = new Set();
-        const screenLockEventEmitter = new NativeEventEmitter(ScreenLockModule);
-
-		screenLockEventEmitter.addListener('onScreenLock', () => {
-		     // console.log('minimize app');
-		     RNMinimize.minimizeApp(); // only runs on actual screen lock
-		});
-
-		screenLockEventEmitter.addListener('onScreenUnlock', () => {
-		  console.log('Phone unlocked');
-		});
-
-		this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
-			if (!event || !event.callUUID) {
-				console.warn('Received invalid event', event);
-				return;
-			}
-		
-			if (handledCalls.has(event.callUUID)) {
-				console.log('Duplicate event ignored for callUUID:', event.callUUID);
-				return;
-			}
-		
-			// Mark as handled
-			handledCalls.add(event.callUUID);
-		
-			console.log('---- FCM user action received', event);
-			this.phoneWasLocked = event.phoneLocked;
-		
-			const media = { audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO' };
-		
-			if (event.action === 'ACTION_ACCEPT_AUDIO' || event.action === 'ACTION_ACCEPT_VIDEO' || event.action === 'ACTION_ACCEPT') {
-				this.callKeepAcceptCall(event.callUUID, media);
-			} else if (event.action === 'REJECT') {
-				this.callKeepRejectCall(event.callUUID);
-			}
-		
-			// Optional: remove from set after a while to prevent memory leaks
-			setTimeout(() => handledCalls.delete(event.callUUID), 5 * 60 * 1000); // 5 minutes
-		});
+        
         
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
@@ -2199,9 +2205,35 @@ componentWillUnmount() {
 		  }
 		});
 
+/*
+notification: {
+  android: {
+    sound: 'default',
+    priority: 1,
+    imageUrl: 'https://icanblink.com/apple-touch-icon-180x180.png',
+    channelId: 'sylk-messages-sound'
+  },
+  body: 'From ag@ag-projects.com',
+  title: 'New message'
+}
+
+f you want to fully control the UI and avoid automatic system notifications, you must send a data-only payload — remove the notification object from the message you send through FCM.
+✅ Example (data-only):
+{
+  "to": "<device-token>",
+  "data": {
+    "event": "message",
+    "to_uri": "ag@sylk.link",
+    "from_uri": "ag@ag-projects.com"
+  },
+  "priority": "high",
+  "content_available": true
+}
+*/
+
 		// --- Background messages ---
 		messaging(app).setBackgroundMessageHandler(async remoteMessage => {
-		  console.log('FCM app background message:', remoteMessage.data);
+		  console.log('FCM in-app background message:', remoteMessage.data);
 		  const msg = normalizeMessage(remoteMessage);
 		  this.handleFirebasePush(msg);
 		});
@@ -2341,11 +2373,7 @@ componentWillUnmount() {
 
     postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
-        //console.log('postAndroidMessageNotification', content);
-        if (Platform.OS !== 'android') {
-            return;
-        }
-
+        console.log('postAndroidMessageNotification', content);
         PushNotification.localNotification({
           /* Android Only Properties */
           channelId: "sylk-messages", // (required) channelId, if the channel doesn't exist, notification will not trigger.
@@ -2414,7 +2442,7 @@ componentWillUnmount() {
     }
 
     handleFirebasePush(notification) {
-        //console.log("FCM app handle notification", notification);
+        console.log("FCM in app handle notification", notification);
         let event = notification.event;
         const callUUID = notification['session-id'];
         const from = notification['from_uri'];
@@ -2448,7 +2476,7 @@ componentWillUnmount() {
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
         } else if (event === 'message') {
-            console.log('FCP app event: new message from', from);
+            //console.log('FCP in-app event: new message from', from);     
         }
     }
 
@@ -2636,6 +2664,8 @@ componentWillUnmount() {
     }
 
     _onPushkitRegistered(token) {
+        console.log('iOS token', token, 'registered');
+        
         this.pushkittoken = token;
     }
 
@@ -2836,7 +2866,9 @@ componentWillUnmount() {
     }
 
     connectionStateChanged(oldState, newState) {
+        //console.log('--- connectionStateChanged', newState);
         if (this.unmounted) {
+            console.log('App is not yet mounted');
             return;
         }
 
@@ -3055,7 +3087,7 @@ componentWillUnmount() {
 		
 		Object.keys(updatedContacts).forEach(key => {
 		  const contact = updatedContacts[key];
-		  const info = sizeMap[key] || { size: 0, prettySize: "0 B" };
+		  const info = sizeMap[key] || { size: 0, prettySize: "" };
 		  updatedContacts[key] = {
 			...contact,
 			storage: info.size,
@@ -3904,7 +3936,7 @@ componentWillUnmount() {
     }
 
     handleRegistration(accountId, password) {
-        //console.log('handleRegistration', accountId, 'verified =', this.state.accountVerified);
+        //console.log('---- handleRegistration', accountId, 'verified =', this.state.accountVerified);
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
             return;
@@ -4828,7 +4860,7 @@ componentWillUnmount() {
     }
 
     backToForeground() {
-        console.log('backToForeground...');
+        //console.log('backToForeground...');
         if (this.state.appState !== 'active') {
             this.callKeeper.backToForeground();
         }
@@ -5160,7 +5192,9 @@ componentWillUnmount() {
 
         if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
             console.log('Do not disturb is enabled');
-            this.postAndroidMessageNotification(from, 'missed call');
+			if (Platform.OS === 'android') {
+				this.postAndroidMessageNotification(from, 'missed call');
+			}
             return;
         }
 
@@ -5212,6 +5246,7 @@ componentWillUnmount() {
         this.callKeeper.addWebsocketCall(call);
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
+		this._notificationCenter.postSystemNotification("Incoming call from "+ from);
 
         //this.playIncomingRingtone(callUUID);
 
@@ -6338,6 +6373,8 @@ componentWillUnmount() {
             console.log('Invalid file transfer state', id, state);
             return;
         }
+        
+        //console.log(query);
 
         await this.ExecuteQuery(query, [JSON.stringify(file_transfer), state, id]).then((results) => {
             this.updateFileTransferBubble(file_transfer);
@@ -7608,7 +7645,6 @@ componentWillUnmount() {
     }
 
     async getMessages(uri, filter={pinned: false, category: null}) {
-
         //console.log('Get messages', filter);
 
         let pinned=filter && 'pinned' in filter ? filter['pinned'] : false;
@@ -8743,7 +8779,9 @@ componentWillUnmount() {
         let content = decryptedBody || message.content;
         if (!this.state.selectedContact || this.state.selectedContact.uri !== message.sender.uri) {
             if (this.state.appState === 'foreground') {
-                this.postAndroidMessageNotification(message.sender.uri, content);
+				if (Platform.OS === 'android') {
+					this.postAndroidMessageNotification(message.sender.uri, content);
+                }
             }
         }
 

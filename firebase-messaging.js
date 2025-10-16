@@ -6,6 +6,8 @@ import InCallManager from 'react-native-incall-manager';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+// This functionality has been moved to android/app/src/main/java/com/agprojects/sylk/MyFirebaseMessagingService.java
+
 // timers map: callUUID -> timeoutId
 const ringtoneTimers = new Map();
 
