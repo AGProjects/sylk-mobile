@@ -192,7 +192,7 @@ class DeleteFileTransfers extends Component {
                             </View>
 
                             <View style={styles.titleContainer}>
-                               <Dialog.Title style={styles.title}>Delete files</Dialog.Title>
+                               <Dialog.Title style={styles.title}> Delete files</Dialog.Title>
                            </View>
 
                         </View>
@@ -209,7 +209,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.deletePhotos ? 'checked' : 'unchecked'} onPress={() => {this.toggleDeletePhotos()}}/>
                                 }
-                             <Text>Delete {photoFiles} photos</Text>
+                             <Text> Delete {photoFiles} photos</Text>
                                 </View>
 							: null}
 
@@ -220,7 +220,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.deleteVideos ? 'checked' : 'unchecked'} onPress={() => {this.toggleDeleteVideos()}}/>
                                 }
-                             <Text>Delete {videoFiles} videos</Text>
+                             <Text> Delete {videoFiles} videos</Text>
                                 </View>
 							: null}
                             
@@ -231,7 +231,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.deleteAudios ? 'checked' : 'unchecked'} onPress={() => {this.toggleDeleteAudios()}}/>
                                 }
-                             <Text>Delete {audioFiles} audio recordings</Text>
+                             <Text> Delete {audioFiles} audio recordings</Text>
                                 </View>
 							: null}
 
@@ -242,7 +242,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.deleteOthers ? 'checked' : 'unchecked'} onPress={() => {this.toggleDeleteOthers()}}/>
                                 }
-                             <Text>Delete other type of files ({otherFiles})</Text>
+                             <Text> Delete other type of files ({otherFiles})</Text>
                                 </View>
 							: null}
 
@@ -253,7 +253,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.incoming ? 'checked' : 'unchecked'} onPress={() => {this.toggleIncoming()}}/>
                                 }
-                             <Text>Incoming</Text>
+                             <Text> Incoming</Text>
                                 </View>
                             : null }
 
@@ -264,7 +264,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.outgoing ? 'checked' : 'unchecked'} onPress={() => {this.toggleOutgoing()}}/>
                                 }
-                             <Text>Outgoing</Text>
+                             <Text> Outgoing</Text>
                                 </View>
                             : null }
 
@@ -274,7 +274,7 @@ class DeleteFileTransfers extends Component {
                                :
                                 <Checkbox status={this.state.today ? 'checked' : 'unchecked'} onPress={() => {this.toggleToday()}}/>
                                 }
-                             <Text>Today only</Text>
+                             <Text> Today only</Text>
                                 </View>
 
                             {canDeleteRemote && !isDisabled ?
