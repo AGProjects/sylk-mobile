@@ -33,6 +33,55 @@ platform :ios do
   end
 end
 
+platform :ios do
+  desc "Build and install release version on connected device"
+  lane :install_release do
+    build_app(
+      scheme: "sylk",        # Replace with your app's scheme
+      workspace: "ios/sylk.xcworkspace",
+      export_method: "development", # Or "ad-hoc" if using ad-hoc provisioning
+      export_options: {
+        provisioningProfiles: {
+          "com.agprojects.sylk-ios" => "Sylk Development Profile",
+          "com.agprojects.sylk-ios.sylk-share" => "Sylk Share Development Profile"
+        }
+      },
+      clean: true,
+      silent: false
+    )
+
+    # Install on connected device
+    install_on_device(
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH]
+    )
+  end
+end
+
+platform :ios do
+  desc "Build and upload release version to TestFlight"
+  lane :upload_testflight do
+    build_app(
+      scheme: "sylk",                         # Your Xcode scheme
+      workspace: "ios/sylk.xcworkspace",
+      export_method: "app-store",              # Important: App Store distribution
+      clean: true,
+      silent: false
+      # Optional: Fastlane can automatically select provisioning profile for App Store
+      # export_options: {
+      #   provisioningProfiles: {
+      #     "com.agprojects.sylk-ios" => "Sylk App Store Profile"
+      #   }
+      # }
+    )
+
+    # Upload the IPA to TestFlight
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true,  # optional: don't wait for Apple processing
+      distribute_external: true
+    )
+  end
+end
+
 platform :android do
   desc "Push a new beta build to Google Play Store"
   lane :beta do
