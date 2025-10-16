@@ -95,22 +95,22 @@
 }
 
 .whiteButtoniOS {
-    padding-top: 4px;
+    padding-top: 0px;
     background-color: white;
 }
 
 .greenButtoniOS {
-    padding-top: 4px;
+    padding-top: 0px;
     background-color: rgba(#6DAA63, .9);
 }
 
 .disabledGreenButtoniOS {
-    padding-top: 4px;
+    padding-top: 0px;
     background-color: rgba(#395936, .9);
 }
 
 .hangupButtoniOS {
-    padding-top: 4px;
+    padding-top: 0px;
     background-color: rgba(#a94442, .8);
 }
 
@@ -126,23 +126,4 @@
     font-size: 18px;
     text-align: center;
     color: white;
-}
-
-.ssiFailed {
-    padding: 0px;
-    font-size: 16px;
-    text-align: center;
-    color: red;
-}
-
-.ssiSucceeded {
-    padding: 0px;
-    font-size: 16px;
-    text-align: center;
-    color: green;
-}
-
-.verifyContainerClass {
-    height: 50px;
-    margin-top: 30px;
 }
