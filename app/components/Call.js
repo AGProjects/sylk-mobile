@@ -581,6 +581,7 @@ class Call extends Component {
                             inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                             finishInvite = {this.props.finishInvite}
                             terminatedReason = {this.state.terminatedReason}
+                            videoMuted = {this.props.videoMuted}
                             />
                     );
                 } else {
@@ -685,7 +686,8 @@ Call.propTypes = {
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
-    postSystemNotification  : PropTypes.func
+    postSystemNotification  : PropTypes.func,
+	videoMuted              : PropTypes.bool
 };
 
 

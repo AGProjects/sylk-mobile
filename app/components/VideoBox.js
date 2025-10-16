@@ -44,10 +44,10 @@ class VideoBox extends Component {
             call: this.props.call,
             reconnectingCall: this.props.reconnectingCall,
             audioMuted: this.props.muted,
+            videoMuted: this.props.videoMuted,
             terminatedReason: this.props.terminatedReason,
             mirror: true,
             callOverlayVisible: true,
-            videoMuted: false,
             localVideoShow: true,
             remoteVideoShow: true,
             remoteSharesScreen: false,
@@ -70,6 +70,19 @@ class VideoBox extends Component {
         if (this.props.call) {
             this.props.call.statistics.on('stats', this.statistics);
         }
+        
+		const localStream = this.state.localStream;
+		if (localStream.getVideoTracks().length > 0) {
+			if (this.props.videoMuted) {
+				const track = localStream.getVideoTracks()[0];
+				track.enabled = false;
+				console.log('Initial video is muted');
+			} else {
+				console.log('Initial video is not muted');
+			}
+		} else {
+			console.log('No video track');
+		}
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -80,6 +93,10 @@ class VideoBox extends Component {
 
         if (nextProps.hasOwnProperty('info')) {
             this.setState({info: nextProps.info});
+        }
+
+        if (nextProps.hasOwnProperty('videoMuted')) {
+            this.setState({videoMuted: nextProps.videoMuted});
         }
 
         if (nextProps.hasOwnProperty('packetLossQueue')) {
@@ -537,7 +554,8 @@ VideoBox.propTypes = {
     selectedContacts        : PropTypes.array,
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
-    terminatedReason        : PropTypes.string
+    terminatedReason        : PropTypes.string,
+    videoMuted              : PropTypes.bool
 };
 
 export default VideoBox;

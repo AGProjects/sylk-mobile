@@ -10997,6 +10997,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
             let callContact = this.state.myContacts[this.state.targetUri];
             this.setState({callContact: callContact});
         }
+        
+        const videoMuted = this.state.incomingCall && Platform.OS === 'ios';
 
         return (
             <Call
@@ -11046,6 +11048,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 ssiRoles = {this.state.ssiRoles}
                 postSystemNotification = {this.postSystemNotification}
                 terminatedReason = {this.state.terminatedReason}
+                videoMuted = {videoMuted}
             />
         )
     }
