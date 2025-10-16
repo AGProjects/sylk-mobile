@@ -146,7 +146,6 @@ class VideoBox extends Component {
 
     openDoor() {
         const tone = this.props.intercomDtmfTone;
-        DEBUG('DTMF tone sent to intercom: ' + tone);
         this.setState({doorOpened: true});
         this.forceUpdate();
 
