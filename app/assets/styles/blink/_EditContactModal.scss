@@ -47,6 +47,13 @@
     margin: 10px;
 }
 
+.checkBoxRow {
+    flex-direction: row;
+    justify-content: left;
+    align-items: center;
+    margin-bottom: 5px;
+}
+
 .buttonRow {
     flex-direction: row;
     justify-content: center;

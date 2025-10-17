@@ -4,9 +4,17 @@ import android.content.Intent;
 import android.os.Build;
 import android.util.Log;
 import androidx.annotation.NonNull;
-import androidx.core.app.NotificationManagerCompat;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
+
+import android.Manifest;
+import androidx.core.app.ActivityCompat;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import android.content.pm.PackageManager;
+import android.media.RingtoneManager;
 
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
@@ -30,11 +38,60 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	private Map<String, List<String>> contactsByTag = new HashMap<>();
 	public static final Set<String> incomingCalls = new HashSet<>();
 
-	private Map<String, List<String>> getContactsByTag() {
+	private void createNotificationChannel() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			String channelId = "rejected_calls_channel";
+			String channelName = "Rejected Calls";
+
+			NotificationManager manager = getSystemService(NotificationManager.class);
+			if (manager != null) {
+				NotificationChannel existing = manager.getNotificationChannel(channelId);
+				if (existing != null) {
+					manager.deleteNotificationChannel(channelId);
+					Log.e(LOG_TAG, "Deleted existing notification channel: " + channelId);
+				}
+
+				NotificationChannel channel = new NotificationChannel(
+						channelId,
+						channelName,
+						NotificationManager.IMPORTANCE_HIGH
+				);
+
+				channel.setDescription("Notifications for rejected calls");
+
+				manager.createNotificationChannel(channel);
+				Log.e(LOG_TAG, "Notification channel created: "+ channelId);
+			}
+		}
+	}
+
+	private void showRejectedCallNotification(String fromUri, String reason) {
+		String channelId = "rejected_calls_channel";
+	
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            Log.e(LOG_TAG, "POST_NOTIFICATIONS permission not granted, cannot show notification");
+            return;
+        }
+
+		NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
+				.setSmallIcon(R.drawable.ic_notification)
+				.setContentTitle("Sylk call rejected")
+				.setContentText(fromUri + " rejected: " + reason)
+				.setPriority(NotificationCompat.PRIORITY_HIGH)
+				.setAutoCancel(true);
+	
+		NotificationManagerCompat manager = NotificationManagerCompat.from(this);
+		manager.notify((int) System.currentTimeMillis(), builder.build()); // unique ID
+	}
+
+	private Map<String, List<String>> getContactsByTag(String account) {
 		Map<String, List<String>> result = new HashMap<>();
 		List<String> favorites = new ArrayList<>();
 		List<String> blocked = new ArrayList<>();
 		List<String> autoanswer = new ArrayList<>();
+		List<String> allUris = new ArrayList<>();
 	
 		try {		
 			File dbFile = getApplicationContext().getDatabasePath("sylk.db");
@@ -51,13 +108,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					SQLiteDatabase.OPEN_READONLY
 			);
 	
-			Cursor cursor = db.rawQuery("SELECT uri, tags FROM contacts", new String[]{});
-	
+			Cursor cursor = db.rawQuery("SELECT uri, tags FROM contacts where account = ?", new String[]{account});
+
 			if (cursor != null) {
 				while (cursor.moveToNext()) {
 					String uri = cursor.getString(cursor.getColumnIndexOrThrow("uri"));
 					String tags = cursor.getString(cursor.getColumnIndexOrThrow("tags"));
 	
+					allUris.add(uri); // add all URIs
 					if (tags != null) {
 						String lowerTags = tags.toLowerCase();
 						if (lowerTags.contains("block")) {
@@ -75,10 +133,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		}
 	
 		result.put("blocked", blocked);
+		result.put("all", allUris);
 		return result;
 	}
 	
-	private boolean isAccountActive(String account) {
+	private boolean isAccountActive(String account, String fromUri, Set<String> uniqueUris) {
 		if (account == null) return false;
 	
 		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
@@ -91,22 +150,26 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		Cursor cursor = null;
 		boolean isActive = false;
 		boolean isDnd = false;
+		boolean rejectAnonymous = false;
+		boolean rejectNonContacts = false;
 	
 		try {
 			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
 	
 			// Parameterized query to prevent SQL injection
-			cursor = db.rawQuery("SELECT active, dnd FROM accounts WHERE account = ?", new String[]{account});
+			cursor = db.rawQuery("SELECT * FROM accounts WHERE account = ?", new String[]{account});
 	
 			if (cursor != null && cursor.moveToFirst()) {
 				String activeValue = cursor.getString(cursor.getColumnIndexOrThrow("active"));
 				String dndValue = cursor.getString(cursor.getColumnIndexOrThrow("dnd"));
+				String rejectAnonymousValue = cursor.getString(cursor.getColumnIndexOrThrow("reject_anonymous"));
+				String rejectNonContactsValue = cursor.getString(cursor.getColumnIndexOrThrow("reject_non_contacts"));
 				
 				isActive = "1".equals(activeValue);
 				isDnd = "1".equals(dndValue);
+				rejectAnonymous = "1".equals(rejectAnonymousValue);
+				rejectNonContacts = "1".equals(rejectNonContactsValue);
 			}
-
-			Log.e(LOG_TAG, "DND: " + isDnd);
 	
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Failed to read account status", e);
@@ -114,8 +177,37 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			if (cursor != null) cursor.close();
 			if (db != null) db.close();
 		}
+
+        if (rejectNonContacts && !uniqueUris.contains(fromUri)) {
+			Log.e(LOG_TAG, "Only my contacts can call me");
+			showRejectedCallNotification(fromUri, "not in contacts list");
+			return false;
+		}
+
+		if (fromUri.contains("anonymous") && rejectAnonymous) {
+			Log.e(LOG_TAG, "Anonymous caller rejected");
+			showRejectedCallNotification(fromUri, "anonymous caller");
+			return false;
+        }
+
+		if (fromUri.contains("@guest.") && rejectAnonymous) {
+			Log.e(LOG_TAG, "Anonymous caller rejected");
+			showRejectedCallNotification(fromUri, "anonymous caller");
+			return false;
+        }
+        
+		if (isDnd) {
+			Log.e(LOG_TAG, "Do not disturb me now");
+			showRejectedCallNotification(fromUri, "Do not disturb now");
+			return false;
+        }
+
+		if (!isActive) {
+			Log.e(LOG_TAG, "Account is not active");
+			return false;
+        }
 	
-		return isActive && !isDnd;
+		return true;
 	}
 
 	private boolean isBlocked(String fromUri) {
@@ -126,6 +218,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
     @Override
     public void onMessageReceived(@NonNull RemoteMessage remoteMessage) {
+        createNotificationChannel();
+    
         Map<String, String> data = remoteMessage.getData();
         if (data == null || !data.containsKey("event")) {
             Log.d(LOG_TAG, "No event found in FCM payload");
@@ -159,21 +253,17 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				Log.w(LOG_TAG, "Missing call id");
 				return;
 			}
-	
-			Log.d(LOG_TAG, event + " " + callId);
 
+			callId = callId.trim();
+	
 			String toUri = data.get("to_uri");
 			if (toUri == null || toUri.trim().isEmpty()) {
 				IncomingCallService.handledCalls.add(callId);
 				Log.w(LOG_TAG, "Missing toUri");
 				return;
 			}
-
-			if (!isAccountActive(toUri)) {
-				Log.w(LOG_TAG, "Account is not active: " + toUri);
-				IncomingCallService.handledCalls.add(callId);
-				return;
-			}
+			
+			toUri = toUri.trim().toLowerCase();
 
 			String fromUri = data.get("from_uri");
 			if (fromUri == null || fromUri.trim().isEmpty()) {
@@ -182,10 +272,49 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				return;
 			}
 
-			contactsByTag = getContactsByTag();
+            fromUri = fromUri.trim().toLowerCase();
+
+			Log.d(LOG_TAG, event + " " + callId + " from " + fromUri + " to " + toUri);
+
+			Set<String> uniqueUris = new HashSet<>();
+            
+			if (event.equals("incoming_session")) {
+				contactsByTag = getContactsByTag(toUri);
+				Map<String, List<String>> contactsByTag = getContactsByTag(toUri); // or toUri if you prefer
+				// Get the "all" list from the map
+				List<String> allUris = contactsByTag.get("all");
+				if (allUris != null) {
+					uniqueUris.addAll(allUris); // ✅ add all to the set
+				}
+
+				if (!isAccountActive(toUri, fromUri, uniqueUris)) {
+					IncomingCallService.handledCalls.add(callId);
+					return;
+				}
+			}
+        
+            if (event.equals("incoming_conference_request")) {
+				String account = data.get("account");
+				if (account == null || account.trim().isEmpty()) {
+					Log.w(LOG_TAG, "Missing account");
+					return;
+				}
+
+				account = account.trim().toLowerCase();
+
+				Map<String, List<String>> contactsByTag = getContactsByTag(account);
+				List<String> allUris = contactsByTag.get("all");
+				if (allUris != null) {
+					uniqueUris.addAll(allUris); // ✅ add all to the set
+				}
+
+				if (!isAccountActive(account, fromUri, uniqueUris)) {
+					IncomingCallService.handledCalls.add(callId);
+					return;
+				}
+            }
 	
 			if (isBlocked(fromUri)) {
-				Log.w(LOG_TAG, "Caller is blocked");
 				IncomingCallService.handledCalls.add(callId);
 				return;
 			}
@@ -218,7 +347,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			if (IncomingCallService.handledCalls.contains(callId)) {
-				Log.d(LOG_TAG, "cancel already handled: " + callId);
+				//Log.d(LOG_TAG, "cancel already handled: " + callId);
 				return;
 			}
 

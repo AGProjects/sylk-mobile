@@ -65,7 +65,9 @@ class NavigationBar extends Component {
             sharingAction: this.props.sharingAction,
             dnd: this.props.dnd,
             myuuid: this.props.myuuid,
-            sharedFiles: this.props.sharedFiles
+            sharedFiles: this.props.sharedFiles,
+            rejectAnonymous: this.props.rejectAnonymous,
+			rejectNonContacts: this.props.rejectNonContacts
         }
 
         this.menuRef = React.createRef();
@@ -108,7 +110,9 @@ class NavigationBar extends Component {
                        dnd: nextProps.dnd,
                        myuuid: nextProps.myuuid,
                        myPhoneNumber: nextProps.myPhoneNumber,
- 					   sharedFiles: nextProps.sharedFiles
+ 					   sharedFiles: nextProps.sharedFiles,
+ 					   rejectAnonymous: nextProps.rejectAnonymous,
+ 					   rejectNonContacts: nextProps.rejectNonContacts
                        });
 
                     if (nextProps.menuVisible) {
@@ -137,6 +141,9 @@ class NavigationBar extends Component {
                 break;
             case 'proximity':
                 this.props.toggleProximity();
+                break;
+            case 'anonymous':
+                this.props.toggleRejectAnonymous();
                 break;
             case 'logOut':
                 this.props.logout();
@@ -365,6 +372,8 @@ class NavigationBar extends Component {
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
         let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
+        let rejectAnonymousTitle = this.state.rejectAnonymous ? 'Allow anonymous callers' : 'Reject anonymous callers';
+        let rejectIcon = this.state.rejectAnonymous ? 'door-closed-lock' : 'door-open';
         let isConference = false;
 
         let hasMessages = true; // allow user to select this after local messages were removed, to delete them remotely
@@ -436,6 +445,16 @@ class NavigationBar extends Component {
                 <Text style={subtitleStyle}>{subtitle} </Text>
                 : null}
 
+                { !this.state.rejectNonContacts ?
+                <IconButton
+                    style={styles.whiteButton}
+                    size={18}
+                    disabled={false}
+                    onPress={this.props.toggleRejectAnonymous}
+                    icon={rejectIcon}
+                />
+                : null}
+
                 <IconButton
                     style={bellStyle}
                     size={18}
@@ -498,6 +517,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
+
                         {tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
@@ -541,6 +561,7 @@ class NavigationBar extends Component {
                         </View>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
+                        <Menu.Item onPress={() => this.handleMenu('anonymous')} icon={rejectIcon} title={rejectAnonymousTitle} />
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
 
@@ -611,6 +632,8 @@ class NavigationBar extends Component {
                     deletePublicKey={this.props.deletePublicKey}
                     publicKey={this.state.showPublicKey ? this.state.publicKey: null}
                     myuuid={this.state.myuuid}
+ 				    rejectNonContacts={this.state.rejectNonContacts}
+ 				    toggleRejectNonContacts={this.props.toggleRejectNonContacts}
                 />
 
                 <EditConferenceModal
@@ -719,7 +742,11 @@ NavigationBar.propTypes = {
     toggleDnd: PropTypes.func,
     buildId: PropTypes.string,
     getFiles: PropTypes.func,
-    sharedFiles: PropTypes.object
+    sharedFiles: PropTypes.object,
+    rejectAnonymous: PropTypes.bool,
+    toggleRejectAnonymous: PropTypes.func,
+    rejectNonContacts: PropTypes.bool,
+    toggleRejectNonContacts: PropTypes.func
 };
 
 export default NavigationBar;

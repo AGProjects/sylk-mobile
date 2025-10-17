@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Linking } from 'react-native';
 import { View } from 'react-native';
-import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, Subheading } from 'react-native-paper';
+import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, Subheading, Checkbox, Switch } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 
@@ -32,7 +32,8 @@ class EditContactModal extends Component {
             myself: this.props.myself,
             uri: this.props.uri,
             confirm: false,
-            myuuid: this.props.myuuid
+            myuuid: this.props.myuuid,
+            rejectNonContacts: this.props.rejectNonContacts
         }
     }
 
@@ -44,7 +45,8 @@ class EditContactModal extends Component {
                        uri: nextProps.uri,
                        myself: nextProps.myself,
                        organization: nextProps.organization,
-                       myuuid: nextProps.myuuid
+                       myuuid: nextProps.myuuid,
+                       rejectNonContacts: nextProps.rejectNonContacts
                        });
     }
 
@@ -155,6 +157,17 @@ class EditContactModal extends Component {
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>{this.props.uri}</Dialog.Title>
+                        { this.state.myself ?
+						<View style={styles.checkBoxRow}>
+                              {Platform.OS === 'ios' ?
+                               <Switch value={this.state.rejectNonContacts} onValueChange={(value) => this.props.toggleRejectNonContacts()}/>
+                               :
+                                <Checkbox status={this.state.rejectNonContacts ? 'checked' : 'unchecked'} onPress={() => {this.props.toggleRejectNonContacts()}}/>
+                                }
+                             <Text> Allow calls only from my contacts</Text>
+						</View>
+						: null}
+
                        <TextInput
                             mode="flat"
                             name="display_name"
@@ -188,6 +201,7 @@ class EditContactModal extends Component {
                             autoCapitalize="none"
                         />
                         }
+                        
                         { this.state.myself ?
                          <Text style={styles.emailStatus}>
                              Used to recover a lost password
@@ -263,7 +277,10 @@ EditContactModal.propTypes = {
     saveContact        : PropTypes.func,
     deleteContact      : PropTypes.func,
     deletePublicKey    : PropTypes.func,
-    myuuid             : PropTypes.string
+    myuuid             : PropTypes.string,
+    rejectNonContacts: PropTypes.bool,
+    toggleRejectNonContacts: PropTypes.func
+
 };
 
 export default EditContactModal;

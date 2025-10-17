@@ -309,6 +309,8 @@ class Sylk extends Component {
             filteredMessageIds: [],
             contentTypes: {},
             dnd: false,
+            rejectAnonymous: false,
+            rejectNonContacts: false,
             headsetIsPlugged: false,
             sortBy: 'timestamp',
             sharedFiles: {}
@@ -499,7 +501,7 @@ class Sylk extends Component {
         this.sqlTableVersions = {'messages': 9,
                                  'contacts': 7,
                                  'keys': 3,
-                                 'accounts': 3
+                                 'accounts': 5
                                  }
 
         this.updateTableQueries = {'messages': {1: [],
@@ -531,7 +533,9 @@ class Sylk extends Component {
                                    'keys': {2: [{query: 'alter table keys add column last_sync_id TEXT', params: []}],
                                             3: [{query: 'alter table keys add column my_uuid TEXT', params: []}]
                                             },
-                                   'accounts': {3: [{query: 'alter table accounts add column dnd TEXT', params: []}]
+                                   'accounts': {3: [{query: 'alter table accounts add column dnd TEXT', params: []}],
+												4: [{query: 'alter table accounts add column reject_anonymous TEXT', params: []}],
+												5: [{query: 'alter table accounts add column reject_non_contacts TEXT', params: []}]
                                                }
                                    };
 
@@ -1000,17 +1004,70 @@ class Sylk extends Component {
         }
 
         this.setState({dnd: !this.state.dnd})
-        this._sendPushToken(this.state.account, !this.state.dnd);
-        this.state.account.register();
+        //this._sendPushToken(this.state.account, !this.state.dnd);
+        //this.state.account.register();
         
         const dnd = (!this.state.dnd) ? '1': '0';
 		let params = [dnd, this.state.account.id];
 		await this.ExecuteQuery("update accounts set dnd = ? where account = ?", params).then((result) => {
-			//console.log('SQL update account OK');
+			console.log('SQL update dnd for account OK');
+		}).catch((error) => {
+			console.log('SQL update dnd error:', error);
+		});
+    }
+
+    async toggleRejectAnonymous () {
+        //console.log('Toggle reject anonymous to', !this.state.rejectAnonymous);
+        if (this.state.rejectAnonymous) {
+            this._notificationCenter.postSystemNotification('Allow anonymous callers');
+        } else {
+            this._notificationCenter.postSystemNotification('Reject anonymous callers');
+        }
+
+        this.setState({rejectAnonymous: !this.state.rejectAnonymous})
+        
+        const rejectAnonymous = (!this.state.rejectAnonymous) ? '1': '0';
+		let params = [rejectAnonymous, this.state.account.id];
+		await this.ExecuteQuery("update accounts set reject_anonymous = ? where account = ?", params).then((result) => {
+			console.log('SQL update reject anonymous for account OK');
+		}).catch((error) => {
+			console.log('SQL update reject anonymous error:', error);
+		});
+    }
+
+    async toggleRejectNonContacts () {
+        //console.log('Toggle reject anonymous to', !this.state.rejectAnonymous);
+        if (this.state.rejectNonContacts) {
+            this._notificationCenter.postSystemNotification('Allow all callers');
+        } else {
+            this._notificationCenter.postSystemNotification('Reject callers not in my contact list');
+        }
+
+        this.setState({rejectNonContacts: !this.state.rejectNonContacts})
+        
+        const rejectNonContacts = (!this.state.rejectNonContacts) ? '1': '0';
+		let params = [rejectNonContacts, this.state.account.id];
+		await this.ExecuteQuery("update accounts set reject_non_contacts = ? where account = ?", params).then((result) => {
+			console.log('SQL update reject non contacts for account OK');
+		}).catch((error) => {
+			console.log('SQL update reject non contacts error:', error);
+		});
+    }
+
+    async loadInitialDnd() {
+		let query = "SELECT * FROM accounts where account = ?";
+		await this.ExecuteQuery(query, [this.state.accountId]).then((results) => {
+			const rows = results.rows;
+			if (rows.length === 1) {
+				const data = rows.item(0);
+				const new_state = {rejectAnonymous: data.reject_anonymous == "1",
+				                  dnd: data.dnd == "1",
+				                  rejectNonContacts: data.reject_non_contacts == "1"};
+				this.setState(new_state)
+			};
 		}).catch((error) => {
 			console.log('SQL error:', error);
 		});
-
     }
 
     async loadSylkContacts() {
@@ -1023,6 +1080,8 @@ class Sylk extends Component {
         }
 
         console.log('Loading Sylk contacts...');
+			this.loadInitialDnd();
+        
 
         let myContacts = {};
         let blockedUris = [];
@@ -1525,12 +1584,14 @@ class Sylk extends Component {
 			'account' TEXT PRIMARY KEY,
 			'password' TEXT,
 			'active' TEXT,
-			'dnd' TEXT
+			'dnd' TEXT,
+			'reject_anonymous' TEXT,
+			'reject_non_contacts' TEXT
 		  )
 		`;
 
         this.ExecuteQuery(create_table_accounts).then((success) => {
-            console.log('SQL accounts table OK');
+            //console.log('SQL accounts table OK');
         }).catch((error) => {
             console.log(create_table_accounts);
             console.log('SQL accounts table creation error:', error);
@@ -2079,7 +2140,7 @@ componentWillUnmount() {
 				// Mark as handled
 				handledCalls.add(event.callUUID);
 			
-				console.log('---- FCM user action received', event);
+				//console.log('---- FCM user action received', event);
 				this.phoneWasLocked = event.phoneLocked;
 			
 				const media = { audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO' };
@@ -7917,7 +7978,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";       
         await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
             let rows = results.rows;
-            console.log(rows.length, 'transfers found');
+            //console.log(rows.length, 'transfers found');
             for (let i = 0; i < rows.length; i++) {
                var item = rows.item(i);
 			   const cleanedTs = item.timestamp.replace(/^"(.*)"$/, '$1');
@@ -10864,6 +10925,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     canSend = {this.canSend}
                     sharingAction = {this.sharingAction}
                     toggleDnd = {this.toggleDnd}
+                    toggleRejectAnonymous = {this.toggleRejectAnonymous}
+                    rejectAnonymous = {this.state.rejectAnonymous}
+                    toggleRejectNonContacts = {this.toggleRejectNonContacts}
+                    rejectNonContacts = {this.state.rejectNonContacts}
                     dnd = {this.state.dnd}
                     buildId = {this.buildId}
                     getFiles = {this.getFiles}

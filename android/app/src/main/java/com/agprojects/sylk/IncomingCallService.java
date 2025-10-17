@@ -255,12 +255,16 @@ public class IncomingCallService extends Service {
         String event = intent.getStringExtra("event");
         String callId = intent.getStringExtra("session-id");
         String fromUri = intent.getStringExtra("from_uri");
+        String toUri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
+        String title = "Sylk Incoming Call";
+        String subtitle = fromUri + " is calling";
+                
 		int notificationId = Math.abs(callId.hashCode());
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
 		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId);
-		Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
+		//Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
 
         if (callId == null || event == null) {
             Log.w(LOG_TAG, "Missing callId or event");
@@ -330,6 +334,23 @@ public class IncomingCallService extends Service {
 		// Handle incoming session
 		if ("incoming_session".equals(event) || "incoming_conference_request".equals(event)) {
             startRingtone(fromUri); // <-- start ringing
+            
+            if ("incoming_conference_request".equals(event)) {
+				title = "Sylk Conference Call";
+				String room = toUri.split("@")[0];
+				String caller = fromUri;
+				
+				if (caller.contains("anonymous")) {
+					caller = "Somebody";
+				}
+
+				if (caller.contains("@guest.")) {
+					caller = "Somebody";
+				}
+
+				subtitle = caller + " is inviting you to the conference room " + room;
+				Log.d(LOG_TAG, subtitle);
+            }
 
 			if (isAutoAnswer(fromUri)) {
     			startAutoAnswerCountdownWithProgress(callId, fromUri, mediaType, notificationId, 30);
@@ -411,8 +432,8 @@ public class IncomingCallService extends Service {
 		
 			// Build notification
 			NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-					.setContentTitle("Incoming Sylk Call")
-					.setContentText(fromUri != null ? fromUri + " is calling" : "Incoming call")
+					.setContentTitle(title)
+					.setContentText(subtitle)
 					.setSmallIcon(R.drawable.ic_notification)
 					.setPriority(NotificationCompat.PRIORITY_HIGH)
 					.setCategory(NotificationCompat.CATEGORY_CALL)
@@ -424,7 +445,7 @@ public class IncomingCallService extends Service {
 					.addAction(0, "Reject", rejectPendingIntent);
 		
 			builder.setStyle(new NotificationCompat.BigTextStyle()
-				.bigText(fromUri + " is calling"));
+				.bigText(subtitle));
 
 			builder.setGroup(null);
 
@@ -584,7 +605,7 @@ public class IncomingCallService extends Service {
 	
     private void cancelNotification(int notificationId) {
         if (autoCancelHandler != null && autoCancelRunnable != null) {
-			Log.d(LOG_TAG, "Timer canceled: " + notificationId);
+			//Log.d(LOG_TAG, "Timer canceled: " + notificationId);
             autoCancelHandler.removeCallbacks(autoCancelRunnable);
             autoCancelHandler = null;
             autoCancelRunnable = null;
