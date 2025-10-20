@@ -6,7 +6,8 @@
  */
 
 #import "AppDelegate.h"
-
+#import <Firebase.h>
+#import <FirebaseMessaging/FirebaseMessaging.h>
 #import <React/RCTBundleURLProvider.h>
 #import <WebRTC/RTCLogging.h>
 #import <React/RCTLog.h>
@@ -21,47 +22,47 @@
 
 @implementation AppDelegate
 
+#pragma mark - Background downloader
 - (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler
 {
   [RNBackgroundDownloader setCompletionHandlerWithIdentifier:identifier completionHandler:completionHandler];
 }
 
-
+#pragma mark - Application launch
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
   self.moduleName = @"Sylk";
-  //RCTAppSetupPrepareApp(application);
-  // RCTSetLogThreshold(RCTLogLevelInfo - 1);
-  // RTCSetMinDebugLogLevel(RTCLoggingSeverityInfo);
+
   if ([FIRApp defaultApp] == nil) {
     [FIRApp configure];
   }
 
-  // Define UNUserNotificationCenter
+  // Set UNUserNotificationCenter delegate
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = self;
 
-  //RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
-  //NSDictionary *initProps = [self prepareInitialProps];
-  //UIView *rootView = RCTAppSetupDefaultRootView(bridge, @"Sylk", initProps);
-  //RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
-  //                                                 moduleName:@"Sylk"
-  //                                          initialProperties:nil];
+  // Register for normal push notifications (required for APNs token)
+  if (@available(iOS 10.0, *)) {
+      UNAuthorizationOptions authOptions = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+      [center requestAuthorizationWithOptions:authOptions
+                            completionHandler:^(BOOL granted, NSError * _Nullable error) {
+          if (granted) {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  [application registerForRemoteNotifications];
+              });
+          }
+      }];
+  } else {
+      UIUserNotificationType allNotificationTypes = (UIUserNotificationTypeAlert | UIUserNotificationTypeSound | UIUserNotificationTypeBadge);
+      UIUserNotificationSettings *settings = [UIUserNotificationSettings settingsForTypes:allNotificationTypes categories:nil];
+      [application registerUserNotificationSettings:settings];
+      [application registerForRemoteNotifications];
+  }
 
-  //rootView.backgroundColor = [[UIColor alloc] initWithRed:1.0f green:1.0f blue:1.0f alpha:1];
-
-  //self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-  //UIViewController *rootViewController = [UIViewController new];
-  //rootViewController.view = rootView;
- // self.window.rootViewController = rootViewController;
-  //self.window makeKeyAndVisible];
-  //return YES;
   return [super application:application didFinishLaunchingWithOptions:launchOptions];
 }
 
-
-
-
+#pragma mark - Open URL (Deep linking)
 - (BOOL)application:(UIApplication *)application
             openURL:(NSURL *)url
             options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
@@ -69,126 +70,117 @@
   return [RCTLinkingManager application:application openURL:url options:options];
 }
 
-//Called when a notification is delivered to a foreground app.
--(void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
+#pragma mark - Foreground notification handling
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
 {
   completionHandler(UNNotificationPresentationOptionNone);
 }
 
-
+#pragma mark - Continue user activity (e.g., CallKeep)
 - (BOOL)application:(UIApplication *)application
 continueUserActivity:(NSUserActivity *)userActivity
   restorationHandler:(void(^)(NSArray * __nullable restorableObjects))restorationHandler
 {
   BOOL handled = [RNCallKeep application:application
-           continueUserActivity:userActivity
-             restorationHandler:restorationHandler];
+                      continueUserActivity:userActivity
+                        restorationHandler:restorationHandler];
 
   if (!handled) {
     handled = [RCTLinkingManager application:application
-                  continueUserActivity:userActivity
-                    restorationHandler:restorationHandler];
+                      continueUserActivity:userActivity
+                        restorationHandler:restorationHandler];
   }
 
   return handled;
 }
 
+#pragma mark - React Native bundle
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge
 {
-    return [self getBundleURL];
-}
-
-- (NSURL *)getBundleURL
-{
 #if DEBUG
-  //return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@"index" fallbackResource:nil];
   return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@"index"];
 #else
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif
 }
 
- // Required to register for notifications
- - (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
- {
+#pragma mark - RNCPushNotificationIOS hooks
+- (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
+{
   [RNCPushNotificationIOS didRegisterUserNotificationSettings:notificationSettings];
- }
- // Required for the register event.
- - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
- {
+}
+
+- (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
+{
+  NSLog(@"Got a PUSH token");
   [RNCPushNotificationIOS didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
- }
- // Required for the notification event. You must call the completion handler after handling the remote notification.
- - (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
- fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
- {
-   NSLog(@"Got a PUSH NOTIFICATION");
+  [FIRMessaging messaging].APNSToken = deviceToken;
+}
 
-   NSString *eventType = userInfo[@"event"];
-   NSLog(@"Value of eventType = %@", eventType);
-
-   if ([eventType isEqualToString:@"cancel"])
-   {
-     NSString *calluuid = userInfo[@"session-id"];
-     BOOL active = [RNCallKeep isCallActive:calluuid];
-
-     if (active) {
-       [RNCallKeep endCallWithUUID:calluuid reason:2];
-
-     }
-     return completionHandler(UIBackgroundFetchResultNoData);
-   }
-
-   [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
- }
- // Required for the registrationError event.
- - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
- {
+- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
+{
+  NSLog(@"Failed to register for remote notifications: %@", error);
   [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
- }
- // IOS 10+ Required for localNotification event
- - (void)userNotificationCenter:(UNUserNotificationCenter *)center
+}
+
+- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
+                                              fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
+{
+  NSLog(@"Got a PUSH NOTIFICATION");
+
+  NSString *eventType = userInfo[@"event"];
+  NSLog(@"Value of eventType = %@", eventType);
+
+  if ([eventType isEqualToString:@"cancel"]) {
+      NSString *calluuid = userInfo[@"session-id"];
+      BOOL active = [RNCallKeep isCallActive:calluuid];
+      if (active) {
+          [RNCallKeep endCallWithUUID:calluuid reason:2];
+      }
+      return completionHandler(UIBackgroundFetchResultNoData);
+  }
+
+  [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
  didReceiveNotificationResponse:(UNNotificationResponse *)response
           withCompletionHandler:(void (^)(void))completionHandler
- {
-   [RNCPushNotificationIOS didReceiveNotificationResponse:response];
-   completionHandler();
- }
- // IOS 4-10 Required for the localNotification event.
- - (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
- {
-  [RNCPushNotificationIOS didReceiveLocalNotification:notification];
- }
+{
+  [RNCPushNotificationIOS didReceiveNotificationResponse:response];
+  completionHandler();
+}
 
-// --- Handle updated push credentials
-- (void)pushRegistry:(PKPushRegistry *)registry didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(PKPushType)type {
-  // Register VoIP push token (a property of PKPushCredentials) with server
+- (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
+{
+  [RNCPushNotificationIOS didReceiveLocalNotification:notification];
+}
+
+#pragma mark - VoIP push handlers
+- (void)pushRegistry:(PKPushRegistry *)registry didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(PKPushType)type
+{
   [RNVoipPushNotificationManager didUpdatePushCredentials:credentials forType:(NSString *)type];
 }
 
 - (void)pushRegistry:(PKPushRegistry *)registry didInvalidatePushTokenForType:(PKPushType)type
 {
-  // --- The system calls this method when a previously provided push token is no longer valid for use. No action is necessary on your part to reregister the push type. Instead, use this method to notify your server not to send push notifications using the matching push token.
+  // Token invalidated, notify server if necessary
 }
 
-
-// --- Handle incoming pushes (for ios <= 10)
-- (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload forType:(PKPushType)type {
+- (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload forType:(PKPushType)type
+{
   [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
 }
 
-// Handle incoming pushes
-- (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload forType:(NSString *)type withCompletionHandler:(void (^)(void))completion{
+- (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
+               forType:(PKPushType)type withCompletionHandler:(void (^)(void))completion
+{
   NSLog(@"Got a PUSHKIT NOTIFICATION");
 
   [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
 
-  // Retrieve information like handle and callerName here
-  NSString *eventType = [payload.dictionaryPayload valueForKey:@"event"];
-  NSLog(@"Value of eventType = %@", eventType);
-
-  // if ([eventType isEqualToString:@"incoming_session"])
-  // {
   NSString *calluuid = [payload.dictionaryPayload valueForKey:@"session-id"];
   NSString *mediaType = [payload.dictionaryPayload valueForKey:@"media-type"];
   NSString *callerName = [payload.dictionaryPayload valueForKey:@"from_display_name"];
@@ -196,26 +188,21 @@ continueUserActivity:(NSUserActivity *)userActivity
 
   [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
 
-  //you can't do this check - you HAVE to call reportNewIncomingCall otherwise apple will start killing your app
   if ([[UIApplication sharedApplication] applicationState] != UIApplicationStateActive) {
-
-     [RNCallKeep reportNewIncomingCall: calluuid
-                             handle: handle
-                         handleType: @"generic"
-                           hasVideo: [mediaType isEqualToString:@"video"]
-                localizedCallerName: callerName
-                    supportsHolding: NO
-                       supportsDTMF: YES
-                   supportsGrouping: YES
-                 supportsUngrouping: YES
-                        fromPushKit: YES
-                            payload: payload.dictionaryPayload
-              withCompletionHandler: completion];
+      [RNCallKeep reportNewIncomingCall: calluuid
+                                handle: handle
+                            handleType: @"generic"
+                              hasVideo: [mediaType isEqualToString:@"video"]
+                   localizedCallerName: callerName
+                       supportsHolding: NO
+                          supportsDTMF: YES
+                      supportsGrouping: YES
+                    supportsUngrouping: YES
+                           fromPushKit: YES
+                               payload: payload.dictionaryPayload
+                 withCompletionHandler: completion];
   }
-  // }
-  // else {
-  //completion();
-  // }
 }
 
 @end
+
