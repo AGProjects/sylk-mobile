@@ -18,6 +18,7 @@
     "@react-native-community/push-notification-ios": "^1.2.0",
     "@react-native-firebase/app": "^21.6.2",
     "@react-native-firebase/messaging": "^21.6.2",
+    "@react-native-picker/picker": "^2.11.4",
     "auto-bind": "^4.0.0",
     "base-64": "^1.0.0",
     "immer": "^9.0.6",
