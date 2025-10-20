@@ -64,6 +64,7 @@ class DeleteMessageModal extends Component {
         let deleteLabel = this.state.confirm || true ? 'Confirm': 'Delete';
         let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
         let canDeleteRemote = this.state.message && this.state.message.direction === 'outgoing';
+
         if (this.state.uri && this.state.uri.indexOf('@videoconference') > -1) {
             canDeleteRemote = false;
         }
@@ -111,7 +112,7 @@ class DeleteMessageModal extends Component {
                             <Checkbox status={this.state.afterDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleAfterDelete()}}/>
                             : null
                             }
-
+                            
                             <Text> Delete conversation for this day</Text>
 
                             </View>
@@ -133,7 +134,6 @@ class DeleteMessageModal extends Component {
     );
     }
 }
-
 
 DeleteMessageModal.propTypes = {
     show               : PropTypes.bool,

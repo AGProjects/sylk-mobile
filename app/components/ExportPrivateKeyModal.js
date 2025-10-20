@@ -63,7 +63,7 @@ class ExportPrivateKeyModal extends Component {
                     <Surface style={styles.container}>
                         <Dialog.Title style={styles.title}>Export private key</Dialog.Title>
                          <Text style={styles.body}>
-                             To replicate messages on multiple devices
+                             To read messages on other devices
                              you need the same private key on all of them.
                         </Text>
 

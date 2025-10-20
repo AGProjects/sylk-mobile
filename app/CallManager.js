@@ -128,12 +128,10 @@ export default class CallManager extends events.EventEmitter {
     async setup() {
         await this._RNCallKeep.setup(options);
         this._RNCallKeep.setAvailable(true);
-        if (this.isSimulator()) {
-            console.log("Not starting callkit, we have a simulator");
-        }
     }
 
     isSimulator() {
+        // this is broken
         return Platform.OS === 'ios' && !process.env.REACT_NATIVE_DEVICE_REAL;
     }
 
@@ -194,9 +192,6 @@ export default class CallManager extends events.EventEmitter {
             hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
         }
 
-        if (this.isSimulator()) {
-            return;
-        }
         //utils.timestampedLog('Callkeep: will start call', callUUID, 'to', targetUri);
         this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
     }
@@ -362,7 +357,7 @@ export default class CallManager extends events.EventEmitter {
             utils.timestampedLog('Callkeep: already accepted call', callUUID, 'on web socket', connection);
             return;
         } else {
-            utils.timestampedLog('Callkeep: accept call', callUUID, 'on web socket', connection);
+            utils.timestampedLog('Callkeep: accept call', callUUID);
         }
 
         if (this._terminatedCalls.has(callUUID)) {
@@ -381,7 +376,7 @@ export default class CallManager extends events.EventEmitter {
         if (this._incoming_conferences.has(callUUID)) {
             let conference = this._incoming_conferences.get(callUUID);
 
-            //utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
+            utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
             this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
             this.backToForeground();
 
@@ -395,7 +390,7 @@ export default class CallManager extends events.EventEmitter {
 
         } else {
             this.backToForeground();
-            //utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
+            utils.timestampedLog('Callkeep: add call', callUUID, 'accept to the waitings list');
             // We accepted the call before it arrived on web socket
             this.respawnConnection();
             this.webSocketActions.set(callUUID, {action: 'accept', options: options});
@@ -648,7 +643,11 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        displayName = from_uri + ' and others';
+		let els = room.split('@');
+        //room = els[0];
+
+		displayName = 'Conference room ' + room;        
+
         const hasVideo = mediaType === 'video' ? true : false;
 
         this._incoming_conferences.set(callUUID, {room: room, from: from_uri});
@@ -678,6 +677,13 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
+		if (Platform.OS === 'android') {
+		    console.log('skip alert panel on android');
+			return;
+		}
+
+        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
+
         if (this._alertedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
             return;
@@ -703,7 +709,6 @@ export default class CallManager extends events.EventEmitter {
                          supportsUngrouping: false,
                          supportsDTMF: supportsDTMF}
 
-        //utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
         this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, callerType, hasVideo, options);
     }
 

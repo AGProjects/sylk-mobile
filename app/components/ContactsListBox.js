@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
+import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -66,6 +66,18 @@ String.prototype.toDate = function(format)
   return new Date(year,month,day,hour,minute,second);
 };
 
+const getAudioDuration = (filePath) => {
+  return new Promise((resolve, reject) => {
+    const sound = new Sound(filePath, '', (error) => {
+      if (error) {
+        console.log('Failed to load the audio', error);
+        return resolve(0);
+      }
+      resolve(sound.getDuration()); // duration in seconds
+    });
+  });
+};
+
 const audioRecorderPlayer = new AudioRecorderPlayer();
 
 const options = {
@@ -75,6 +87,16 @@ const options = {
     audioSource: 6,     // android only (see below)
     wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
 };
+
+const styles1 = StyleSheet.create({
+  audioLabel: {
+    marginLeft: 0,
+    marginTop: 10,
+    alignSelf: 'center',
+    fontSize: 14,
+    color: 'white', // <-- change this to any color you want
+  },
+});
 
 // Note: copy and paste all styles in App.js from my repository
 function  renderBubble (props) {
@@ -295,7 +317,10 @@ class ContactsListBox extends Component {
             audioSendFinished: false,
             messagesCategoryFilter: this.props.messagesCategoryFilter,
             isTexting: this.props.isTexting,
-            sourceContact: this.props.sourceContact
+            sourceContact: this.props.sourceContact,
+            audioDurations: {},
+            searchMessages: this.props.searchMessages,
+            searchString: this.props.searchString
         }
 
         this.ended = false;
@@ -471,7 +496,9 @@ class ContactsListBox extends Component {
                        sourceContact: nextProps.sourceContact,
                        isTexting: nextProps.isTexting,
                        showDeleteMessageModal: nextProps.showDeleteMessageModal,
-                       selectMode: nextProps.shareToContacts || nextProps.inviteContacts
+                       selectMode: nextProps.shareToContacts || nextProps.inviteContacts,
+                       searchMessages: nextProps.searchMessages,
+                       searchString: nextProps.searchString
                        });
 
         if (nextProps.isTyping) {
@@ -498,6 +525,22 @@ class ContactsListBox extends Component {
         })
     }
 
+	  getAudioDuration = (filePath, messageId) => {
+		const Sound = require('react-native-sound'); // import dynamically
+		const sound = new Sound(filePath, '', (error) => {
+		  if (error) {
+			console.log('Failed to load the audio', error);
+			return;
+		  }
+		  this.setState((prevState) => ({
+			audioDurations: {
+			  ...prevState.audioDurations,
+			  [messageId]: sound.getDuration(),
+			},
+		  }));
+		});
+	  };
+  
     async _launchCamera() {
         let options = {maxWidth: 2000,
                         maxHeight: 2000,
@@ -705,69 +748,90 @@ class ContactsListBox extends Component {
         this.setState({renderMessages: GiftedChat.append(newRenderMessages, [])});
     }
 
-    async handleShare(message) {
-        const { local_url, filename, filetype } = message.metadata;
-
-        let what = 'File';
-        let newFilename = filename;
-        let newLocalUrl = local_url;
-
-        if (newFilename.endsWith('.asc')) {
-			newFilename = filename.slice(0, -4); // remove last 4 characters
-        }
-
+    async handleShare(message, email=false) {
         //console.log('-- handleShare\n', JSON.stringify(message, null, 2));
+        let what = 'Message';
+		let options = {
+			title: 'Share Message',
+			subject: 'Sylk shared message',
+			message: message.text
+		};    
 
-        const now = new Date();
-        const pad = (num) => String(num).padStart(2, '0');
-		const timestamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-        const ext = newFilename.substring(newFilename.lastIndexOf('.'));
-
-		if (message.image) {
-			what = 'Photo';
-			newFilename = `${timestamp}-Image${ext}`;
-		} else if (utils.isAudio(newFilename)) {
-			what = 'Audio message';
-			newFilename = `${timestamp}-AudioMessage${ext}`;
-    	} else if (utils.isVideo(newFilename)) {
-			what = 'Video';
-			newFilename = `${timestamp}-Video${ext}`;
-		}
-
-		if (Platform.OS === 'android') {
-			try {
-				const destPath = `${RNFS.CachesDirectoryPath}/${newFilename}`;
-				await RNFS.copyFile(local_url, destPath);
-				newLocalUrl = `file://${destPath}`;
-				//const res = await RNFS.readFile(newLocalUrl, 'base64');
-				//newLocalUrl = `data:${message.metadata.filetype};base64,${res}`;
-			} catch (err) {
-				console.log('Error reading file:', err);
-				this.props.postSystemNotification('Error reading file: ' + err.message);
-				return;
+        if (message.metadata && message.metadata.filename) {
+            console.log('is a file');
+            const { local_url, filename, filetype } = message.metadata;
+            what = 'File';
+			let newFilename = filename;
+			let newLocalUrl = local_url;
+	
+			if (newFilename.endsWith('.asc')) {
+				newFilename = filename.slice(0, -4); // remove last 4 characters
 			}
+
+			const now = new Date();
+			const pad = (num) => String(num).padStart(2, '0');
+			const timestamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+			const ext = newFilename.substring(newFilename.lastIndexOf('.'));
+
+			if (message.image) {
+				what = 'Photo';
+				newFilename = `${timestamp}-Image${ext}`;
+			} else if (utils.isAudio(newFilename)) {
+				what = 'Audio message';
+				newFilename = `${timestamp}-AudioMessage${ext}`;
+			} else if (utils.isVideo(newFilename)) {
+				what = 'Video';
+				newFilename = `${timestamp}-Video${ext}`;
+			}
+
+			if (Platform.OS === 'android') {
+				try {
+					const destPath = `${RNFS.CachesDirectoryPath}/${newFilename}`;
+					await RNFS.copyFile(local_url, destPath);
+					newLocalUrl = `file://${destPath}`;
+					//const res = await RNFS.readFile(newLocalUrl, 'base64');
+					//newLocalUrl = `data:${message.metadata.filetype};base64,${res}`;
+				} catch (err) {
+					console.log('Error reading file:', err);
+					this.props.postSystemNotification('Error reading file: ' + err.message);
+					return;
+				}
+			}
+
+			options = {
+				title: 'Share via',
+				subject: newFilename ? what + ' ' +newFilename: 'Message',
+				url: newLocalUrl,
+				type: filetype,
+				filename: newFilename
+			};
+		} else {
+            console.log('is a message');
 		}
+
+		console.log('-- options\n', JSON.stringify(options, null, 2));
 		
- 	    const options = {
-			title: 'Share via',
-            subject: what + ' ' +newFilename,
-			url: newLocalUrl,
-			type: filetype,
-			filename: newFilename
-		};
-		
-		//console.log('-- options\n', JSON.stringify(options, null, 2));
-  
-        Share.open(options)
-            .then((res) => {
-                console.log('Sharing finished');
-            })
-            .catch((error) => {
-                console.log('Error sharing data', error);
-                if (error.message.indexOf("did not share") === -1) {
-                    this.props.postSystemNotification('Error sharing data: ' + error.message);
-                }   
-            });
+		if (email) {
+			const subject = encodeURIComponent(options.subject);
+			const body = encodeURIComponent(options.message || options.subject);
+			const mailtoUrl = `mailto:?subject=${subject}&body=${message.text}`;
+			
+			Linking.openURL(mailtoUrl).catch((err) => {
+			  console.error('Error opening mail app', err);
+			});
+
+		} else {		  
+			Share.open(options)
+				.then((res) => {
+					console.log('Sharing finished');
+				})
+				.catch((error) => {
+					console.log('Error sharing data', error);
+					if (error.message.indexOf("did not share") === -1) {
+						this.props.postSystemNotification('Error sharing data: ' + error.message);
+				}   
+			});
+		}
     }
 
     async startPlaying(message) {
@@ -1506,9 +1570,9 @@ class ContactsListBox extends Component {
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
         }
-
+        
         let icons = [];
-        //console.log('currentMessage', currentMessage);
+        console.log('---- currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
             let options = []
             if (currentMessage.metadata && !currentMessage.metadata.error) {
@@ -1564,33 +1628,32 @@ class ContactsListBox extends Component {
                 icons.push(<Icon name="share" size={20} />);
             }
             
-            if  (currentMessage.metadata) {
-				//console.log('mesage metadata:', currentMessage.metadata);
-            }
-            if  (currentMessage.metadata.filename) {
-				//console.log('mesage metadata filename:', currentMessage.metadata.filename);
-            }
-
-            if (currentMessage.metadata && currentMessage.metadata.filename) {
-                if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
-                    options.push('Download again');
-                    icons.push(<Icon name="cloud-download" size={20} />);
-					if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
-						options.push('Decrypt');
-						icons.push(<Icon name="table-key" size={20} />);
-					}
-
-                } else {
-                    options.push('Download');
-                    icons.push(<Icon name="cloud-download" size={20} />);
-                }
-                
+            if  (currentMessage && currentMessage.metadata) {
+				console.log('mesage metadata:', currentMessage.metadata);
+				if (currentMessage.metadata.filename) {
+					if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
+						options.push('Download again');
+						icons.push(<Icon name="cloud-download" size={20} />);
+						if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
+							options.push('Decrypt');
+							icons.push(<Icon name="table-key" size={20} />);
+						}
+	
+					} else {
+						options.push('Download');
+						icons.push(<Icon name="cloud-download" size={20} />);
+					}					
+				} else {
+					options.push('Email');
+					icons.push(<Icon name="email" size={20} />);
+				}
             }
 
             options.push('Cancel');
             icons.push(<Icon name="cancel" size={20} />);
 
             let l = options.length - 1;
+            
 
             context.actionSheet().showActionSheetWithOptions({options, l, l, icons, textStyle: styles.actionSheetText}, (buttonIndex) => {
                 let action = options[buttonIndex];
@@ -1608,6 +1671,8 @@ class ContactsListBox extends Component {
                     this.setState({message: currentMessage, showEditMessageModal: true});
                 } else if (action.startsWith('Share')) {
                     this.handleShare(currentMessage);
+                } else if (action.startsWith('Email')) {
+                    this.handleShare(currentMessage, true);
                 } else if (action.startsWith('Forward')) {
                     this.props.forwardMessageFunc(currentMessage, this.state.targetUri);
                 } else if (action === 'Resend') {
@@ -1703,38 +1768,43 @@ class ContactsListBox extends Component {
         );
     };
 
-    renderMessageAudio(props){
-        const { currentMessage } = props;
-        let playAudioButtonStyle = Platform.OS === 'ios' ? styles.playAudioButtoniOS : styles.playAudioButton;
+  renderMessageAudio = (props) => {
+    const { currentMessage } = props;
+    const { audioDurations } = this.state;
 
-        if (currentMessage.metadata.playing === true) {
-            return (
-                <View style={styles.audioContainer}>
-                  <TouchableHighlight style={styles.roundshape}>
-                    <IconButton
-                        size={32}
-                        onPress={() => this.stopPlaying(currentMessage)}
-                        style={playAudioButtonStyle}
-                        icon="pause"
-                    />
-                </TouchableHighlight>
-            </View>
-            );
-        } else {
-            return (
-                <View style={styles.audioContainer}>
-                  <TouchableHighlight style={styles.roundshape}>
-                    <IconButton
-                        size={32}
-                        onPress={() => this.startPlaying(currentMessage)}
-                        style={playAudioButtonStyle}
-                        icon="play"
-                    />
-                </TouchableHighlight>
-            </View>
-            );
-        }
-    };
+    // Load duration if not already loaded
+    if (currentMessage.audio && !audioDurations[currentMessage._id]) {
+      this.getAudioDuration(currentMessage.audio, currentMessage._id);
+    }
+
+    // Get duration string
+    const durationLabel = audioDurations[currentMessage._id]
+      ? `Audio message (${audioDurations[currentMessage._id]}s)`
+      : 'Audio message';
+
+    let playAudioButtonStyle =
+      Platform.OS === 'ios' ? styles.playAudioButtoniOS : styles.playAudioButton;
+
+    return (
+      <View style={styles.audioContainer}>
+        <TouchableHighlight style={styles.roundshape}>
+          <IconButton
+            size={28}
+            onPress={() =>
+              currentMessage.metadata.playing
+                ? this.stopPlaying(currentMessage)
+                : this.startPlaying(currentMessage)
+            }
+            style={playAudioButtonStyle}
+            icon={currentMessage.metadata.playing ? 'pause' : 'play'}
+          />
+        </TouchableHighlight>
+
+        {/* Display the label with duration */}
+        <Text style={styles1.audioLabel}>{durationLabel}</Text>
+      </View>
+    );
+  };
 
     videoError() {
         console.log('Video streaming error');
@@ -1749,7 +1819,7 @@ class ContactsListBox extends Component {
 
     renderMessageText(props) {
         const { currentMessage } = props;
-        if (currentMessage.video || currentMessage.audio) {
+        if (currentMessage.video) {
             return (
                 <View style={styles.photoMenuContainer}>
                     <IconButton
@@ -1765,6 +1835,16 @@ class ContactsListBox extends Component {
                     />
                     </View>
 
+                </View>
+            );
+        } else if (currentMessage.audio) {
+            return (
+                <View style={styles.photoMenuContainer}>
+                    <IconButton
+                        style={styles.photoMenu}
+                        size={20}
+                        icon="menu"
+                    />
                 </View>
             );
         } else if (currentMessage.image) {
@@ -1911,6 +1991,10 @@ class ContactsListBox extends Component {
                chatInputClass = this.noChatInputToolbar;
            }
            if (this.state.selectedContact.tags.indexOf('test') > -1) {
+               chatInputClass = this.noChatInputToolbar;
+           }
+
+           if (this.state.searchMessages) {
                chatInputClass = this.noChatInputToolbar;
            }
 
@@ -2101,6 +2185,15 @@ class ContactsListBox extends Component {
 		  }
 		}
 
+		let filteredMessages = messages;
+		
+		// Filter messages that contain the search string (case-insensitive)
+		if (this.state.searchMessages && this.state.searchString && this.state.searchString.length > 1) {
+		  filteredMessages = messages.filter(msg => 
+			msg.text && msg.text.toLowerCase().includes(this.state.searchString.toLowerCase())
+		  );
+		}
+  
         //console.log('this.state.selectedContact', this.state.selectedContact);
         return (
             <SafeAreaView style={container}>
@@ -2125,7 +2218,7 @@ class ContactsListBox extends Component {
              {this.showChat && !this.state.inviteContacts?
              <View style={[chatContainer, borderClass]}>
                 <GiftedChat innerRef={this.chatListRef}
-                  messages={messages}
+                  messages={filteredMessages}
                   onSend={this.onSendMessage}
                   alwaysShowSend={true}
                   onLongPress={this.onLongMessagePress}
@@ -2159,7 +2252,7 @@ class ContactsListBox extends Component {
               : (items.length === 1) ?
               <View style={[chatContainer, borderClass]}>
                 <GiftedChat innerRef={this.chatListRef}
-                  messages={messages}
+                  messages={filteredMessages}
                   renderInputToolbar={() => { return null }}
                   renderBubble={renderBubble}
                   renderMessageText={this.renderMessageText}
@@ -2274,6 +2367,9 @@ ContactsListBox.propTypes = {
     file2GiftedChat: PropTypes.func,
     postSystemNotification: PropTypes.func,
     sortBy: PropTypes.string,
+    toggleSearchMessages: PropTypes.func,
+    searchMessages: PropTypes.bool,
+    searchString: PropTypes.string
 };
 
 

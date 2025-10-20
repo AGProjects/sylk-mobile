@@ -1098,7 +1098,7 @@ class ConferenceBox extends Component {
     }
 
     async listSharedFiles() {
-        console.log('--- List shared files');
+        //console.log('--- List shared files');
 
         let messages = this.state.renderMessages;
         let new_messages = [];

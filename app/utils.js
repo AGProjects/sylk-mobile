@@ -813,7 +813,7 @@ async function getRemotePartySizes(accountId) {
 
     return results;
   } catch (error) {
-    console.error('Error reading remote parties:', error);
+    console.log('No remote parties:', error);
     return [];
   }
 }

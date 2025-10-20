@@ -185,6 +185,8 @@ class ConferenceHeader extends React.Component {
         const room = this.state.remoteUri.split('@')[0];
         let displayName = (this.state.displayName && this.state.displayName !== this.state.remoteUri) ? this.state.displayName : room;
         let callDetail = '';
+        
+        displayName = 'Room ' + displayName;
 
         if (this.state.reconnectingCall) {
             callDetail = 'Reconnecting call...';
@@ -198,14 +200,12 @@ class ConferenceHeader extends React.Component {
             } else {
                 callDetail = callDetail + ' and nobody joined yet';
             }
+        } else {
+			callDetail = 'Nobody joined yet';
         }
 
-        if (this.state.info) {
-            if (callDetail) {
-                callDetail = callDetail + ' - ' + this.state.info;
-            } else {
-                callDetail = this.state.info;
-            }
+        if (this.state.info && callDetail) {
+            //callDetail = callDetail + ' - ' + this.state.info;
         }
 
         let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';

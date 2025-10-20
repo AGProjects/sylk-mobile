@@ -5,6 +5,8 @@ import { View, Platform } from 'react-native';
 import UserIcon from './UserIcon';
 import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, RadioButton, Checkbox, Switch } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import { Picker } from '@react-native-picker/picker';
+
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -46,7 +48,8 @@ class DeleteFileTransfers extends Component {
             deleteOthers: true,
             incoming: true,
             outgoing: true,
-            today: true,
+            periodFilterKey: '2',
+            periodType: 'after',
             username: this.props.uri && this.props.uri ? this.props.uri.split('@')[0] : null,
             remoteDelete: false,
             confirm: false
@@ -56,7 +59,11 @@ class DeleteFileTransfers extends Component {
     
 	componentDidMount() {
 	    this.setState(this.defaultState());
-		this.props.getFiles(this.props.uri, true, true, true);
+        const filter = {incoming: true, 
+                        outgoing: true, 
+                        period: this.getPeriodFilterDate(), 
+                        periodType: 'after'}
+		this.props.getFiles(this.props.uri, filter);
     }
 
     deleteMessages(event) {
@@ -69,7 +76,8 @@ class DeleteFileTransfers extends Component {
                             'others': this.state.deleteOthers,
                             'incoming': this.state.incoming,
                             'outgoing': this.state.outgoing,
-                            'today': this.state.today
+                            'period': this.state.periodFilterKey,
+                            'periodType': this.state.periodType
                             }
 
 			const sharedFiles = JSON.parse(JSON.stringify(this.state.sharedFiles));
@@ -98,25 +106,29 @@ class DeleteFileTransfers extends Component {
 
             this.props.deleteFilesFunc(this.state.uri, allIds, this.state.remoteDelete, filter);
             this.props.close();
-            this.setState({today: true, incoming: true, outgoing:true, remoteDelete: false });
+            this.setState({periodFilterKey: 2, periodType: 'before', incoming: true, outgoing:true, remoteDelete: false });
         } else {
             this.setState({confirm: true});
         }
     }
-
+    
     toggleIncoming() {
-        this.props.getFiles(this.props.uri, !this.state.incoming, this.state.outgoing, this.state.today);
+        const filter = {incoming: !this.state.incoming, 
+                        outgoing: this.state.outgoing, 
+                        period: this.getPeriodFilterDate(), 
+                        periodType: this.state.periodType}
+        this.props.getFiles(this.props.uri, filter);
         this.setState({incoming: !this.state.incoming});
     }
 
     toggleOutgoing() {
-        this.props.getFiles(this.props.uri, this.state.incoming, !this.state.outgoing, this.state.today);
+        const filter = {incoming: this.state.incoming, 
+                        outgoing: !this.state.outgoing, 
+                        period: this.getPeriodFilterDate(), 
+                        periodType: this.state.periodType}
+    
+        this.props.getFiles(this.props.uri, filter);
         this.setState({outgoing: !this.state.outgoing});
-    }
-
-    toggleToday() {
-        this.setState({today: !this.state.today, outgoing: true, incoming:true});
-        this.props.getFiles(this.props.uri, this.state.incoming, this.state.outgoing, !this.state.today);
     }
 
     toggleDeletePhotos() {
@@ -141,6 +153,93 @@ class DeleteFileTransfers extends Component {
 		this.props.close()
 	}
 
+	getPeriodFilterDate(key) {
+		if (!key) key = this.state.periodFilterKey;
+	
+		if (key === 'all') return null;
+	
+		const num = Number(key);
+		if (isNaN(num)) return null;
+	
+		const now = new Date();
+	
+		// Create a UTC date at 00:00 local time
+		const utcDate = new Date(Date.UTC(
+			now.getUTCFullYear(),
+			now.getUTCMonth(),
+			now.getUTCDate()
+		));
+	
+		// Subtract days, always go back in time
+		utcDate.setUTCDate(utcDate.getUTCDate() - Math.abs(num));
+	
+		return utcDate;
+	}
+
+    renderPeriodDropdown() {
+        const periodOptions = [
+            { key: 'all', label: 'All' },
+            { key: '1', label: 'Last day' },
+            { key: '2', label: 'Last two days' },
+            { key: '7', label: 'Last week' },
+            { key: '30', label: 'Last month' },
+            { key: '60', label: 'Last 60 days' },
+            { key: '-92', label: 'Older than three months' },
+            { key: '-365', label: 'Older than one year' }
+        ];
+
+        return (
+            <View style={{ marginVertical: 8, marginLeft: 20, marginRight: 40 }}>
+                <View style={{
+                    borderWidth: 1,
+                    borderColor: '#ccc',
+                    borderRadius: 8,
+                    overflow: 'hidden',
+                    justifyContent: 'center',
+                    height: 50
+                }}>
+				<Picker
+					selectedValue={this.state.periodFilterKey}
+					onValueChange={(key) => {
+						let periodType = 'after'; // default for positive values and "all"
+				
+						const num = Number(key);
+						if (!isNaN(num) && num < 0) {
+							periodType = 'before';
+						}
+
+						console.log('Set days to', key);	
+						this.setState({
+							periodFilterKey: key,
+							periodType
+						});
+
+						const filter = {incoming: this.state.incoming, 
+										outgoing: this.state.outgoing, 
+										period: this.getPeriodFilterDate(key), 
+										periodType: periodType}
+					
+						this.props.getFiles(this.props.uri, filter);
+
+					}}
+					mode="dropdown"
+					style={{ height: '100%', width: '100%' }}
+					itemStyle={{ height: 50 }}
+				>
+					{periodOptions.map(option => (
+						<Picker.Item
+							key={option.key}
+							label={option.label}
+							value={option.key}
+						/>
+					))}
+				</Picker>
+
+                </View>
+            </View>
+        );
+    }
+    
     render() {
 		const sharedFiles = JSON.parse(JSON.stringify(this.state.sharedFiles));
 
@@ -201,6 +300,8 @@ class DeleteFileTransfers extends Component {
                                  Are you sure you want to delete files exchanged with {remote_label}?
                              </Text>
                         </View>
+
+                        {this.renderPeriodDropdown()}
  
                             {photoFiles ?
                             <View style={styles.checkBoxRow}>
@@ -267,15 +368,6 @@ class DeleteFileTransfers extends Component {
                              <Text> Outgoing</Text>
                                 </View>
                             : null }
-
-                            <View style={styles.checkBoxRow}>
-                              {Platform.OS === 'ios' ?
-                               <Switch value={this.state.today} onValueChange={(value) => this.toggleToday()}/>
-                               :
-                                <Checkbox status={this.state.today ? 'checked' : 'unchecked'} onPress={() => {this.toggleToday()}}/>
-                                }
-                             <Text> Today only</Text>
-                                </View>
 
                             {canDeleteRemote && !isDisabled ?
                             <View style={styles.checkBoxRow}>

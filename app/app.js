@@ -10,6 +10,7 @@ import history from './history';
 import Logger from "../Logger";
 import autoBind from 'auto-bind';
 import messaging from '@react-native-firebase/messaging';
+import { getMessaging, getToken } from '@react-native-firebase/messaging';
 import RNMinimize from 'react-native-minimize';
 import { NativeEventEmitter, NativeModules } from 'react-native';
 const { ScreenLockModule } = NativeModules;
@@ -72,7 +73,7 @@ import storage from './storage';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
-import { registerForegroundListener } from '../firebase-messaging';
+//import { registerForegroundListener } from '../firebase-messaging';
 
 // import {
 //   Agent,
@@ -313,7 +314,8 @@ class Sylk extends Component {
             rejectNonContacts: false,
             headsetIsPlugged: false,
             sortBy: 'timestamp',
-            sharedFiles: {}
+            sharedFiles: {},
+            searchMessages: false
         };
 
         this.buildId = "20250923";
@@ -596,7 +598,7 @@ class Sylk extends Component {
     }
 
     async requestCameraPermission() {
-        console.log('Request camera permission');
+        //console.log('Request camera permission');
 
         if (Platform.OS === 'ios') {
             check(PERMISSIONS.IOS.CAMERA).then((result) => {
@@ -1052,6 +1054,11 @@ class Sylk extends Component {
 		}).catch((error) => {
 			console.log('SQL update reject non contacts error:', error);
 		});
+    }
+
+    async toggleSearchMessages () {
+        //console.log('toggle search messages');
+        this.setState({searchMessages: !this.state.searchMessages});
     }
 
     async loadInitialDnd() {
@@ -1847,7 +1854,6 @@ class Sylk extends Component {
         //console.log('Route', route, 'with reason', reason);
         utils.timestampedLog('Change route', this.currentRoute, '->', route, 'with reason:', reason);
         let messages = this.state.messages;
-
         if (this.currentRoute === route) {
             if (route === '/ready') {
                 if (this.state.selectedContact) {
@@ -1863,12 +1869,14 @@ class Sylk extends Component {
                     this.setState({
                                 messages: messages,
                                 selectedContact: null,
+                                searchMessages: false,
                                 targetUri: ''
                                 });
                 } else {
                     this.setState({
                                 messages: {},
-                                messageZoomFactor: 1
+                                messageZoomFactor: 1,
+                                searchMessages: false
                                 });
                     this.endShareContent();
                 }
@@ -2122,6 +2130,12 @@ componentWillUnmount() {
 
     async componentDidMount() {
         utils.timestampedLog('-- App did mount');
+        this._loaded = true;
+        
+          // Add a short delay to give background handler time to write
+		  setTimeout(() => {
+			this.checkFCMPendingActions();
+		  }, 100); // 0.5–1s is usually enough
         
 		if (Platform.OS === 'android') {
 			const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
@@ -2171,7 +2185,6 @@ componentWillUnmount() {
         // Keep track of handled call UUIDs
         const handledCalls = new Set();
         
-        
         DeviceInfo.getFontScale().then((fontScale) => {
             this.setState({fontScale: fontScale});
         });
@@ -2210,17 +2223,47 @@ componentWillUnmount() {
             this.setState({myPhoneNumber: myPhoneNumber});
         });
 
-
-        registerForegroundListener(this);
-
  		await this.listenForPushNotifications();
         this.listenforSoundNotifications();
-        this._loaded = true;
         this.checkVersion();
+
+/*
+        if (Platform.OS === 'android') {
+			try {
+			    registerForegroundListener(this);
+			} catch (err) {
+			    console.error('Error in registerForegroundListener:', err);
+			}
+		}
+*/
     }
 
+async registerPushToken() {
+  const app = getApp(); // modular SDK
+  try {
+	  const messaging = getMessaging(app);
+	
+	  const authStatus = await messaging.requestPermission();
+	  const enabled =
+		authStatus === 1 || // AUTHORIZED
+		authStatus === 2;   // PROVISIONAL
+	
+	  if (!enabled) {
+		console.log('Push permissions denied');
+		return;
+	  }
+	
+	  // Only call getToken() after permissions granted
+	  const fcmToken = await messaging.getToken(messaging);
+	  console.log('FCM token:', fcmToken);
+	   if  (fcmToken) this._onPushRegistered(fcmToken);
+	} catch (e) {
+    	console.log('Error getting iOS token:', e);
+ 	}
+}
+
   listenForPushNotifications = async () => {
-    //console.log('listenForPushNotifications');
+    utils.timestampedLog('Listen for push notifications');
 
     if (!this.state.appState) this.setState({ appState: 'active' });
 
@@ -2235,13 +2278,9 @@ componentWillUnmount() {
 
     // --- Request permissions ---
     if (Platform.OS === 'ios') {
-      const authStatus = await messaging().requestPermission();
-      const enabled =
-        authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-        authStatus === messaging.AuthorizationStatus.PROVISIONAL;
-      if (!enabled) console.log('Push notifications not enabled');
+        await this.registerPushToken();
     } else {
-      await messaging().requestPermission();
+        await messaging().requestPermission();
     }
 
     if (Platform.OS === 'android') {
@@ -2323,6 +2362,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     // --- iOS VoIP ---
     if (Platform.OS === 'ios') {
+	  utils.timestampedLog('Register VoIP token...');
       this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
       VoipPushNotification.addEventListener('register', this._boundOnPushkitRegistered);
       VoipPushNotification.registerVoipToken();
@@ -2331,14 +2371,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
       this._onLocalNotificationReceivedBackground =
         this._onLocalNotificationReceivedBackground.bind(this);
 
-      VoipPushNotification.addEventListener(
-        'notification',
-        this._onNotificationReceivedBackground,
-      );
-      VoipPushNotification.addEventListener(
-        'localNotification',
-        this._onLocalNotificationReceivedBackground,
-      );
+      VoipPushNotification.addEventListener('notification',this._onNotificationReceivedBackground, );
+      VoipPushNotification.addEventListener('localNotification',this._onLocalNotificationReceivedBackground,);
     }
 
     // --- DeviceEventEmitter ---
@@ -2725,29 +2759,29 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     _onPushkitRegistered(token) {
-        console.log('iOS token', token, 'registered');
-        
+        utils.timestampedLog(Platform.OS, 'VoIP push token', token, 'registered');
         this.pushkittoken = token;
     }
 
     _onPushRegistered(token) {
+        utils.timestampedLog(Platform.OS, 'normal push token', token, 'registered');
         this.pushtoken = token;
     }
 
     _sendPushToken(account, silent=false) {
         if (!this.pushtoken) {
+			utils.timestampedLog('Error: no push token available');
             return;
         }
 
         let token = null;
-
-        //console.log('Push Token:', this.pushtoken, 'silent =', silent);
 
         if (Platform.OS === 'ios') {
             token = `${this.pushkittoken}-${this.pushtoken}`;
         } else if (Platform.OS === 'android') {
             token = this.pushtoken;
         }
+
         utils.timestampedLog('Push token', token, 'for app', bundleId, 'sent');
         account.setDeviceToken(token, Platform.OS, deviceId, silent, bundleId);
     }
@@ -2929,7 +2963,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     connectionStateChanged(oldState, newState) {
         //console.log('--- connectionStateChanged', newState);
         if (this.unmounted) {
-            console.log('App is not yet mounted');
+            //console.log('App is not yet mounted');
             return;
         }
 
@@ -4094,7 +4128,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 account.on('conferenceInvite', this.conferenceInviteFromWebSocket);
                 //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
 
-                this._sendPushToken(account, this.state.dnd);
+                this._sendPushToken(account);
 
                 this.setState({account: account});
 
@@ -4551,9 +4585,15 @@ f you want to fully control the UI and avoid automatic system notifications, you
     async callKeepAcceptCall(callUUID, options={}) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
+        
         this.hideInternalAlertPanel('accept');
         
-        utils.timestampedLog('Callkeep accept call');
+        utils.timestampedLog('Callkeep accept call', callUUID);
+        if (this.unmounted) {
+			console.log('Wait until the app mounts');
+			return;        
+        }
+        
         this.changeRoute('/call', 'accept_call');
         this.backToForeground();
 
@@ -4923,7 +4963,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     backToForeground() {
         //console.log('backToForeground...');
         if (this.state.appState !== 'active') {
-            this.callKeeper.backToForeground();
+            //this.callKeeper.backToForeground();
         }
 
         if (this.state.accountId && this.state.accountVerified) {
@@ -4958,7 +4998,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         let incomingContact = this.newContact(from, displayName);
 
-        this.setState({incomingCallUUID: callUUID, incomingContact: incomingContact});
+        //this.setState({incomingCallUUID: callUUID, incomingContact: incomingContact});
         this.callKeeper.handleConference(callUUID, to, from, displayName, mediaType, outgoingMedia);
     }
 
@@ -4998,8 +5038,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
         utils.timestampedLog('Conference invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
         if (this.isConference()) {
             return;
-        }
-        //this._notificationCenter.postSystemNotification('Expecting conference invite', {body: `from ${data.originator.displayName || data.originator.uri}`});
+        }            
+        
+		this.incomingConference(data.id, data.room, data.originator.uri, data.originator.displayName);
     }
 
     updateLinkingURL = (event) => {
@@ -5143,7 +5184,28 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 return true;
             }
         }
+        
+        if (this.state.rejectNonContacts) {
+            if (from in this.state.myContacts) {
+				utils.timestampedLog('Caller is in my contacts list');
+            } else {        
+				utils.timestampedLog('Reject call', callUUID, 'from caller not in contacts list');
+ 				return true;
+           }
+        }
 
+        if (this.state.rejectAnonymous) {
+			if (from.indexOf('@guest') > -1) {
+				utils.timestampedLog('Reject call', callUUID, 'from anonymous caller');
+				return true;
+			}
+	
+			if (from.indexOf('anonymous') > -1) {
+				utils.timestampedLog('Reject call', callUUID, 'from anonymous caller');
+				return true;
+			}
+        }
+        
         const fromDomain = '@' + from.split('@')[1]
         if (this.state.blockedUris && this.state.blockedUris.indexOf(fromDomain) > -1) {
             utils.timestampedLog('Reject call', callUUID, 'from blocked domain', fromDomain);
@@ -5188,33 +5250,41 @@ f you want to fully control the UI and avoid automatic system notifications, you
         return false;
     }
 
-	// --------------------------------
-	// Post incoming call notification
-	// --------------------------------
-	async processPendingAction(callUUID) {
-	  console.log('processPendingAction')
-	  const pendingJson = await AsyncStorage.getItem(`pendingAction:${callUUID}`);
-	  if (!pendingJson) return;
-
-	  const { payload, choice } = JSON.parse(pendingJson);
-
-   	  console.log('choice', choice);
-	  if (choice === 'accept_audio') {
-	      console.log('We must accept call', callUUID, payload);
-	  }
-
-	  await AsyncStorage.removeItem(`pendingAction:${callUUID}`);
-	  await AsyncStorage.removeItem(`incomingCall:${callUUID}`);
-	}
-
-	async checkPendingActions(appInstance) {
+	async checkFCMPendingActions() {
+	  //console.log('Check FCM pending actions');
 	  const keys = await AsyncStorage.getAllKeys();
-	  const pendingKeys = keys.filter(k => k.startsWith('pendingAction:'));
-	  console.log('---- checkPendingActions', pendingKeys);
+	
+	  for (const key of keys) {
+		if (key.startsWith('incomingCall:')) {
+		  try {
+			const pendingJson = await AsyncStorage.getItem(key); // ✅ await here
+			if (!pendingJson) continue;
+	
+			const payload = JSON.parse(pendingJson);
+			console.log('--- Pending incoming call:', payload);
+	
+			const callUUID = key.replace('incomingCall:', '');
+	
+			if (payload.data.event === "incoming_conference_request") {
+			  const media = {
+				audio: true,
+				video: payload.data["media-type"] === 'video'
+			  };
 
-	  for (const key of pendingKeys) {
-		const callUUID = key.split(':')[1];
-		await this.processPendingAction(callUUID);
+			  this.incomingConference(
+				callUUID,
+				payload.data.to_uri,
+				payload.data.from_uri,
+				payload.data.from_display_name, // fixed small typo here too
+				media
+			  );
+			}
+	
+			await AsyncStorage.removeItem(key);
+		  } catch (e) {
+			console.error(`Error processing ${key}`, e);
+		  }
+		}
 	  }
 	}
 
@@ -5808,6 +5878,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
             return;
         }
 
+        if (this.state.rejectNonContacts && !(uri in this.state.myContacts)) {
+            console.log('Skip key from non local contact');
+			return;
+        }
+
         if (!key) {
             console.log('Missing key');
             return;
@@ -5958,7 +6033,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 return;
             }
 
-            const localPath = RNFS.DocumentDirectoryPath + "/" + file_transfer.sender.uri + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
+            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + file_transfer.sender.uri + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
             if (file_transfer.path !== localPath) {
                 // the file may have already been copied
                 const dirname = path.dirname(localPath);
@@ -6918,7 +6993,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
      }
 
      async addJournal(id, action, data={}) {
-        //console.log('Add journal entry:', action, id);
+        console.log('Add journal entry:', action, id);
         this.mySyncJournal[uuid.v4()] = {id: id, action: action, data: data};
         this.replayJournal();
      }
@@ -7910,7 +7985,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
                         filteredMessageIds.push(msg._id);
                     }
 
-
                     if (msg.metadata && msg.metadata.filename) {
                         if (msg.metadata.paused) {
                             contentTypes['paused'] = true;
@@ -7966,28 +8040,52 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     }
 
-    async getFiles(uri, incoming=true, outgoing=true, today=true) {
-        //console.log('Get files for', uri, 'incoming', incoming, 'outgoing', outgoing, 'today', today);
+    async getFiles(uri, filter) {
+        if (this.unmounted) {
+			return;
+        }
+
+        if (!uri) {
+			return;
+        }
+
+        console.log('Get files for', uri, filter);
+    
+        let incoming = filter.incoming;
+        let outgoing = filter.outgoing;
+        let period = filter.period;
+        let periodType = filter.periodType || 'after';
+    
+        
         let sharedFiles = this.state.sharedFiles;
         let metadata;
         let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
-       
-		var todayStart = new Date();
-        todayStart.setHours(0,0,0,0);
- 
+        let found = 0;
         let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";       
         await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
             let rows = results.rows;
-            //console.log(rows.length, 'transfers found');
             for (let i = 0; i < rows.length; i++) {
                var item = rows.item(i);
-			   const cleanedTs = item.timestamp.replace(/^"(.*)"$/, '$1');
-			   const tsDate = new Date(cleanedTs);
-			   const isToday = tsDate >= todayStart;
-			   
-			   if (today && !isToday) {
+               try {
+                   timestamp = new Date(JSON.parse(item.timestamp, _parseSQLDate));
+	   		   } catch (error) {
+				   console.log('parse timestamp error:', error);
 				   continue;
 			   }
+			   
+			   //console.log(timestamp);
+
+               if (filter.period) {
+                   if (filter.periodType == 'before') {
+						if (timestamp > filter.period) {
+						   continue;
+						}
+					} else {
+						if (timestamp < filter.period) {
+						   continue;
+						}
+					}
+               }
 
                if (!incoming && item.direction === 'incoming') {
 				   continue;
@@ -8002,36 +8100,32 @@ f you want to fully control the UI and avoid automatic system notifications, you
                    if (!metadata.local_url) {
 					   continue;
                    }
+
 				   const filename = metadata.local_url.split('/').pop();
 				   
 				   if (metadata.filetype.toLowerCase().startsWith('image/')) {
 					   message_ids['photos'].push(item.msg_id);
-					   continue;
 				   } else if (metadata.filetype.toLowerCase().startsWith('audio/')) {
 					   message_ids['audios'].push(item.msg_id);
-					   continue;
 				   } else if (metadata.filetype.toLowerCase().startsWith('video/')) {
 					   message_ids['videos'].push(item.msg_id);
-					   continue;
 				   } else {
 					   message_ids['others'].push(item.msg_id);
 				   }
+				   found = found + 1;
 	
                } catch (e) {
                    console.log('deleteFiles error:', e);
                    continue;
                }
-
             }
+
+			sharedFiles[uri] = message_ids;
+			this.setState({sharedFiles: sharedFiles});
 
         }).catch((error) => {
             console.log('deleteFiles SQL error:', error);
-        });
-        
-        sharedFiles[uri] = message_ids;
-        this.setState({sharedFiles: sharedFiles});
-        
-        return message_ids;  
+        });   
     }
     
     async deleteFiles(uri, ids=[], remote=false, filter={}) {
@@ -8053,7 +8147,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
 			   //console.log('Delete file transfer id', item.msg_id);
 			   this.deleteMessage(item.msg_id, uri, remote);
-	
             }
 
         }).catch((error) => {
@@ -8061,91 +8154,169 @@ f you want to fully control the UI and avoid automatic system notifications, you
         });
     }
 
-    async deleteMessages(uri, remote=false) {
-        console.log('Delete messages for', uri);
-
-        if (this.state.filteredMessageIds.length > 0) {
-            this.state.filteredMessageIds.forEach((id) => {
-                this.deleteMessage(id, uri, remote);
-            });
-            return;
-        }
+    async deleteMessages(uri, remote=false, filter={}) {
+        console.log('Delete messages for', uri, 'remote', remote, 'filter', filter);
 
         let messages = this.state.messages;
         let myContacts = this.state.myContacts;
+        let timestamp;
+        let purgeMessages = [];
+        let deleteAll = remote && filter.deleteContact && !filter.simulate
+       
+        if (filter.wipe) {
+			this.wipe_device();
+			return;
+        }
+       
+        if (filter.incoming && filter.outgoing && !filter.period) {
+			deleteAll = true;
+        }
 
-        let query;
-        let params;
         let orig_uri = uri;
 
-        if (uri) {
-            if (uri.indexOf('@') === -1 && utils.isPhoneNumber(uri)) {
-                uri = uri + '@' + this.state.defaultDomain;
-            } else {
-                if (remote) {
-                    console.log('Delete messages remote party', uri);
-                    this.addJournal(orig_uri, 'removeConversation');
-                }
+		if (uri.indexOf('@') === -1 && utils.isPhoneNumber(uri)) {
+			uri = uri + '@' + this.state.defaultDomain;
+		}
+		
+		if (deleteAll) {
+			console.log('Delete all messages exchanged with', uri);
+			this.addJournal(orig_uri, 'removeConversation');
+
+			let dir = RNFS.DocumentDirectoryPath + '/conference/' + uri + '/files';
+			RNFS.unlink(dir).then((success) => {
+				console.log('Removed folder', dir);
+			}).catch((err) => {
+				console.log('Error deleting folder', dir, err.message);
+			});
+
+			if (orig_uri in messages) {
+				delete messages[orig_uri];
+				this.setState({messages: messages});
+			}
+			
+			if (!filter.deleteContact && orig_uri in myContacts) {
+				myContacts[orig_uri].totalMessages = 0;
+				myContacts[orig_uri].lastMessage = null;
+				myContacts[orig_uri].lastMessageId = null;
+				this.setState({myContacts: myContacts});
+			}
+		}
+
+		if (filter.deleteContact) {
+			this.removeContact(orig_uri);
+			return;
+		} else if (deleteAll) {
+			return;
+		}
+
+        let query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
+        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+            let rows = results.rows;
+            let metadata;
+            console.log(rows.length, 'messages found');
+            for (let i = 0; i < rows.length; i++) {
+               var item = rows.item(i);
+               try {
+                   timestamp = new Date(JSON.parse(item.timestamp, _parseSQLDate));
+	   		   } catch (error) {
+				   console.log('parse timestamp error:', error);
+				   continue;
+			   }
+               
+               if (!filter.deleteContact) {
+ 				   try {
+                       metadata = JSON.parse(item.metadata);
+					   if (metadata.local_url) {
+					       //console.log('skip file transfer');
+						   continue;
+					   }
+				   } catch (e) {
+					   // is not a file transfer
+				   }
+			   }
+
+			  if (filter.period) {
+                   if (filter.periodType == 'before') {
+						if (timestamp > filter.period) {
+						   // skip for deletion
+						   continue;
+						}
+					} else {
+						if (timestamp < filter.period) {
+						   continue;
+						}
+					}
+               }
+               
+               if (!filter.incoming && item.direction == 'incoming') {
+				   continue;  
+               }
+
+               if (!filter.outgoing && item.direction == 'outgoing') {
+				   continue;  
+               }
+
+			   purgeMessages.push(item.msg_id);
             }
-        }
+            
+            if (!filter.simulate && purgeMessages.length > 20) {
+                // the UI may go nuts if too many updates in chat component
+				this.setState({selectedContact: null});
+			}
 
-        if (uri) {
-            let dir = RNFS.DocumentDirectoryPath + '/conference/' + uri + '/files';
-            RNFS.unlink(dir).then((success) => {
-                console.log('Removed folder', dir);
-            }).catch((err) => {
-                //console.log('Error deleting folder', dir, err.message);
-            });
+			for (const item of purgeMessages) {
+				if (!filter.simulate) {	
+					this.deleteMessage(item, uri, remote);
+				}
+			}
+			const remaining = rows.length - purgeMessages.length;
+	
+	        if (remaining && purgeMessages.length) {		
+				this._notificationCenter.postSystemNotification(purgeMessages.length + ' messages removed, ' + remaining + ' left on device');
+			} else if (remaining) {
+				this._notificationCenter.postSystemNotification('No messages removed, ' + remaining + ' left on device');
+			} else if (purgeMessages.length) {
+				this._notificationCenter.postSystemNotification('All messages removed');
+			}
 
-            query = "DELETE FROM messages where ((from_uri = ? and to_uri = ? and direction = 'incoming') or (from_uri = ? and to_uri = ? and direction = 'outgoing'))";
-            params = [uri, this.state.accountId, this.state.accountId, uri];
-        } else {
-            console.log('--- Wiping device --- ');
-            let dir = RNFS.DocumentDirectoryPath + '/conference/';
-            RNFS.unlink(dir).then((success) => {
-                console.log('Removed folder', dir);
-            }).catch((err) => {
-                //console.log('Error deleting folder', dir, err.message);
-            });
+        }).catch((error) => {
+            console.log('delete messages error:', error);
+        });
+    }
 
-            query = "DELETE FROM messages where (account = ? and to_uri = ? and direction = 'incoming') or (account = ? and from_uri = ? and direction = 'outgoing')";
-            params = [this.state.accountId, this.state.accountId, this.state.accountId, this.state.accountId];
+    async wipe_device() {
+		this.deleteAllContacts(this.state.accountId);
 
-            this.setState({messages: {}});
-            this.saveLastSyncId(null);
-        }
+		console.log('--- Wiping device --- ');
+		let dir = RNFS.DocumentDirectoryPath + '/conference/';
+		RNFS.unlink(dir).then((success) => {
+			console.log('Removed conference folder', dir);
+		}).catch((err) => {
+			//console.log('Error deleting folder', dir, err.message);
+		});
+
+		dir = RNFS.DocumentDirectoryPath + '/' + this.state.accountId;
+		RNFS.unlink(dir).then((success) => {
+			console.log('Removed home folder', dir);
+		}).catch((err) => {
+			//console.log('Error deleting folder', dir, err.message);
+		});
+
+		query = "DELETE FROM messages where (account = ? and to_uri = ? and direction = 'incoming') or (account = ? and from_uri = ? and direction = 'outgoing')";
+		params = [this.state.accountId, this.state.accountId, this.state.accountId, this.state.accountId];
 
         await this.ExecuteQuery(query, params).then((result) => {
             if (result.rowsAffected) {
-                console.log('deleteMessages SQL deleted', result.rowsAffected, 'messages');
-                if (uri) {
-                    this._notificationCenter.postSystemNotification(result.rowsAffected + ' messages removed');
-                }
-            }
-
-            if (!uri) {
-                this.deleteAllContacts(this.state.accountId);
-            } else {
-                if (result.rowsAffected === 0) {
-                    //this.removeContact(orig_uri);
-                } else {
-                    if (orig_uri in messages) {
-                        delete messages[orig_uri];
-                        this.setState({messages: messages});
-                    }
-
-                    if (orig_uri in myContacts) {
-                        myContacts[orig_uri].totalMessages = 0;
-                        myContacts[orig_uri].lastMessage = null;
-                        myContacts[orig_uri].lastMessageId = null;
-                        this.setState({myContacts: myContacts});
-                    }
-                }
+                console.log('SQL deleted', result.rowsAffected, 'contacts');
             }
         }).catch((error) => {
-            console.log('deleteMessages SQL error:', error);
+            console.log('SQL query:', query);
+            console.log('SQL error:', error);
         });
-    }
+
+		this.setState({messages: {}});
+		this.saveLastSyncId(null);
+	}
 
     async deleteAllContacts(account) {
         let query = 'delete from contacts where account = ?';
@@ -8289,7 +8460,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     async removeConversation(obj) {
         let uri = obj;
-        //console.log('removeConversation', uri);
+        console.log('removeConversation', uri);
 
         let renderMessages = this.state.messages;
 
@@ -9578,10 +9749,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         if (uri in myContacts) {
             //
         } else {
-            myContacts[uri] = this.newContact(uri, message.ssiName);
-            if (message.ssiName) {
-                myContacts[uri].tags.push('ssi');
-            }
+            myContacts[uri] = this.newContact(uri);
         }
 
         if (myContacts[uri].tags.indexOf('blocked') > -1) {
@@ -10564,6 +10732,13 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     addHistoryEntry(uri, callUUID, direction='outgoing', participants=[]) {
         let myContacts = this.state.myContacts;
+        
+        if (this.state.rejectNonContacts && direction == 'incoming') {
+            if (!(from in this.state.myContacts)) {
+				console.log('skip history entry from unknown address', uri);                
+				return;
+            }
+        }
 
         //console.log('addHistoryEntry', uri);
 
@@ -10724,6 +10899,23 @@ f you want to fully control the UI and avoid automatic system notifications, you
             if (this.state.blockedUris.indexOf(uri) > -1) {
                 return;
             }
+
+			if (this.state.rejectNonContacts && item.direction == 'incoming') {
+				if (!(uri in this.state.myContacts)) {
+					console.log('Skip server history entry from unknown address', uri);                
+					return;
+				}
+			}
+
+			if (this.state.rejectAnonymous && item.direction == 'incoming') {
+				if (uri.indexOf('@guest') > -1) {
+					return;
+				}
+		
+				if (uri.indexOf('anonymous') > -1) {
+					return;
+				}
+			}
 
             if (uri in myContacts) {
             } else {
@@ -10933,6 +11125,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     buildId = {this.buildId}
                     getFiles = {this.getFiles}
                     sharedFiles = {this.state.sharedFiles}
+                    toggleSearchMessages = {this.toggleSearchMessages}
+                    searchMessages = {this.state.searchMessages}
+                    searchString = {this.state.searchString}
                 />
 
                 <ReadyBox
@@ -11014,6 +11209,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     requestStoragePermission = {this.requestStoragePermission}
                     postSystemNotification = {this.postSystemNotification}
                     sortBy = {this.state.sortBy}
+                    toggleSearchMessages = {this.toggleSearchMessages}
+                    searchMessages = {this.state.searchMessages}
                 />
 
                 <ImportPrivateKeyModal
@@ -11108,9 +11305,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 finishInvite={this.finishInviteToConference}
                 selectedContact={this.state.selectedContact}
                 selectedContacts={this.state.selectedContacts}
-                ssiAgent={this.ssiAgent}
-                ssiRequired = {this.state.ssiRequired}
-                ssiRoles = {this.state.ssiRoles}
                 postSystemNotification = {this.postSystemNotification}
                 terminatedReason = {this.state.terminatedReason}
                 videoMuted = {videoMuted}

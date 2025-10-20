@@ -7,6 +7,7 @@ import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import { openComposer } from 'react-native-email-link';
 import Share from 'react-native-share';
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+import { Linking } from 'react-native';
 
 import utils from '../utils';
 import config from '../config';
@@ -19,7 +20,7 @@ class ShareConferenceLinkModal extends Component {
         super(props);
         autoBind(this);
         this.state = {
-            roomUrl: config.publicUrl + '/conference/' + this.props.room.split('@')[0]
+            
         }
     }
 
@@ -29,14 +30,22 @@ class ShareConferenceLinkModal extends Component {
         this.props.close();
     }
 
+    UNSAFE_componentWillReceiveProps(nextProps) {
+        if (nextProps.room) {
+			const roomUrl = config.publicUrl + '/conference/' + nextProps.room.split('@')[0];
+			this.setState({roomUrl: roomUrl});
+        }
+    }
+
     handleEmailButton(event) {
         const emailMessage = 'You can join my conference at ' + this.state.roomUrl;
-        const subject = 'Join conference, maybe?';
-
-        openComposer({
-            subject,
-            body: emailMessage
-        })
+		const subject = encodeURIComponent('Join conference, maybe?');
+		const body = encodeURIComponent(emailMessage);
+		const mailtoUrl = `mailto:?subject=${subject}&body=${body}`;
+		
+		Linking.openURL(mailtoUrl).catch((err) => {
+		  console.error('Error opening mail app', err);
+		});
 
         this.props.close();
     }
@@ -59,7 +68,7 @@ class ShareConferenceLinkModal extends Component {
             });
     }
 
-    render() {
+    render() {    
         return (
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>

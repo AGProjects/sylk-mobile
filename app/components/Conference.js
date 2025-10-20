@@ -43,8 +43,8 @@ class Conference extends React.Component {
               selectedContacts: this.props.selectedContacts,
               room: this.props.targetUri.toLowerCase(),
               messages: this.props.messages
-              }
-
+        }
+              
         if (this.props.connection) {
             this.props.connection.on('stateChanged', this.connectionStateChanged);
         }
@@ -133,6 +133,7 @@ class Conference extends React.Component {
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                        isFavorite: nextProps.favoriteUris.indexOf(this.state.room) > -1,
                        selectedContacts: nextProps.selectedContacts,
+                       room: nextProps.targetUri.toLowerCase(),
                        messages: nextProps.messages
                        });
     }
@@ -146,6 +147,11 @@ class Conference extends React.Component {
             console.log('Conference: no local media');
             return false;
         }
+
+		if (!this.state.room) {
+            console.log('Room not set yet');
+			return false;
+		}
 
         if (!this.state.connection) {
             console.log('Conference: no connection yet');
@@ -408,7 +414,7 @@ class Conference extends React.Component {
             }
 
         } else {
-            console.log('Waiting for local media');
+            //console.log('Waiting for local media');
         }
 
         return box;

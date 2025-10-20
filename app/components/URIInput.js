@@ -10,7 +10,9 @@ class URIInput extends React.Component {
         this.state = {
             selecting: false,
             shareToContacts: this.props.shareToContacts,
-            inviteContacts: this.props.inviteContacts
+            inviteContacts: this.props.inviteContacts,
+            searchMessages: this.props.searchMessages,
+            defaultValue: this.props.defaultValue
         };
 
         this.uriInput = React.createRef();
@@ -44,7 +46,11 @@ class URIInput extends React.Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({shareToContacts: nextProps.shareToContacts, inviteContacts: nextProps.inviteContacts});
+        this.setState({shareToContacts: nextProps.shareToContacts, 
+                       inviteContacts: nextProps.inviteContacts, 
+                       searchMessages: nextProps.searchMessages,
+                       defaultValue: nextProps.defaultValue
+                       });
     }
 
     componentDidUpdate(prevProps) {
@@ -110,6 +116,10 @@ class URIInput extends React.Component {
             placeholder = 'Select contacts to invite...';
         }
 
+        if (this.state.searchMessages) {
+            placeholder = 'Search messages';
+        }
+        
         return (
             <Searchbar
                 mode="flat"
@@ -119,10 +129,13 @@ class URIInput extends React.Component {
                 onKeyDown={this.onInputKeyDown}
                 onBlur={this.onInputBlur}
                 onPress={this.onInputClick}
-                value={this.props.defaultValue}
+                value={this.state.defaultValue}
                 autoCapitalize="none"
                 autoCorrect={false}
                 required
+                clearIcon="close" 
+                showClearIcon={true}
+                style={{ iconColor: 'gray' }}
                 autoFocus={this.props.autoFocus}
                 placeholder={placeholder}
             />
@@ -136,7 +149,9 @@ URIInput.propTypes = {
     onChange: PropTypes.func.isRequired,
     onSelect: PropTypes.func.isRequired,
     shareToContacts  : PropTypes.bool,
-    inviteContacts  : PropTypes.bool
+    inviteContacts  : PropTypes.bool,
+    searchMessages: PropTypes.bool
+    
 };
 
 

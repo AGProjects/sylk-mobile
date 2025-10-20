@@ -22,6 +22,7 @@ class ShareMessageModal extends Component {
 
         this.state = {
             message: props.message,
+            type: 'text/plain',
             show: props.show
         }
     }
@@ -74,8 +75,10 @@ class ShareMessageModal extends Component {
     async handleShareButton(event) {
         let local_url;
         let what =  'message';
+        
+        console.log('Handle share');
 
-        if (this.state.message.metadata) {
+        if (this.state.message.metadata  && Object.keys(this.state.message.metadata).length > 0) {
             local_url = this.state.message.metadata.local_url;
             if (this.state.message.image) {
                 what = 'photo';

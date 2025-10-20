@@ -65,7 +65,10 @@ class ReadyBox extends Component {
             isTexting: this.props.isTexting,
             keyboardVisible: this.props.keyboardVisible,
             contentTypes: this.props.contentTypes,
-            sourceContact: this.props.sourceContact
+            sourceContact: this.props.sourceContact,
+			keyboardVisible: false,
+			searchMessages: this.props.searchMessages,
+			searchString: ''
         };
         this.ended = false;
 
@@ -81,12 +84,16 @@ class ReadyBox extends Component {
         }
 
         if (!this.state.inviteContacts && nextProps.inviteContacts) {
-            this.handleTargetChange('');
+            this.handleSearch('');
             this.setState({chat: false});
         }
 
         if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
+        }
+
+        if (nextProps.hasOwnProperty('keyboardVisible')) {
+            this.setState({keyboardVisible: nextProps.keyboardVisible});
         }
 
         if (nextProps.selectedContact !== this.state.selectedContact) {
@@ -119,6 +126,10 @@ class ReadyBox extends Component {
         if (Object.keys(this.state.myContacts).length === 0 && nextProps.myContacts && Object.keys(nextProps.myContacts).length > 0) {
             this.bounceNavigation();
         }
+        
+        if (nextProps.searchString) {
+            this.setState({'searchString': nextProps.searchString});
+        }
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                         myContacts: nextProps.myContacts,
@@ -126,6 +137,7 @@ class ReadyBox extends Component {
                         historyFilter: nextProps.historyFilter,
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
+                        searchMessages: nextProps.searchMessages,
                         showConferenceModal: nextProps.showConferenceModal,
                         isTyping: nextProps.isTyping,
                         navigationItems: nextProps.navigationItems,
@@ -156,13 +168,32 @@ class ReadyBox extends Component {
     }
 
     async componentDidMount() {
+        this.keyboardDidShowListener = Keyboard.addListener(
+              'keyboardDidShow',
+              this._keyboardDidShow
+            );
+        this.keyboardDidHideListener = Keyboard.addListener(
+              'keyboardDidHide',
+              this._keyboardDidHide
+            );
         this.ended = false;
     }
 
     componentWillUnmount() {
+        this.keyboardDidShowListener.remove();
+        this.keyboardDidHideListener.remove();
+
         this.ended = true;
     }
 
+    _keyboardDidShow(e) {
+       this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
+    }
+
+    _keyboardDidHide() {
+        this.setState({keyboardVisible: false, keyboardHeight: 0});
+    }
+    
     filterHistory(filter) {
        if (this.ended) {
             return;
@@ -209,7 +240,7 @@ class ReadyBox extends Component {
            this.setState({'historyCategoryFilter': filter});
        }
 
-       this.handleTargetChange('');
+       this.handleSearch('');
        
     }
 
@@ -252,7 +283,9 @@ class ReadyBox extends Component {
 
     get showSearchBar() {
         if (this.state.selectedContact) {
-            return false;
+            if (!this.state.searchMessages) {
+				return false;
+            }
         }
 
         if (this.state.showQRCodeScanner) {
@@ -311,6 +344,14 @@ class ReadyBox extends Component {
             return false;
         }
 
+        if (this.state.keyboardVisible) {
+            return false;
+        }        
+
+        if (this.state.searchMessages) {
+            return false;
+        }        
+
         if (this.state.showQRCodeScanner) {
             return false;
         }
@@ -339,9 +380,19 @@ class ReadyBox extends Component {
         return true;
     }
 
-    handleTargetChange(new_uri, contact) {
-        //console.log('---handleTargetChange new_uri =', new_uri);
-        //console.log('handleTargetChange contact =', contact);
+    handleSearch(inputText, contact) {
+        //console.log('handleSearch', inputText);
+        if (this.state.searchMessages) {
+            if (!inputText) {
+				this.props.toggleSearchMessages();
+				this.setState({searchString: ''});
+			} else {
+				this.setState({searchString: inputText});
+			}
+			return;
+        }
+
+        //console.log('handleSearch contact =', contact);
 
         if ((this.state.inviteContacts || this.state.shareToContacts) && contact) {
              const uri = contact.uri;
@@ -358,7 +409,7 @@ class ReadyBox extends Component {
             this.setState({chat: false});
         }
 
-        let new_value = new_uri;
+        let new_value = inputText;
 
         if (contact) {
             if (this.state.targetUri === contact.uri) {
@@ -368,7 +419,7 @@ class ReadyBox extends Component {
             contact = null;
         }
 
-        if (this.state.targetUri === new_uri) {
+        if (this.state.targetUri === inputText) {
             new_value = '';
         }
 
@@ -390,6 +441,12 @@ class ReadyBox extends Component {
     }
 
     handleTargetSelect() {
+        console.log('---handleTargetSelect');
+        
+        if (this.state.searchMessages) {
+			return;
+        }
+
         if (this.props.connection === null) {
             this.props._notificationCenter.postSystemNotification("Server unreachable");
             return;
@@ -785,7 +842,7 @@ class ReadyBox extends Component {
         //console.log('QR code object:', e);
         console.log('QR code data:', e.data);
         this.props.toggleQRCodeScannerFunc();
-        this.handleTargetChange(e.data);
+        this.handleSearch(e.data);
     }
 
     get showContactsList() {
@@ -1124,7 +1181,7 @@ class ReadyBox extends Component {
         }
 
         let extraStyles = {paddingBottom: Platform.OS === 'android' ? 0 : 0};
-
+        
         return (
             <Fragment>
                 <View style={styles.container}>
@@ -1132,12 +1189,13 @@ class ReadyBox extends Component {
                         {this.showSearchBar && !this.state.isLandscape ?
                         <View style={URIContainerClass}>
                             <URIInput
-                                defaultValue={this.state.targetUri}
-                                onChange={this.handleTargetChange}
+                                defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
+                                onChange={this.handleSearch}
                                 onSelect={this.handleTargetSelect}
                                 shareToContacts={this.state.shareToContacts}
                                 inviteContacts={this.state.inviteContacts}
-                                autoFocus={false}
+                                searchMessages={this.state.searchMessages}
+                                autoFocus={this.state.searchMessages}
                             />
                         </View>
                         : null}
@@ -1147,11 +1205,12 @@ class ReadyBox extends Component {
                         {this.showSearchBar && this.state.isLandscape ?
                         <View style={URIContainerClass}>
                             <URIInput
-                                defaultValue={this.state.targetUri}
-                                onChange={this.handleTargetChange}
+                                defaultValue={this.state.searchMessages ? "" : this.state.targetUri}
+                                onChange={this.handleSearch}
                                 onSelect={this.handleTargetSelect}
                                 shareToContacts={this.state.shareToContacts}
                                 inviteContacts={this.state.inviteContacts}
+                                searchMessages={this.state.searchMessages}
                                 autoFocus={false}
                             />
                         </View>
@@ -1325,7 +1384,7 @@ class ReadyBox extends Component {
                             targetUri={this.state.targetUri}
                             fontScale = {this.state.fontScale}
                             orientation={this.props.orientation}
-                            setTargetUri={this.handleTargetChange}
+                            setTargetUri={this.handleSearch}
                             selectedContact={this.state.selectedContact}
                             isTablet={this.state.isTablet}
                             chat={this.state.chat && !this.state.inviteContacts}
@@ -1387,6 +1446,9 @@ class ReadyBox extends Component {
                             file2GiftedChat = {this.file2GiftedChat}
                             postSystemNotification = {this.props.postSystemNotification}
                             sortBy = {this.state.sortBy}
+                            toggleSearchMessages = {this.props.toggleSearchMessages}
+                            searchMessages = {this.state.searchMessages}
+                            searchString = {this.state.searchString}
                         />
                         }
 
@@ -1527,7 +1589,9 @@ ReadyBox.propTypes = {
     requestCameraPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,
     requestMicPermission: PropTypes.func,
-    postSystemNotification: PropTypes.func
+    postSystemNotification: PropTypes.func,
+    toggleSearchMessages: PropTypes.func,
+    searchMessages: PropTypes.bool
 };
 
 
