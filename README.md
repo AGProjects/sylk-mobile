@@ -108,6 +108,7 @@ SSI functionality has been removed due to unmaintained dependencies.
 * Fastlane (for deploying to testflight/google play store)
   brew update
   brew install ruby
+  brew install ios-deploy
   gem install bundler
   gem install fastlane -NV
 
@@ -171,8 +172,6 @@ Use `react-native run-ios --help` and `react-native run-android --help` to give 
 
 ### Running on the iOS Simulator
 
-Currently we have issues running a build of ios from the cli using `yarn react-native run-ios` so instead, open up xcode and run it there
-
 ```bash
 open ios/sylk.xcworkspace/
 ```
@@ -203,7 +202,25 @@ Product -> Scheme -> Edit -> Run -> Build Configuration -> Debug
 
 ### Running on the iOS Device
 
-Currently we have issues running a build of ios from the cli using `yarn react-native run-ios --device` so instead, open up xcode and run it there
+Start Metro:
+
+yarn react-native
+
+Find the list of connected devices:
+
+```bash
+xcrun xctrace list devices
+```
+
+Get the id of the device and run:
+
+```bash
+xcodebuild -workspace ios/sylk.xcworkspace -scheme sylk \
+-configuration Debug \
+-destination 'id=00008120-0018510402A2201E' \
+build install
+```
+
 
 ### Running on a specific Android Device
 
