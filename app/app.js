@@ -2238,29 +2238,35 @@ componentWillUnmount() {
 */
     }
 
-async registerPushToken() {
-  const app = getApp(); // modular SDK
-  try {
-	  const messaging = getMessaging(app);
+
+	async registerPushToken() {
+	  if (Platform.OS !== 'ios') return;
 	
-	  const authStatus = await messaging.requestPermission();
-	  const enabled =
-		authStatus === 1 || // AUTHORIZED
-		authStatus === 2;   // PROVISIONAL
+	  try {
+		const { APNSTokenModule } = NativeModules; // make sure this matches the Objective-C module name
+		if (!APNSTokenModule) {
+		  console.log('APNSTokenModule not found in NativeModules');
+		  return;
+		}
 	
-	  if (!enabled) {
-		console.log('Push permissions denied');
-		return;
+		const apnsEmitter = new NativeEventEmitter(APNSTokenModule);
+	
+		apnsEmitter.addListener('apnsToken', token => {
+		  console.log('APNs token received:', token);
+		  this._onPushRegistered(token);
+		  // Send this token to your server
+		});
+		
+		  // Ask native to emit cached token if any
+		  if (APNSTokenModule.emitCachedAPNSToken) {
+			APNSTokenModule.emitCachedAPNSToken();
+		  }
+	
+	  } catch (e) {
+		console.log('Error getting iOS token:', e);
 	  }
-	
-	  // Only call getToken() after permissions granted
-	  const fcmToken = await messaging.getToken(messaging);
-	  console.log('FCM token:', fcmToken);
-	   if  (fcmToken) this._onPushRegistered(fcmToken);
-	} catch (e) {
-    	console.log('Error getting iOS token:', e);
- 	}
-}
+	}
+
 
   listenForPushNotifications = async () => {
     utils.timestampedLog('Listen for push notifications');
@@ -8286,28 +8292,43 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     async wipe_device() {
 		this.deleteAllContacts(this.state.accountId);
+		let exists = false;
+
+		// Remove the saved account
+
+        storage.remove('last_signup');
+        storage.remove('signup');
+		storage.remove('myParticipants');
+		storage.remove('account');
+		storage.remove('devices');
 
 		console.log('--- Wiping device --- ');
-		let dir = RNFS.DocumentDirectoryPath + '/conference/';
-		RNFS.unlink(dir).then((success) => {
-			console.log('Removed conference folder', dir);
-		}).catch((err) => {
-			//console.log('Error deleting folder', dir, err.message);
-		});
+
+		let dir = RNFS.DocumentDirectoryPath + '/conference';
+		exists = await RNFS.exists(dir);
+
+		if (exists) {
+			RNFS.unlink(dir).then((success) => {
+			}).catch((err) => {
+				console.log('Error deleting conference folder', dir, err.message);
+			});
+		}
 
 		dir = RNFS.DocumentDirectoryPath + '/' + this.state.accountId;
-		RNFS.unlink(dir).then((success) => {
-			console.log('Removed home folder', dir);
-		}).catch((err) => {
-			//console.log('Error deleting folder', dir, err.message);
-		});
+		exists = await RNFS.exists(dir);
+		if (exists) {
+			RNFS.unlink(dir).then((success) => {
+			}).catch((err) => {
+				console.log('Error deleting home folder', dir, err.message);
+			});
+		}
 
 		query = "DELETE FROM messages where (account = ? and to_uri = ? and direction = 'incoming') or (account = ? and from_uri = ? and direction = 'outgoing')";
 		params = [this.state.accountId, this.state.accountId, this.state.accountId, this.state.accountId];
 
         await this.ExecuteQuery(query, params).then((result) => {
             if (result.rowsAffected) {
-                console.log('SQL deleted', result.rowsAffected, 'contacts');
+                console.log('SQL deleted', result.rowsAffected, 'messages');
             }
         }).catch((error) => {
             console.log('SQL query:', query);
@@ -8316,6 +8337,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
 		this.setState({messages: {}});
 		this.saveLastSyncId(null);
+
+		if (Platform.OS === 'android') {
+		  BackHandler.exitApp();
+		}
 	}
 
     async deleteAllContacts(account) {
@@ -9837,7 +9862,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         //console.log('saveIncomingMessageSync', message);
 
         if (message.dispositionNotification.indexOf('display') === -1) {
-            //console.log('Incoming message', message.id, 'was already read');
+            console.log('Incoming message', message.id, 'was already read');
             received = 2;
         } else {
             if (message.dispositionNotification.indexOf('positive-delivery') > -1) {

@@ -344,7 +344,7 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.keyboardVisible) {
+        if (this.state.keyboardVisible && this.state.selectedContact) {
             return false;
         }        
 
