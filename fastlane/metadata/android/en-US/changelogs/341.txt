@@ -1,4 +1,4 @@
  * Added DND for callers not in contacts list
  * Added DND for anonymous callers
- * Improve alert panel if is a connference invite
+ * Improve alert panel if is a conference invite
  * Various bug fixes

@@ -8,7 +8,14 @@
 #import <RCTAppDelegate.h>
 #import <UIKit/UIKit.h>
 #import <UserNotifications/UNUserNotificationCenter.h>
+#import <React/RCTBridgeDelegate.h>
 
-@interface AppDelegate : RCTAppDelegate
+@interface AppDelegate : RCTAppDelegate <RCTBridgeDelegate>
+
+// Needed for APNSTokenModule to send cached tokens
+@property (nonatomic, strong) NSString *cachedAPNSToken;
+
+// Reference to the bridge (required to get module instance)
+@property (nonatomic, strong) RCTBridge *bridge;
 
 @end

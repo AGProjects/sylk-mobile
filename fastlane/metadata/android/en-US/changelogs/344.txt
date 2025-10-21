@@ -1,0 +1,6 @@
+Allow deletion of messages depending on period
+Allow deletion of file transfer depending on period
+Fixes for wiping the device
+Fixes for initial sign-in
+Search contacts/messages fixes
+Improved UI
