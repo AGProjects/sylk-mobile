@@ -177,6 +177,10 @@ function  renderBubble (props) {
               />
             )
         } else if (props.currentMessage.audio) {
+            if (props.currentMessage.metadata.filesize < 2000) {
+            return null;
+            }
+        
             return (
               <Bubble
                 {...props}
@@ -532,10 +536,11 @@ class ContactsListBox extends Component {
 			console.log('Failed to load the audio', error);
 			return;
 		  }
+		  let duration = Math.floor(sound.getDuration());
 		  this.setState((prevState) => ({
 			audioDurations: {
 			  ...prevState.audioDurations,
-			  [messageId]: sound.getDuration(),
+			  [messageId]: duration,
 			},
 		  }));
 		});
@@ -839,6 +844,8 @@ class ContactsListBox extends Component {
             console.log('Already playing or recording');
             return;
         }
+
+		this.getAudioDuration(message.audio, message._id);
 
         this.setState({playing: true, placeholder: 'Playing audio message'});
         message.metadata.playing = true;
@@ -1546,7 +1553,7 @@ class ContactsListBox extends Component {
         }
 
         if (utils.isAudio(file_transfer.filename)) {
-//            this.startPlaying(file_path);
+            this.startPlaying(message);
             return;
         }
 
@@ -1572,7 +1579,7 @@ class ContactsListBox extends Component {
         }
         
         let icons = [];
-        console.log('---- currentMessage', currentMessage);
+        //console.log('---- currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
             let options = []
             if (currentMessage.metadata && !currentMessage.metadata.error) {
@@ -1774,7 +1781,7 @@ class ContactsListBox extends Component {
 
     // Load duration if not already loaded
     if (currentMessage.audio && !audioDurations[currentMessage._id]) {
-      this.getAudioDuration(currentMessage.audio, currentMessage._id);
+      //this.getAudioDuration(currentMessage.audio, currentMessage._id);
     }
 
     // Get duration string
