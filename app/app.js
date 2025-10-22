@@ -119,6 +119,7 @@ const KeyOptions = {
   RSABits: 4096,
 }
 
+
 const max_transfer_size = 40 * 1000 * 1000;
 
 const incomingCallLabel = 'Incoming call...';
@@ -1096,6 +1097,28 @@ class Sylk extends Component {
 		});
     }
 
+	async getChatContacts() {
+		  try {
+			const results = await this.ExecuteQuery(
+			  "SELECT from_uri, MAX(timestamp) as last_timestamp FROM messages WHERE to_uri = ? GROUP BY from_uri",
+			  [this.state.accountId]
+			);
+		
+			const contacts = {}; // from_uri -> last_timestamp
+			const rows = results.rows;
+		
+			for (let i = 0; i < rows.length; i++) {
+			  const item = rows.item(i);
+			  contacts[item.from_uri] = item.last_timestamp;
+			}
+		
+			return contacts;
+		  } catch (error) {
+			console.error('Failed to get recent contacts:', error);
+			return {};
+		  }
+		};
+
     async loadSylkContacts() {
         if (this.state.contactsLoaded) {
             return;
@@ -1106,8 +1129,9 @@ class Sylk extends Component {
         }
 
         console.log('Loading Sylk contacts...');
-			this.loadInitialDnd();
-        
+		this.loadInitialDnd();
+
+        let chatContacts = await this.getChatContacts();
 
         let myContacts = {};
         let blockedUris = [];
@@ -1137,6 +1161,7 @@ class Sylk extends Component {
         }
 
         this.setState({defaultDomain: this.state.accountId.split('@')[1]});
+        
         this.ExecuteQuery("SELECT * FROM contacts where account = ? order by timestamp desc",[this.state.accountId]).then((results) => {
             let rows = results.rows;
             let idx;
@@ -1332,6 +1357,20 @@ class Sylk extends Component {
                     }
                 });
 
+                 Object.keys(chatContacts).forEach((key) => {
+                      if (!myContacts.hasOwnProperty(key)) {
+							myContacts[key] = this.newContact(key);
+							try {
+								timestamp = JSON.parse(chatContacts[key], _parseSQLDate);
+								myContacts[key].timestamp = timestamp;
+								console.log('Add missing contact', key, timestamp);
+								this.saveSylkContact(key, 'chat');
+							} catch (error) {
+								console.log('Failed to create chat contact');
+							}
+                      }
+                });
+                
                 this.updateTotalUread(myContacts);
 
                 utils.timestampedLog('Loaded', rows.length, 'contacts for account', this.state.accountId);
