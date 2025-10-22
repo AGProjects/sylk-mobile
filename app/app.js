@@ -2810,7 +2810,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     _wiredHeadsetDetect(data) {
-        console.log('Wired headset:', data);
+        //console.log('Wired headset:', data);
         // {'isPlugged': boolean, 'hasMic': boolean, 'deviceName': string }
         this.setState({'headsetIsPlugged': data.isPlugged});
         if (data.isPlugged) {
