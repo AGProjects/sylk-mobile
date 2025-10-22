@@ -37,6 +37,7 @@ import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 import {check, request, PERMISSIONS, RESULTS, openSettings} from 'react-native-permissions';
 import {decode as atob, encode as btoa} from 'base-64';
+import notifee, { AndroidImportance } from '@notifee/react-native';
 
 registerGlobals();
 
@@ -190,7 +191,6 @@ function _parseSQLDate(key, value) {
         };
     }
 })();
-
 
 class Sylk extends Component {
     constructor() {
@@ -557,6 +557,25 @@ class Sylk extends Component {
 
     }
 
+	async  displayJoinNotification() {
+	  await notifee.requestPermission();
+	
+	  await notifee.displayNotification({
+		title: 'Join Conference',
+		body: 'Tap to join',
+		android: {
+		  channelId: 'calls',
+		  importance: AndroidImportance.HIGH,
+		  pressAction: {
+			id: 'default',
+		  },
+		},
+		ios: {
+		  categoryId: 'call',
+		},
+	  });
+	}
+	
     async requestPhonePermission () {
         if (Platform.OS !== 'android') {
             return;
@@ -614,7 +633,7 @@ class Sylk extends Component {
                     console.log('Camera permission is limited: some actions are possible');
                     break;
                   case RESULTS.GRANTED:
-                    console.log('Camera permission is granted');
+                    //console.log('Camera permission is granted');
                     break;
                   case RESULTS.BLOCKED:
                     this._notificationCenter.postSystemNotification("Access to camera is denied. Go to Settings -> Sylk to enable access.");
@@ -692,7 +711,7 @@ class Sylk extends Component {
                     console.log('Mic permission is limited: some actions are possible');
                     break;
                   case RESULTS.GRANTED:
-                    console.log('Mic permission is granted');
+                    //console.log('Mic permission is granted');
                     break;
                   case RESULTS.BLOCKED:
                     this._notificationCenter.postSystemNotification("Microphone permission. Go to Settings -> Sylk to enable access.");
@@ -4104,7 +4123,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         };
 
         if (this.state.connection._accounts.has(options.account)) {
-            console.log('Account already exists for connection');
+            //console.log('Account already exists for connection');
             return;
         }
 
@@ -4568,7 +4587,16 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
         utils.timestampedLog('New outgoing conference to room', targetUri);
+        this.backToForeground();
         this.setState({targetUri: targetUri});
+		if (Platform.OS === 'ios') {
+		   console.log('wake up app');
+		   Linking.openURL('sylk://wakeup');
+		   if (this.state.appState === 'background') {
+				this.displayJoinNotification();
+			}
+		}
+
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
         this.getMessages(targetUri);
     }
@@ -4898,6 +4926,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     outgoingConference(call) {
         // called by sylrtc.js when an outgoing conference starts
+        //console.log('outgoingConference');
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
@@ -4969,7 +4998,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     backToForeground() {
         //console.log('backToForeground...');
         if (this.state.appState !== 'active') {
-            //this.callKeeper.backToForeground();
+			this.callKeeper.backToForeground();
         }
 
         if (this.state.accountId && this.state.accountVerified) {
@@ -5154,7 +5183,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     const media = {audio: true, video: mediaType === 'video'}
                     this.incomingConference(callUUID, to, from, displayName, media);
                 }
-
+            } else if (event === 'wakeup') {
+                console.log('wakeup from Linking');
             } else if (event === 'call') {
                 this.startedByPush = true;
                 if (direction === 'outgoing') {
@@ -5312,7 +5342,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async incomingCallFromPush(callUUID, from, displayName, mediaType, force) {
-        return;
         utils.timestampedLog('Handle incoming PUSH call', callUUID, 'from', from, '(', displayName, ')');
 
         if (this.unmounted) {
@@ -5335,9 +5364,12 @@ f you want to fully control the UI and avoid automatic system notifications, you
             return;
         }
 
-        const phoneAllowed = await this.requestPhonePermission();
-        if (!phoneAllowed) {
-            return;
+        if (Platform.OS === 'android') {
+			const phoneAllowed = await this.requestPhonePermission();
+			if (!phoneAllowed) {
+				console.log('PhonePermission not allowed');
+				return;
+			}
         }
 
         //this.backToForeground();
@@ -5346,14 +5378,17 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         this.setState({targetUri: from});
 
-        let skipNativePanel = false;
+        // we use native alert panel starting with 2025-10-21
+        let skipNativePanel = true;
 
+        /*
         if (!this.callKeeper._calls.get(callUUID) || (this.state.currentCall && this.state.currentCall.direction === 'outgoing')) {
             //this._notificationCenter.postSystemNotification('Incoming call', {body: `from ${from}`});
             if (Platform.OS === 'android' && this.state.appState === 'foreground') {
                 skipNativePanel = true;
             }
         }
+        */
 
         this.callKeeper.incomingCallFromPush(callUUID, from, displayName, mediaType, force, skipNativePanel);
     }

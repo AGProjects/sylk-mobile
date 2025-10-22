@@ -27,6 +27,9 @@ class Conference extends React.Component {
         this.ended = false;
         this.started = false;
         this.participants = [];
+        
+        let room = this.props.targetUri ? this.props.targetUri.toLowerCase() : '';
+        console.log('Loaded Conference for room', room);
 
         this.state = {
               currentCall: this.props.currentCall,
@@ -41,7 +44,7 @@ class Conference extends React.Component {
               myInvitedParties: this.props.myInvitedParties,
               isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1,
               selectedContacts: this.props.selectedContacts,
-              room: this.props.targetUri.toLowerCase(),
+              room: room,
               messages: this.props.messages
         }
               
@@ -105,6 +108,8 @@ class Conference extends React.Component {
 
         if (nextProps.currentCall) {
             this.setState({room: nextProps.currentCall.remoteIdentity.uri.toLowerCase()});
+        } else if (nextProps.targetUri) {
+            this.setState({room: nextProps.targetUri.toLowerCase()});
         }
 
         this.setState({registrationState: nextProps.registrationState});
@@ -129,11 +134,10 @@ class Conference extends React.Component {
 
             this.startCallWhenReady();
         }
-
+		
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                        isFavorite: nextProps.favoriteUris.indexOf(this.state.room) > -1,
                        selectedContacts: nextProps.selectedContacts,
-                       room: nextProps.targetUri.toLowerCase(),
                        messages: nextProps.messages
                        });
     }
@@ -271,7 +275,7 @@ class Conference extends React.Component {
         }
 
         if (this.participants.length === 0) {
-            console.log('No show dialog because there are no participants')
+            //console.log('No show dialog because there are no participants')
             return false;
         }
 

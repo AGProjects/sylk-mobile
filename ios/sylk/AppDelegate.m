@@ -22,6 +22,13 @@
 #import <React/RCTLinkingManager.h>
 #import <sqlite3.h>
 #import "APNSTokenModule.h"
+#import <UserNotifications/UserNotifications.h>
+#import <React/RCTBridge.h>
+#import <React/RCTBundleURLProvider.h>
+#import <React/RCTRootView.h>
+
+@interface AppDelegate () <UNUserNotificationCenterDelegate>
+@end
 
 @implementation AppDelegate
 
@@ -40,6 +47,20 @@
     [FIRApp configure];
   }
 
+ // React Native setup
+  RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
+  RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
+                                                   moduleName:@"Sylk"
+                                            initialProperties:nil];
+  self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+  UIViewController *rootViewController = [UIViewController new];
+  rootViewController.view = rootView;
+  self.window.rootViewController = rootViewController;
+  [self.window makeKeyAndVisible];
+
+  // --- Register notification categories ---
+  [self registerNotificationCategories];
+  
   // Set UNUserNotificationCenter delegate
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = self;
@@ -62,8 +83,28 @@
       [application registerForRemoteNotifications];
   }
 
-  return [super application:application didFinishLaunchingWithOptions:launchOptions];
+   return YES;
+
+  //return [super application:application didFinishLaunchingWithOptions:launchOptions];
 }
+
+- (void)registerNotificationCategories
+{
+  UNNotificationAction *answerAction = [UNNotificationAction actionWithIdentifier:@"ANSWER_ACTION"
+                                                                            title:@"Answer"
+                                                                          options:UNNotificationActionOptionForeground];
+  UNNotificationAction *declineAction = [UNNotificationAction actionWithIdentifier:@"DECLINE_ACTION"
+                                                                             title:@"Decline"
+                                                                           options:UNNotificationActionOptionDestructive];
+
+  UNNotificationCategory *callCategory = [UNNotificationCategory categoryWithIdentifier:@"INCOMING_CALL"
+                                                                                actions:@[answerAction, declineAction]
+                                                                      intentIdentifiers:@[]
+                                                                                options:UNNotificationCategoryOptionCustomDismissAction];
+
+  [[UNUserNotificationCenter currentNotificationCenter] setNotificationCategories:[NSSet setWithObject:callCategory]];
+}
+
 
 - (void)emitCachedAPNSToken {
     if (self.cachedAPNSToken) {
@@ -491,8 +532,8 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSArray *blocked = contactsMap[@"blocked"] ?: @[];
     NSSet<NSString *> *uniqueUris = [NSSet setWithArray:allUris];
 
-    NSLog(@"[VoIP Push] allUris = %@", allUris);
-    NSLog(@"[VoIP Push] blocked = %@", blocked);
+    //NSLog(@"[VoIP Push] allUris = %@", allUris);
+    //NSLog(@"[VoIP Push] blocked = %@", blocked);
 
     BOOL accountAllowed = YES;
     @try {

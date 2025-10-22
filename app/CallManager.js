@@ -171,7 +171,9 @@ export default class CallManager extends events.EventEmitter {
 
     backToForeground() {
        //utils.timestampedLog('Callkeep: bring app to the FOREGROUND');
-       this.callKeep.backToForeground();
+       if (Platform.OS === 'android') {
+		   this.callKeep.backToForeground();
+       }       
     }
 
     startOutgoingCall(call) {
@@ -682,8 +684,6 @@ export default class CallManager extends events.EventEmitter {
 			return;
 		}
 
-        utils.timestampedLog('Callkeep: ALERT PANEL for', callUUID, 'from', from, '(', displayName, ')');
-
         if (this._alertedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: call', callUUID, 'was already alerted');
             return;
@@ -709,6 +709,7 @@ export default class CallManager extends events.EventEmitter {
                          supportsUngrouping: false,
                          supportsDTMF: supportsDTMF}
 
+        utils.timestampedLog('IMPORTANT Callkeep: displayIncomingCall for', callUUID, 'from', from, '(', displayName, ')');
         this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, callerType, hasVideo, options);
     }
 

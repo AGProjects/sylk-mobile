@@ -31,7 +31,6 @@ RCT_EXPORT_METHOD(emitCachedAPNSToken)
 
     if (app.cachedAPNSToken) {
         [self sendEventWithName:@"apnsToken" body:app.cachedAPNSToken];
-        app.cachedAPNSToken = nil;
     }
   });
 }

@@ -261,7 +261,7 @@ class ConferenceBox extends Component {
             }
         });
 
-        const friendlyName = this.state.remoteUri.split('@')[0];
+        const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
         //if (window.location.origin.startsWith('file://')) {
             this.conferenceUrl = `${config.publicUrl}/conference/${friendlyName}`;
         //} else {
@@ -721,7 +721,7 @@ class ConferenceBox extends Component {
     }
 
     filePath(filename) {
-        let dir = RNFS.DocumentDirectoryPath + '/conference/' + this.state.remoteUri + '/files';
+        let dir = RNFS.DocumentDirectoryPath + '/' + this.state.accountId + '/conference/' + this.state.remoteUri + '/files';
         let path;
         RNFS.mkdir(dir);
         path = dir + '/' + filename.toLowerCase();
@@ -1539,8 +1539,10 @@ class ConferenceBox extends Component {
         this.latency.delete(p.id);
         this.packetLoss.delete(p.id);
         this.mediaLost.delete(p.id);
-
-        this.participantStats.delete(p.id);
+        
+        if (this.participantStats) {
+			this.participantStats.delete(p.id);
+        }
 
         const idx = participants.indexOf(p);
         if (idx !== -1) {
