@@ -11000,7 +11000,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             }
 
 			if (this.state.rejectNonContacts && item.direction == 'incoming') {
-				if (!(uri in this.state.myContacts)) {
+				if (!(uri in this.state.myContacts) && !item.duration) {
 					console.log('Skip server history entry from unknown address', uri);                
 					return;
 				}
