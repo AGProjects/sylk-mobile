@@ -2183,7 +2183,7 @@ componentWillUnmount() {
     }
 
     get sharingAction() {
-        return this.state.forwardContent || this.state.shareContent.length > 0;
+        return !!this.state.forwardContent || (this.state.shareContent && this.state.shareContent.length > 0);
     }
 
     async componentDidMount() {
