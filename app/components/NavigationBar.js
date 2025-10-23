@@ -389,7 +389,7 @@ class NavigationBar extends Component {
         }
 
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
-        let proximityTitle = this.state.proximity ? 'No proximity sensor' : 'Proximity sensor';
+        let proximityTitle = this.state.proximity ? 'Disable proximity sensor' : 'Enable proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
         let rejectAnonymousTitle = this.state.rejectAnonymous ? 'Allow anonymous callers' : 'Reject anonymous callers';
         let rejectIcon = this.state.rejectAnonymous ? 'door-closed-lock' : 'door-open';
@@ -596,7 +596,6 @@ class NavigationBar extends Component {
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Change private key..."/> :null}
                         {false ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
-                        <Divider/>
                         {extraMenu ?
                         <View>
 
