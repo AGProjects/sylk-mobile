@@ -47,9 +47,6 @@ class NotificationCenter extends Component {
     }
 
     postConferenceInvite(originator, room, cb) {
-        // if (originator.uri.endsWith(config.defaultGuestDomain)) {
-        //     return;
-        // }
         if (this.ended) {
             return;
         }
