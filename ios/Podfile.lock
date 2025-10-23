@@ -1317,12 +1317,12 @@ PODS:
     - React-Core
   - RNCallKeep (4.3.16):
     - React
-  - RNCAsyncStorage (1.8.0):
-    - React
+  - RNCAsyncStorage (2.2.0):
+    - React-Core
   - RNCPicker (2.11.4):
     - React-Core
-  - RNCPushNotificationIOS (1.2.0):
-    - React
+  - RNCPushNotificationIOS (1.11.0):
+    - React-Core
   - RNDeviceInfo (8.4.0):
     - React-Core
   - RNExitApp (2.0.0):
@@ -1483,7 +1483,7 @@ DEPENDENCIES:
   - RNAudioRecord (from `../node_modules/react-native-audio-record`)
   - RNAudioRecorderPlayer (from `../node_modules/react-native-audio-recorder-player`)
   - RNCallKeep (from `../node_modules/react-native-callkeep`)
-  - "RNCAsyncStorage (from `../node_modules/@react-native-community/async-storage`)"
+  - "RNCAsyncStorage (from `../node_modules/@react-native-async-storage/async-storage`)"
   - "RNCPicker (from `../node_modules/@react-native-picker/picker`)"
   - "RNCPushNotificationIOS (from `../node_modules/@react-native-community/push-notification-ios`)"
   - RNDeviceInfo (from `../node_modules/react-native-device-info`)
@@ -1691,7 +1691,7 @@ EXTERNAL SOURCES:
   RNCallKeep:
     :path: "../node_modules/react-native-callkeep"
   RNCAsyncStorage:
-    :path: "../node_modules/@react-native-community/async-storage"
+    :path: "../node_modules/@react-native-async-storage/async-storage"
   RNCPicker:
     :path: "../node_modules/@react-native-picker/picker"
   RNCPushNotificationIOS:
@@ -1835,9 +1835,9 @@ SPEC CHECKSUMS:
   RNAudioRecord: b253d15d8141c5ef6bc614fc9d9f06577870bfc3
   RNAudioRecorderPlayer: b5ed41ccfe72a211a870bfe09ab36c046eb27d2a
   RNCallKeep: 1930a01d8caf48f018be4f2db0c9f03405c2f977
-  RNCAsyncStorage: 5520a7684a72e79dcdb7dd14d4d2aa2f02507f12
+  RNCAsyncStorage: b44e8a4e798c3e1f56bffccd0f591f674fb9198f
   RNCPicker: 7de564dce1f90b53e386a24001aafc3578233dfe
-  RNCPushNotificationIOS: 8f15c5b54964accd0710bbec9c401404a8b4dda6
+  RNCPushNotificationIOS: 6c4ca3388c7434e4a662b92e4dfeeee858e6f440
   RNDeviceInfo: 5cfc358ab602ac09f18edb3b9af2ca80362106f4
   RNExitApp: 4432b9b7cc5ccec9f91c94e507849891282befd4
   RNFastImage: 462a183c4b0b6b26fdfd639e1ed6ba37536c3b87
