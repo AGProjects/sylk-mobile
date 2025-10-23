@@ -455,7 +455,7 @@ class ReadyBox extends Component {
 
         let uri = this.state.targetUri.toLowerCase();
 
-        if (uri.endsWith(`@${config.defaultConferenceDomain}`)) {
+        if (uri.endsWith(`@${this.props.defaultConferenceDomain}`)) {
             let participants;
             if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
                 participants = this.state.myInvitedParties[uri];
@@ -522,12 +522,12 @@ class ReadyBox extends Component {
                 let event = uri_parts[3];
                 uri = uri_parts[4];
                 if (event === 'conference') {
-                    uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+                    uri = uri.split("@")[0] + '@' + this.props.defaultConferenceDomain;
                 }
             }
         }
 
-        if (uri.endsWith(`@${config.defaultConferenceDomain}`)) {
+        if (uri.endsWith(`@${this.props.defaultConferenceDomain}`)) {
             this.props.startConference(uri, {audio: true, video: false});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: false});
@@ -550,12 +550,12 @@ class ReadyBox extends Component {
                 let event = uri_parts[3];
                 uri = uri_parts[4];
                 if (event === 'conference') {
-                    uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+                    uri = uri.split("@")[0] + '@' + this.props.defaultConferenceDomain;
                 }
             }
         }
 
-        if (uri.endsWith(`@${config.defaultConferenceDomain}`)) {
+        if (uri.endsWith(`@${this.props.defaultConferenceDomain}`)) {
             this.props.startConference(uri, {audio: true, video: true});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
@@ -687,7 +687,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (uri.indexOf('@') > -1 && uri.indexOf(config.defaultConferenceDomain) === -1) {
+        if (uri.indexOf('@') > -1 && uri.indexOf(this.props.defaultConferenceDomain) === -1) {
             return true;
         }
 
@@ -1117,7 +1117,7 @@ class ReadyBox extends Component {
             let event = uri_parts[3];
             uri = uri_parts[4];
             if (event === 'conference') {
-                uri = uri.split("@")[0] + '@' + config.defaultConferenceDomain;
+                uri = uri.split("@")[0] + '@' + this.props.defaultConferenceDomain;
             }
         }
 
@@ -1509,6 +1509,7 @@ class ReadyBox extends Component {
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.props.account ? this.props.account.id: null}
                     lookupContacts={this.props.lookupContacts}
+					defaultConferenceDomain = {this.props.defaultConferenceDomain}
                 />
             </Fragment>
         );
@@ -1592,7 +1593,8 @@ ReadyBox.propTypes = {
     requestMicPermission: PropTypes.func,
     postSystemNotification: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
-    searchMessages: PropTypes.bool
+    searchMessages: PropTypes.bool,
+    defaultConferenceDomain: PropTypes.string
 };
 
 

@@ -78,7 +78,9 @@ class NotificationCenter extends Component {
         }
         const currentDate = moment().format('MMMM Do YYYY [at] HH:mm:ss');
         let action;
-        if (originator.uri.endsWith(config.defaultGuestDomain)) {
+        const defaultGuestDomain = 'guest.' + config.defaultDomain;
+        
+        if (originator.uri.endsWith(defaultGuestDomain)) {
             action = null;
         } else {
             action = {

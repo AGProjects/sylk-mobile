@@ -201,7 +201,11 @@ class Sylk extends Component {
         let isFocus = Platform.OS === 'ios';
         this.startTimestamp = new Date();
         this.phoneWasLocked = false;
-
+        this.defaultDomain = config.defaultDomain;
+        this.fileSharingUrl = config.wsServer + '/filesharing';
+        this.fileTransferUrl = config.wsServer + '/filetransfer';
+        this.defaultConferenceDomain = 'videoconference.' + config.defaultDomain;
+        
         this._initialState = {
             appState: null,
             terminatedReason: null,
@@ -256,9 +260,6 @@ class Sylk extends Component {
             participantsToInvite: [],
             myInvitedParties: {},
             myContacts: {},
-            defaultDomain: config.defaultDomain,
-            fileSharingUrl: config.fileSharingUrl,
-            fileTransferUrl: config.fileTransferUrl,
             showLogsModal: false,
             logs: '',
             proximityEnabled: true,
@@ -2036,7 +2037,7 @@ class Sylk extends Component {
                     });
                     conf_uri.sort();
 
-                    let uri = conf_uri.toString().toLowerCase().replace(/,/g,'-') + '@' + config.defaultConferenceDomain;
+                    let uri = conf_uri.toString().toLowerCase().replace(/,/g,'-') + '@' + this.defaultConferenceDomain;
 
                     const options = {audio: this.outgoingMedia ? this.outgoingMedia.audio: true,
                                      video: this.outgoingMedia ? this.outgoingMedia.video: true,
@@ -3025,7 +3026,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     connectionStateChanged(oldState, newState) {
-        //console.log('--- connectionStateChanged', newState);
+        console.log('--- connectionStateChanged', newState);
         if (this.unmounted) {
             //console.log('App is not yet mounted');
             return;
@@ -4111,9 +4112,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         if (this.state.connection === null) {
-            const userAgent = 'Sylk Mobile';
-
-            let connection = sylkrtc.createConnection({server: config.wsServer});
+            const wsUrl = config.wsServer + '/ws';           
+            let connection = sylkrtc.createConnection({server: wsUrl});
             utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
             connection.on('stateChanged', this.connectionStateChanged);
             connection.on('publicKey', this.publicKeyReceived);
@@ -4547,7 +4547,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let callUUID = options.callUUID || uuid.v4();
 
         if (targetUri.indexOf('@') === -1 && !options.conference) {
-            targetUri = targetUri + '@' + this.state.defaultDomain;
+            targetUri = targetUri + '@' + this.defaultDomain;
         }
 
         this.setState({targetUri: targetUri,
@@ -5192,9 +5192,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 callUUID = uuid.v4();
 
                 if (to.indexOf('@') === -1 && event === 'conference') {
-                    to = url_parts[4] + '@' + config.defaultConferenceDomain;
+                    to = url_parts[4] + '@' + this.defaultConferenceDomain;
                 } else if (to.indexOf('@') === -1 && event === 'call') {
-                    to = url_parts[4] + '@' + this.state.defaultDomain;
+                    to = url_parts[4] + '@' + this.defaultDomain;
                 }
                 this.setState({targetUri: to});
             }
@@ -5574,7 +5574,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     sendPublicKey(puri, force=false) {
-        let random_uri = uuid.v4() + '@' + this.state.defaultDomain;
+        let random_uri = uuid.v4() + '@' + this.defaultDomain;
         let uri =  puri || random_uri;
 
         this.mustSendPublicKey = false;
@@ -6136,7 +6136,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             }
 
             file_transfer.local_url = localPath;
-            file_transfer.url = this.state.fileTransferUrl + '/' + file_transfer.sender.uri + '/' + file_transfer.receiver.uri + '/' + file_transfer.transfer_id + '/' + file_transfer.filename;
+            file_transfer.url = this.fileTransferUrl + '/' + file_transfer.sender.uri + '/' + file_transfer.receiver.uri + '/' + file_transfer.transfer_id + '/' + file_transfer.filename;
             message.metadata = file_transfer;
             this.uploadFile(message.metadata);
         }
@@ -7757,7 +7757,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 //console.log('Update contact after decryption', uri);
 
                 if (this.mustPlayIncomingSoundAfterSync) {
-                    this.playMessageSound();
+                    if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                        // don't play message if inside the same chat
+                    } else {
+                        this.playMessageSound();
+                    }
                     this.mustPlayIncomingSoundAfterSync = false;
                 }
 
@@ -7898,7 +7902,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         if (utils.isPhoneNumber(uri) && uri.indexOf('@') === -1) {
-            uri = uri + '@' + this.state.defaultDomain;
+            uri = uri + '@' + this.defaultDomain;
         } else {
             this.resetUnreadCount(orig_uri);
             this.lookupPublicKey(myContacts[orig_uri]);
@@ -8255,7 +8259,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let orig_uri = uri;
 
 		if (uri.indexOf('@') === -1 && utils.isPhoneNumber(uri)) {
-			uri = uri + '@' + this.state.defaultDomain;
+			uri = uri + '@' + this.defaultDomain;
 		}
 		
 		if (deleteAll) {
@@ -8459,6 +8463,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
             return;
         }
 
+        if (direction === 'outgoing') {
+        }
+
         if (direction === 'incoming') {
             if (this.incoming_sound_ts) {
                 let diff = (Date.now() - this.incoming_sound_ts)/ 1000;
@@ -8478,10 +8485,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
         if (!must_play_sound) {
             console.log('Play incoming sound skipped');
             return;
-        }
-
-        if (Platform.OS === 'android' && this.state.appState === 'foreground') {
-        //
         }
 
         try {
@@ -9983,13 +9986,13 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         if (this.myParticipants.hasOwnProperty(room)) {
             let old_uris = this.myParticipants[room];
-            if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
+            if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + this.defaultDomain) !== this.state.account.id) {
                 this.myParticipants[room].push(uri);
             }
 
         } else {
             let new_uris = [];
-            if (uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
+            if (uri !== this.state.account.id && (uri + '@' + this.defaultDomain) !== this.state.account.id) {
                 new_uris.push(uri);
             }
 
@@ -10005,7 +10008,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         uri = uri.trim().toLowerCase();
 
         if (uri.indexOf('@') === -1) {
-            uri = uri + '@' + this.state.defaultDomain;
+            uri = uri + '@' + this.defaultDomain;
         }
 
         let myContacts = this.state.myContacts;
@@ -10019,7 +10022,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         uri = uri.trim().toLowerCase();
 
         if (uri.indexOf('@') === -1) {
-            uri = uri + '@' + this.state.defaultDomain;
+            uri = uri + '@' + this.defaultDomain;
         }
 
         let myContacts = this.state.myContacts;
@@ -10103,7 +10106,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let contact;
 
         if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
-            uri = uri + '@' + this.state.defaultDomain;
+            uri = uri + '@' + this.defaultDomain;
         }
 
         let myContacts = this.state.myContacts;
@@ -10535,7 +10538,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             let idx = current_uris.indexOf(uri);
             if (idx === -1) {
                 if (uri.indexOf('@') === -1) {
-                    uri =  uri + '@' + this.state.defaultDomain;
+                    uri =  uri + '@' + this.defaultDomain;
                 }
 
                 if (uri !== this.state.account.id) {
@@ -10816,7 +10819,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let new_participants = [];
         participants.forEach((uri) => {
             if (uri.indexOf('@') === -1) {
-                uri =  uri + '@' + this.state.defaultDomain;
+                uri =  uri + '@' + this.defaultDomain;
             }
             if (uri !== this.state.account.id) {
                 new_participants.push(uri);
@@ -10842,7 +10845,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         //console.log('addHistoryEntry', uri);
 
         if (uri.indexOf('@') === -1) {
-            uri = uri + '@videoconference.' + this.state.defaultDomain;
+            uri = uri + '@videoconference.' + this.defaultDomain;
         }
 
         if (uri in myContacts) {
@@ -10859,7 +10862,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     updateHistoryEntry(uri, callUUID, duration) {
         if (uri.indexOf('@') === -1) {
-            uri = uri + '@videoconference.' + this.state.defaultDomain;
+            uri = uri + '@videoconference.' + this.defaultDomain;
         }
 
         let myContacts = this.state.myContacts;
@@ -11187,7 +11190,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     toggleAutoanswer = {this.toggleAutoanswer}
                     toggleBlocked = {this.toggleBlocked}
                     saveConference={this.saveConference}
-                    defaultDomain = {this.state.defaultDomain}
+                    defaultDomain = {this.defaultDomain}
                     favoriteUris = {this.state.favoriteUris}
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
@@ -11254,7 +11257,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     favoriteUris = {this.state.favoriteUris}
                     missedCalls = {this.state.missedCalls}
                     blockedUris = {this.state.blockedUris}
-                    defaultDomain = {this.state.defaultDomain}
+                    defaultDomain = {this.defaultDomain}
                     saveContact = {this.saveContact}
                     myContacts = {this.state.myContacts}
                     lookupContacts = {this.lookupContacts}
@@ -11310,6 +11313,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     sortBy = {this.state.sortBy}
                     toggleSearchMessages = {this.toggleSearchMessages}
                     searchMessages = {this.state.searchMessages}
+                    defaultConferenceDomain = {this.defaultConferenceDomain}
                 />
 
                 <ImportPrivateKeyModal
@@ -11436,7 +11440,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 let uris = this.myParticipants[room];
                 if (uris) {
                     uris.forEach((uri) => {
-                        if (uri.search(this.state.defaultDomain) > -1) {
+                        if (uri.search(this.defaultDomain) > -1) {
                             let user = uri.split('@')[0];
                             _previousParticipants.add(user);
                         } else {
@@ -11490,8 +11494,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 isLandscape = {this.state.orientation === 'landscape'}
                 isTablet = {this.state.isTablet}
                 muted = {this.state.muted}
-                defaultDomain = {this.state.defaultDomain}
-                fileSharingUrl = {this.state.fileSharingUrl}
+                defaultDomain = {this.defaultDomain}
+                fileSharingUrl = {this.fileSharingUrl}
                 startedByPush = {this.startedByPush}
                 inFocus = {this.state.inFocus}
                 reconnectingCall = {this.state.reconnectingCall}
@@ -11554,7 +11558,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     conferenceByUri(urlParameters) {
-        const targetUri = utils.normalizeUri(urlParameters.targetUri, config.defaultConferenceDomain);
+        const targetUri = utils.normalizeUri(urlParameters.targetUri, this.defaultConferenceDomain);
         const idx = targetUri.indexOf('@');
         const uri = {};
         const pattern = /^[A-Za-z0-9\-\_]+$/g;

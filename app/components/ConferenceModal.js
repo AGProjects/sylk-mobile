@@ -57,7 +57,7 @@ class ConferenceModal extends Component {
         let domain;
 
         if (targetUri) {
-            let uri = `${targetUri.replace(/[\s\@()]/g, '')}@${config.defaultConferenceDomain}`;
+            let uri = `${targetUri.replace(/[\s\@()]/g, '')}@${this.props.defaultConferenceDomain}`;
             uri = uri.split('@')[0];
 
             if (this.state.selectedContact && this.state.selectedContact.participants) {
@@ -108,7 +108,7 @@ class ConferenceModal extends Component {
         if (!this.state.targetUri) {
             return;
         }
-        const uri = `${this.state.targetUri.replace(/[\s\@()]/g, '')}@${config.defaultConferenceDomain}`;
+        const uri = `${this.state.targetUri.replace(/[\s\@()]/g, '')}@${this.props.defaultConferenceDomain}`;
         const participants = [];
 
         if (this.state.participants) {
@@ -128,7 +128,7 @@ class ConferenceModal extends Component {
 
     joinVideo(event) {
         event.preventDefault();
-        const uri = `${this.state.targetUri.replace(/[\s\@()]/g, '')}@${config.defaultConferenceDomain}`;
+        const uri = `${this.state.targetUri.replace(/[\s\@()]/g, '')}@${this.props.defaultConferenceDomain}`;
         const participants = [];
 
         if (this.state.participants) {
@@ -298,7 +298,8 @@ ConferenceModal.propTypes = {
     selectedContact: PropTypes.object,
     targetUri: PropTypes.string.isRequired,
     defaultDomain: PropTypes.string,
-    lookupContacts: PropTypes.func
+    lookupContacts: PropTypes.func,
+	defaultConferenceDomain: PropTypes.string
 };
 
 export default ConferenceModal;

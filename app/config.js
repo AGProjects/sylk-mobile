@@ -1,22 +1,13 @@
 'use strict';
 
-const defaultDomain = 'sylk.link';
-
 const configOptions = {
-    defaultDomain           : defaultDomain,
-    enrollmentDomain        : defaultDomain,
-    defaultConferenceDomain : `videoconference.sip2sip.info`,
-    defaultGuestDomain      : `guest.${defaultDomain}`,
-    wsServer                : 'wss://webrtc-gateway.sipthor.net:9999/webrtcgateway/ws',
-    publicUrl               : 'https://webrtc.sipthor.net',
+    defaultDomain           : 'sylk.link',
+    wsServer                : 'wss://webrtc-gateway.sipthor.net:9999/webrtcgateway',
+    publicUrl               : 'https://webrtc.sipthor.net', // must be synced with in AndroidManifest.xml and Info.plist
     enrollmentUrl           : 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
     serverCallHistoryUrl    : 'https://blink.sipthor.net/settings-webrtc.phtml',
     serverSettingsUrl       : 'https://mdns.sipthor.net/sip_settings.phtml',
-    fileSharingUrl          : 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
-    fileTransferUrl         : 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filetransfer',
-    iceServers              : [{urls: 'stun:stun.sipthor.net:3478'}],
-    useServerCallHistory    : true,
-    intercomDomains         : []
+    iceServers              : [{urls: 'stun:stun.sipthor.net:3478'}]
 };
 
 
