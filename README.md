@@ -36,55 +36,53 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 ## Features
 
 * 1-to-1 audio and video calls
-* Encrypted end-to-end messaging
+* Encrypted end-to-end text messaging
 * Encrypted end-to-end file transfers
-* Synchronization of multiple devices 
+* Synchronization between multiple devices 
 * Multiparty conferencing for all supported media
 * Call history entries management
 * Native address book lookup
 * Native OS telephony integration
-* Support for multiple devices in parallel
-* Support for multiple cameras
+* Multiparty conferences for all media
 * Support for landscape and portrait modes
-* Support for tablets and phones
 * Interoperable with SIP clients
 * Receive calls from the web
-* Support for Self Sovereign Identity (SSI)
 
-Messages are encrypted end-to-end using OpenPGP.  
+Messages are encrypted end-to-end using OpenPGP. 
 
-File transfer are encrypted end-to-end using OpenPGP whenever possible.
-
-SSI support is based on Hyperledger provided by Indy and Animo SDKs.
+File transfers are encrypted end-to-end using OpenPGP, whenever possible.
 
 
 ## Credits
 
-### Financial support from:
+### Funding partners
 
 * NGI Assure Fund, https://nlnet.nl/assure
 * NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement [No 825310](https://nlnet.nl/project/SylkMobile/)
+* NGI eSSIF-Lab program, in collaboration with [Bloqzone](https://bloqzone.com) [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
+
 
 ### People
 
-* Adrian Georgescu - Project lead
+* Adrian Georgescu - Project lead, maintenace and support
 * Saúl Ibarra Corretgé - Inception architect / original idea
 * Tijmen de Mes - API, Conference, Chat and desktop features
 * Dan Jenkins - WebRTC and React Native mechanic
 * Michiel Leenaars - Strategic guidance
-* Alexander Blom - SSIcomms partnership
-* Karim Stekelenburg - Animo SDK integration
 
 ### Old contributions
 
-SSI functionality has been removed due to unmaintained dependencies.
-
-* NGI eSSIF-Lab program, in collaboration with [Bloqzone](https://bloqzone.com) [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
+* Support for Self Sovereign Identity (SSI): Alexander Blom
 
 
 ## Running dependencies
 
-* Generic SIP infrastructure (SIP proxy server) is required
+Generic SIP server infrastructure is required. For a working
+preconfigured example based on OpenSIPS follow:
+
+* SylkServer https://download.ag-projects.com/SylkServer/INSTALL
+
+Edit app/config.js with your server end-points. 
 
 
 ## Developing dependencies
@@ -162,10 +160,6 @@ git clean -d -x -f
 
 npm rebuild node-sass
 
-3. https://github.com/facebook/create-react-app/issues/4540
-
-brew install watchman or port install watchman
-
 ### Running the app
 
 Use `react-native run-ios --help` and `react-native run-android --help` to give you all you need to know. You shouldn't ever have to build from Xcode or Android Studio.
@@ -204,7 +198,7 @@ Product -> Scheme -> Edit -> Run -> Build Configuration -> Debug
 
 Start Metro:
 
-yarn react-native
+npx react-native start
 
 Find the list of connected devices:
 
@@ -221,6 +215,7 @@ xcodebuild -workspace ios/sylk.xcworkspace -scheme sylk \
 build install
 ```
 
+Or press Run inside the sylk target in Xcode.
 
 ### Running on a specific Android Device
 
