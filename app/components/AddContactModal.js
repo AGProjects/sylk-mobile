@@ -1,127 +1,120 @@
-import React, { Component } from 'react';
+import React, { useState, useEffect } from 'react';
+import { Modal, View, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { Text, Button, Surface, TextInput } from 'react-native-paper';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import PropTypes from 'prop-types';
-import autoBind from 'auto-bind';
-import { View } from 'react-native';
-import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph } from 'react-native-paper';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
-
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
-
 import styles from '../assets/styles/blink/_AddContactModal.scss';
 
+const AddContactModal = ({
+  show,
+  close,
+  saveContact,
+  defaultDomain,
+  displayName: propDisplayName,
+  uri: propUri,
+  organization: propOrg
+}) => {
+  const [uri, setUri] = useState(propUri || '');
+  const [displayName, setDisplayName] = useState(propDisplayName || '');
+  const [organization, setOrganization] = useState(propOrg || '');
 
-class AddContactModal extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
+  useEffect(() => {
+    setUri(propUri || '');
+    setDisplayName(propDisplayName || '');
+    setOrganization(propOrg || '');
+  }, [propUri, propDisplayName, propOrg, show]);
 
-        this.state = {
-            displayName: this.props.displayName,
-            show: this.props.show,
-            uri: null,
-            displayName: null
-        }
-    }
+  const handleSave = () => {
+    saveContact(uri, displayName, organization);
+    close();
+  };
 
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({show: nextProps.show,
-                       displayName: nextProps.displayName,
-                       uri: nextProps.uri,
-                       organization: nextProps.organization
-                       });
-    }
+  const onUriChange = (value) => {
+    const cleaned = value.replace(/\s|\(|\)/g, '').toLowerCase();
+    setUri(cleaned);
+  };
 
-    save(event) {
-        event.preventDefault();
-        this.props.saveContact(this.state.uri, this.state.displayName, this.state.organization);
-        this.props.close();
-    }
+  if (!show) return null;
 
-    onUriChange(value) {
-        value = value.replace(/\s|\(|\)/g, '').toLowerCase();
-        this.setState({uri: value});
-    }
+  return (
+    <Modal
+      visible={show}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={close}
+    >
+      <TouchableWithoutFeedback
+        onPress={() => {
+          Keyboard.dismiss(); // close keyboard if open
+          close(); // dismiss modal
+        }}
+      >
+        <View style={{ flex: 1, justifyContent: 'center' }}>
+          <KeyboardAwareScrollView
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}
+            enableOnAndroid={true}
+            keyboardShouldPersistTaps="handled"
+            extraScrollHeight={80}
+          >
+            <TouchableWithoutFeedback onPress={() => { /* prevent closing when tapping inside form */ }}>
+              <Surface style={[styles.container, { backgroundColor: 'white', borderRadius: 12, padding: 16 }]}>
+                <Text style={styles.title}>Add contact</Text>
 
-    onDisplayChange(value) {
-        this.setState({displayName: value});
-    }
+                <TextInput
+                  mode="flat"
+                  label="Enter user@domain"
+                  onChangeText={onUriChange}
+                  value={uri}
+                  autoCapitalize="none"
+                />
+                <Text style={styles.domain}>
+                  The domain is optional, it defaults to @{defaultDomain}
+                </Text>
 
-    onOrganizationChange(value) {
-        this.setState({organization: value});
-    }
+                <TextInput
+                  mode="flat"
+                  label="Display name"
+                  onChangeText={setDisplayName}
+                  value={displayName}
+                  autoCapitalize="words"
+                />
 
-    render() {
-        return (
-            <Portal>
-                <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
+                <TextInput
+                  mode="flat"
+                  label="Organization"
+                  onChangeText={setOrganization}
+                  value={organization}
+                  autoCapitalize="words"
+                />
 
-                    <Dialog.Title style={styles.title}>Add contact</Dialog.Title>
-                        <TextInput
-                            mode="flat"
-                            name="uri"
-                            label="Enter user@domain"
-                            onChangeText={this.onUriChange}
-                            value={this.state.uri}
-                            required
-                            autoCapitalize="none"
-                        />
-                        <Text style={styles.domain}>
-                             The domain is optional, it defaults to @{this.props.defaultDomain}
-                        </Text>
-
-                        <TextInput
-                            mode="flat"
-                            name="display_name"
-                            label="Display name"
-                            onChangeText={this.onDisplayChange}
-                            required
-                            autoCapitalize="words"
-                        />
-
-                       <TextInput
-                            mode="flat"
-                            name="organization"
-                            label="Organization"
-                            onChangeText={this.onOrganizationChange}
-                            autoCapitalize="words"
-                        />
-
-                        <View style={styles.buttonRow}>
-                        {!this.state.uri ?
-                        <Button
-                            mode="flat"
-                            style={styles.button}
-                            icon="content-save"
-                            accessibilityLabel="Save"
-                            >Save
-                        </Button>
-                        :
-                        <Button
-                            mode="contained"
-                            style={styles.button}
-                            disabled={!this.state.uri}
-                            onPress={this.save}
-                            icon="content-save"
-                            accessibilityLabel="Save"
-                            >Save
-                        </Button>
-                        }
-
-                        </View>
-                    </Surface>
-                </DialogType>
-            </Portal>
-        );
-    }
-}
-
+                <View style={styles.buttonRow}>
+                  <Button
+                    mode={uri ? 'contained' : 'flat'}
+                    style={styles.button}
+                    disabled={!uri}
+                    onPress={handleSave}
+                    icon="content-save"
+                  >
+                    Save
+                  </Button>
+                </View>
+              </Surface>
+            </TouchableWithoutFeedback>
+          </KeyboardAwareScrollView>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 AddContactModal.propTypes = {
-    show       : PropTypes.bool,
-    close      : PropTypes.func.isRequired,
-    saveContact: PropTypes.func,
-    defaultDomain: PropTypes.string
+  show: PropTypes.bool,
+  close: PropTypes.func.isRequired,
+  saveContact: PropTypes.func,
+  defaultDomain: PropTypes.string,
+  displayName: PropTypes.string,
+  uri: PropTypes.string,
+  organization: PropTypes.string,
 };
 
 export default AddContactModal;

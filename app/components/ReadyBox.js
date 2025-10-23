@@ -4,7 +4,8 @@ import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
-import red from 'material-ui/colors/red';
+
+import { red } from '../colors'; 
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';

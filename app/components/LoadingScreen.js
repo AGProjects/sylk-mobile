@@ -5,7 +5,7 @@ import { Title, Modal, Portal, ActivityIndicator, Colors } from 'react-native-pa
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import styles from '../assets/styles/blink/_LoadingScreen.scss';
 
-import red from 'material-ui/colors/red';
+import { red } from '../colors'; 
 
 const LoadingScreen = (props) => {
     let containerClass;
