@@ -7,6 +7,7 @@ import xss from 'xss';
 import {decode as atob, encode as btoa} from 'base-64';
 import RNFS from 'react-native-fs';
 import { Platform } from 'react-native';
+import { generateColor } from './MaterialColors';
 
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
@@ -467,7 +468,7 @@ function generateSillyName() {
 }
 
 function generateMaterialColor(text) {
-    return MaterialColors.generateColor(text);
+    return generateColor(text);
 }
 
 function generateVideoTrack(stream, width = 640, height = 480) {
