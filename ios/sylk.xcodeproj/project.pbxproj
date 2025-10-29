@@ -612,7 +612,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "#export NODE_BINARY=/Users/tijmen/.nvm/versions/node/v18.20.8/bin/node\nexport NODE_BINARY=$(command -v node)\nexport PATH=/opt/homebrew/bin/:$PATH\n../node_modules/react-native/scripts/react-native-xcode.sh\n";
+			shellScript = "export NODE_BINARY=/Users/adigeo/.nvm/versions/node/v21.7.0/bin/node\n#export NODE_BINARY=$(command -v node)\nexport PATH=/opt/homebrew/bin/:$PATH\n../node_modules/react-native/scripts/react-native-xcode.sh\n";
 		};
 		2599BF6E26195FF25B0DBBFC /* [CP-User] [RNFB] Core Configuration */ = {
 			isa = PBXShellScriptBuildPhase;
