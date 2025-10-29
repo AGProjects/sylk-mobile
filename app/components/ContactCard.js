@@ -467,7 +467,9 @@ class ContactCard extends Component {
 									containerStyle={styles.badgeContainer}
 								/>
 							) : null}
+							{this.state.contact.tags.indexOf('synthetic') === -1 ?
 							<Text style={styles.timestamp}>{contact_ts}</Text>
+							: null}
 						</View>
 
 						<Text style={styles.storageText}>{this.state.contact.prettyStorage}</Text>

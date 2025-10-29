@@ -12,9 +12,10 @@ import CallOverlay from './CallOverlay';
 import EscalateConferenceModal from './EscalateConferenceModal';
 import DTMFModal from './DTMFModal';
 import config from '../config';
-import styles from '../assets/styles/blink/_VideoBox.scss';
 //import TrafficStats from './BarChart';
 import utils from '../utils';
+
+import styles from '../assets/styles/VideoCall';
 
 const DEBUG = debug('blinkrtc:Video');
 //debug.enable('*');
@@ -58,8 +59,7 @@ class VideoBox extends Component {
             localStream: this.props.call.getLocalStreams()[0],
             remoteStream: this.props.call.getRemoteStreams()[0],
             showDtmfModal: false,
-            doorOpened: false,
-            localMedia                  : this.props.localMedia,
+            localMedia: this.props.localMedia,
             statistics: []
         };
 
@@ -142,19 +142,6 @@ class VideoBox extends Component {
 
     callStateChanged(oldState, newState, data) {
         this.forceUpdate();
-    }
-
-    openDoor() {
-        const tone = this.props.intercomDtmfTone;
-        this.setState({doorOpened: true});
-        this.forceUpdate();
-
-        dtmf.stopTone(); //don't play a tone at the same time as another
-        dtmf.playTone(dtmf['DTMF_' + tone], 1000);
-
-        if (this.state.call !== null && this.state.call.state === 'established') {
-            this.state.call.sendDtmf(tone);
-        }
     }
 
     componentDidMount() {
@@ -442,6 +429,11 @@ class VideoBox extends Component {
 
         const remoteStreamUrl = this.state.remoteStream ? this.state.remoteStream.toURL() : null
         const show = this.state.callOverlayVisible || this.state.reconnectingCall;
+        
+        console.log('styles.container', styles.container);
+        console.log('styles.remoteVideoContainer', styles.remoteVideoContainer);
+        console.log('styles.localVideoContainer', styles.localVideoContainer);
+        console.log('styles.buttonContainer', styles.buttonContainer);
 
         return (
             <View style={styles.container}>
@@ -464,17 +456,18 @@ class VideoBox extends Component {
                 />
                 {this.state.remoteVideoShow && !this.state.reconnectingCall ?
                         <TouchableWithoutFeedback onPress={this.toggleCallOverlay}>
-                    <View style={[styles.container, styles.remoteVideoContainer]}>
-                            <RTCView
-                                objectFit='cover'
-                                style={[styles.video, styles.remoteVideo]}
-                                poster="assets/images/transparent-1px.png"
-                                ref={this.remoteVideo}
-                                streamURL={remoteStreamUrl}
-                            />
-                    </View>
+							<View style={[styles.container, styles.remoteVideoContainer]}>
+									<RTCView
+										objectFit='cover'
+										style={[styles.video, styles.remoteVideo]}
+										poster="assets/images/transparent-1px.png"
+										ref={this.remoteVideo}
+										streamURL={remoteStreamUrl}
+									/>
+							</View>
                         </TouchableWithoutFeedback>
                     : null }
+
                 { this.state.localVideoShow ?
                         <TouchableWithoutFeedback onPress={this.toggleCamera}>
                     <View style={[styles.localVideoContainer]}>

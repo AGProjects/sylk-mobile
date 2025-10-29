@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity} from 'react-native';
+import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
 
 import { red } from '../colors'; 
@@ -14,16 +14,16 @@ import FooterBox from './FooterBox';
 import URIInput from './URIInput';
 import config from '../config';
 import utils from '../utils';
-import styles from '../assets/styles/blink/_ReadyBox.scss';
 import {Keyboard} from 'react-native';
 import QRCodeScanner from 'react-native-qrcode-scanner';
 import { RNCamera } from 'react-native-camera';
 import AudioRecord from 'react-native-audio-record';
 
-
 import uuid from 'react-native-uuid';
 import RNFetchBlob from "rn-fetch-blob";
 import fileType from 'react-native-file-type';
+
+import styles from '../assets/styles/ReadyBox';
 
 
 class ReadyBox extends Component {
@@ -455,7 +455,7 @@ class ReadyBox extends Component {
 
         let uri = this.state.targetUri.toLowerCase();
 
-        if (uri.endsWith(`@${this.props.defaultConferenceDomain}`)) {
+        if (uri.indexOf('@videoconference.') > -1) {
             let participants;
             if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
                 participants = this.state.myInvitedParties[uri];
@@ -527,7 +527,7 @@ class ReadyBox extends Component {
             }
         }
 
-        if (uri.endsWith(`@${this.props.defaultConferenceDomain}`)) {
+        if (uri.indexOf('@videoconference.') > -1) {
             this.props.startConference(uri, {audio: true, video: false});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: false});
@@ -535,6 +535,7 @@ class ReadyBox extends Component {
     }
 
     handleVideoCall(event) {
+        console.log('handleVideoCall')
         let uri;
 
         if (this.state.selectedContact) {
@@ -555,7 +556,7 @@ class ReadyBox extends Component {
             }
         }
 
-        if (uri.endsWith(`@${this.props.defaultConferenceDomain}`)) {
+        if (uri.indexOf('@videoconference.') > -1) {
             this.props.startConference(uri, {audio: true, video: true});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
@@ -564,6 +565,7 @@ class ReadyBox extends Component {
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
         Keyboard.dismiss();
+        console.log('handleConferenceCall options', options);
         this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants});
         this.props.hideConferenceModalFunc();
     }
@@ -687,7 +689,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (uri.indexOf('@') > -1 && uri.indexOf(this.props.defaultConferenceDomain) === -1) {
+        if (uri.indexOf('@videoconference.') > -1) {
             return true;
         }
 
@@ -1182,10 +1184,12 @@ class ReadyBox extends Component {
         }
 
         let extraStyles = {paddingBottom: Platform.OS === 'android' ? 0 : 0};
-        
+		const { width, height } = Dimensions.get('window');
+		const isLandscape = width > height;
+		const marginRight = isLandscape && Platform.OS === 'android' ? 48 : 0;
         return (
             <Fragment>
-                <View style={styles.container}>
+                <View style={[styles.container, {marginRight: marginRight}]}>
                     <View >
                         {this.showSearchBar && !this.state.isLandscape ?
                         <View style={URIContainerClass}>
@@ -1203,7 +1207,9 @@ class ReadyBox extends Component {
 
                         {this.showButtonsBar ?
                         <View style={uriGroupClass}>
+
                         {this.showSearchBar && this.state.isLandscape ?
+
                         <View style={URIContainerClass}>
                             <URIInput
                                 defaultValue={this.state.searchMessages ? "" : this.state.targetUri}

@@ -214,7 +214,7 @@ class InviteParticipantsModal extends Component {
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
                     <Surface>
-                        <Dialog.Title style={styles.title}>Share web link</Dialog.Title>
+                        <Dialog.Title style={styles.title}>Share web  link</Dialog.Title>
                         {showAutocomplete ?
                         <View>
                         <Autocomplete

@@ -1,110 +1,127 @@
-import React, { Component } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import autoBind from 'auto-bind';
-import { View } from 'react-native';
-import { Dialog, Portal, Text, Button, Surface} from 'react-native-paper';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
-import styles from '../assets/styles/blink/_ExportPrivateKeyModal.scss';
+import { Platform } from 'react-native';
+import { Text, Button, Surface, Checkbox } from 'react-native-paper';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { TouchableWithoutFeedback, View, KeyboardAvoidingView, Modal } from 'react-native';
 
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+import containerStyles from '../assets/styles/ContainerStyles';
+import styles from '../assets/styles/ContentStyles';
 
+const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: propStatus, publicKeyHash, backup: propBackup }) => {
+  const [backupToEmail, setBackupToEmail] = useState(false);
+  const [status, setStatus] = useState('');
+  const [sent, setSent] = useState(false);
 
-class ExportPrivateKeyModal extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
+  // Sync props to state
+  useEffect(() => {
+    setStatus(propStatus || '');
+    setSent(false); // reset sent state when modal is shown again
+    setBackupToEmail(!!propBackup); // auto-check backupToEmail if backup prop is true
+  }, [show, password, propStatus, propBackup]);
 
-        this.state = {
-            password: this.props.password,
-            show: this.props.show,
-            sent: this.props.sent,
-            status: ''
-        }
-    }
+  const disableButton = !password || password.length < 6;
 
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({show: nextProps.show,
-                       password: nextProps.password,
-                       status: nextProps.status || '',
-                       publicKeyHash: nextProps.publicKeyHash,
-                       sent: nextProps.password === this.state.password
-                       });
+  const handleClose = () => {
+    if (close) close();
+  };
 
-    }
+  const handleExport = () => {
+    exportFunc(password, backupToEmail);
+    setSent(true);
+    setStatus('Enter pincode on the other device');
+  };
 
-    save(event) {
-        event.preventDefault();
-        this.props.saveFunc(this.state.password);
-        this.setState({sent: true,
-                       status: 'Enter same pincode on the other devices'});
-    }
+  if (!show) return null;
 
-    get disableButton() {
-        if (!this.state.password || this.state.password.length < 6) {
-            return true;
-        }
+console.log('backup', propBackup);
+  // Conditional title and body based on backup prop
+  const title = propBackup ? 'Backup private key' : 'Export private key';
+  const buttonTitle = propBackup ? 'Backup' : 'Export';
+  const bodyText1 = propBackup
+    ? 'Backup your key so you can restore it at a later time.' // <-- edit this
+    : 'To read messages using Sylk on other devices, you need the same private key on all of them.';
+  const bodyText2 = propBackup
+    ? 'Note down the code to use it when restoring the key'
+    : 'Start Sylk on another device and enter this code when prompted:';
 
-        if (this.state.sent) {
-            return true;
-        }
+  return (
+    <Modal
+      style={containerStyles.container}
+      visible={show}
+      transparent
+      animationType="fade"
+      onRequestClose={handleClose}
+    >
+      <TouchableWithoutFeedback onPress={handleClose}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+          >
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <Surface style={containerStyles.modalSurface}>
+                <Text style={containerStyles.title}>{title}</Text>
 
-        return false;
-    }
+                <KeyboardAwareScrollView
+                  enableOnAndroid={true}
+                  enableAutomaticScroll={true}
+                  extraScrollHeight={120}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <Text style={styles.body}>{bodyText1}</Text>
+                  <Text style={styles.body}>{bodyText2}</Text>
 
-    onInputChange(value) {
-        this.setState({password: value});
-    }
+                  <Text style={styles.pincode}>{password}</Text>
 
-    render() {
+                  {!propBackup && !sent && (
+                    <View style={[styles.checkBoxRow, { justifyContent: 'center', alignItems: 'center', marginVertical: 12 }]}>
+                      <Checkbox
+                        status={backupToEmail ? 'checked' : 'unchecked'}
+                        onPress={() => setBackupToEmail(!backupToEmail)}
+                      />
+                      <Text style={{ marginLeft: 8 }}>Backup key to an email address</Text>
+                    </View>
+                  )}
 
-        return (
-            <Portal>
-                <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>Export private key</Dialog.Title>
-                         <Text style={styles.body}>
-                             To read messages on other devices
-                             you need the same private key on all of them.
-                        </Text>
+                  {!sent && (
+                    <View style={styles.buttonRow}>
+                      <Button
+                        mode="contained"
+                        style={styles.button}
+                        disabled={disableButton}
+                        onPress={handleExport}
+                        icon="content-save"
+                        accessibilityLabel="Export private key"
+                      >
+                        {buttonTitle}
+                      </Button>
+                    </View>
+                  )}
 
-                        <Text style={styles.body}>
-                             Enter this code when prompted on your other device:
-                        </Text>
-
-                        <Text style={styles.pincode}>
-                             {this.state.password}
-                        </Text>
-
-                        <View style={styles.buttonRow}>
-                        <Button
-                            mode="contained"
-                            style={styles.button}
-                            disabled={this.disableButton}
-                            onPress={this.save}
-                            icon="content-save"
-                            accessibilityLabel="Export private key"
-                            >Export
-                        </Button>
-                        </View>
-                        <View style={styles.buttonRow}>
-                         <Text style={styles.status}>
-                             {this.state.status}
-                        </Text>
-                        </View>
-                    </Surface>
-                </DialogType>
-            </Portal>
-        );
-    }
-}
-
+                  {sent && (
+                    <View style={styles.buttonRow}>
+                      <Text style={[styles.status, { marginBottom: 20 }]}>{status}</Text>
+                    </View>
+                  )}
+                </KeyboardAwareScrollView>
+              </Surface>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 ExportPrivateKeyModal.propTypes = {
-    show               : PropTypes.bool,
-    close              : PropTypes.func.isRequired,
-    password           : PropTypes.string,
-    saveFunc           : PropTypes.func.isRequired,
-    publicKeyHash      : PropTypes.string
+  show: PropTypes.bool,
+  close: PropTypes.func,
+  password: PropTypes.string,
+  exportFunc: PropTypes.func,
+  status: PropTypes.string,
+  publicKeyHash: PropTypes.string,
+  backup: PropTypes.bool, // new prop
 };
 
 export default ExportPrivateKeyModal;

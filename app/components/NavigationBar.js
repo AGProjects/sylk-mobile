@@ -1,13 +1,11 @@
 import React, { Component } from 'react';
-import { Linking, Image, Platform, View , TouchableHighlight} from 'react-native';
+import { Linking, Image, Platform, View , TouchableHighlight, Dimensions} from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text, IconButton } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import { SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 
-import config from '../config';
-
-import styles from '../assets/styles/blink/_NavigationBar.scss';
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
 import AboutModal from './AboutModal';
@@ -26,6 +24,9 @@ import SylkAppbarContent from './SylkAppbarContent';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 
+import config from '../config';
+
+import styles from '../assets/styles/NavigationBar';
 
 class NavigationBar extends Component {
     constructor(props) {
@@ -70,7 +71,9 @@ class NavigationBar extends Component {
             sharedFiles: this.props.sharedFiles,
             rejectAnonymous: this.props.rejectAnonymous,
 			rejectNonContacts: this.props.rejectNonContacts,
-			searchMessages: this.props.searchMessages
+			searchMessages: this.props.searchMessages,
+			isLandscape: this.props.isLandscape,
+			backupKey: false
         }
 
         this.menuRef = React.createRef();
@@ -83,7 +86,6 @@ class NavigationBar extends Component {
     get hasMessages() {
         return this.state.selectedContact && Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) > -1 && this.state.messages[this.state.selectedContact.uri].length > 0;
     }
-
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -125,13 +127,18 @@ class NavigationBar extends Component {
  					   sharedFiles: nextProps.sharedFiles,
  					   rejectAnonymous: nextProps.rejectAnonymous,
  					   rejectNonContacts: nextProps.rejectNonContacts,
- 					   searchMessages: nextProps.searchMessages
+ 					   searchMessages: nextProps.searchMessages,
+ 					   isLandscape: nextProps.isLandscape
                        });
 
                     if (nextProps.menuVisible) {
-                        this.setState({menuVisible: nextProps.menuVisible});
                         console.log('Next menu visible', nextProps.menuVisible);
                     }
+                    
+                    if ('backupKey' in nextProps) {
+                        this.setState({backupKey: nextProps.backupKey});
+                    }
+
     }
 
     handleMenu(event) {
@@ -226,6 +233,15 @@ class NavigationBar extends Component {
                     this.props.showImportModal(true);
                 }
                 break;
+            case 'backupPrivateKey':
+                if (this.state.publicKey) {
+					this.setState({backupKey: true});
+                    this.showExportPrivateKeyModal();
+                }
+                break;
+            case 'restorePrivateKey':
+				this.props.showRestoreKeyModalFunc(true);
+                break;
             case 'showPublicKey':
                 this.setState({showEditContactModal: !this.state.showEditContactModal, showPublicKey: true});
                 break;
@@ -243,19 +259,6 @@ class NavigationBar extends Component {
                 break;
         }
         this.setState({menuVisible: false});
-    }
-
-    saveContact(displayName, organization='', email='') {
-        if (!displayName) {
-            return;
-        }
-
-        if (this.state.selectedContact && this.state.selectedContact.uri !== this.state.accountId) {
-            this.props.saveContact(this.state.selectedContact.uri, displayName, organization);
-        } else {
-            this.setState({displayName: displayName});
-            this.props.saveContact(this.state.accountId, displayName, organization, email);
-        }
     }
 
     toggleMute() {
@@ -313,6 +316,10 @@ class NavigationBar extends Component {
         this.setState({showGenerateKeysModal: false});
     }
 
+    hideImportKeysModal() {
+        this.setState({showImportKeysModal: false});
+    }
+
     showEditContactModal() {
         this.setState({showEditContactModal: true,
                        showPublicKey: false});
@@ -348,6 +355,11 @@ class NavigationBar extends Component {
         const password = Math.random().toString().substr(2, 6);
         this.setState({privateKeyPassword: password});
         this.props.showExportPrivateKeyModalFunc()
+    }
+
+    hideExportPrivateKeyModal() {
+        this.setState({backupKey: false});
+        this.props.hideExportPrivateKeyModalFunc()
     }
 
     render() {
@@ -395,6 +407,9 @@ class NavigationBar extends Component {
         let rejectIcon = this.state.rejectAnonymous ? 'door-closed-lock' : 'door-open';
         let isConference = false;
 
+		const friendlyName = this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0] : '';
+		const conferenceUrl = `${config.publicUrl}/conference/${friendlyName}`;
+
         if (this.state.selectedContact) {
             tags = this.state.selectedContact.tags;
             isConference = this.state.selectedContact.conference || tags.indexOf('conference') > -1;
@@ -415,13 +430,15 @@ class NavigationBar extends Component {
         let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
         let isAnonymous = this.state.selectedContact && (this.state.selectedContact.uri.indexOf('@guest.') > -1 || this.state.selectedContact.uri.indexOf('anonymous@') > -1);
-        let isCallableUri = !isConference && !this.state.inCall && !isAnonymous;
+        let isCallableUri = !isConference && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1;
 
         let blockedTitle = (this.state.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
         if (isAnonymous && this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
             blockedTitle = 'Allow anonymous callers';
         }
         
+        let editTitle = isConference ? "Configure..." : "Edit contact...";
+        let deleteTitle = isConference ? "Remove" : "Delete contact...";
         let searchTitle = this.state.searchMessages ? 'End search': 'Search messages...';
         
         let subtitle = this.state.accountId;
@@ -446,31 +463,45 @@ class NavigationBar extends Component {
 				subtitle = this.state.selectedContact.uri;
 			}
 		}
-				
+
+		const { width, height } = Dimensions.get('window');
+		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - 48 : width;
+		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+
         return (
-            <Appbar.Header style={{backgroundColor: 'black'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
+			<View style={{ width: navBarWidth}}>
+                         
+            <Appbar.Header 
+                 style={{backgroundColor: 'black', 
+                         marginLeft: marginLeft,
+                         width: navBarWidth
+                 }} 
+                 statusBarHeight={Platform.OS === "ios" ? 0 : undefined} 
+                 dark
+                 >
+  
                 {showBackButton ?
                 <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
                 : <Image source={blinkLogo} style={styles.logo}/>}
 
 				{this.props.selectedContact ?
-                                <View style={styles.avatarContent}>
-                                        <UserIcon size={35} identity={this.props.selectedContact}/>
-                                </View>
+					<View style={styles.avatarContent}>
+							<UserIcon size={35} identity={this.props.selectedContact}/>
+					</View>
 				: null}
-                                
+                                  
                 <SylkAppbarContent
                     title={title}
                     subtitle={subtitle}
-                    titleStyle={titleStyle}
-                    subtitleStyle={subtitleStyle}
+                    titleStyle={[titleStyle, { marginLeft: 0 }]}
+                    subtitleStyle={[subtitleStyle, { marginLeft: 0 }]}
                 />
 
                 {this.props.isTablet?
                 <Text style={subtitleStyle}>{subtitle} </Text>
                 : null}
 
-                { !this.state.rejectNonContacts && ! this.state.selectedContact?
+                { false && !this.state.rejectNonContacts && ! this.state.selectedContact?
                 <IconButton
                     style={styles.whiteButton}
                     size={18}
@@ -520,13 +551,18 @@ class NavigationBar extends Component {
 
                         { false ? <Menu.Item onPress={() => this.handleMenu('searchMessages')} icon="search" title={searchTitle}/> : null}
 
-						{ !this.state.searchMessages ?
-						<Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title="Edit contact..."/>
-						: null}
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
-                        {!this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share web link..."/> :null}
+                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {tags.indexOf('blocked') === -1 && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
+
+                        {tags.indexOf('blocked') === -1 ?
+                        <Divider />
+						: null}
+                                                
+						{ !this.state.searchMessages ?
+						<Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title={editTitle}/>
+						: null}
 
                         { !this.state.searchMessages && this.hasMessages && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
@@ -547,27 +583,29 @@ class NavigationBar extends Component {
                         : null
                         }
 
-                        {!this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
+                        {!isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
 
-                        {!this.state.searchMessages && this.props.publicKey ?
+                        {!isConference && !this.state.searchMessages && this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
-                        {!this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
+
+                        {!isConference && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
-                        : null}
-                        {!this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
                         <Divider />
 
-                        {!this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
+                        {!isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
+                        : null}
+
+                        {!isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && !this.hasMessages && tags.indexOf('test') === -1?
-                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete contact..."/>
+                        {!this.state.inCall && tags.indexOf('test') === -1?
+                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title={deleteTitle}/>
                         : null}
                         
                     </Menu>
@@ -584,18 +622,32 @@ class NavigationBar extends Component {
                             />
                         }
                     >
+                        {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
+                         : null }
                         {!this.state.syncConversations && !this.state.inCall  ?
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
+                        {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
+                         : null }
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
+                        {!this.state.inCall ?
+                        <Divider />
+                        : null}
 
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Change private key..."/> :null}
+                        {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
+                        {false && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
+
+                        {!this.state.inCall ?
+						<Divider />
+                        : null}
+
                         {false ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
                         {extraMenu ?
                         <View>
 
@@ -603,16 +655,23 @@ class NavigationBar extends Component {
                         </View>
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
-                        {!this.state.rejectNonContacts ?
+
+                        {false && !this.state.rejectNonContacts ?
                         <Menu.Item onPress={() => this.handleMenu('anonymous')} icon={rejectIcon} title={rejectAnonymousTitle} />
                         : null}
                         
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
+                        {false && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
+                         : null }
 
                         {!this.state.inCall ?
-                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
                         <Divider />
+                         : null }
+                        {false ?
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
+                        :null}
+                        {!this.state.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
                     </Menu>
@@ -670,20 +729,21 @@ class NavigationBar extends Component {
                     close={this.hideEditContactModal}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId}
                     displayName={this.state.displayName}
-                    edit={this.state.email}
                     selectedContact={this.state.selectedContact}
                     organization={this.state.organization}
-                    email={this.state.email}
+                    email={this.state.selectedContact ? this.state.selectedContact.email : this.state.email}
                     myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
-                    saveContact={this.saveContact}
-                    deleteContact={this.props.deleteContact}
+                    saveContact={this.props.saveContact}
                     deletePublicKey={this.props.deletePublicKey}
                     publicKey={this.state.showPublicKey ? this.state.publicKey: null}
                     myuuid={this.state.myuuid}
  				    rejectNonContacts={this.state.rejectNonContacts}
  				    toggleRejectNonContacts={this.props.toggleRejectNonContacts}
+					rejectAnonymous={this.state.rejectAnonymous}
+ 				    toggleRejectAnonymous={this.props.toggleRejectAnonymous}
                 />
 
+                { this.state.showEditConferenceModal ?
                 <EditConferenceModal
                     show={this.state.showEditConferenceModal}
                     close={this.closeEditConferenceModal}
@@ -697,29 +757,39 @@ class NavigationBar extends Component {
                     accountId={this.state.accountId}
                     favoriteUris={this.props.favoriteUris}
                 />
+                : null}
 
+                { this.state.showConferenceLinkModal ?
                 <ShareConferenceLinkModal
                     notificationCenter={this.props.notificationCenter}
                     show={this.state.showConferenceLinkModal}
                     close={this.hideConferenceLinkModal}
-                    room={this.state.selectedContact ? this.state.selectedContact.uri: ''}
+                    conferenceUrl={conferenceUrl}
                 />
+                : null}
+                
+				{this.state.showExportPrivateKeyModal && (
+				  <ExportPrivateKeyModal
+					show={this.state.showExportPrivateKeyModal}
+					password={this.state.privateKeyPassword}
+					close={this.hideExportPrivateKeyModal}
+					exportFunc={this.props.exportKey|| (() => {})}
+					publicKeyHash={this.state.publicKeyHash}
+					publicKey={this.state.publicKey}
+					backup={this.state.backupKey}
+				  />
+				)}
 
-                <ExportPrivateKeyModal
-                    show={this.state.showExportPrivateKeyModal}
-                    password={this.state.privateKeyPassword}
-                    close={this.props.hideExportPrivateKeyModalFunc}
-                    saveFunc={this.props.replicateKey}
-                    publicKeyHash={this.state.publicKeyHash}
-                    publicKey={this.state.publicKey}
-                />
-
+                { this.state.showGenerateKeysModal && (
                 <GenerateKeysModal
                     show={this.state.showGenerateKeysModal}
                     close={this.hideGenerateKeysModal}
                     generateKeysFunc={this.props.generateKeysFunc}
-                />
+                />)
+                }
+
             </Appbar.Header>
+</View>
         );
     }
 }
@@ -747,7 +817,7 @@ NavigationBar.propTypes = {
     isTablet           : PropTypes.bool,
     selectedContact    : PropTypes.object,
     goBackFunc         : PropTypes.func,
-    replicateKey       : PropTypes.func,
+    exportKey          : PropTypes.func,
     publicKeyHash      : PropTypes.string,
     publicKey          : PropTypes.string,
     deleteMessages     : PropTypes.func,
@@ -778,6 +848,8 @@ NavigationBar.propTypes = {
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,
     hideExportPrivateKeyModalFunc: PropTypes.func,
+    showRestoreKeyModal: PropTypes.bool,
+    showRestoreKeyModalFunc: PropTypes.func,
     blockedUris: PropTypes.array,
     myuuid: PropTypes.string,
     resumeTransfers: PropTypes.func,
@@ -796,7 +868,8 @@ NavigationBar.propTypes = {
     rejectNonContacts: PropTypes.bool,
     toggleRejectNonContacts: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
-    searchMessages: PropTypes.bool
+    searchMessages: PropTypes.bool,
+    isLandscape: PropTypes.bool
 };
 
 export default NavigationBar;

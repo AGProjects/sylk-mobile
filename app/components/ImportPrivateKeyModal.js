@@ -139,12 +139,12 @@ class ImportPrivateKeyModal extends Component {
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>Another device?</Dialog.Title>
+                            <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
                              <Text style={styles.body}>
-                                 You have used messaging on more than one device. To decrypt messages, you need the same private key on all devices.
+                                 You have used Sylk on more than one device or perhaps you have deleted Sylk from this device. To decrypt your messages, you need the same private key on all devices.
                             </Text>
                              <Text style={styles.body}>
-                                 To use the private key from another device, choose on that device to menu option 'Export private key'.
+                                 To use the private key from another device, on that device chose the menu option 'Export private key'.
                             </Text>
                             <View style={styles.buttonRow}>
                             <Button
@@ -165,7 +165,7 @@ class ImportPrivateKeyModal extends Component {
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
-                            <Dialog.Title style={styles.title}>Another device?</Dialog.Title>
+                            <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
                              <Text style={styles.body}>
                                  To decrypt messages, you need the same private key on all devices.
                             </Text>
@@ -174,7 +174,7 @@ class ImportPrivateKeyModal extends Component {
                             </Text>
 
                              <Text style={styles.body}>
-                                 In case you lost access to your old devices, you must generate a new key. If you do this, older message cannot be read anymore.
+                                 In case you lost access to your old devices, you must generate a new key or restore it from a previous backup. If you generate a new key, older message cannot be read anymore.
                             </Text>
                             <View style={styles.buttonRow}>
                             <Button

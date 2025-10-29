@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, View, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import { Text, Button, Surface, TextInput } from 'react-native-paper';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import PropTypes from 'prop-types';
-import styles from '../assets/styles/blink/_AddContactModal.scss';
+
+import containerStyles from '../assets/styles/ContainerStyles';
+import styles from '../assets/styles/ContentStyles';
 
 const AddContactModal = ({
   show,
@@ -25,7 +26,14 @@ const AddContactModal = ({
   }, [propUri, propDisplayName, propOrg, show]);
 
   const handleSave = () => {
-    saveContact(uri, displayName, organization);
+    const contact = {uri: uri, 
+                     displayName: displayName,
+                     organization: organization,
+                     email: ''
+                     }
+    console.log('Add contact', contact);
+  
+    saveContact(contact);
     close();
   };
 
@@ -36,71 +44,77 @@ const AddContactModal = ({
 
   if (!show) return null;
 
+  const title = "Add contact";
+
   return (
     <Modal
+	  style={containerStyles.container}
       visible={show}
-      transparent={true}
+      transparent
       animationType="fade"
-      onRequestClose={close}
+      onRequestClose={close} // Android back button
     >
-      <TouchableWithoutFeedback
-        onPress={() => {
-          Keyboard.dismiss(); // close keyboard if open
-          close(); // dismiss modal
-        }}
-      >
-        <View style={{ flex: 1, justifyContent: 'center' }}>
-          <KeyboardAwareScrollView
-            contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}
-            enableOnAndroid={true}
-            keyboardShouldPersistTaps="handled"
-            extraScrollHeight={80}
+
+      {/* Dismiss modal when tapping outside */}
+      <TouchableWithoutFeedback onPress={close}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
           >
-            <TouchableWithoutFeedback onPress={() => { /* prevent closing when tapping inside form */ }}>
-              <Surface style={[styles.container, { backgroundColor: 'white', borderRadius: 12, padding: 16 }]}>
-                <Text style={styles.title}>Add contact</Text>
+            {/* Prevent taps inside modal from dismissing */}
+            <TouchableWithoutFeedback onPress={() => {}}>
 
-                <TextInput
-                  mode="flat"
-                  label="Enter user@domain"
-                  onChangeText={onUriChange}
-                  value={uri}
-                  autoCapitalize="none"
-                />
-                <Text style={styles.domain}>
-                  The domain is optional, it defaults to @{defaultDomain}
-                </Text>
+   		    <Surface style={containerStyles.modalSurface}>
+            {/* Modal content start */}
+				<Text style={containerStyles.title}>{title}</Text>
 
-                <TextInput
-                  mode="flat"
-                  label="Display name"
-                  onChangeText={setDisplayName}
-                  value={displayName}
-                  autoCapitalize="words"
-                />
+			{/* Scrollable content above buttons */}
+			<ScrollView
+			  style={containerStyles.scrollContainer}
+			  contentContainerStyle={{ flexGrow: 1 }}
+			  keyboardShouldPersistTaps="handled"
+			>
+			  <TextInput
+				mode="flat"
+				label="Enter user@domain"
+				onChangeText={onUriChange}
+				value={uri}
+  			    autoCapitalize="none"
+			    autoCorrect={false}
+			  />
+	
+			  <TextInput
+				mode="flat"
+				label="Display name"
+				onChangeText={setDisplayName}
+				value={displayName}
+			    autoCorrect={false}
+				autoCapitalize="words"
+			  />
+	
+			</ScrollView>
 
-                <TextInput
-                  mode="flat"
-                  label="Organization"
-                  onChangeText={setOrganization}
-                  value={organization}
-                  autoCapitalize="words"
-                />
+			  <Text style={containerStyles.note}>
+				The domain part is optional, it defaults to @{defaultDomain}
+			  </Text>
+	
+			  <View style={styles.buttonRow}>
+					<Button
+					  mode={uri ? 'contained' : 'flat'}
+					  style={styles.button}
+					  disabled={!uri}
+					  onPress={handleSave}
+					  icon="content-save"
+					>
+					  Save
+					</Button>
+			   </View>
 
-                <View style={styles.buttonRow}>
-                  <Button
-                    mode={uri ? 'contained' : 'flat'}
-                    style={styles.button}
-                    disabled={!uri}
-                    onPress={handleSave}
-                    icon="content-save"
-                  >
-                    Save
-                  </Button>
-                </View>
+               {/* Modal content end */}
               </Surface>
             </TouchableWithoutFeedback>
-          </KeyboardAwareScrollView>
+          </KeyboardAvoidingView>
         </View>
       </TouchableWithoutFeedback>
     </Modal>
@@ -118,3 +132,4 @@ AddContactModal.propTypes = {
 };
 
 export default AddContactModal;
+

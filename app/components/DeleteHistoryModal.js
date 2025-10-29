@@ -220,7 +220,7 @@ class DeleteHistoryModal extends Component {
                                 <Dialog.Title style={styles.title}>Delete contact</Dialog.Title>
                             </View>
 
-                            <Text style={styles.body}>Are you sure you want to delete {this.state.uri} from your contacts list?</Text>
+                            <Text style={styles.body}>Are you sure you want to delete {this.state.uri}?</Text>
 
                             <View style={styles.buttonRow}>
                                 <Button

@@ -17,12 +17,6 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import DocumentPicker from 'react-native-document-picker';
 import RNFetchBlob from "rn-fetch-blob";
 import VideoPlayer from 'react-native-video-player';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
-import Immersive from 'react-native-immersive';
-import { getStatusBarHeight } from 'react-native-status-bar-height';
-import ExtraDimensions from 'react-native-extra-dimensions-android';
-
-import { useEffect, useRef } from 'react';
 
 import uuid from 'react-native-uuid';
 
@@ -85,31 +79,10 @@ function toTitleCase(str) {
     );
 }
 
-function usePrevious(value) {
-  const ref = useRef();
-  useEffect(() => {
-    ref.current = value;
-  }, [value]);
-  return ref.current;
-}
-
-function useLogChanges(label, value) {
-  const prevValue = usePrevious(value);
-  useEffect(() => {
-    if (prevValue !== undefined && JSON.stringify(prevValue) !== JSON.stringify(value)) {
-      console.log(`--- ${label} changed ---`);
-      console.log('previous:', prevValue);
-      console.log('current:', value);
-    }
-  }, [value]);
-}
-
 class ConferenceBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        
-        this.prevValues = {};
 
         this.downloadRequests = {};
 
@@ -126,10 +99,12 @@ class ConferenceBox extends Component {
         this.myself = null;
 
         let renderMessages = [];
-        this.participantStats = {};
+        this.participantStats = [];
         if (this.props.remoteUri in this.props.messages) {
             renderMessages = this.props.messages[this.props.remoteUri];
         }
+
+        this.audioViewMinHeight = 170;
 
         let duration = 0;
 
@@ -216,8 +191,7 @@ class ConferenceBox extends Component {
             isLandscape: this.props.isLandscape,
             selectedContacts: this.props.selectedContacts,
             activeDownloads: {},
-            myVideoCorner: 'bottomRight',
-            enableMyVideo: true,
+            myVideoCorner: 'topLeft',
             offset          : 0,
             topHeight       : Dimensions.get('window').height - bottomHeight,
             bottomHeight    : bottomHeight,
@@ -231,6 +205,12 @@ class ConferenceBox extends Component {
         //} else {
         //    this.conferenceUrl = `${window.location.origin}/conference/${friendlyName}`;
         //}
+
+        const emailMessage  = `You can join me in the conference using a Web browser at ${this.conferenceUrl} ` +
+                             'or by using the freely available Sylk WebRTC client app at http://sylkserver.com';
+        const subject       = 'Join me, maybe?';
+
+        this.emailLink = `mailto:?subject=${encodeURI(subject)}&body=${encodeURI(emailMessage)}`;
 
         this.overlayTimer = null;
         this.logEvent = {};
@@ -257,7 +237,9 @@ class ConferenceBox extends Component {
         });
 
         this.invitedParticipants = new Map();
-        //console.log('Initial call duration', duration);
+        // TODO preserve this list between route changes
+
+        console.log('Initial call duration', duration);
 
         props.initialParticipants.forEach((uri) => {
             const existing_participants = participants.filter(p => p.identity._uri === uri);
@@ -300,7 +282,7 @@ class ConferenceBox extends Component {
         this.props.call.on('composingIndication', this.composingIndicationReceived);
         this.props.call.on('message', this.messageReceived);
 
-        this.fullScreenTimer();
+        this.armOverlayTimer();
 
         // attach to ourselves first if there are no other participants
         if (this.state.participants.length === 0) {
@@ -332,13 +314,9 @@ class ConferenceBox extends Component {
         if (this.state.selectedContacts) {
             this.inviteParticipants(this.state.selectedContacts);
         }
-        //this.props.call.statistics.on('stats', this.statistics);
+        this.props.call.statistics.on('stats', this.statistics);
     }
     
-    get fullScreen() {
-		return !this.state.callOverlayVisible;
-	}
-        
     get conferenceStarted() {
 		return this.state.participants.length > 0;
 	}
@@ -352,7 +330,20 @@ class ConferenceBox extends Component {
         })
         this.keyboardDidShowListener.remove();
         this.keyboardDidHideListener.remove();
-        //this.props.call.statistics.removeListener('stats', this.statistics);
+        this.props.call.statistics.removeListener('stats', this.statistics);
+    }
+
+    get chatViewHeight() {
+        const wh = Dimensions.get('window').height;
+        const kh = this.state.keyboardHeight;
+        const sh = (Platform.OS === 'android') ? StatusBar.currentHeight : 0;
+        //console.log('window height', Math.floor(wh));
+        //console.log('keyboa height', Math.floor(kh));
+        //console.log('status height', Math.floor(sh));
+
+        let ah = Platform.OS === 'android' ? wh - kh - sh - 30: wh - 50;
+        //console.log('Available height', Math.floor(ah));
+        return ah;
     }
 
     messageExists(giftedChatMessage, sylkMessage) {
@@ -450,10 +441,6 @@ class ConferenceBox extends Component {
                 });
             }
         }
-        
-        if ('enableMyVideo' in nextProps) {
-            this.setState({enableMyVideo: nextProps.enableMyVideo});
-        }
 
         if (nextProps.bottomHeight) {
             this.setState({
@@ -474,6 +461,171 @@ class ConferenceBox extends Component {
 
     }
 
+    statistics(stats) {
+        const { video: videoData, audio: audioData, remote: remoteData } = stats.data;
+        const audioRemoteData = remoteData.audio;
+        const videoRemoteData = remoteData.video;
+
+        const videoRemoteExists = videoRemoteData?.inbound?.[0];
+        const audioRemoteExists = audioRemoteData?.inbound?.[0];
+        const peerId = stats.peerId;
+        const callId = this.props.call.id;
+
+        // Participant-specific stats (not current call)
+        if (peerId !== callId) {
+            if (!this.participantStats[peerId]) {
+                this.participantStats[peerId] = {
+                    packetLossData: new Array(MAX_POINTS).fill(null) // fill with null to avoid shared refs
+                };
+            }
+
+            const participant = this.participantStats[peerId];
+            participant.lastData = stats;
+
+            let packetLossRate = 0;
+            let packetRate = 0;
+            
+            //console.log(participant.packetLossData);
+
+            // Helper function to safely access first element
+            const firstInbound = (data) => data?.inbound?.[0];
+            const firstOutbound = (data) => data?.outbound?.[0];
+
+            // Audio inbound
+            const audioInbound = firstInbound(audioData);
+            if (audioInbound) {
+                packetRate += audioInbound.packetRate || 0;
+                packetLossRate += audioInbound.packetLossRate || 0;
+            }
+
+            // Audio outbound (if remote exists)
+            const audioOutbound = firstOutbound(audioData);
+            if (audioOutbound && audioRemoteExists) {
+                packetRate += audioOutbound.packetRate || 0;
+                packetLossRate += audioRemoteData.inbound[0].packetLossRate || 0;
+            }
+
+            // Video inbound
+            const videoInbound = firstInbound(videoData);
+            if (videoInbound) {
+                packetRate += videoInbound.packetRate || 0;
+                packetLossRate += videoInbound.packetLossRate || 0;
+            }
+
+            // Video outbound (if remote exists)
+            const videoOutbound = firstOutbound(videoData);
+            if (videoOutbound && videoRemoteExists) {
+                packetRate += videoOutbound.packetRate || 0;
+                packetLossRate += videoRemoteData.inbound[0].packetLossRate || 0;
+            }
+
+            // Add new packet loss data point, keep last 30 entries
+            participant.packetLossData.push({
+                packetsLostInbound: packetLossRate,
+                packetRateInbound: packetRate,
+                latency: 0
+            });
+            if (participant.packetLossData.length > 30) {
+                participant.packetLossData.shift();
+            }
+
+            return; // Done processing participant stats
+        }
+
+        // Global stats for current call
+
+        if (!videoRemoteExists && !audioRemoteExists) return;
+
+        // Aggregate inbound bitrates and packet loss/rates for all participants
+        let inboundVideoBitrate = 0;
+        let inboundAudioBitrate = 0;
+
+        let videoPacketsLostInbound = 0;
+        let audioPacketsLostInbound = 0;
+
+        let videoPacketRateInbound = 0;
+        let audioPacketRateInbound = 0;
+
+        this.state.participants.forEach(({ id }) => {
+            const participantStats = this.participantStats[id];
+            //console.log(participantStats);
+            if (!participantStats?.lastData) return;
+
+            const pVideoInbound = participantStats.lastData.data.video?.inbound?.[0];
+            if (pVideoInbound) {
+                inboundVideoBitrate += pVideoInbound.bitrate || 0;
+                videoPacketsLostInbound += pVideoInbound.packetLossRate || 0;
+                videoPacketRateInbound += pVideoInbound.packetRate || 0;
+            }
+
+            // this.mediaLost.set(id, Math.floor(participantStats.lastData.data.audio.inbound[0].audioOutputLevel) < 5 ? true : false);
+            const pAudioInbound = participantStats.lastData.data.audio?.inbound?.[0];
+            if (pAudioInbound) {
+                inboundAudioBitrate += pAudioInbound.bitrate || 0;
+                audioPacketsLostInbound += pAudioInbound.packetLossRate || 0;
+                audioPacketRateInbound += pAudioInbound.packetRate || 0;
+            }
+        });
+
+        // Remote outbound stats
+        const audioOutbound = audioData?.outbound?.[0];
+        const videoOutbound = videoData?.outbound?.[0];
+
+        const audioRTT = audioRemoteExists ? audioRemoteData.inbound[0].roundTripTime || 0 : 0;
+        const videoRTT = videoRemoteExists ? videoRemoteData.inbound[0].roundTripTime || 0 : 0;
+
+        const audioPacketsLostOutbound = audioRemoteExists ? audioRemoteData.inbound[0].packetLossRate || 0 : 0;
+        const videoPacketsLostOutbound = videoRemoteExists ? videoRemoteData.inbound[0].packetLossRate || 0 : 0;
+
+        const audioPacketRateOutbound = (audioOutbound && audioRemoteExists) ? audioOutbound.packetRate || 0 : 0;
+        const videoPacketRateOutbound = (videoOutbound && videoRemoteExists) ? videoOutbound.packetRate || 0 : 0;
+
+        // Prepare data for state update
+        const addData = {
+            audio: {
+                timestamp: audioData.timestamp,
+                incomingBitrate: inboundAudioBitrate,
+                outgoingBitrate: audioOutbound?.bitrate || 0,
+                latency: audioRTT / 2,
+                jitter: 0, // Not collected
+                packetsLostOutbound: audioPacketsLostOutbound,
+                packetsLostInbound: audioPacketsLostInbound,
+                packetRateOutbound: audioPacketRateOutbound,
+                packetRateInbound: audioPacketRateInbound,
+            },
+            video: videoRemoteExists ? {
+                timestamp: videoData.timestamp,
+                incomingBitrate: inboundVideoBitrate,
+                outgoingBitrate: videoOutbound?.bitrate || 0,
+                latency: videoRTT / 2,
+                jitter: 0, // Not collected
+                packetsLostOutbound: videoPacketsLostOutbound,
+                packetsLostInbound: videoPacketsLostInbound,
+                packetRateOutbound: videoPacketRateOutbound,
+                packetRateInbound: videoPacketRateInbound,
+            } : {}
+        };
+
+        let info;
+        let bandwidthDownload = inboundVideoBitrate + addData.audio.incomingBitrate;
+        let bandwidthUpload = (addData.video.outgoingBitrate || 0) + addData.audio.outgoingBitrate;
+
+        if (bandwidthDownload > 0 && bandwidthUpload > 0) {
+            info = '⇣' + appendBits(bandwidthDownload) + ' ⇡' + appendBits(bandwidthUpload);
+        } else if (bandwidthDownload > 0) {
+            info = '⇣' + appendBits(bandwidthDownload);
+        } else if (bandwidthUpload > 0) {
+            info = '⇡' + appendBits(bandwidthUpload);
+        }
+
+        this.setState(state => {
+            const statistics = [...state.statistics, addData].slice(-MAX_POINTS);
+            return {
+                statistics,
+                info
+            };
+        });
+    }
 
     saveConferenceMessage(uri, message) {
         this.props.saveConferenceMessage(uri, message);
@@ -1119,7 +1271,7 @@ class ConferenceBox extends Component {
             participants_uris.push(p.identity._uri);
         });
 
-        this.getConnectionStats();
+        //this.getConnectionStats();
 
         const invitedParties = Array.from(this.invitedParticipants.keys());
         //console.log('Invited participants', invitedParties);
@@ -1294,7 +1446,7 @@ class ConferenceBox extends Component {
     }
 
      onParticipantJoined(p) {
-        //console.log(p.identity.uri, 'joined the conference');
+        console.log(p.identity.uri, 'joined the conference');
         if (p.identity._uri.search('guest.') === -1) {
             if (p.identity._uri !== this.props.call.localIdentity._uri) {
                 // used for history item
@@ -1318,176 +1470,8 @@ class ConferenceBox extends Component {
             participants: this.state.participants.concat([p])
         });
         // this.changeResolution();
-        this.fullScreenTimer();
+        this.armOverlayTimer();
     }
-
-	async getConnectionStats() {
-		try {
-			// --- Initialize all maps if they don’t exist
-			this.audioBytesReceived = this.audioBytesReceived || new Map();
-			this.videoBytesReceived = this.videoBytesReceived || new Map();
-			this.audioBandwidth = this.audioBandwidth || new Map();
-			this.videoBandwidth = this.videoBandwidth || new Map();
-			this.audioPacketLoss = this.audioPacketLoss || new Map();
-			this.videoPacketLoss = this.videoPacketLoss || new Map();
-			this.packetLoss = this.packetLoss || new Map();
-			this.latency = this.latency || new Map();
-			this.mediaLost = this.mediaLost || new Map();
-	
-			if (this.state.participants.length === 0) {
-				// console.log("No participants, resetting bandwidth");
-				this.bandwidthDownload = 0;
-				this.bandwidthUpload = 0;
-				this.videoBandwidth.set('total', 0);
-				this.audioBandwidth.set('total', 0);
-				return;
-			}
-	
-			const participants = this.state.participants.concat(this.props.call);
-			// console.log("Participants to process:", participants.length);
-	
-			for (const p of participants) {
-				if (!p._pc) {
-					// console.log("Skipping participant with no peer connection:", p.id || p);
-					continue;
-				}
-	
-				const identity = p.identity ? p.identity.uri : 'myself';
-				// console.log("Processing participant:", identity);
-	
-				// Ensure per-participant map entries
-				if (!this.audioBytesReceived.has(p.id)) this.audioBytesReceived.set(p.id, 0);
-				if (!this.videoBytesReceived.has(p.id)) this.videoBytesReceived.set(p.id, 0);
-				if (!this.audioBandwidth.has(p.id)) this.audioBandwidth.set(p.id, 0);
-				if (!this.videoBandwidth.has(p.id)) this.videoBandwidth.set(p.id, 0);
-				if (!this.latency.has(p.id)) this.latency.set(p.id, 0);
-				if (!this.audioPacketLoss.has(p.id)) this.audioPacketLoss.set(p.id, 0);
-				if (!this.videoPacketLoss.has(p.id)) this.videoPacketLoss.set(p.id, 0);
-				if (!this.packetLoss.has(p.id)) this.packetLoss.set(p.id, 0);
-	
-				try {
-					const stats = await p._pc.getStats();
-					// console.log("Stats received for", identity, stats.size);
-	
-					let audioPackets = 0,
-						videoPackets = 0,
-						audioPacketsLost = 0,
-						videoPacketsLost = 0;
-	
-					let totalPackets = 0,
-						totalPacketsLost = 0;
-	
-					let totalAudioBandwidth = 0,
-						totalVideoBandwidth = 0,
-						bandwidthUpload = 0;
-	
-					stats.forEach(report => {
-						try {
-							const kind = report.kind; // "audio" or "video"
-	
-							// --- Inbound media (received from remote)
-							if (report.type === "inbound-rtp" && identity !== 'myself') {
-								const { bytesReceived, packetsReceived, packetsLost } = report;
-								if (bytesReceived !== undefined) {
-									const lastBytes = kind === 'audio'
-										? this.audioBytesReceived.get(p.id)
-										: this.videoBytesReceived.get(p.id);
-									const diff = bytesReceived - lastBytes;
-									const speed = Math.floor(diff / this.sampleInterval * 8 / 1000);
-									if (kind === 'audio') {
-										totalAudioBandwidth += speed;
-										this.audioBandwidth.set(p.id, speed);
-										this.audioBytesReceived.set(p.id, bytesReceived);
-									} else if (kind === 'video') {
-										totalVideoBandwidth += speed;
-										this.videoBandwidth.set(p.id, speed);
-										this.videoBytesReceived.set(p.id, bytesReceived);
-									}
-									// console.log(`[${identity}] ${kind} inbound speed: ${speed} kbps`);
-								}
-	
-								if (packetsReceived !== undefined && packetsLost !== undefined) {
-									totalPackets += packetsReceived;
-									totalPacketsLost += packetsLost;
-									if (kind === 'audio') {
-										audioPackets += packetsReceived;
-										audioPacketsLost += packetsLost;
-									} else if (kind === 'video') {
-										videoPackets += packetsReceived;
-										videoPacketsLost += packetsLost;
-									}
-									// console.log(`[${identity}] ${kind} inbound packets received: ${packetsReceived}, lost: ${packetsLost}`);
-								}
-							}
-	
-							// --- Outbound media (sent by us)
-							if (report.type === "outbound-rtp" && identity === 'myself') {
-								const { bytesSent, packetsSent } = report;
-								if (bytesSent !== undefined) {
-									const lastBytes = kind === 'audio'
-										? this.audioBytesReceived.get(p.id)
-										: this.videoBytesReceived.get(p.id);
-									const diff = bytesSent - lastBytes;
-									const speed = Math.floor(diff / this.sampleInterval * 8 / 1000);
-									bandwidthUpload += speed;
-									if (kind === 'audio') this.audioBandwidth.set(p.id, speed);
-									else if (kind === 'video') this.videoBandwidth.set(p.id, speed);
-									if (kind === 'audio') this.audioBytesReceived.set(p.id, bytesSent);
-									else this.videoBytesReceived.set(p.id, bytesSent);
-									// console.log(`[${identity}] ${kind} outbound speed: ${speed} kbps`);
-								}
-	
-								if (packetsSent !== undefined) {
-									totalPackets += packetsSent;
-									// console.log(`[${identity}] ${kind} outbound packets sent: ${packetsSent}`);
-								}
-							}
-	
-							// --- Latency / RTT
-							if ((report.type === "remote-inbound-rtp" || report.type === "transport") && report.roundTripTime !== undefined) {
-								const delay = report.roundTripTime * 1000; // ms
-								this.latency.set(p.id, Math.ceil(delay));
-								// console.log(`[${identity}] RTT from ${report.type}: ${delay.toFixed(2)} ms`);
-							}
-	
-							if (report.type === "candidate-pair" && report.state === "succeeded" && report.currentRoundTripTime !== undefined) {
-								const delay = report.currentRoundTripTime * 1000;
-								this.latency.set(p.id, Math.ceil(delay));
-								// console.log(`[${identity}] RTT from candidate-pair: ${delay.toFixed(2)} ms`);
-							}
-	
-						} catch (err) {
-							console.warn("Error processing report", report.type, err);
-						}
-					});
-	
-					// --- Compute packet loss %
-					const audioPacketLoss = audioPackets > 0 ? Math.floor(audioPacketsLost / audioPackets * 100) : 100;
-					const videoPacketLoss = videoPackets > 0 ? Math.floor(videoPacketsLost / videoPackets * 100) : 100;
-					const totalPacketLoss = totalPackets > 0 ? Math.floor(totalPacketsLost / totalPackets * 100) : 100;
-	
-					this.audioPacketLoss.set(p.id, audioPacketLoss);
-					this.videoPacketLoss.set(p.id, videoPacketLoss);
-					this.packetLoss.set(p.id, totalPacketLoss);
-	
-					// --- Update totals
-					this.bandwidthDownload = totalAudioBandwidth + totalVideoBandwidth;
-					this.bandwidthUpload = bandwidthUpload;
-					this.videoBandwidth.set('total', totalVideoBandwidth);
-					this.audioBandwidth.set('total', totalAudioBandwidth);
-	
-					// console.log(`[${identity}] audio loss: ${audioPacketLoss}%, video loss: ${videoPacketLoss}%, total loss: ${totalPacketLoss}%`);
-					// console.log(`[${identity}] audio bandwidth: ${totalAudioBandwidth} kbps, video bandwidth: ${totalVideoBandwidth} kbps`);
-					// console.log(`[${identity}] latency: ${this.latency.get(p.id)} ms`);
-	
-				} catch (err) {
-					console.error("Error getting stats for participant", identity, err);
-				}
-			}
-		} catch (err) {
-			console.error("Error in getConnectionStats", err);
-		}
-	}
 
     onParticipantLeft(p) {
         console.log(p.identity.uri, 'left the conference');
@@ -1497,11 +1481,11 @@ class ConferenceBox extends Component {
         this.packetLoss.delete(p.id);
         this.mediaLost.delete(p.id);
         
-        //console.log(this.participantStats);
-        
-		if (this.participantStats[p.id]) {
-			delete this.participantStats[p.id];
-		}
+		try {
+			this.participantStats.delete(p.id);
+		} catch (error) {
+		    console.log(error);
+        }
 
         const idx = participants.indexOf(p);
         if (idx !== -1) {
@@ -1510,13 +1494,9 @@ class ConferenceBox extends Component {
                 participants: participants
             });
         }
-        
         p.detach(true);
         // this.changeResolution();
-
-        setTimeout(() => {
-			this.exitFullScreenIfAlone();
-		}, 100);
+        this.armOverlayTimer();
 
         this.postChatSystemMessage(p.identity.uri + ' left', false);
     }
@@ -1593,16 +1573,30 @@ class ConferenceBox extends Component {
         }
     }
 
+    handleClipboardButton() {
+        utils.copyToClipboard(this.conferenceUrl);
+        this.props.notificationCenter().postSystemNotification('Join me, maybe?', {body: 'Link copied to the clipboard'});
+        this.setState({shareOverlayVisible: false});
+    }
+
+    handleEmailButton(event) {
+        // if (navigator.userAgent.indexOf('Chrome') > 0) {
+        //     let emailWindow = window.open(this.emailLink, '_blank');
+        //     setTimeout(() => {
+        //         emailWindow.close();
+        //     }, 500);
+        // } else {
+        //     window.open(this.emailLink, '_self');
+        // }
+        this.setState({shareOverlayVisible: false});
+    }
+
     handleShareOverlayEntered() {
         this.setState({shareOverlayVisible: true});
     }
 
     handleShareOverlayExited() {
         this.setState({shareOverlayVisible: false});
-    }
-
-    toggleMyVideo() {
-        this.setState({enableMyVideo: !this.state.enableMyVideo});    
     }
 
     handleActiveSpeakerSelected(participant, secondVideo=false) {      // eslint-disable-line space-infix-ops
@@ -1730,55 +1724,30 @@ class ConferenceBox extends Component {
         this.props.hangup('user_hangup_conference');
     }
 
-    fullScreenTimer() {
+    armOverlayTimer() {
         if (this.props.audioOnly) {
             return;
         }
+        this.setState({callOverlayVisible: true});
 
-		clearTimeout(this.overlayTimer);
-
-        if (this.state.participants.length > 0 && !this.state.chatView) {
+        if (this.state.participants.length > 0) {
+            clearTimeout(this.overlayTimer);
             this.overlayTimer = setTimeout(() => {
                 this.setState({callOverlayVisible: false});
-				StatusBar.setHidden(true, 'fade');   // hide
-				if (Platform.OS === 'android') {
-					Immersive.on();
-				}
-            }, 15000);
+            }, 5000);
         }
     }
 
-    toggleFullScreen() {
-		//console.log(' --toggleFullScreen');
-		if (this.state.callOverlayVisible && !this.state.chatView && !this.props.audioOnly) {			
-			this.setState({callOverlayVisible: !this.state.callOverlayVisible});
-			StatusBar.setHidden(true, 'fade');   // hide
-			if (Platform.OS === 'android') {
-				Immersive.on();
-			}
-			this.fullScreenTimer();
-		} else {
-			this.setState({callOverlayVisible: true});
-			StatusBar.setHidden(false, 'fade');   // hide
-			if (Platform.OS === 'android') {
-				Immersive.off();
-			}
-		}
-    }
-
-    exitFullScreenIfAlone() {
-        if (this.state.participants.length > 0) {
-            console.log('Still not alone');
-			return;
-        } 
-
-		clearTimeout(this.overlayTimer);
-
-		this.setState({callOverlayVisible: true});
-		StatusBar.setHidden(false, 'fade');
-		if (Platform.OS === 'android') {
-			Immersive.off();
-		}
+    showOverlay() {
+        if (this.props.audioOnly) {
+            return;
+        }
+        // if (!this.state.shareOverlayVisible && !this.state.showDrawer && !this.state.showFiles) {
+        // if (!this.state.callOverlayVisible) {
+                this.setState({callOverlayVisible: !this.state.callOverlayVisible});
+        // }
+        this.armOverlayTimer();
+        // }
     }
 
     toggleInviteModal() {
@@ -1821,72 +1790,16 @@ class ConferenceBox extends Component {
         this.props.finishInvite();
         this.forceUpdate()
     }
-    
-    get amIspeaker() {
-		return this.state.activeSpeakers.some(speaker => {
-			return speaker.identity && speaker.identity._uri === this.state.accountId;
-		});
-	}
-
-    get showMyself() {
-		if (this.state.participants.length == 3) {
-			return false;
-		}
-		
-		if (this.amIspeaker) {
-			return false;		
-		}
-		
-		if (!this.state.enableMyVideo) {
-			return false;
-		}
-				
-		if (this.state.showDrawer) {
-			return false;
-		}
-		        
-        return !this.state.videoMuted && !this.state.chatView;
-    }
-    
-	getVideoLayout() {
-		const count = Math.min(this.state.participants.length, 4); // max 4 participants
-		const isLandscape = this.state.isLandscape;
-	
-		let container = {};
-		let item = {};
-	
-		switch (count) {
-			case 1:
-				container = { flexDirection: 'column', flexWrap: 'nowrap', justifyContent: 'center', alignItems: 'center' };
-				item = { width: '100%', height: '100%' };
-				break;
-			case 2:
-				if (isLandscape) {
-					// 2 participants → 2 columns
-					container = { flexDirection: 'row', flexWrap: 'nowrap' };
-					item = { width: '50%', height: '100%' };
-				} else {
-					// 2 participants → 2 rows
-					container = { flexDirection: 'column', flexWrap: 'nowrap' };
-					item = { width: '100%', height: '50%' };
-				}
-				break;
-			case 3:
-			case 4:
-			default:
-				// Always 2x2 grid
-				container = { flexDirection: 'row', flexWrap: 'wrap' };
-				item = { width: '50%', height: '50%' };
-				break;
-		}
-	
-		return { container, item };
-	}
 
     render() {
         if (this.props.call === null) {
             return (<View></View>);
         }
+
+		const { width, height } = Dimensions.get('window');
+		const isLandscape = width > height;
+		const marginRight = isLandscape && Platform.OS === 'android' ? 48 : 0;
+		const marginBottom = isLandscape && Platform.OS === 'android' ? -48 : 0;
 
         //console.log('---- Conference box', this.state.renderMessages.length);
 
@@ -1935,8 +1848,8 @@ class ConferenceBox extends Component {
 
         const buttons = {};
 
-        const muteButtonIcon = this.state.audioMuted ? 'microphone-off' : 'microphone';
-        const muteVideoButtonIcon = this.state.videoMuted ? 'video-off' : 'video';
+        const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
+        const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
         
         let unselectItem = {id: 'none', publisherId: null, identity: {uri: 'none', displayName: 'No speaker'}};
@@ -1962,8 +1875,7 @@ class ConferenceBox extends Component {
         //console.log('----speakerSelectionParticipants', speakerSelectionParticipants);
         const floatingButtons = [];
 
-        /*
-        if (!this.state.showDrawer && speakerSelectionParticipants.length > 3 && this.state.videoEnabled) {
+        if (!this.state.chatView && !this.state.showDrawer && speakerSelectionParticipants.length > 2 && this.state.videoEnabled) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key="selects">
                   <TouchableHighlight style={styles.roundshape}>
@@ -1979,9 +1891,7 @@ class ConferenceBox extends Component {
               </View>
             );
         }
-        
-        */
-        
+
         if (this.state.videoEnabled) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key="chat">
@@ -1991,7 +1901,7 @@ class ConferenceBox extends Component {
                     style={buttonClass}
                     title="Chat"
                     onPress={this.toggleChat}
-                    icon={!this.state.chatView ? "chat" : "chat-remove"} // toggle icon
+                    icon="chat"
                     key="toggleChat"
                 />
                 </TouchableHighlight>
@@ -2035,22 +1945,7 @@ class ConferenceBox extends Component {
             */
         }
 
-        floatingButtons.push(
-              <View style={styles.buttonContainer} key="Mute">
-                  <TouchableHighlight style={styles.roundshape}>
-            <IconButton
-                size={this.state.videoEnabled ? 25 : 25}
-                style={buttonClass}
-                title="Mute/unmute audio"
-                onPress={this.muteAudio}
-                icon={muteButtonIcon}
-                key="muteAudioButton"
-            />
-                </TouchableHighlight>
-              </View>
-        );
-
-       if (this.state.videoEnabled) {
+       if (this.state.videoEnabled && !this.state.chatView) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key="mutev">
                   <TouchableHighlight style={styles.roundshape}>
@@ -2059,7 +1954,7 @@ class ConferenceBox extends Component {
                     style={buttonClass}
                     title="Mute/unmute video"
                     onPress={this.muteVideo}
-                    icon={muteVideoButtonIcon}
+                    icon={muteVideoButtonIcons}
                     key="muteVideoButton"
                 />
                 </TouchableHighlight>
@@ -2067,7 +1962,22 @@ class ConferenceBox extends Component {
             );
         }
 
-        if (this.state.videoEnabled) {
+        floatingButtons.push(
+              <View style={styles.buttonContainer} key="Mute">
+                  <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                style={buttonClass}
+                title="Mute/unmute audio"
+                onPress={this.muteAudio}
+                icon={muteButtonIcons}
+                key="muteAudioButton"
+            />
+                </TouchableHighlight>
+              </View>
+        );
+
+        if (this.state.videoEnabled && !this.state.chatView) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key='toggleCamerag'>
                   <TouchableHighlight style={styles.roundshape}>
@@ -2076,7 +1986,7 @@ class ConferenceBox extends Component {
                     style={buttonClass}
                     title="Toggle camera"
                     onPress={this.toggleCamera}
-                    icon='camera-switch'
+                    icon='video-switch'
                     key="toggleVideo"
                 />
                 </TouchableHighlight>
@@ -2151,7 +2061,7 @@ class ConferenceBox extends Component {
         );
         */
 
-        if (this.props.isLandscape && !this.props.audioOnly) {
+        if (this.props.isLandscape && !this.state.chatView && !this.props.audioOnly) {
             buttons.additional = floatingButtons;
         } else {
             buttons.additional = [];
@@ -2188,7 +2098,9 @@ class ConferenceBox extends Component {
         let _contact;
         let _identity;
         let participants_uris = [];
+
         let sessionButtons = floatingButtons;
+
 /*
         let inviteParticipantsModal = (
                     <InviteParticipantsModal
@@ -2212,19 +2124,11 @@ class ConferenceBox extends Component {
         const conferenceUrl = `${config.publicUrl}/conference/${friendlyName}`;
 
         //console.log(this.state.statistics);
-        let container = styles.container;
 
-		let mediaContainer = this.state.isLandscape ? styles.audioContainerLandscape : styles.audioContainer;
-		let conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
-		let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
-		let conferenceHeader = styles.conferenceHeader;
+		const audioContainer = this.state.isLandscape ? styles.audioContainerLandscape : styles.audioContainerPortrait;
+		const conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
+		let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainerPortrait;
 
-		const topInset = initialWindowMetrics?.insets.top || 0;
-		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
-		const leftInset = initialWindowMetrics?.insets.left || 0;
-		const rightInset = initialWindowMetrics?.insets.right || 0;
-		let debugBorderWidth = 1;
-		
 		if (this.props.audioOnly) {
 			chatContainer = this.state.isLandscape ? styles.chatContainerLandscapeAudio : styles.chatContainerPortraitAudio;
 		}
@@ -2255,8 +2159,6 @@ class ConferenceBox extends Component {
                 }
                 
                 //console.log('Push', p.id);
-                //console.log(this.latency);
-                //console.log(this.packetLoss);
 
                 audioParticipants.push(
                     <ConferenceAudioParticipant
@@ -2355,98 +2257,22 @@ class ConferenceBox extends Component {
                     isLocal={true}
                     timestamp={Date.now()}
                     extraButtons={floatingButtons}
+                    supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                 />
             );
 
-			//console.log('topInset', topInset);
-			//console.log('bottomInset', bottomInset);
+            console.log('--- audio only conference');	
 
-			const marginRight = this.state.isLandscape && Platform.OS === 'android' ? 48 : 0;
-			const marginBottom = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
-			let audioHeight = this.state.renderMessages.length < 6 ? 300 : 240; 
-			audioHeight = this.state.keyboardVisible ? 150 : audioHeight;
-			const marginTop = Platform.OS === 'ios' ? topInset : 0;
-			
-			debugBorderWidth = 0;
-
-			container = {
-				flex: 1,
-				flexDirection: 'column',
-				marginRight: marginRight,
-				marginTop: Platform.OS === 'ios' ? 0: topInset,
-				marginBottom: marginBottom,
-	            borderWidth: debugBorderWidth,
-			    borderColor: 'white'
- 		    };
-
-  		    conferenceHeader = {
-  		      top: 0,
-			  height: 60,
-			  width: '100%',
-			  marginTop: 0,
-	          borderWidth: debugBorderWidth,
-			  borderColor: 'yellow'
-		    };
-
-			conferenceContainer = {
-			  flex: 1,
-			  flexDirection: this.state.isLandscape ? 'row' : 'column',
-			  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
-			  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
-			  height: '100%',
-  			  marginTop: 0,
-	          borderWidth: debugBorderWidth,
-			  borderColor: 'blue'
-			};
-						
-		    mediaContainer = {
-			  width: this.state.isLandscape ? '50%' : '100%',
-			  height: this.state.isLandscape ? '100%' : audioHeight,
-  			  marginTop: 0,			  
-	          borderWidth: debugBorderWidth,
-			  borderColor: 'green'
-			};
-			
-			chatContainer = {
-			  flex: this.state.isLandscape ? 0 : 1,
-			  borderColor: 'gray',
-			  width: this.state.isLandscape ? '50%' : '100%',
-			  marginTop: this.state.isLandscape ? 0 : 0,
-	          borderWidth: debugBorderWidth || 1,
-			  borderColor: 'gray'
-			};
-
-			if (debugBorderWidth) {
-				const values = {
-				  topInset,
-				  bottomInset,
-				  leftInset,
-				  rightInset,
-				  container,
-				  conferenceHeader,
-				  buttonsContainer,
-				  conferenceContainer,
-				  mediaContainer,
-				  chatContainer,
-				};
-
-				const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
-			
-				Object.entries(values).forEach(([key, value]) => {
-				  const prev = this.prevValues[key];
-				   const paddedKey = key.padStart(maxKeyLength, ' '); // right
-				  if (JSON.stringify(prev) !== JSON.stringify(value)) {
-					console.log(paddedKey, value);
-				  }
-				});
-	
-				this.prevValues = values;
-			}
-
+			console.log('styles.container', styles.container);
+			console.log('styles.conferenceHeader',styles.conferenceHeader);
+		    console.log('styles.buttonsContainer', styles.buttonsContainer);	
+		    
+			console.log('conferenceContainer', conferenceContainer);
+			console.log('audioContainer', audioContainer);
+			console.log('chatContainer', chatContainer);
+		
 			return (
-			   <View 
-			        key={this.state.isLandscape ? 'landscape' : 'portrait'}
-			        style={container}>
+			   <View style={[styles.container, {marginRight: marginRight, marginBottom: marginBottom}]}>
 
 				<ShareConferenceLinkModal
 					notificationCenter={this.props.notificationCenter}
@@ -2455,10 +2281,8 @@ class ConferenceBox extends Component {
 					conferenceUrl={conferenceUrl}
 				/>
 
-				<View style={conferenceHeader}>
+				<View style={styles.conferenceHeader}>
 					<ConferenceHeader
-					    visible={true}
-					    height={conferenceHeader.height}
 						remoteUri={this.state.remoteUri}
 						callContact={this.props.callContact}
 						isTablet={this.props.isTablet}
@@ -2479,600 +2303,271 @@ class ConferenceBox extends Component {
 						hangUpFunc={this.hangup}
 						audioView={this.state.audioView}
 						chatView={this.state.chatView}
-						toggleDrawer={this.toggleDrawer}
-						enableMyVideo={this.state.enableMyVideo}
-						toggleMyVideo={this.toggleMyVideo}
 					/>
-				</View>
+				 </View>
 
-				<View style={styles.buttonsContainer}>
-					{sessionButtons}
-				</View>
+					<View style={styles.buttonsContainer}>
+						{sessionButtons}
+					</View>
 
 				<View style={conferenceContainer}>
 
-					<View style={mediaContainer}>
-                    { true && (
+					<View style={audioContainer}>
 						<ConferenceAudioParticipantList >
 							{audioParticipants}
 						</ConferenceAudioParticipantList>
-					) }
 					</View>
 
-				{Platform.OS === 'android'?	
 					<KeyboardAvoidingView
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
 					  style={chatContainer}
 					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
 					  keyboardVerticalOffset={90} // adjust if you have a header
 					>
-					<GiftedChat
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  messages={renderMessages}
-					  isTyping={this.state.isTyping}
-					  onLongPress={this.onLongMessagePress}
-					  onSend={this.onSendMessage}
-					  renderCustomView={this.renderCustomView}
-					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
-					  renderMessageImage={this.renderMessageImage}
-					  renderMessageVideo={this.renderMessageVideo}
-					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-					  alwaysShowSend={true}
-					  scrollToBottom
-					  lockStyle={styles.lock}
-					  inverted={true}
-					  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
-					  infiniteScroll
-					/>
+						<GiftedChat
+						  messages={renderMessages}
+						  isTyping={this.state.isTyping}
+						  onLongPress={this.onLongMessagePress}
+						  onSend={this.onSendMessage}
+						  renderCustomView={this.renderCustomView}
+						  renderSend={this.renderSend}
+						  renderBubble={renderBubble}
+						  renderMessageImage={this.renderMessageImage}
+						  renderMessageVideo={this.renderMessageVideo}
+						  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
+						  alwaysShowSend={true}
+						  scrollToBottom
+						  lockStyle={styles.lock}
+						  inverted={true}
+						  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
+						  infiniteScroll
+						/>
 				   </KeyboardAvoidingView>
-				 :
-
-				 <View style={chatContainer}>
-					<GiftedChat
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  messages={renderMessages}
-					  isTyping={this.state.isTyping}
-					  onLongPress={this.onLongMessagePress}
-					  onSend={this.onSendMessage}
-					  renderCustomView={this.renderCustomView}
-					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
-					  renderMessageImage={this.renderMessageImage}
-					  renderMessageVideo={this.renderMessageVideo}
-					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-					  alwaysShowSend={true}
-					  scrollToBottom
-					  lockStyle={styles.lock}
-					  inverted={true}
-					  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
-					  infiniteScroll
-					/>
-					</View>
-				 } 
-
 				</View>
 			</View>
 			);
         }
 
-		const participants = [];
-		const drawerParticipants = [];
+        const participants = [];
+        const drawerParticipants = [];
 
-		drawerParticipants.push(
-			<ConferenceDrawerParticipant
-				key="myself1"
-				participant={{identity: this.props.call.localIdentity}}
-				isLocal={true}
-			/>
-		);
+        drawerParticipants.push(
+            <ConferenceDrawerParticipant
+                key="myself1"
+                participant={{identity: this.props.call.localIdentity}}
+                isLocal={true}
+            />
+        );
 
-		let videos = [];
-		let status = '';
-		
-		if (this.state.participants.length === 0) {
-		    /*
-			videos.push(
-			</View>
-				// Parent wrapper
-				<View style={{ flex: 1 }}>
-					<RTCView
-						key="self"
-						objectFit="cover"
-						style={{ flex: 1 }}
-						ref="largeVideo"
-						poster="assets/images/transparent-1px.png"
-						streamURL={this.state.largeVideoStream ? this.state.largeVideoStream.toURL() : null}
-					/>
-				</View>
-			);
-			*/
+        let videos = [];
+        let status = '';
 
-		} else {
-			const activeSpeakers = this.state.activeSpeakers;
-			const activeSpeakersCount = activeSpeakers.length;
+        if (this.state.participants.length === 0) {
+            videos.push(
+                <RTCView key="self" objectFit="cover" style={styles.wholePageVideo} ref="largeVideo" poster="assets/images/transparent-1px.png" streamURL={this.state.largeVideoStream ? this.state.largeVideoStream.toURL() : null} />
+            );
+        } else {
+            const activeSpeakers = this.state.activeSpeakers;
+            const activeSpeakersCount = activeSpeakers.length;
 
-			if (activeSpeakersCount > 0) {
-				activeSpeakers.forEach((p) => {
-					status = '';
-					if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-						status = 'Muted';
-					} else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-						if (this.packetLoss.get(p.id) === 100) {
-							status = 'No media';
-							return;
-						} else {
-							status = this.packetLoss.get(p.id) + '% loss';
-						}
+            if (activeSpeakersCount > 0) {
+                activeSpeakers.forEach((p) => {
+                    status = '';
+                    if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
+                        status = 'Muted';
+                    } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
 
-					} else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
-						status = this.latency.get(p.id) + ' ms';
-					}
+                    } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
+                        status = this.latency.get(p.id) + ' ms';
+                    }
 
-					if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-						status = 'Muted';
-					} else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-						if (this.packetLoss.get(p.id) === 100) {
-							status = 'No media';
-							return;
-						} else {
-							status = this.packetLoss.get(p.id) + '% loss';
-						}
-					}
+                    if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
+                        status = 'Muted';
+                    } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
+                    }
 
-					videos.push(
-						<ConferenceMatrixParticipant
-							key={p.id}
-							participant={p}
-							isLocal={p.id === this.props.call.id}
-							status={status}
-						/>
-					);
-				});
+                    videos.push(
+                        <ConferenceMatrixParticipant
+                            key={p.id}
+                            participant={p}
+                            large={activeSpeakers.length <= 1}
+                            isLocal={p.id === this.props.call.id}
+                            status={status}
+                        />
+                    );
+                });
 
-				this.state.participants.forEach((p) => {
-					status = '';
-					if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-						status = 'Muted';
-					} else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-						if (this.packetLoss.get(p.id) === 100) {
-							status = 'No media';
-							return;
-						} else {
-							status = this.packetLoss.get(p.id) + '% loss';
-						}
-					} else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
-						status = this.latency.get(p.id) + ' ms delay';
-					}
+                this.state.participants.forEach((p) => {
+                    status = '';
+                    if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
+                        status = 'Muted';
+                    } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
+                    } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
+                        status = this.latency.get(p.id) + ' ms delay';
+                    }
 
-					if (this.state.activeSpeakers.indexOf(p) === -1) {
-						participants.push(
-							<ConferenceParticipant
-								key={p.id}
-								participant={p}
-								selected={() => {}}
-								pauseVideo={true}
-								display={false}
-								status={status}
+                    if (this.state.activeSpeakers.indexOf(p) === -1) {
+                        participants.push(
+                            <ConferenceParticipant
+                                key={p.id}
+                                participant={p}
+                                selected={() => {}}
+                                pauseVideo={true}
+                                display={false}
+                                status={status}
 								isLandscape={this.state.isLandscape}
-							/>
-						);
-					}
+                            />
+                        );
+                    }
 
-					drawerParticipants.push(
-						<ConferenceDrawerParticipant
-							key={p.id}
-							participant={p}
-						/>
-					);
+                    drawerParticipants.push(
+                        <ConferenceDrawerParticipant
+                            key={p.id}
+                            participant={p}
+                        />
+                    );
 
-				});
-			} else {
-			    //console.log('====='); 
-				let vtrack;
-				if (this.state.participants.length == 3) {
-					//console.log('Added video of myself');
-					videos.push(
-						<ConferenceParticipantSelf
-						  key="myself2"
-						  visible={true}
-						  stream={this.props.call.getLocalStreams()[0]}
-						  identity={this.props.call.localIdentity}
-						  audioMuted={this.state.audioMuted}
-						  isLandscape={this.state.isLandscape}
-						  generatedVideoTrack={this.props.generatedVideoTrack}
-						  big={true}
-						/>
-					);
-				}
+                });
+            } else {
+                let vtrack;
+                this.state.participants.forEach((p, idx) => {
+                    status = '';
+                    if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
+                        status = 'Muted';
+                    } else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
+                        if (this.packetLoss.get(p.id) === 100) {
+                            status = 'No media';
+                            return;
+                        } else {
+                            status = this.packetLoss.get(p.id) + '% loss';
+                        }
+                    } else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
+                        status = this.latency.get(p.id) + ' ms';
+                    }
 
-				this.state.participants.forEach((p, idx) => {
-					status = '';
-					if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
-						status = 'Muted';
-						//console.log(p.identity.uri, 'media lost');
-					} else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
-						if (this.packetLoss.get(p.id) === 100) {
-							status = 'No media';
-							console.log(p.identity.uri, 'has no media');
-						} else {
-							status = this.packetLoss.get(p.id) + '% loss';
-							//console.log(p.identity.uri, 'has packet loss', status);
-						}
-					} else if (this.latency.has(p.id) && this.latency.get(p.id) > 100) {
-						status = this.latency.get(p.id) + ' ms';
-					}
+                    if (p.streams && p.streams.length > 0) {
+                        if (p.streams[0].getVideoTracks().length > 0) {
+                            vtrack = p.streams[0].getVideoTracks()[0];
+                            if (vtrack.muted) {
+                                //console.log('Skip muted video of', p.identity.uri);
+                                return;
+                            }
+                        }
+                    }
 
-					if (p.streams && p.streams.length > 0) {
-						if (p.streams[0].getVideoTracks().length > 0) {
-							vtrack = p.streams[0].getVideoTracks()[0];
-							//console.log(vtrack);
-							if (vtrack.muted) {
-								//console.log(p.identity.uri, 'has video explicitly muted');
-								//return;
-							}
-						}
-					}
-					//console.log(p.identity.uri, 'video added');
-					videos.push(
-						<ConferenceMatrixParticipant
-							key = {p.id}
-							participant = {p}
-							pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
-							status={status}
-						/>
-					);
-
-					if (idx >= 4 || idx >= 2 && this.props.isTablet === false) {
-						participants.push(
-							<ConferenceParticipant
-								key={p.id}
-								participant={p}
-								selected={this.onVideoSelected}
-								pauseVideo={true}
-								display={true}
-								status={status}
+                    // console.log('Added video of', p.identity.uri);
+                    videos.push(
+                        <ConferenceMatrixParticipant
+                            key = {p.id}
+                            participant = {p}
+                            large = {this.state.participants.length <= 1}
+                            pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
+                            isLandscape={this.state.isLandscape}
+                            isTablet={this.props.isTablet}
+                            useTwoRows={this.state.participants.length > 2}
+                            status={status}
+                        />
+                    );
+                    if (idx >= 4 || idx >= 2 && this.props.isTablet === false) {
+                        participants.push(
+                            <ConferenceParticipant
+                                key={p.id}
+                                participant={p}
+                                selected={this.onVideoSelected}
+                                pauseVideo={true}
+                                display={true}
+                                status={status}
 								isLandscape={this.state.isLandscape}
-							/>
-						);
-					}
+                            />
+                        );
+                    }
 
-					drawerParticipants.push(
-						<ConferenceDrawerParticipant
-							key={p.id}
-							participant={p}
-						/>
-					);
+                    drawerParticipants.push(
+                        <ConferenceDrawerParticipant
+                            key={p.id}
+                            participant={p}
+                        />
+                    );
 
-				});
-			}
-	
-			const currentParticipants = this.state.participants.map((p) => {return p.identity.uri})
-			const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];		
-		}
+                });
+            }
+        }
 
-		if (this.state.callOverlayVisible) {
-			buttons.bottom = floatingButtons;
-			buttons.additional = [];
-		}
+        const currentParticipants = this.state.participants.map((p) => {return p.identity.uri})
+        const alreadyInvitedParticipants = this.invitedParticipants ? Array.from(this.invitedParticipants.keys()) : [];
+        let buttonsContainerClass = this.state.isLandscape && !this.state.chatView ? styles.buttonsContainerLandscape : styles.buttonsContainer;
 
-		let corners = {
+        if (this.state.callOverlayVisible) {
+            buttons.bottom = floatingButtons;
+            buttons.additional = [];
+        }
+        
+        const offsetX = isLandscape && Platform.OS === 'android' ? 50 : 0;
+        
+        // video conference
+        let corners = {
+			  topLeft: { top: 150, left: 0 },
+			  topRight: { top: 150, right: 0 },
+			  bottomLeft: { bottom: offsetX, left: 0 },
+			  bottomRight: { bottom: 0, right: 0 },
+			};
+			
+		if (!this.state.callOverlayVisible) {
+         corners = {
 			  topLeft: { top: 0, left: 0 },
 			  topRight: { top: 0, right: 0 },
+			  bottomLeft: { bottom: offsetX, left: 0 },
 			  bottomRight: { bottom: 0, right: 0 },
-			  bottomLeft: { bottom: 0, left: 0},
-			  id: 'init'
-		};
+			};		
+		}
 
-		let buttonsContainer = this.state.isLandscape ? styles.buttonsContainerLandscape : styles.buttonsContainer;
-		mediaContainer = this.state.isLandscape? styles.videoContainerLandscape : styles.videoContainer;
-        
-		const marginRight = this.state.isLandscape && Platform.OS === 'android' ? 48 : 0;
-		const marginBottom = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
-
-		let audioHeight = this.state.renderMessages.length < 6 ? 300 : 240; 
-		audioHeight = this.state.keyboardVisible ? 150 : audioHeight;
-		const statusBarHeight = getStatusBarHeight(); 
-		let navigationBarHeight = 0;
-		if (Platform.OS === 'android') {
-            navigationBarHeight = ExtraDimensions.get('SOFT_MENU_BAR_HEIGHT');
-        }
-
-        const videoGridContainer = styles.videoGridContainer;
-
-		debugBorderWidth = 0;
-
-		container = {
-			flex: 1,
-			flexDirection: 'column',
-			marginRight: marginRight,
-			marginTop: topInset,
-			marginBottom: marginBottom,
-			borderWidth: debugBorderWidth,
-			borderColor: 'red'
-		};
-
-		conferenceHeader = {
-		  top: 0,
-		  height: 60,
-		  width: '100%',
-		  marginTop: 0,
-		  borderWidth: debugBorderWidth,
-		  borderColor: 'white'
-		};
-
-		buttonsContainer = {
-			position: 'absolute',
-			top: conferenceHeader.height,
-			height: 60,
-			left: 0,
-			right: 0,
-			flexDirection: 'row',
-			justifyContent: 'center',
-			alignItems: 'center',
-			zIndex: 1000,
-			borderWidth: debugBorderWidth,
-			borderColor: 'pink'
-		};
-
-		conferenceContainer = {
-		  flex: 1,
-		  flexDirection: this.state.isLandscape ? 'row' : 'column',
-		  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
-		  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
-		  height: '100%',
-		  marginTop: 0,
-		  borderColor: 'blue',
-		  borderWidth: debugBorderWidth,
-		  marginBottom: 0,
-		};
-					
-		let videoWidth = this.state.chatView ? '50%' : '100%' ;
-					
-		mediaContainer = {
-		  width: this.state.isLandscape ? videoWidth : '100%',
-		  height: this.state.isLandscape ? '100%' : this.state.chatView ? 300 : '100%',
-		  borderColor: 'red',
-		  borderWidth: debugBorderWidth,
-		};
-
-		let { width, height } = Dimensions.get('window');
-		let top = 0;
-	    //console.log('width', width);
-	    //console.log('height', height);
-	    
-		chatContainer = {
-			...(this.state.isLandscape ? {} : {flex: 1}),
-		  borderWidth: 1,
-		  borderColor: 'gray',
-		  width: '100%',
-		};
-	    	
-        if (Platform.OS === 'ios') {
-		    if (this.state.isLandscape) {
-		          if (this.fullScreen) {
-					 corners = {
-						  topLeft: { top: 0, left: 0 },
-						  topRight: { top: 0, right: bottomInset },
-						  bottomRight: { bottom: 0, right: bottomInset },
-						  bottomLeft: { bottom: 0, left: 0},
-						  id: 'ios-landscape'
-					};
-
-					container = {
-						width: this.fullScreen ? width - topInset: width,
-						height: height,
-						marginBottom: marginBottom,
-						borderWidth: debugBorderWidth,
-						borderColor: 'blue'
-					};
-
-		          } else {
-						corners = {
-						  topLeft: { top: conferenceHeader.height, left: 0 },
-						  topRight: { top: conferenceHeader.height, right: 0 },
-						  bottomRight: { bottom: 0, right:  0 },
-						  bottomLeft: { bottom: 0, left: 0},
-						  id: 'ios-landscape'
-						};
-
-					container = {
-						width: width - topInset - bottomInset,
-						height: '100%',
-						marginBottom: marginBottom,
-						borderWidth: debugBorderWidth,
-						borderColor: 'blue'
-					};
-
-					conferenceContainer = {
-					  flexDirection: 'row',
-					  alignContent: 'flex-start',
-					  justifyContent: 'flex-start',
-					  height: height - conferenceHeader.height,
-					  width: width - bottomInset - topInset,
-					  marginTop: conferenceHeader.height,
-					  borderColor: 'green',
-					  borderWidth: debugBorderWidth,
-					};
-
-					mediaContainer = {
-					  width: this.state.isLandscape ? videoWidth : '100%',
-					  height: height - conferenceHeader.height - bottomInset,
-					  borderColor: 'red',
-					  borderWidth: debugBorderWidth,
-					};
-				}
-				conferenceHeader = {
-				  top: topInset,
-				  marginLeft: 0,
-				  height: 60,
-				  width: width - topInset - bottomInset,
-				  marginTop: -topInset,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white'
-				};
-
-			} else {
-				  corners = {
-					  topLeft: { top: this.fullScreen ? 0 : conferenceHeader.height + buttonsContainer.height, left: 0 },
-					  topRight: { top: this.fullScreen ? 0: conferenceHeader.height + buttonsContainer.height, right: 0 },
-					  bottomRight: { bottom: this.fullScreen ? bottomInset: 0, right: 0 },
-					  bottomLeft: { bottom: this.fullScreen ? bottomInset: 0, left: 0},
-					  id: 'ios-portrait'
-				  };
-
-				container = {
-				  ...(this.fullScreen ? {} : {flex: 1}),  // adds flex:1 only if fullScreen
-				  top: 0,
-				  left: 0,
-				  flexDirection: 'column',
-				  marginTop: 0,
-				  width: width,
-				  height: this.fullScreen ? height - topInset: '100%',
-				  marginBottom: marginBottom,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'green',
-				};
-  
-				mediaContainer = {
-				  position: 'absolute',
-				  resizeMode: 'cover',
-				  top: 0,
-				  left: 0,
-				  marginTop: 0,
-				  height: this.fullScreen ? height: '100%',
-				  width: width,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white'
+		if (this.state.isLandscape ) {
+         corners = {
+			  topLeft: { top: 90, left: offsetX },
+			  topRight: { top: 90, right: -offsetX },
+			  bottomLeft: { bottom: offsetX, left: offsetX },
+			  bottomRight: { bottom: 0, right: -offsetX },
+			};		
+			if (!this.state.callOverlayVisible) {
+			 corners = {
+				  topLeft: { top: 0, left: offsetX },
+				  topRight: { top: 0, right: -offsetX },
+				  bottomLeft: { bottom: offsetX, left: offsetX },
+				  bottomRight: { bottom: 0, right: -offsetX },
 				};		
 			}
+		}
 
-		} else {
-		    // android
-		    if (this.state.isLandscape) {
-				  corners = {
-					  topLeft: { top: this.fullScreen ? 0 : conferenceHeader.height, left: navigationBarHeight },
-					  topRight: { top: this.fullScreen ? 0 : conferenceHeader.height, right: -navigationBarHeight },
-					  bottomRight: { bottom: 0, right: -navigationBarHeight },
-					  bottomLeft: { bottom: 0, left: navigationBarHeight},
-					  id: 'android-landscape'
-				  };
+		let videosContainer = this.state.chatView ? styles.videosChatContainer : styles.videosContainer;
+        
 
-				container = {
-					flex: 1,
-					flexDirection: 'column',
-					marginRight: 0,
-					marginTop: this.fullScreen ? 0 : topInset,
-				    width: this.fullScreen ? width: width - navigationBarHeight,
-				    height: this.fullScreen ? height + navigationBarHeight : '100%',
-					marginBottom: marginBottom,
-					borderWidth: debugBorderWidth,
-					borderColor: 'red'
-				};
+		console.log('--- video conference');	
 
-				mediaContainer = {
-				  position: 'absolute',
-				  resizeMode: 'cover',
-				  height: this.fullScreen ? height : '100%',
-				  width: this.fullScreen ? width : width - navigationBarHeight,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white',
-				};		
-
-//			  transform: this.fullScreen ? [{ translateY: -statusBarHeight }] : [],
-			} else {
-			      // android portrait
-		          if (!this.fullScreen) {
-					  corners = {
-						  topLeft: { top: conferenceHeader.height + buttonsContainer.height, left: 0 },
-						  topRight: { top: conferenceHeader.height + buttonsContainer.height, right: 0 },
-						  bottomRight: { bottom: 0, right: 0 },
-						  bottomLeft: { bottom: 0, left: 0},
-						  id: 'android-portrait'
-					  };
-				  }
+		console.log('styles.container', styles.container);
+		console.log('styles.conferenceHeader', styles.conferenceHeader);
+		console.log('conferenceContainer', conferenceContainer);
+		console.log('videosContainer', videosContainer);
+		console.log('chatContainer', chatContainer);
 			
-				container = {
-				  ...(this.fullScreen ? {} : {flex: 1}),  // adds flex:1 only if fullScreen
-				  top: 0,
-				  left: 0,
-				  flexDirection: 'column',
-				  marginTop: this.fullScreen ? 0 :topInset,
-				  width: width,
-				  height: this.fullScreen ? height : '100%',
-				  marginBottom: marginBottom,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'green',
-				};
-  
-				mediaContainer = {
-				  position: 'absolute',
-				  resizeMode: 'cover',
-				  top: 0,
-				  left: 0,
-				  marginTop: 0,
-				  height: this.fullScreen ? height: '100%',
-				  width: width,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white'
-				};		
-			}
-		}
-		
-		if (this.state.chatView) {
-			mediaContainer.height = 0;
-		}
-				
-		const corner = {
-		  ...corners[this.state.myVideoCorner],
-		};
-
-        const gridLayoutContainer = this.getVideoLayout().container;
-        const videoObjectsCount = videos.length;
-        
-		if (debugBorderWidth) {
-			const values = {
-			  corners,
-			  navigationBarHeight,
-			  statusBarHeight,
-			  topInset,
-			  bottomInset,
-			  leftInset,
-			  rightInset,
-			  container,
-			  conferenceHeader,
-			  buttonsContainer,
-			  conferenceContainer,
-			  mediaContainer,
-			  videoGridContainer,
-			  gridLayoutContainer,
-			  videoObjectsCount
-			};
-
-			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
-		
-			Object.entries(values).forEach(([key, value]) => {
-			  const prev = this.prevValues[key];
-			   const paddedKey = key.padStart(maxKeyLength, ' '); // right
-			  if (JSON.stringify(prev) !== JSON.stringify(value)) {
-				console.log(paddedKey, value);
-			  }
-			});
-
-			this.prevValues = values;
-		}
-
-		if (debugBorderWidth) {
-			videos = [];
-			//buttons.bottom = [];
-		}
-		
-		//console.log('activeSpeakers', this.state.activeSpeakers);
-		
         return (
-			<View 
-			      key={this.state.isLandscape ? 'landscape' : 'portrait'}
-			      style={container}>
+			<View style={[styles.container, {marginRight: marginRight, marginBottom: marginBottom}]}>
 
                 <ShareConferenceLinkModal
                     notificationCenter={this.props.notificationCenter}
@@ -3081,88 +2576,76 @@ class ConferenceBox extends Component {
                     conferenceUrl={conferenceUrl}
                 />
                     
- 				{!this.fullScreen || this.state.chatView ?
+ 				 {this.state.callOverlayVisible || this.state.chatView ?
 
-				<View style={conferenceHeader}>
-					<ConferenceHeader
-					    visible={true}
-						remoteUri={this.state.remoteUri}
-						callContact={this.props.callContact}
-						isTablet={this.props.isTablet}
-						isLandscape={this.state.isLandscape}
-						call={this.state.call}
-						participants={this.state.participants.length}
-						reconnectingCall={this.state.reconnectingCall}
-						buttons={buttons}
-						audioOnly={this.props.audioOnly}
-						terminated={this.state.terminated}
-						info={this.state.info}
-						goBackFunc={this.props.goBackFunc}
-						toggleInviteModal={this.toggleInviteModal}
-						inviteToConferenceFunc={this.props.inviteToConferenceFunc}
-						callState={this.props.callState}
-						toggleAudioParticipantsFunc={this.toggleAudioParticipants}
-						toggleChatFunc={this.toggleChat}
-						hangUpFunc={this.hangup}
-						audioView={this.state.audioView}
-						chatView={this.state.chatView}
-						toggleDrawer={this.toggleDrawer}
-						enableMyVideo={this.state.enableMyVideo}
-						toggleMyVideo={this.toggleMyVideo}
-					/>
-				</View>
+				<View style={styles.conferenceHeader}>
+
+				 <ConferenceHeader
+					remoteUri={this.state.remoteUri}
+					callContact={this.props.callContact}
+					isTablet={this.props.isTablet}
+					isLandscape={this.state.isLandscape}
+					call={this.state.call}
+					participants={this.state.participants.length}
+					reconnectingCall={this.state.reconnectingCall}
+					buttons={buttons}
+					audioOnly={this.props.audioOnly}
+					terminated={this.state.terminated}
+					info={this.state.info}
+					goBackFunc={this.props.goBackFunc}
+					toggleInviteModal={this.toggleInviteModal}
+					inviteToConferenceFunc={this.props.inviteToConferenceFunc}
+					callState={this.props.callState}
+					toggleAudioParticipantsFunc={this.toggleAudioParticipants}
+					toggleChatFunc={this.toggleChat}
+					hangUpFunc={this.hangup}
+					audioView={this.state.audioView}
+					chatView={this.state.chatView}
+				/>
+					</View>
 
 				: null}
 
-				{!this.fullScreen && !this.props.isLandscape && !this.state.showDrawer ?
-				<View style={buttonsContainer}>
+				{!this.props.isLandscape && !this.state.showDrawer ?
+				<View style={buttonsContainerClass}>
 					{buttons.bottom}
 				</View>
 				: null}
 
 				<View style={conferenceContainer}>
-				   {!this.state.keyboardVisible && !this.state.chatView?  // videos show up here 
-					<TouchableWithoutFeedback onPress={this.toggleFullScreen}>
-						<View style={[mediaContainer]}>
-							<View style={[videoGridContainer, gridLayoutContainer]}>
-								{videos.slice(0, 4).map((video, index) => (
-									<View key={index} style={this.getVideoLayout().item}>
-										{video}
-									</View>
-								))}
-							</View>
+				   {!this.state.keyboardVisible ?  // videos show up here 
+	
+					<TouchableWithoutFeedback onPress={this.showOverlay}>
+						<View style={[videosContainer, { marginTop: !this.state.isLandscape ? 0 : 90 }]}>
+							{videos}
 						</View>
 					</TouchableWithoutFeedback>
+					
 					: null}
 
-				{this.state.chatView && Platform.OS === 'android'?	
-					<KeyboardAvoidingView
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
+				{this.state.chatView ?
+				<KeyboardAvoidingView
 					  style={chatContainer}
 					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
 					  keyboardVerticalOffset={90} // adjust if you have a header
 					>
-
 					<GiftedChat
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
 					  messages={renderMessages}
 					  isTyping={this.state.isTyping}
+					  renderCustomView={this.renderCustomView}
 					  onLongPress={this.onLongMessagePress}
 					  onSend={this.onSendMessage}
-					  renderCustomView={this.renderCustomView}
-					  renderSend={this.renderSend}
 					  renderBubble={renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
+					  renderSend={this.renderSend}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-					  alwaysShowSend={true}
 					  scrollToBottom
-					  lockStyle={styles.lock}
 					  inverted={true}
 					  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
 					  infiniteScroll
 					/>
-				   </KeyboardAvoidingView>
+				</KeyboardAvoidingView>
 				:
 
 				<View style={styles.carouselContainer}>
@@ -3171,37 +2654,8 @@ class ConferenceBox extends Component {
 					</ConferenceCarousel>
 				</View>
 				}
-
-				{this.state.chatView && Platform.OS === 'ios'?	
-					<GiftedChat
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  messages={renderMessages}
-					  isTyping={this.state.isTyping}
-					  onLongPress={this.onLongMessagePress}
-					  onSend={this.onSendMessage}
-					  renderCustomView={this.renderCustomView}
-					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
-					  renderMessageImage={this.renderMessageImage}
-					  renderMessageVideo={this.renderMessageVideo}
-					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-					  alwaysShowSend={true}
-					  scrollToBottom
-					  lockStyle={styles.lock}
-					  inverted={true}
-					  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
-					  infiniteScroll
-					/>
-				:
-				<View style={styles.carouselContainer}>
-					<ConferenceCarousel align={'right'}>
-						{participants}
-					    visible={this.state.activeSpeakers.length == 0}
-					</ConferenceCarousel>
-				</View>
-				}
-
 			</View>
+
 			  <View
 				style={{
 				  position: 'absolute',
@@ -3209,7 +2663,7 @@ class ConferenceBox extends Component {
 				  left: 0,
 				  right: 0,
 				  bottom: 0,
-				  zIndex: 1000,
+				  zIndex: 10,
 				}}
 				pointerEvents="box-none" // allows touches to pass through except for children
 			  >
@@ -3218,7 +2672,7 @@ class ConferenceBox extends Component {
 					position: 'absolute',
 					width: 120,
 					height: 160,
-					...corner,
+					...corners[this.state.myVideoCorner],
 				  }}
 				>
 				  <TouchableOpacity
@@ -3232,7 +2686,7 @@ class ConferenceBox extends Component {
 				  >
 					<ConferenceParticipantSelf
 					  key="myself2"
-					  visible={this.showMyself}
+					  visible={this.conferenceStarted}
 					  stream={this.props.call.getLocalStreams()[0]}
 					  identity={this.props.call.localIdentity}
 					  audioMuted={this.state.audioMuted}

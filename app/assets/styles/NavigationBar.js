@@ -1,0 +1,65 @@
+import { StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  avatarContent: {
+    marginRight: 10,
+  },
+
+  titleContainer: {},
+
+  title: {
+    fontSize: 16,
+  },
+
+  subtitle: {
+    color: 'white',
+    fontSize: 12,
+    marginRight: 10,
+  },
+
+  tabletSubtitle: {
+    color: 'white',
+    fontSize: 16,
+    marginRight: 10,
+  },
+
+  menuItem: {
+    fontSize: 12,
+  },
+
+  tabletTitle: {
+    fontSize: 24,
+  },
+
+  logo: {
+    marginLeft: 15,
+    marginRight: 15,
+    height: 35,
+    width: 35,
+  },
+
+  menuContentStyle: {
+    fontSize: 10,
+  },
+
+  roundshape: {
+    height: 24,
+    width: 24,
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+
+  redButton: {
+    backgroundColor: 'red',
+  },
+
+  greenButton: {
+    backgroundColor: 'rgba(33, 171, 99, 0.9)', // #21AB63 + 0.9
+  },
+
+  whiteButton: {
+    backgroundColor: 'white',
+  },
+});
+
+export default styles;

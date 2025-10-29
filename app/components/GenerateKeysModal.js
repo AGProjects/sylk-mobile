@@ -1,91 +1,102 @@
-import React, { Component } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import autoBind from 'auto-bind';
-import { View } from 'react-native';
-import { Dialog, Portal, Text, Button, Surface} from 'react-native-paper';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import { Platform, View, Modal, KeyboardAvoidingView, TouchableWithoutFeedback } from 'react-native';
+import { Text, Button, Surface } from 'react-native-paper';
+
+import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/blink/_GenerateKeysModal.scss';
 
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+const GenerateKeysModal = ({ show = false, close, generateKeysFunc, confirm: propConfirm, confirm_again: propConfirmAgain }) => {
+  const [confirm, setConfirm] = useState(false);
+  const [confirmAgain, setConfirmAgain] = useState(false);
 
+  // Sync props to state
+  useEffect(() => {
+    setConfirm(propConfirm || false);
+    setConfirmAgain(propConfirmAgain || false);
+  }, [propConfirm, propConfirmAgain, show]);
 
-class GenerateKeysModal extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
+  const handleGenerateKeys = (event) => {
+    if (event && event.preventDefault) event.preventDefault();
 
-        this.state = {
-            show: this.props.show,
-            confirm: false,
-            confirm_again: false
-        }
+    if (confirmAgain) {
+      setConfirm(false);
+      setConfirmAgain(false);
+      generateKeysFunc();
+      if (close) close();
+    } else if (confirm) {
+      setConfirmAgain(true);
+    } else {
+      setConfirm(true);
     }
+  };
 
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({show: nextProps.show,
-                       confirm: nextProps.confirm,
-                       confirm_again: nextProps.confirm_again
-                       });
-    }
+  if (!show) return null;
 
-    generateKeys(event) {
-         event.preventDefault();
-         if (this.state.confirm_again) {
-            this.setState({confirm: false});
-			this.props.generateKeysFunc();
-            this.props.close();
-        } else if (this.state.confirm) {
-           this.setState({confirm_again: true}); 
-        } else {
-            this.setState({confirm: true});
-        } 
-    }
+  let label = 'Generate';
+  if (confirm) label = 'Confirm';
+  if (confirmAgain) label = 'Confirm again';
 
-    render() {
-		let label = 'Generate';
+  const isConfirming = label.includes('Confirm');
 
-        if (this.state.confirm) {
-			label = 'Confirm';
-        }
+  return (
+    <Modal
+      style={containerStyles.container}
+      visible={show}
+      transparent
+      animationType="fade"
+      onRequestClose={close}
+    >
+      <TouchableWithoutFeedback onPress={close}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+          >
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <Surface style={containerStyles.modalSurface}>
+                <Text style={containerStyles.title}>Generate private key</Text>
 
-        if (this.state.confirm_again) {
-			label = 'Confirm again';
-        } 
+                <Text style={styles.body}>
+                  You should generate a private key only if you lost another device.
+                </Text>
 
-        return (
-            <Portal>
-                <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>Change private key</Dialog.Title>
-                         <Text style={styles.body}>
-                            You should change your private key only if one of your devices was lost.
-                        </Text>
-                         <Text style={styles.body}>
-                            Once you generate a new key, previous messages encrypted with the old key cannot be read on new devices.                            
-                        </Text>
-                        <View style={styles.buttonRow}>
-                        <Button
-                            mode="contained"
-							style={[styles.button, label.indexOf('Confirm') > -1 && { backgroundColor: 'red' }]}
-                            disabled={this.disableButton}
-                            onPress={this.generateKeys}
-                            icon="content-save"
-                            accessibilityLabel="Generate keys"
-                            >{label}
-                        </Button>
-                        </View>
-                    </Surface>
-                </DialogType>
-            </Portal>
-        );
-    }
-}
+                <Text style={styles.body}>
+                  If you generate a new key, previous received messages cannot be read on new devices.
+                </Text>
 
+                <View style={styles.buttonRow}>
+                  <Button
+                    mode="contained"
+                    style={[styles.button, isConfirming && { backgroundColor: 'red' }]}
+                    onPress={handleGenerateKeys}
+                    icon="content-save"
+                    accessibilityLabel="Generate keys"
+                  >
+                    {label}
+                  </Button>
+                </View>
+              </Surface>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 GenerateKeysModal.propTypes = {
-    show               : PropTypes.bool,
-    close              : PropTypes.func.isRequired,
-    generateKeysFunc   : PropTypes.func.isRequired
+  show: PropTypes.bool,
+  close: PropTypes.func,
+  generateKeysFunc: PropTypes.func,
+  confirm: PropTypes.bool,
+  confirm_again: PropTypes.bool,
+};
+
+GenerateKeysModal.defaultProps = {
+  show: false,
+  confirm: false,
+  confirm_again: false,
 };
 
 export default GenerateKeysModal;

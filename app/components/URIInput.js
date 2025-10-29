@@ -125,6 +125,11 @@ class URIInput extends React.Component {
                 mode="flat"
                 label="Enter address"
                 ref={this.uriInput}
+                 style={{backgroundColor: 'black', 
+                         marginLeft: 10,
+                         width: 100
+                 }} 
+                
                 onChangeText={this.onInputChange}
                 onKeyDown={this.onInputKeyDown}
                 onBlur={this.onInputBlur}

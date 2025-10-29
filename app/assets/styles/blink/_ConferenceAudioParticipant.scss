@@ -59,22 +59,20 @@
 }
 
 .card {
-    height: 68px;
+    padding-top: 0px;
 }
 
 .userIconContainer {
-    padding-top: 8px;
+    padding-top: 15px;
     padding-right: 5px;
     margin: 0 auto;
 }
 
 .userButtonsContainer {
+    padding-top: 15px;
     flex-direction: row;
 }
 
 .mediaContainer {
     flex-direction: column;
 }
-
-
-

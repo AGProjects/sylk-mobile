@@ -3,13 +3,25 @@ import { View } from 'react-native';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
+import { StyleSheet } from 'react-native';
+import { Platform, Dimensions} from 'react-native';
+import { initialWindowMetrics } from 'react-native-safe-area-context';
 
 import momentFormat from 'moment-duration-format';
-import { Text, Appbar, Menu } from 'react-native-paper';
+import { Text, Appbar, Menu, Divider } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import SylkAppbarContent from './SylkAppbarContent';
-import styles from '../assets/styles/blink/_ConferenceHeader.scss';
+
+const styles = StyleSheet.create({
+  container: {
+    position: 'absolute', // float above video
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1000,         // ensures it's on top
+  },
+});
 
 
 class ConferenceHeader extends React.Component {
@@ -26,16 +38,19 @@ class ConferenceHeader extends React.Component {
             reconnectingCall: this.props.reconnectingCall,
             info: this.props.info,
             remoteUri: this.props.remoteUri,
-            menuVisible: true,
+            menuVisible: false,
             chatView: this.props.chatView,
-            audioView: this.props.audioView
+            audioView: this.props.audioView,
+            isLandscape: this.props.isLandscape,
+            visible:  this.props.visible,
+            audioOnly: this.props.audioOnly,
+            enableMyVideo: this.props.enableMyVideo
         }
 
         this.duration = null;
         this.timer = null;
         this._isMounted = false;
         this.menuRef = React.createRef();
-
     }
 
     componentDidMount() {
@@ -107,6 +122,10 @@ class ConferenceHeader extends React.Component {
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
                        chatView: nextProps.chatView,
                        audioView: nextProps.audioView,
+                       isLandscape: nextProps.isLandscape,
+                       visible: nextProps.visible,
+                       audioOnly: nextProps.audioOnly,
+                       enableMyVideo: nextProps.enableMyVideo,
                        participants: nextProps.participants});
     }
 
@@ -138,7 +157,6 @@ class ConferenceHeader extends React.Component {
 
     hangUp() {
         console.log('Hangup');
-        return;
         this.props.hangUpFunc();
     }
 
@@ -157,21 +175,29 @@ class ConferenceHeader extends React.Component {
             case 'chat':
                 this.props.toggleChatFunc();
                 break;
-            case 'participants':
-                this.props.toggleAudioParticipantsFunc();
+            case 'speakers':
+                this.props.toggleDrawer();
                 break;
             case 'share':
                 this.props.toggleInviteModal();
                 break;
+            case 'myVideo':
+                this.props.toggleMyVideo();
+                break;
             default:
                 break;
         }
+
         this.setState({menuVisible: false});
     }
 
     render() {
 
-        //console.log('render conf header lanscape =', this.props.isLandscape);
+        //console.log('render conf header lanscape =', this.state.isLandscape);
+        
+        if (!this.state.visible) {
+			return (null);
+        }
 
         let videoHeader;
         let callButtons;
@@ -207,64 +233,124 @@ class ConferenceHeader extends React.Component {
         if (this.state.info && callDetail) {
             //callDetail = callDetail + ' - ' + this.state.info;
         }
+        
+        //console.log('callDetail', callDetail);
 
         let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
-        let participantsTitle = this.state.audioView ? 'Hide participants' : 'Show participants';
-        let buttonsContainerClass = this.props.isLandscape && !this.state.chatView ? styles.buttonsContainerLandscape : styles.buttonsContainer;
+		const { width, height } = Dimensions.get('window');
+		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - 48 : width;
+		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+        let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
+
+		const topInset = initialWindowMetrics?.insets.top || 0;
+		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
+/*
+				<Appbar.Action color="white" onPress={() => this.handleMenu('invite')} icon="account-plus" />
+				<Appbar.Action color="white" onPress={() => this.handleMenu('share')} icon="share-variant" />
+*/
+
+        let barContainer = {
+				backgroundColor: 'rgba(34,34,34,.7)',
+				marginLeft: marginLeft,
+				marginTop: -topInset,
+				width: navBarWidth,
+				height: this.props.height,
+			}
+				
+       if (Platform.OS === 'ios') {
+             if (this.state.isLandscape) {
+                let w = this.props.audioOnly ? topInset : bottomInset
+				 barContainer = {
+					backgroundColor: 'rgba(34,34,34,.7)',
+				    height: 60,
+					marginLeft: -topInset,
+					width: width - topInset - w,
+					height: this.props.height,
+				}
+			} else {
+				barContainer = {
+				  backgroundColor: 'rgba(34,34,34,.7)',
+				  height: 60,
+				  width: width,
+				  marginTop: -topInset
+				};
+			}
+        }
 
         return (
-        <View style={styles.container}>
-            <Appbar.Header style={{backgroundColor: 'rgba(34,34,34,.7)'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
-                <Appbar.BackAction onPress={() => {this.goBack()}} />
-                 <SylkAppbarContent
-                    title={displayName}
-                    subtitle={callDetail}
-                />
-                {this.props.buttons.additional}
-                <Appbar.Action onPress={() => this.handleMenu('invite')} icon="account-plus"/>
-                <Appbar.Action onPress={() => this.handleMenu('share')} icon="share-variant"/>
+			<Appbar.Header
+			  style={[barContainer]}
+			  dark={true}
+			>
+			  <Appbar.BackAction onPress={this.goBack} color="white" />
+			
+			  {/* Title + Subtitle */}
+			  <View style={{ flexDirection: 'column', justifyContent: 'center', flex: 1 }}>
+				<Text style={{ fontSize: 18, fontWeight: 'bold', color: 'white' }}>
+				  {displayName}
+				</Text>
+				<Text style={{ fontSize: 14, color: 'white' }}>
+				  {callDetail}
+				</Text>
+			  </View>
+			
+			  {/* Right-aligned buttons */}
+			  <View style={{ flexDirection: 'row', alignItems: 'center'}}>
+				{this.state.isLandscape &&
+				  this.props.buttons.bottom?.map((btn, idx) => (
+					<View key={idx} style={{ marginLeft: 8 }}>
+					  {btn}
+					</View>
+				  ))
+				}
 
-            </Appbar.Header>
-            <View style={buttonsContainerClass}>
-                {this.props.buttons.bottom}
-            </View>
-        </View>
-        );
-    }
-}
-
-/*
-
-This menu somehow causes the action button and menu itself to require double tap to be activated!
+				{this.props.buttons.additional}
 
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
                     anchor={
+                    <View style={{ marginLeft: 50}}>
                         <Appbar.Action
                             ref={this.menuRef}
                             color="white"
                             icon="menu"
                             onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
                         />
+                        </View>
                     }
                 >
                     <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
                     <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share web link..." />
-                    {!this.props.isLandscape ?
-                    <Menu.Item onPress={() => this.handleMenu('chat')} icon="chat" title={chatTitle} />
+                    {this.state.participants > 1 ?
+                    <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
                     : null}
+                    {!this.props.audioOnly ?
+                    <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
+                    : null}
+                    
+						<Divider />
 
-                    { this.props.audioOnly && !this.props.isLandscape?
-                    <Menu.Item onPress={() => this.handleMenu('participants')} icon="account-multiple" title={participantsTitle} />
-                    : null}
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
                 </Menu>
 
+			  </View>
+			</Appbar.Header>
+			);
+		}
+	}
+
+/*
+
+This menu somehow causes the action button and menu itself to require double tap to be activated!
 */
 
+
+
 ConferenceHeader.propTypes = {
+    visible: PropTypes.bool,
+    height: PropTypes.number,
     remoteUri: PropTypes.string.isRequired,
     call: PropTypes.object,
     isTablet: PropTypes.bool,
@@ -284,8 +370,14 @@ ConferenceHeader.propTypes = {
     inviteToConferenceFunc: PropTypes.func,
     audioView: PropTypes.bool,
     chatView: PropTypes.bool,
-    callState: PropTypes.object
+    callState: PropTypes.object,
+    toggleDrawer: PropTypes.func,
+    enableMyVideo: PropTypes.bool,    
+    toggleMyVideo: PropTypes.func
 };
 
-
 export default ConferenceHeader;
+
+
+
+

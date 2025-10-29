@@ -6,7 +6,7 @@ import { RTCView } from 'react-native-webrtc';
 import { IconButton, Button, Text} from 'react-native-paper';
 
 import CallOverlay from './CallOverlay';
-import styles from '../assets/styles/blink/_LocalMedia.scss';
+import styles from '../assets/styles/LocalMediaStyles';
 
 
 class LocalMedia extends Component {
@@ -23,7 +23,6 @@ class LocalMedia extends Component {
             reconnectingCall: this.props.reconnectingCall,
             terminatedReason: this.props.terminatedReason
         };
-
     }
 
     componentDidMount() {
@@ -65,10 +64,7 @@ class LocalMedia extends Component {
     render() {
 
         let {height, width} = Dimensions.get('window');
-        let videoStyle = {
-            height,
-            width
-        };
+        let videoStyle = {height, width};
 
         const streamUrl = this.props.localMedia ? this.props.localMedia.toURL() : null;
         const buttonSize = this.props.isTablet ? 40 : 34;
@@ -91,7 +87,6 @@ class LocalMedia extends Component {
 
                 {this.showSaveDialog() ?
                     <View style={styles.buttonContainer}>
-
                     <Text style={styles.title}>Save conference maybe?</Text>
                     <Text style={styles.subtitle}>Would you like to save participants {this.state.participants.toString().replace(/,/g, ', ')} for having another conference later?</Text>
                     <Text style={styles.description}>You can find later it in your Favorites. </Text>

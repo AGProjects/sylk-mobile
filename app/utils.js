@@ -814,7 +814,7 @@ async function getRemotePartySizes(accountId) {
 
     return results;
   } catch (error) {
-    console.log('No remote parties:', error);
+    //console.log('No remote parties:', error);
     return [];
   }
 }
@@ -868,6 +868,28 @@ function getErrorMessage(error) {
   }
 }
 
+
+function formatPGPMessage(pgpMessage, lineLength = 64) {
+	// Split the message into lines if it already has them
+	const lines = pgpMessage.split(/\r?\n/).filter(line => line.trim() !== '');
+
+	// Keep the header and footer intact
+	const beginMarker = '-----BEGIN PGP MESSAGE-----';
+	const endMarker = '-----END PGP MESSAGE-----';
+	const header = lines[0] === beginMarker ? lines.shift() : '';
+	const footer = lines[lines.length - 1] === endMarker ? lines.pop() : '';
+
+	// Join the remaining content into a single string
+	const body = lines.join('').replace(/\r?\n/g, '');
+
+	// Break the body into chunks of lineLength
+	const formattedBody = body.match(new RegExp(`.{1,${lineLength}}`, 'g')).join('\n');
+
+	// Reconstruct the message
+	return [header, formattedBody, footer].filter(Boolean).join('\n');
+}
+
+exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;
 exports.getRemotePartySizes = getRemotePartySizes;

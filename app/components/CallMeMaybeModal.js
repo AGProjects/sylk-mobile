@@ -1,125 +1,107 @@
-import React, { Component } from 'react';
-import { View } from 'react-native';
+import React from 'react';
+import {  Platform, Linking } from 'react-native';
+import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
+import { Text, IconButton, Surface, Portal } from 'react-native-paper';
 import PropTypes from 'prop-types';
-import { Dialog, Title, Surface, Portal, IconButton, Text } from 'react-native-paper';
-import autoBind from 'auto-bind';
-import { openComposer } from 'react-native-email-link';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import Share from 'react-native-share';
-
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
-
 import utils from '../utils';
-import styles from '../assets/styles/blink/_CallMeMaybeModal.scss';
 
-class CallMeMaybeModal extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
-    }
+import containerStyles from '../assets/styles/ContainerStyles';
+import styles from '../assets/styles/ContentStyles';
 
-    handleClipboardButton(event) {
-        utils.copyToClipboard(this.props.callUrl);
-        this.props.notificationCenter().postSystemNotification('Call me', {body: 'Web address copied to the clipboard'});
-        this.props.close();
-    }
+const CallMeMaybeModal = ({ show, close, callUrl, notificationCenter }) => {
 
-    handleEmailButton(event) {
+  const sipUri = callUrl.split('/').slice(-1)[0];
 
-        const sipUri = this.props.callUrl.split('/').slice(-1)[0];    // hack!
-        const emailMessage = `You can call me using a Web browser at ${this.props.callUrl} or a SIP client at ${sipUri} ` +
-                             'or by using the freely available Sylk client app from http://sylkserver.com';
-        const subject = 'Call me, maybe?';
+  const handleClipboardButton = () => {
+    utils.copyToClipboard(callUrl);
+    notificationCenter().postSystemNotification('Call me', { body: 'Web address copied to the clipboard' });
+    close();
+  };
 
-        openComposer({
-            subject,
-            body: emailMessage
-        })
+  const handleEmailButton = () => {
+    const emailMessage = `You can call me using a Web browser at ${callUrl} or a SIP client at ${sipUri} ` +
+      'or by using Sylk client freely downloadable from http://sylkserver.com';
+    const subject = encodeURIComponent('Call me, maybe?');
+    const body = encodeURIComponent(emailMessage);
+    const mailtoUrl = `mailto:?subject=${subject}&body=${body}`;
 
-        // Linking.canOpenURL(this.emailLink)
-        //     .then((supported) => {
-        //         if (!supported) {
-        //         } else {
-        //             return Linking.openURL(url);
-        //         }
-        //     })
-        //     .catch((err) => {
-        //         this.props.notificationCenter().postSystemNotification('Call me', {body: 'Unable to open email app'});
-        //     });
+    Linking.openURL(mailtoUrl).catch(err => console.error('Error opening mail app', err));
+    close();
+  };
 
-        this.props.close();
-    }
+  const handleShareButton = () => {
+    const options = {
+      subject: 'Call me, maybe?',
+      message: `You can call me using a Web browser at ${callUrl} or a SIP client at ${sipUri} or by using the freely available Sylk WebRTC client app at http://sylkserver.com`
+    };
 
-    handleShareButton(event) {
+    Share.open(options)
+      .then(() => close())
+      .catch(() => close());
+  };
 
-        const sipUri = this.props.callUrl.split('/').slice(-1)[0];    // hack!
+	const handleClose = () => {
+	  close();           // call parent close
+	};
 
-        let options= {
-            subject: 'Call me, maybe?',
-            message: `You can call me using a Web browser at ${this.props.callUrl} or a SIP client at ${sipUri} or by using the freely available Sylk WebRTC client app at http://sylkserver.com`
-        }
+  if (!show) return null;
 
-        Share.open(options)
-            .then((res) => {
-                this.props.close();
-            })
-            .catch((err) => {
-                this.props.close();
-            });
-    }
+   const title= "Call me, maybe?";
 
-    render() {
-        const sipUri = this.props.callUrl.split('/').slice(-1)[0];
+  return (
+    <Modal
+	  style={containerStyles.container}
+      visible={show}
+      transparent
+      animationType="fade"
+      onRequestClose={handleClose} // Android back button
+    >
 
-        return (
-            <Portal>
-                <DialogType visible={this.props.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
-                        <Dialog.Title style={styles.title}>Call me, maybe?</Dialog.Title>
-                        <Text style={styles.body}>
-                            Others can call you with SIP at:
-                        </Text>
-                        <Text style={styles.address}>
-                         {sipUri}
-                        </Text>
-                        <Text style={styles.body}>
-                            or with a Web browser at:
-                        </Text>
-                        <Text style={styles.address}>
-                            {this.props.callUrl}
-                        </Text>
-                        <Text style={styles.body}>
-                             Share this address with others:
-                        </Text>
-                        <View style={styles.iconContainer}>
-                            <IconButton
-                                size={34}
-                                onPress={this.handleClipboardButton}
-                                icon="content-copy"
-                            />
-                            <IconButton
-                                size={34}
-                                onPress={this.handleEmailButton}
-                                icon="email"
-                            />
-                            <IconButton
-                                size={34}
-                                onPress={this.handleShareButton}
-                                icon="share-variant"
-                            />
-                        </View>
-                    </Surface>
-                </DialogType>
-            </Portal>
-        );
-    }
-}
+      {/* Dismiss modal when tapping outside */}
+      <TouchableWithoutFeedback onPress={handleClose}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+          >
+            {/* Prevent taps inside modal from dismissing */}
+            <TouchableWithoutFeedback onPress={() => {}}>
+
+   		    <Surface style={containerStyles.modalSurface}>
+            {/* Modal content start */}
+			  <Text style={containerStyles.title}>{title}</Text>
+
+              <Text style={styles.body}>Others can call you with a SIP client at:</Text>
+              <Text style={styles.link}>{sipUri}</Text>
+
+              <Text style={styles.body}>or with a Web browser at:</Text>
+              <Text style={styles.link}>{callUrl}</Text>
+
+              <Text style={styles.body}>Share this address with others:</Text>
+
+              <View style={styles.iconContainer}>
+                <IconButton size={34} onPress={handleClipboardButton} icon="content-copy" />
+                <IconButton size={34} onPress={handleEmailButton} icon="email" />
+                <IconButton size={34} onPress={handleShareButton} icon="share-variant" />
+              </View>
+
+               {/* Modal content end */}
+              </Surface>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 CallMeMaybeModal.propTypes = {
-    show               : PropTypes.bool,
-    close              : PropTypes.func.isRequired,
-    callUrl            : PropTypes.string.isRequired,
-    notificationCenter : PropTypes.func.isRequired
+  show: PropTypes.bool,
+  close: PropTypes.func.isRequired,
+  callUrl: PropTypes.string,
+  notificationCenter: PropTypes.func.isRequired
 };
 
 export default CallMeMaybeModal;
+

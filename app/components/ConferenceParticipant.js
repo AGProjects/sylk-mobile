@@ -7,8 +7,27 @@ import autoBind from 'auto-bind';
 import { IconButton, Surface } from 'react-native-paper';
 import { RTCView } from 'react-native-webrtc';
 import UserIcon from './UserIcon';
+import { StyleSheet } from 'react-native';
 
-import styles from '../assets/styles/blink/_ConferenceParticipant.scss';
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',  // vertical alignment
+    alignItems: 'center',      // horizontal alignment
+
+  },
+
+  videoContainer: {
+    width: 120,
+    height: 90
+  },
+
+  video: {
+    width: '100%',
+    height: '100%'
+   }
+});
+
 
 class ConferenceParticipant extends React.Component {
     constructor(props) {
@@ -19,17 +38,23 @@ class ConferenceParticipant extends React.Component {
             hasVideo: false,
             overlayVisible: false,
             audioMuted: false,
-            stream: null
+            stream: null,
+            isLandscape: this.props.isLandscape
         }
         this.speechEvents = null;
-
         this.videoElement = React.createRef();
-
-        props.participant.on('stateChanged', this.onParticipantStateChanged);
     }
 
+    UNSAFE_componentWillReceiveProps(nextProps) {
+		this.setState({isLandscape: nextProps.isLandscape
+		});
+    }
+
+
     componentDidMount() {
+        this.props.participant.on('stateChanged', this.onParticipantStateChanged);
         this.maybeAttachStream();
+
         // this.videoElement.current.oncontextmenu = (e) => {
         //     // disable right click for video elements
         //     e.preventDefault();
@@ -121,8 +146,17 @@ class ConferenceParticipant extends React.Component {
         }
 
         let icon;
+
+        let shiftX = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+        let shiftY = this.state.isLandscape ? 0 : 0;
+
         if (this.props.pauseVideo && this.props.display) {
-            icon = <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}><View><UserIcon identity={this.props.participant.identity} size={50} /></View></TouchableWithoutFeedback>;
+            icon = 
+            <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}>
+            <View style={{borderWidth: 2, borderColor: 'yellow'},  { borderColor: 'white', transform: [{ translateX: shiftX}, { translateY: shiftY }]}}>
+            <UserIcon identity={this.props.participant.identity} size={50} />
+            </View>
+            </TouchableWithoutFeedback>;
         }
 
         return (
@@ -144,7 +178,8 @@ ConferenceParticipant.propTypes = {
     display: PropTypes.bool,
     pauseVideo: PropTypes.bool,
     selected: PropTypes.func,
-    status: PropTypes.string
+    status: PropTypes.string,
+    isLandscape: PropTypes.bool
 };
 
 export default ConferenceParticipant;

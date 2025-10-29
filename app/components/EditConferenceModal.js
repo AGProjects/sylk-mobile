@@ -1,158 +1,144 @@
-import React, { Component } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import autoBind from 'auto-bind';
-import { View } from 'react-native';
-import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph } from 'react-native-paper';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import { Platform, View, Modal, KeyboardAvoidingView, TouchableWithoutFeedback } from 'react-native';
+import { Text, Button, Surface, TextInput } from 'react-native-paper';
 
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+import containerStyles from '../assets/styles/ContainerStyles';
+import styles from '../assets/styles/ContentStyles';
 
-import config from '../config';
-import styles from '../assets/styles/blink/_InviteParticipantsModal.scss';
+// ✅ Sanitize each participant
+const sanitizeParticipant = (item, accountId, defaultDomain) => {
+  if (!item) return null;
+  item = item.trim().toLowerCase();
 
+  // Only ASCII letters, numbers, and limited symbols
+  if (!/^[a-z0-9._-]+(@[a-z0-9.-]+)?$/.test(item)) return null;
+  if (item === accountId) return null;
 
-class EditConferenceModal extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
+  if (!item.includes('@')) return item;
 
-        let participants = [];
-        if (this.props.invitedParties && this.props.invitedParties.length > 0) {
-            participants = this.props.invitedParties;
-        } else if (this.props.selectedContact && this.props.selectedContact.participants) {
-            participants = this.props.selectedContact.participants;
-        }
+  const [user, domain] = item.split('@');
+  if (domain === defaultDomain) return user;
+  return item;
+};
 
-        this.state = {
-            participants: this.sanitizedParticipants(participants),
-            selectedContact: this.props.selectedContact,
-            show: this.props.show,
-            displayName: this.props.displayName,
-            invitedParties: this.props.invitedParties
-        }
+// ✅ Split and clean participants into array
+const splitAndSanitizeParticipants = (str, accountId, defaultDomain) => {
+  if (!str) return [];
+  return str
+    .split(/[\s,]+/) // split by commas or spaces
+    .map(p => sanitizeParticipant(p, accountId, defaultDomain))
+    .filter(Boolean);
+};
+
+// ✅ Convert array to "aaa, bbb, ccc"
+const formatParticipantsForDisplay = (arr) => arr.join(', ');
+
+const EditConferenceModal = ({
+  show,
+  close,
+  selectedContact,
+  displayName: initialDisplayName,
+  invitedParties: initialInvited,
+  room,
+  accountId,
+  defaultDomain,
+  saveConference
+}) => {
+  const [displayName, setDisplayName] = useState(initialDisplayName || '');
+  const [participantsStr, setParticipantsStr] = useState('');
+
+  useEffect(() => {
+    let participants = [];
+    if (initialInvited?.length > 0) {
+      participants = initialInvited;
+    } else if (selectedContact?.participants?.length > 0) {
+      participants = selectedContact.participants;
     }
 
-    sanitizedParticipants(participants) {
-        let sanitizedParticipants = [];
-        participants.forEach((item) => {
-            item = item.trim().toLowerCase();
+    // Only sanitize incoming props, not user typing
+    const sanitized = splitAndSanitizeParticipants(participants.join(', '), accountId, defaultDomain);
+    setParticipantsStr(formatParticipantsForDisplay(sanitized));
+    setDisplayName(initialDisplayName || '');
+  }, [initialInvited, selectedContact, initialDisplayName, accountId, defaultDomain]);
 
-            if (item === this.props.accountId) {
-                return;
-            }
+  const handleSave = () => {
+    const participants = splitAndSanitizeParticipants(participantsStr, accountId, defaultDomain);
+    const formatted = formatParticipantsForDisplay(participants);
+    setParticipantsStr(formatted);
 
-            if (item.indexOf('@') === -1) {
-                sanitizedParticipants.push(item);
-            } else {
-                const domain = item.split('@')[1];
-                if (domain === this.props.defaultDomain) {
-                    sanitizedParticipants.push(item.split('@')[0]);
-                } else {
-                    sanitizedParticipants.push(item);
-                }
-            }
-        });
+    const name = displayName || selectedContact?.uri;
+    saveConference?.(selectedContact?.uri, participants, name);
+    close?.();
+  };
 
-        return sanitizedParticipants.toString().replace(/,/g, ", ");
-    }
+  if (!show) return null;
 
+  return (
+    <Modal
+      style={containerStyles.container}
+      visible={show}
+      transparent
+      animationType="fade"
+      onRequestClose={close}
+    >
+      <TouchableWithoutFeedback onPress={close}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+          >
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <Surface style={containerStyles.modalSurface}>
+                <Text style={containerStyles.title}>Configure conference</Text>
+                <Text style={styles.subtitle}>Room {room}</Text>
 
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        let participants = [];
-        if (nextProps.invitedParties && nextProps.invitedParties.length > 0) {
-            participants = nextProps.invitedParties;
-        } else if (nextProps.selectedContact && nextProps.selectedContact.participants) {
-            participants = nextProps.selectedContact.participants;
-        }
+                <TextInput
+                  mode="flat"
+                  label="Display name"
+                  value={displayName}
+                  onChangeText={setDisplayName}
+                  autoCapitalize="words"
+                />
 
-        this.setState({
-            participants: this.sanitizedParticipants(participants),
-            selectedContact: nextProps.selectedContact,
-            show: nextProps.show,
-            displayName: nextProps.displayName,
-            invitedParties: nextProps.invitedParties
-        });
-    }
+                <TextInput
+                  mode="flat"
+                  label="People you wish to invite when you join the room"
+                  placeholder="Accounts separated by , or spaces"
+                  value={participantsStr}
+                  onChangeText={setParticipantsStr}
+                  autoCapitalize="none"
+                />
 
-    saveConference(event) {
-        event.preventDefault();
-        const uris = [];
-        if (this.state.participants) {
-            this.state.participants.split(',').forEach((item) => {
-                item = item.trim();
-                if (uris.indexOf(item) === -1) {
-                    uris.push(item);
-                }
-            });
-        }
-
-        if (uris || this.state.displayName) {
-            let name = this.state.displayName || this.state.selectedContact.uri;
-            this.props.saveConference(this.state.selectedContact.uri, uris, name);
-        }
-        this.props.close();
-    }
-
-
-    displayNameChange(value) {
-        this.setState({displayName: value});
-    }
-
-    participantsChange(value) {
-        this.setState({participants: value});
-    }
-
-    render() {
-        return (
-            <Portal>
-                <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
-                       <Dialog.Title style={styles.title}>Conference {this.props.room}</Dialog.Title>
-                       <TextInput
-                            mode="flat"
-                            name="display_name"
-                            label="Display name"
-                            onChangeText={this.displayNameChange}
-                            defaultValue={this.state.displayName}
-                            required
-                            autoCapitalize="words"
-                        />
-                        <TextInput
-                            mode="flat"
-                            name="participants"
-                            label="People you wish to invite when you join the room"
-                            onChangeText={this.participantsChange}
-                            value={this.state.participants}
-                            placeholder="Enter accounts separated by ,"
-                            required
-                            autoCapitalize="none"
-                        />
-
-                        <View style={styles.buttonRow}>
-                        <Button
-                            mode="contained"
-                            style={styles.button}
-                            onPress={this.saveConference}
-                            icon="content-save">Save
-                        </Button>
-                        </View>
-                    </Surface>
-                </DialogType>
-            </Portal>
-        );
-    }
-}
+                <View style={styles.buttonRow}>
+                  <Button
+                    mode="contained"
+                    style={styles.button}
+                    onPress={handleSave}
+                    icon="content-save"
+                  >
+                    Save
+                  </Button>
+                </View>
+              </Surface>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 EditConferenceModal.propTypes = {
-    room               : PropTypes.string,
-    displayName        : PropTypes.string,
-    show               : PropTypes.bool,
-    close              : PropTypes.func.isRequired,
-    saveConference     : PropTypes.func,
-    invitedParties     : PropTypes.array,
-    selectedContact    : PropTypes.object,
-    defaultDomain      : PropTypes.string,
-    accountId          : PropTypes.string
-    };
+  room: PropTypes.string,
+  displayName: PropTypes.string,
+  show: PropTypes.bool,
+  close: PropTypes.func.isRequired,
+  saveConference: PropTypes.func,
+  invitedParties: PropTypes.array,
+  selectedContact: PropTypes.object,
+  defaultDomain: PropTypes.string,
+  accountId: PropTypes.string,
+};
 
 export default EditConferenceModal;

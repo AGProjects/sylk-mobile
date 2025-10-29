@@ -53,7 +53,11 @@ class RegisterForm extends Component {
     }
 
     handleAccountIdChange(value) {
-        this.setState({ accountId: value.trim() });
+		const trimmed = value.trim();
+		this.setState({ 
+			accountId: trimmed,
+			password: trimmed === '' ? '' : this.state.password // reset password if accountId is empty
+		});
     }
 
     handlePasswordChange(value) {
@@ -72,7 +76,7 @@ class RegisterForm extends Component {
         Keyboard.dismiss();
         this.setState({ registering: true });
 
-        const delay = new Promise(resolve => setTimeout(resolve, 1000));
+        const delay = new Promise(resolve => setTimeout(resolve, 5000));
         let success = false;
 
         try {
@@ -83,8 +87,8 @@ class RegisterForm extends Component {
         }
 
         await delay;
-
         this.setState({ registering: false });
+ 
         if (success) {
             // Optionally handle post-login transition
         }
@@ -159,6 +163,8 @@ class RegisterForm extends Component {
                         label="Password"
                         textContentType="password"
                         placeholder="Password"
+   					    autoCapitalize="none"
+					    autoCorrect={false}
                         value={this.state.password}
                         onChangeText={this.handlePasswordChange}
                         onSubmitEditing={this.handleSubmit}

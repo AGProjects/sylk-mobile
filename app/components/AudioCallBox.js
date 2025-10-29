@@ -8,12 +8,12 @@ import EscalateConferenceModal from './EscalateConferenceModal';
 import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
 import UserIcon from './UserIcon';
-import styles from '../assets/styles/blink/_AudioCallBox.scss';
 import utils from '../utils';
 import LoadingScreen from './LoadingScreen';
 
 import TrafficStats from './BarChart';
 
+import styles from '../assets/styles/AudioCall';
 
 function toTitleCase(str) {
     return str.replace(

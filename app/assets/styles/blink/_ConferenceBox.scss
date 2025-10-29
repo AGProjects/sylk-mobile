@@ -2,6 +2,23 @@
     flex: 1;
 }
 
+.buttonsContainer {
+    flex-direction: row;
+    justify-content: center;
+    height: 55;
+    border: 0px;
+}
+
+.conferenceContainer {
+    flex-direction: column;
+    align-content: flex-start;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: 0;
+}
+
 .roundshape {
     height: 48; //any of height
     width: 48; //any of width
@@ -27,13 +44,6 @@
 
 .hangupButton {
     background-color: rgba(#a94442, .8);
-}
-
-.buttonsContainer {
-    flex-direction: row;
-    justify-content: center;
-    height: 55;
-    border: 0px;
 }
 
 .hangupButtonAudioContainer {
@@ -119,16 +129,6 @@ align-content: flex-end;
     flex: 1;
     border: 0px;
     border-radius: 5px;
-}
-
-.conferenceContainer {
-    flex-direction: column;
-    align-content: flex-start;
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    top: 0;
 }
 
 .videosContainer {

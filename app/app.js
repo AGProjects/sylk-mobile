@@ -19,6 +19,7 @@ import PushNotification , {Importance} from "react-native-push-notification";
 import VoipPushNotification from 'react-native-voip-push-notification';
 import { getApp } from '@react-native-firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ProximitySensor } from 'react-native-sensors';
 
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
@@ -52,6 +53,7 @@ import Conference from './components/Conference';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
 import ImportPrivateKeyModal from './components/ImportPrivateKeyModal';
+import RestoreKeyModal from './components/RestoreKeyModal';
 import IncomingCallModal from './components/IncomingCallModal';
 import LogsModal from './components/LogsModal';
 import NotificationCenter from './components/NotificationCenter';
@@ -118,7 +120,6 @@ const KeyOptions = {
   hash: "sha512",
   RSABits: 4096,
 }
-
 
 const max_transfer_size = 40 * 1000 * 1000;
 
@@ -204,7 +205,9 @@ class Sylk extends Component {
         this.defaultDomain = config.defaultDomain;
         this.fileSharingUrl = config.wsServer + '/filesharing';
         this.fileTransferUrl = config.wsServer + '/filetransfer';
-        this.defaultConferenceDomain = 'videoconference.' + config.defaultDomain;
+        this.defaultConferenceDomain = 'videoconference.sip2sip.info';
+       
+        this.boundProximityDetect = this._proximityDetect.bind(this);
         
         this._initialState = {
             appState: null,
@@ -302,6 +305,7 @@ class Sylk extends Component {
             showLogo: true,
             historyFilter: null,
             showExportPrivateKeyModal: false,
+            showRestoreKeyModal: false,
             showQRCodeScanner: false,
             navigationItems: {today: false,
                               yesterday: false,
@@ -814,7 +818,7 @@ class Sylk extends Component {
         let params = [this.state.accountId, keys.private, keys.public, unixTime, my_uuid];
         await this.ExecuteQuery("INSERT INTO keys (account, private_key, public_key, timestamp, my_uuid) VALUES (?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL inserted private key');
-
+			this._notificationCenter.postSystemNotification('Private key updated');
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
                 this.updateKeySql(keys);
@@ -860,6 +864,7 @@ class Sylk extends Component {
 
         await this.ExecuteQuery("update keys set private_key = ?, public_key = ?, timestamp = ? where account = ?", params).then((result) => {
             console.log('SQL updated private key');
+			this._notificationCenter.postSystemNotification('Private key updated');
         }).catch((error) => {
             console.log('SQL update keys error:', error);
         });
@@ -2091,6 +2096,8 @@ class Sylk extends Component {
 componentWillUnmount() {
     utils.timestampedLog('App will unmount');
 
+    if (this.proximityListener) this.proximityListener.unsubscribe();
+
     if (this.appStateSubscription) {
         this.appStateSubscription.remove();
         this.appStateSubscription = null;
@@ -2278,25 +2285,43 @@ componentWillUnmount() {
         this._detectOrientation();
 
         getPhoneNumber().then(myPhoneNumber => {
-            //console.log('myPhoneNumber', myPhoneNumber);
+            console.log('myPhoneNumber', myPhoneNumber);
             this.setState({myPhoneNumber: myPhoneNumber});
         });
 
  		await this.listenForPushNotifications();
         this.listenforSoundNotifications();
-        this.checkVersion();
 
-/*
-        if (Platform.OS === 'android') {
-			try {
-			    registerForegroundListener(this);
-			} catch (err) {
-			    console.error('Error in registerForegroundListener:', err);
-			}
-		}
-*/
+		this.proximityListener = new ProximitySensor({ interval: 100 }).subscribe(
+		  ({ proximity }) => {
+			this.boundProximityDetect(proximity);
+		  },
+		  (error) => {
+			console.warn("Proximity sensor error:", error);
+		  }
+		);
+
+        this.checkVersion();
+        
+        this.checkInstaller();
     }
 
+	async checkInstaller() {
+	  const installer = await DeviceInfo.getInstallerPackageName(); 
+	  // Returns a string like "com.android.vending" for Play Store
+	  console.log('Installer package:', installer);
+	
+	  if (installer === 'com.android.vending') {
+		console.log('App was installed from Play Store');
+		return 'playstore';
+	  } else if (installer === null) {
+		console.log('App was sideloaded or unknown source');
+		return 'sideloaded';
+	  } else {
+		console.log('App installed from another source:', installer);
+		return 'other';
+	  }
+	}
 
 	async registerPushToken() {
 	  if (Platform.OS !== 'ios') return;
@@ -2441,10 +2466,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     // --- DeviceEventEmitter ---
-    this.boundProximityDetect = this._proximityDetect.bind(this);
     this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
 
-    DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
     DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
 
     // --- AppState listener ---
@@ -2792,6 +2815,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     _proximityDetect(data) {
+        console.log('_proximityDetect', data);
+
         if (!this.state.proximityEnabled) {
             return;
         }
@@ -3026,7 +3051,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     connectionStateChanged(oldState, newState) {
-        console.log('--- connectionStateChanged', newState);
+        //console.log('--- connectionStateChanged', newState);
         if (this.unmounted) {
             //console.log('App is not yet mounted');
             return;
@@ -4380,7 +4405,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 this.setState({loading: null});
                 this.changeRoute(nextRoute, 'media_ready');
                 if (nextRoute === '/conference') {
-                    this.playMessageSound();
+                    //this.playMessageSound();
                 }
             }
         })
@@ -4893,11 +4918,20 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     async hideExportPrivateKeyModal() {
         this.setState({privateKey: null,
-                       showExportPrivateKeyModal: false});
+ 	    showExportPrivateKeyModal: false});
     }
 
     async showExportPrivateKeyModal() {
         this.setState({showExportPrivateKeyModal: true});
+    }
+
+    async showRestoreKeyModal() {
+        console.log('showRestoreKeyModal');
+        this.setState({showRestoreKeyModal: true});
+    }
+
+    async hideRestoreKeyModal() {
+        this.setState({showRestoreKeyModal: false});
     }
 
     togglePinned() {
@@ -5612,7 +5646,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         this.setState({showCallMeMaybeModal: true});
         setTimeout(() => {
             this.hideCallMeModal();
-        }, 5000);
+        }, 20000);
     }
 
     hideCallMeModal() {
@@ -5764,7 +5798,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
     }
 
-    async replicatePrivateKey(password) {
+    async exportPrivateKey(password, email) {
         if (!this.state.account) {
             console.log('No account');
             return;
@@ -5773,6 +5807,32 @@ f you want to fully control the UI and avoid automatic system notifications, you
         if (!this.state.keys || !this.state.keys.private) {
             return;
         }
+
+        if (email) {
+			const public_key = this.state.keys.public.replace(/\r/g, '').trim();
+			const private_key = this.state.keys.private.replace(/\r/g, '').trim();
+			const keyPair = public_key + '\n' + private_key;
+			await OpenPGP.encryptSymmetric(keyPair, password, KeyOptions).then((encryptedBuffer) => {
+				utils.timestampedLog('Sending encrypted private key');
+				encryptedBuffer = encryptedBuffer;
+				const body = btoa(encryptedBuffer);
+				const s = 'Sylk Private Key for ' + this.state.accountId;
+                const subject = encodeURIComponent(s);
+   			    const mailtoUrl = `mailto:?subject=${subject}&body=${body}`;
+
+				this.setState({showExportPrivateKeyModal: false});
+
+				Linking.openURL(mailtoUrl).catch((err) => {
+				  console.error('Error opening mail app', err);
+				});
+
+
+			}).catch((error) => {
+				console.log('Error encrypting private key:', error);
+			});
+				
+			return;
+		}
 
         this.sendPublicKey();
 
@@ -5813,6 +5873,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
         utils.timestampedLog('showImportPrivateKeyModal 5');
         this.setState({showImportPrivateKeyModal: true,
                        privateKey: keyPair});
+    }
+
+    async restorePrivateKey(keyPair) {
+        utils.timestampedLog('Save encrypted private key');
+        this.processPrivateKey(keyPair);
     }
 
     async decryptPrivateKey(password) {
@@ -7760,7 +7825,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
                         // don't play message if inside the same chat
                     } else {
-                        this.playMessageSound();
+                        //this.playMessageSound();
                     }
                     this.mustPlayIncomingSoundAfterSync = false;
                 }
@@ -8452,7 +8517,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     playMessageSound(direction='incoming') {
-        //console.log('playMessageSound', this.state.appState);
+        console.log('---- playMessageSound', this.state.appState);
         let must_play_sound = true;
 
         if (this.state.dnd) {
@@ -9140,7 +9205,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 selectedContact.timestamp = message.timestamp;
                 selectedContact.direction = 'incoming';
                 selectedContact.lastCallDuration = null;
-
                 this.setState({selectedContact: selectedContact, messages: renderMessages});
             }
 
@@ -9149,7 +9213,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         if (this.state.selectedContact || this.currentRoute === '/ready') {
-            this.playMessageSound();
+            //this.playMessageSound();
         }
 
         this.notifyIncomingMessageWhileInACall(message.sender.uri);
@@ -10005,6 +10069,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     deleteContact(uri) {
+        
         uri = uri.trim().toLowerCase();
 
         if (uri.indexOf('@') === -1) {
@@ -10100,9 +10165,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
        }
     }
 
-    saveContact(uri, displayName='', organization='', email='') {
-        displayName = displayName.trim();
-        uri = uri.trim().toLowerCase();
+    saveContact(contactObject) {
+	 console.log('saveContact', contactObject);
+    
+     let uri = contactObject.uri;
+     let displayName = contactObject.displayName;
+     let organization = contactObject.organization;
+     let email = contactObject.email;
+
         let contact;
 
         if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
@@ -11155,7 +11225,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         } else {
             publicKey = this.state.keys ? this.state.keys.public: null;
         }
-
+        
         return (
             <Fragment>
                 <NavigationBar
@@ -11182,7 +11252,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     organization = {this.state.organization}
                     selectedContact = {this.state.selectedContact}
                     messages = {this.state.messages}
-                    replicateKey = {this.replicatePrivateKey}
+                    exportKey = {this.exportPrivateKey}
                     publicKey = {publicKey}
                     deleteMessages = {this.deleteMessages}
                     deleteFiles = {this.deleteFiles}
@@ -11209,6 +11279,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     showExportPrivateKeyModal = {this.state.showExportPrivateKeyModal}
                     showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
                     hideExportPrivateKeyModalFunc = {this.hideExportPrivateKeyModal}
+                    showRestoreKeyModal = {this.state.showRestoreKeyModal}
+                    showRestoreKeyModalFunc = {this.showRestoreKeyModal}
                     generateKeysFunc={this.generateKeys}
                     refetchMessages = {this.refetchMessagesForContact}
                     blockedUris = {this.state.blockedUris}
@@ -11230,6 +11302,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     toggleSearchMessages = {this.toggleSearchMessages}
                     searchMessages = {this.state.searchMessages}
                     searchString = {this.state.searchString}
+                    isLandscape = {this.state.orientation === 'landscape'}
                 />
 
                 <ReadyBox
@@ -11328,6 +11401,12 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     keyStatus={this.state.keyStatus}
                     status={this.state.privateKeyImportStatus}
                     success={this.state.privateKeyImportSuccess}
+                />
+
+                <RestoreKeyModal
+                    show={this.state.showRestoreKeyModal}
+                    close={this.hideRestoreKeyModal}
+                    saveFunc={this.restorePrivateKey}
                 />
             </Fragment>
         );

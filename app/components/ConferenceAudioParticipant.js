@@ -5,7 +5,91 @@ import { View, TouchableOpacity } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import UserIcon from './UserIcon';
 import { List, Text } from 'react-native-paper';
-import styles from '../assets/styles/blink/_ConferenceAudioParticipant.scss';
+
+import { StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  card: {
+    height: 60,
+    borderWidth: 0,
+    borderColor: 'white'
+  },
+  
+  displayName: {
+    fontSize: 16,
+    color: 'white',
+  },
+
+  uri: {
+    fontSize: 14,
+    color: 'white',
+  },
+
+  media: {
+    fontSize: 12,
+    color: 'white',
+    paddingBottom: 6,
+    textAlign: 'right',
+  },
+
+  mediaMedium: {
+    fontSize: 12,
+    color: 'orange',
+    paddingBottom: 6,
+    textAlign: 'right',
+  },
+
+  mediaBad: {
+    fontSize: 12,
+    color: 'red',
+    paddingBottom: 6,
+    textAlign: 'right',
+  },
+
+  mediaGood: {
+    fontSize: 12,
+    color: 'green',
+    paddingBottom: 6,
+    textAlign: 'right',
+  },
+
+  right: {
+    fontSize: 12,
+    color: 'white',
+    textAlign: 'right',
+  },
+
+  rightOrange: {
+    fontSize: 12,
+    color: 'orange',
+    textAlign: 'right',
+  },
+
+  rightGreen: {
+    fontSize: 12,
+    color: 'yellow',
+    textAlign: 'right',
+  },
+
+  userIconContainer: {
+    paddingRight: 5,
+    paddingLeft: 5
+  },
+
+  userButtonsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center', 
+    alignItems: 'center',
+    borderWidth: 0,
+    borderColor: 'white'
+  },
+
+  mediaContainer: {
+    flexDirection: 'column',
+    borderWidth: 0,
+    borderColor: 'white'
+  },
+});
 
 
 class ConferenceAudioParticipant extends Component {
@@ -65,33 +149,33 @@ class ConferenceAudioParticipant extends Component {
         let media = '';
         let mediaStyle = styles.mediaGood;
         if (this.props.loss && this.props.loss > 7) {
-            media = this.props.loss > 50 ? 'Audio lost' : this.props.loss + '% packet loss';
-            mediaStyle = styles.mediaBad;
+            media = this.props.loss > 50 ? 'Audio lost' : this.props.loss + '% loss';
+            mediaStyle = this.props.loss > 25 ? styles.mediaBad : styles.mediaMedium;
         } else if (this.props.latency) {
-            if (this.props.latency < 300) {
-                media = this.props.latency + ' ms delay';
+			media = this.props.latency + ' ms delay';
+            if (this.props.latency < 250) {
             } else if (this.props.latency && this.props.latency >= 300 && this.props.latency < 600) {
-                media = this.props.latency + ' ms delay';
                 mediaStyle = styles.mediaMedium;
             } else if (this.props.latency && this.props.latency >= 600) {
-                media = this.props.latency + ' ms big delay';
                 mediaStyle = styles.mediaBad;
             }
         } else {
             media = 'Waiting for audio...';
-            mediaStyle = styles.mediaBad;
         }
+        
+        //console.log(mediaStyle);
 
         return (
+            <View style={{justifyContent: 'center', alignItems: 'center' }}>
             <List.Item
-            style={styles.card}
+                style={styles.card}
                 title={identity.displayName||identity.uri}
                 key={identity.uri}
                 titleStyle={styles.displayName}
                 description={identity.uri}
                 descriptionStyle={styles.uri}
                 left={props => <View style={styles.userIconContainer}>
-                                  <UserIcon size={40} identity={identity}/>
+                                  <UserIcon size={50} identity={identity}/>
                                </View>
                       }
                 right={props =>
@@ -106,6 +190,7 @@ class ConferenceAudioParticipant extends Component {
                            </View>
                       }
             />
+            </View>
         );
     }
 }
@@ -114,12 +199,10 @@ ConferenceAudioParticipant.propTypes = {
     identity: PropTypes.object.isRequired,
     participant: PropTypes.object,
     isLocal: PropTypes.bool,
-    supportsVideo: PropTypes.bool,
     status: PropTypes.string,
     loss: PropTypes.number,
     latency: PropTypes.number,
     extraButtons: PropTypes.array
-
 };
 
 

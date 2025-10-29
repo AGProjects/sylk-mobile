@@ -5,25 +5,54 @@ import { View, TouchableWithoutFeedback} from 'react-native';
 import { Appbar } from 'react-native-paper';
 import FadeInView from './FadeInView';
 
-import styles from '../assets/styles/blink/_ConfDrawer.scss';
-// const styleSheet = {
-//     paper: {
-//         width: 350,
-//         backgroundColor: Grey[100],
-//         borderLeft: '1px solid rgba(0, 0, 0, 0.12)',
-//         borderRight: 0
-//     },
-//     title: {
-//         flex: '0 1 auto'
-//     },
-//     grow: {
-//         flex: '1 1 auto'
-//     },
-//     toolbar: {
-//         minHeight: '50px',
-//         height: 50
-//     }
-// };
+import { StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  margin: {
+    padding: 10,
+    backgroundColor: '#fff',
+    height: '100%',
+    // position: 'relative', // uncomment if needed
+    flex: 1,
+  },
+
+  negative: {
+    marginLeft: -10,
+    marginTop: -10,
+    marginRight: -10,
+    elevation: 0,
+  },
+
+  flex: {
+    flex: 1,
+  },
+
+  container: {
+    height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
+
+  drawerColor: {
+    backgroundColor: '#fff',
+  },
+
+  backdrop: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: '100%',
+  },
+
+  backdropColor: {
+    backgroundColor: 'rgba(0, 0, 0, 0.54)',
+  },
+});
+
 
 const ConferenceDrawer = props => {
     const [visible, setVisible] = useState(props.show);

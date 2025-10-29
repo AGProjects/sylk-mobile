@@ -1,118 +1,108 @@
-import React, { Component } from 'react';
+import React from 'react';
+import {  Platform, Linking } from 'react-native';
+import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
+import { Text, IconButton, Surface, Portal } from 'react-native-paper';
 import PropTypes from 'prop-types';
-import autoBind from 'auto-bind';
-import { View, TouchableOpacity } from 'react-native';
-import { Dialog, Portal, Text, Button, Surface, TextInput, IconButton} from 'react-native-paper';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
-import { openComposer } from 'react-native-email-link';
 import Share from 'react-native-share';
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
-import { Linking } from 'react-native';
-
 import utils from '../utils';
-import config from '../config';
 
-import styles from '../assets/styles/blink/_ConferenceModal.scss';
+import containerStyles from '../assets/styles/ContainerStyles';
+import styles from '../assets/styles/ContentStyles';
 
+const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCenter }) => {
 
-class ShareConferenceLinkModal extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
-        this.state = {
-            
-        }
-    }
+  const handleClipboardButton = () => {
+    utils.copyToClipboard(conferenceUrl);
+    notificationCenter().postSystemNotification('Call me', { body: 'Web address copied to the clipboard' });
+    close();
+  };
 
-    handleClipboardButton(event) {
-        utils.copyToClipboard(this.state.roomUrl);
-        this.props.notificationCenter().postSystemNotification('Conference', {body: 'address copied to clipboard'});
-        this.props.close();
-    }
+  const handleEmailButton = () => {
+    const emailMessage = `You can join the conference using a Web browser at ${conferenceUrl} ` +
+      'or by using Sylk client freely downloadable from http://sylkserver.com';
+	const subject = encodeURIComponent('Join conference, maybe?');
+	const body = encodeURIComponent(emailMessage);
+	const mailtoUrl = `mailto:?subject=${subject}&body=${body}`;
 
-    UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.room) {
-			const roomUrl = config.publicUrl + '/conference/' + nextProps.room.split('@')[0];
-			this.setState({roomUrl: roomUrl});
-        }
-    }
+    Linking.openURL(mailtoUrl).catch(err => console.error('Error opening mail app', err));
+    close();
+  };
 
-    handleEmailButton(event) {
-        const emailMessage = 'You can join my conference at ' + this.state.roomUrl;
-		const subject = encodeURIComponent('Join conference, maybe?');
-		const body = encodeURIComponent(emailMessage);
-		const mailtoUrl = `mailto:?subject=${subject}&body=${body}`;
-		
-		Linking.openURL(mailtoUrl).catch((err) => {
-		  console.error('Error opening mail app', err);
-		});
+  const handleShareButton = () => {
+    const options = {
+        subject: 'Join conference, maybe?',
+        message: 'You can join my conference at ' + conferenceUrl
+    };
 
-        this.props.close();
-    }
+    Share.open(options)
+      .then(() => close())
+      .catch(() => close());
+  };
 
-    handleShareButton(event) {
-        const subject = 'Join conference, maybe?';
-        const message = 'You can join my conference at ' + this.state.roomUrl;
+  const handleClose = () => {
+	  close();           // call parent close
+  };
 
-        let options= {
-            subject: subject,
-            message: message
-        }
+  if (!show) return null;
 
-        Share.open(options)
-            .then((res) => {
-                this.props.close();
-            })
-            .catch((err) => {
-                this.props.close();
-            });
-    }
+  const title= "Share conference link?";
 
-    render() {    
-        return (
-            <Portal style={styles.container}>
-                <DialogType visible={this.props.show} onDismiss={this.props.close}>
-                    <Surface>
-                        <Dialog.Title style={styles.title}>Share web link</Dialog.Title>
-                        <Text style={styles.shareText}>
-                            {this.state.roomUrl}
-                        </Text>
+  return (
+    <Modal
+	  style={containerStyles.container}
+      visible={show}
+      transparent
+      animationType="fade"
+      onRequestClose={handleClose} // Android back button
+    >
 
-                        <Text style={styles.shareText}>
-                            Select an external application to share the conference web link:
-                        </Text>
+      {/* Dismiss modal when tapping outside */}
+      <TouchableWithoutFeedback onPress={handleClose}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+          >
+            {/* Prevent taps inside modal from dismissing */}
+            <TouchableWithoutFeedback onPress={() => {}}>
 
-                        <View style={styles.iconContainer}>
-                            <IconButton
-                                size={30}
-                                onPress={this.handleClipboardButton}
-                                icon="content-copy"
-                            />
-                            <IconButton
-                                size={30}
-                                onPress={this.handleEmailButton}
-                                icon="email"
-                            />
-                            <IconButton
-                                size={30}
-                                onPress={this.handleShareButton}
-                                icon="share-variant"
-                            />
-                        </View>
+   		    <Surface style={containerStyles.modalSurface}>
+			  <Text style={containerStyles.title}>{title}</Text>
 
+				<View style={styles.buttonRow}>
+				<Text style={styles.link}>
+					{conferenceUrl}
+				</Text>
+              </View>
 
-                    </Surface>
-                </DialogType>
-            </Portal>
-        );
-    }
-}
+				<View style={styles.buttonRow}>
+				<Text style={styles.shareText}>
+					Select an external application to share the conference web link:
+				</Text>
+              </View>
+
+              <View style={styles.iconContainer}>
+                <IconButton size={34} onPress={handleClipboardButton} icon="content-copy" />
+                <IconButton size={34} onPress={handleEmailButton} icon="email" />
+                <IconButton size={34} onPress={handleShareButton} icon="share-variant" />
+              </View>
+
+               {/* Modal content end */}
+              </Surface>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 ShareConferenceLinkModal.propTypes = {
-    notificationCenter : PropTypes.func.isRequired,
-    show: PropTypes.bool,
-    close: PropTypes.func.isRequired,
-    room: PropTypes.string
+  show: PropTypes.bool,
+  close: PropTypes.func.isRequired,
+  conferenceUrl: PropTypes.string.isRequired,
+  notificationCenter: PropTypes.func.isRequired
 };
 
 export default ShareConferenceLinkModal;
+

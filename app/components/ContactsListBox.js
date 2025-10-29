@@ -1636,9 +1636,9 @@ class ContactsListBox extends Component {
             }
             
             if  (currentMessage && currentMessage.metadata) {
-				console.log('mesage metadata:', currentMessage.metadata);
+				//console.log('mesage metadata:', currentMessage.metadata);
 				if (currentMessage.metadata.filename) {
-					if (!currentMessage.metadata.filename.local_url || currentMessage.metadata.filename.error) {
+					if (currentMessage.metadata.filename.error) {
 						options.push('Download again');
 						icons.push(<Icon name="cloud-download" size={20} />);
 						if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
@@ -1647,8 +1647,10 @@ class ContactsListBox extends Component {
 						}
 	
 					} else {
-						options.push('Download');
-						icons.push(<Icon name="cloud-download" size={20} />);
+					    if (!currentMessage.metadata.local_url) {					
+							options.push('Download');
+							icons.push(<Icon name="cloud-download" size={20} />);
+						}
 					}					
 				} else {
 					options.push('Email');
@@ -2027,7 +2029,10 @@ class ContactsListBox extends Component {
         }
 
         if (this.state.targetUri) {
-            items = items.concat(this.searchedContact(this.state.targetUri, this.state.selectedContact));
+            if (this.state.selectedContact && this.state.selectedContact.uri == this.state.targetUri) {
+            } else {
+				items = items.concat(this.searchedContact(this.state.targetUri, this.state.selectedContact));
+            }
         }
 
         if (this.state.filter && this.state.targetUri) {
@@ -2070,12 +2075,8 @@ class ContactsListBox extends Component {
             }
         });
 
-
-		//console.log('Contacts ----');
-
         items.forEach((item) => {
             item.showActions = false;
-            //console.log(item.uri);
 
             if (item.uri.indexOf('@videoconference.') === -1) {
                 item.conference = false;
@@ -2088,7 +2089,6 @@ class ContactsListBox extends Component {
             } else {
                 item.selected = false;
             }
-
         });
 
         let filteredItems = [];
@@ -2138,15 +2138,44 @@ class ContactsListBox extends Component {
         });
 
         items = filteredItems;
+
         if (this.state.sortBy == 'storage') {
             items.sort((a, b) => (a.storage < b.storage) ? 1 : -1)
         } else {
-			items.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
+			items.sort(function(a, b) {
+			  var aHasTimestamp = !!a.timestamp;
+			  var bHasTimestamp = !!b.timestamp;
+			
+			  // Case 1: both have timestamps -> newest first
+			  if (aHasTimestamp && bHasTimestamp) {
+				return new Date(b.timestamp) - new Date(a.timestamp);
+			  }
+			
+			  // Case 2: only one has timestamp -> that one comes first
+			  if (aHasTimestamp && !bHasTimestamp) return -1;
+			  if (!aHasTimestamp && bHasTimestamp) return 1;
+			
+			  // Case 3: neither has timestamp -> sort alphabetically by name
+			  var aName = (a.name || "").toLowerCase();
+			  var bName = (b.name || "").toLowerCase();
+			  return aName.localeCompare(bName);
+			});
         }
+        
+        //console.log(this.state.sortBy);
 
         if (items.length === 1) {
             items[0].showActions = true;
         }
+
+        /*
+		console.log('Contacts ----');
+
+        items.forEach((item) => {
+            item.showActions = false;
+            console.log(item.timestamp, item.uri, item.name);
+        });
+        */
 
         let columns = 1;
 

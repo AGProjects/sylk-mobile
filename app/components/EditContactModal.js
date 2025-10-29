@@ -1,63 +1,61 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, View, TouchableWithoutFeedback, Keyboard, Platform, Linking } from 'react-native';
+import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking } from 'react-native';
 import { Text, Button, Surface, TextInput, Switch, Checkbox } from 'react-native-paper';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import PropTypes from 'prop-types';
-import styles from '../assets/styles/blink/_EditContactModal.scss';
 import utils from '../utils';
+
+import containerStyles from '../assets/styles/ContainerStyles';
+import styles from '../assets/styles/ContentStyles';
 
 const EditContactModal = ({
   show,
   close,
-  uri,
+  saveContact,
+  uri: propUri,
   displayName: propDisplayName,
   email: propEmail,
   organization: propOrg,
   publicKey,
   selectedContact,
   myself,
-  saveContact: saveContactProp,
-  deleteContact: deleteContactProp,
   deletePublicKey: deletePublicKeyProp,
   myuuid,
   rejectNonContacts,
-  toggleRejectNonContacts
+  toggleRejectNonContacts,
+  rejectAnonymous,
+  toggleRejectAnonymous
 }) => {
+  const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
   const [organization, setOrganization] = useState(propOrg || '');
   const [email, setEmail] = useState(propEmail || '');
   const [confirm, setConfirm] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  // Reset all form fields whenever modal opens or props change
   useEffect(() => {
-    setDisplayName(propDisplayName || '');
-    setOrganization(propOrg || '');
-    setEmail(propEmail || '');
-  }, [propDisplayName, propOrg, propEmail, show]);
-
-  useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => setKeyboardHeight(e.endCoordinates.height));
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
+    if (show) {
+      setUri(propUri || '');
+      setDisplayName(propDisplayName || '');
+      setOrganization(propOrg || '');
+      setEmail(propEmail || '');
+      setConfirm(false);
+    }
+  }, [show, propUri, propDisplayName, propOrg, propEmail]);
 
   const handleSave = () => {
-    saveContactProp(displayName, organization, email);
-    setConfirm(false);
+    const contact = {
+      uri: uri.trim().toLowerCase(),
+      displayName: displayName.trim(),
+      organization: organization.trim(),
+      email: email.toLowerCase()
+    };
+    saveContact(contact);
     close();
   };
 
-  const handleDelete = () => {
-    if (!confirm) {
-      setConfirm(true);
-      return;
-    }
+  const handleClose = () => {
     setConfirm(false);
-    deleteContactProp(uri);
     close();
   };
 
@@ -82,50 +80,125 @@ const EditContactModal = ({
   };
 
   if (!show) return null;
+  let title = myself ? "My account" : 'Edit Contact';
 
-  // Dynamic top padding for keyboard
-  const paddingTop = keyboardHeight > 0 ? 50 : 100;
+  if (publicKey) {
+	  title = 'Public key';
+  }
 
   return (
     <Modal
+	  style={containerStyles.container}
       visible={show}
-      transparent={true}
+      transparent
       animationType="fade"
-      onRequestClose={close}
+      onRequestClose={close} // Android back button
     >
-      {/* Dimmed background overlay */}
-      <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); close(); }}>
-        <View style={{
-          flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.5)', // dim the app behind
-          justifyContent: 'flex-start',
-          paddingTop
-        }}>
-          <KeyboardAwareScrollView
-            contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-start', paddingHorizontal: 16 }}
-            enableOnAndroid
-            keyboardShouldPersistTaps="handled"
-            extraScrollHeight={30}
+
+      {/* Dismiss modal when tapping outside */}
+      <TouchableWithoutFeedback onPress={close}>
+        <View style={containerStyles.overlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
           >
+            {/* Prevent taps inside modal from dismissing */}
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={[styles.container, { backgroundColor: 'white', borderRadius: 12, padding: 16 }]}>
-                
-                {/* Public Key Section */}
+
+   		    <Surface style={containerStyles.modalSurface}>
+            {/* Modal content start */}
+				<Text style={containerStyles.title}>{title}</Text>
+
                 {publicKey ? (
                   <>
-                    <Text style={styles.title}>{displayName || uri}</Text>
-                    <Text style={styles.body}>PGP Public Key</Text>
-                    <Text style={styles.key}>{publicKey}</Text>
+                    <Text style={styles.subtitle}>{uri}</Text>
+					<ScrollView
+					  style={{
+						height: 430,
+						backgroundColor: '#f0f0f0',
+						borderRadius: 4,
+						borderWidth: 1,
+						borderColor: '#ccc',
+						padding: 8,
+					  }}
+					  horizontal
+					  nestedScrollEnabled
+					  bounces
+					  showsHorizontalScrollIndicator
+					  showsVerticalScrollIndicator
+					>
+					  <ScrollView
+						style={{ flex: 1 }}
+						nestedScrollEnabled
+						bounces
+						showsVerticalScrollIndicator
+					  >
+						<Text style={{ fontFamily: 'monospace', fontSize: 10, lineHeight: 12 }}>
+						  {publicKey}
+						</Text>
+					  </ScrollView>
+					</ScrollView>
+
+
                     <View style={styles.buttonRow}>
-                      <Button mode="contained" style={styles.button} disabled={confirm} onPress={handleClipboard} icon="content-copy">Copy</Button>
-                      <Button mode="contained" style={styles.button} disabled={myself} onPress={handleDeletePublicKey} icon="delete">
+                      <Button
+                        mode="contained"
+                        style={styles.button}
+                        disabled={confirm}
+                        onPress={handleClipboard}
+                        icon="content-copy"
+                      >
+                        Copy
+                      </Button>
+                      <Button
+                        mode="contained"
+                        style={styles.button}
+                        disabled={myself}
+                        onPress={handleDeletePublicKey}
+                        icon="delete"
+                      >
                         {confirm ? 'Confirm delete' : 'Delete'}
                       </Button>
                     </View>
+
+                    <Text style={styles.small}>If the key is deleted messages to {uri} will not be encrypted until a new key is received</Text>
+
                   </>
                 ) : (
                   <>
-                    <Text style={styles.title}>{uri}</Text>
+                    <Text style={styles.subtitle}>{uri}</Text>
+
+                    <ScrollView
+                      style={containerStyles.scrollContainer}
+                      contentContainerStyle={{ flexGrow: 1 }}
+                      keyboardShouldPersistTaps="handled"
+                    >
+                      <TextInput
+                        mode="flat"
+                        label="Display name"
+                        onChangeText={setDisplayName}
+                        value={displayName}
+                        autoCapitalize="words"
+                      />
+                      {!myself && (
+                        <TextInput
+                          mode="flat"
+                          label="Organization"
+                          onChangeText={setOrganization}
+                          value={organization}
+                          autoCapitalize="words"
+                        />
+                      )}
+                      <TextInput
+                        mode="flat"
+                        label="Email"
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        onChangeText={setEmail}
+                        value={email}
+                      />
+                    </ScrollView>
 
                     {myself && (
                       <View style={styles.checkBoxRow}>
@@ -138,79 +211,59 @@ const EditContactModal = ({
                       </View>
                     )}
 
-                    <TextInput
-                      mode="flat"
-                      label="Display name"
-                      onChangeText={setDisplayName}
-                      value={displayName !== uri ? displayName : ''}
-                      autoCapitalize="words"
-                    />
-
-                    {!myself ? (
-                      <TextInput
-                        mode="flat"
-                        label="Organization"
-                        onChangeText={setOrganization}
-                        value={organization}
-                        autoCapitalize="words"
-                      />
-                    ) : (
-                      <TextInput
-                        mode="flat"
-                        label="Email"
-                        placeholder="Used to recover the password"
-                        onChangeText={setEmail}
-                        value={email}
-                        autoCapitalize="none"
-                      />
+                    {myself && !rejectNonContacts && (
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={rejectAnonymous} onValueChange={toggleRejectAnonymous} />
+                        ) : (
+                          <Checkbox status={rejectAnonymous ? 'checked' : 'unchecked'} onPress={toggleRejectAnonymous} />
+                        )}
+                        <Text> Reject anonymous callers</Text>
+                      </View>
                     )}
-
-                    {myself && <Text style={styles.emailStatus}>Used to recover a lost password</Text>}
 
                     <View style={styles.buttonRow}>
                       <Button
                         mode="contained"
                         style={styles.button}
-                        disabled={confirm || (myself && !validEmail())}
+                        disabled={!validEmail()}
                         onPress={handleSave}
                         icon="content-save"
                       >
                         Save
                       </Button>
-
-                      {!myself && (
-                        <Button
-                          mode="contained"
-                          style={styles.button}
-                          disabled={myself}
-                          onPress={handleDelete}
-                        >
-                          {confirm ? 'Confirm delete' : 'Delete'}
-                        </Button>
-                      )}
                     </View>
 
                     {myself ? (
-                      <Text onPress={() => Linking.openURL('http://delete.sylk.link')} style={styles.link}>
-                        Delete account on server...
+                      <Text
+                        onPress={() => Linking.openURL('http://delete.sylk.link')}
+                        style={[styles.link, { padding: 20 }]}
+                      >
+                        Deletion account on server...
                       </Text>
                     ) : (
-                      <Text>Storage usage: {selectedContact?.prettyStorage}</Text>
+                      selectedContact?.prettyStorage && (
+                        <Text>Storage usage: {selectedContact.prettyStorage}</Text>
+                      )
                     )}
 
+                    {!myself ?
                     <View style={{ flexDirection: 'row', marginTop: 8 }}>
                       <Icon style={styles.lock} name="lock" />
-                      <Text style={styles.pgp}>Messages are encrypted end-to-end</Text>
+                      <Text style={styles.small}>Messages are encrypted end-to-end</Text>
                     </View>
+                    : null}
 
-                    <View style={{ flexDirection: 'row', marginTop: 4 }}>
-                      <Text style={styles.pgp}>Device: {myuuid}</Text>
-                    </View>
+                    {false && myself && (
+                      <View style={{ flexDirection: 'row', marginTop: 4 }}>
+                        <Text style={styles.small}>Device Id: {myuuid}</Text>
+                      </View>
+                    )}
                   </>
                 )}
               </Surface>
             </TouchableWithoutFeedback>
-          </KeyboardAwareScrollView>
+          </KeyboardAvoidingView>
         </View>
       </TouchableWithoutFeedback>
     </Modal>
@@ -220,6 +273,7 @@ const EditContactModal = ({
 EditContactModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
+  saveContact: PropTypes.func,
   uri: PropTypes.string,
   displayName: PropTypes.string,
   email: PropTypes.string,
@@ -227,12 +281,12 @@ EditContactModal.propTypes = {
   publicKey: PropTypes.string,
   selectedContact: PropTypes.object,
   myself: PropTypes.bool,
-  saveContact: PropTypes.func,
-  deleteContact: PropTypes.func,
   deletePublicKey: PropTypes.func,
   myuuid: PropTypes.string,
   rejectNonContacts: PropTypes.bool,
-  toggleRejectNonContacts: PropTypes.func
+  toggleRejectNonContacts: PropTypes.func,
+  rejectAnonymous: PropTypes.bool,
+  toggleRejectAnonymous: PropTypes.func
 };
 
 export default EditContactModal;

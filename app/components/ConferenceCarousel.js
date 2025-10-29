@@ -14,6 +14,9 @@ class ConferenceCarousel extends Component {
     render() {
         const margin = 20;
         const width = Dimensions.get('window')['width'] - margin;
+        if (!this.props.visible) {
+			return;
+        }
         return (
             <Carousel
                 ref={(c) => { this._carousel = c; }}
@@ -35,6 +38,7 @@ class ConferenceCarousel extends Component {
 
 ConferenceCarousel.propTypes = {
     children: PropTypes.node,
+    visible: PropTypes.bool,
     align: PropTypes.string
 };
 

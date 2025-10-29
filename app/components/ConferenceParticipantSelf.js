@@ -1,12 +1,50 @@
 import React, { Component } from 'react';
-import { View } from   'react-native';
+import { View, Platform } from   'react-native';
 import PropTypes from 'prop-types';
 //const hark              = require('hark');
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { RTCView } from 'react-native-webrtc';
 import { Surface } from 'react-native-paper';
+import { StyleSheet } from 'react-native';
+import { Tooltip } from 'react-native-elements';
 
-import styles from '../assets/styles/blink/_ConferenceParticipantSelf.scss';
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    width: 120,
+    height: 90,
+    elevation: 5,
+    borderWidth: 0,
+	zIndex: 1000,
+
+  },
+
+  containerBig: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    borderWidth: 0,
+    borderColor: 'orange',
+	zIndex: 1000,
+  },
+
+  video: {
+    width: '100%',
+    height: '100%',
+  },
+
+  muteIcon: {
+    position: 'absolute',
+    top: 30,
+    width: '100%',
+    zIndex: 2,
+  },
+
+  icon: {
+    marginLeft: 'auto',
+    marginRight: 'auto',
+  },
+});
 
 class ConferenceParticipantSelf extends Component {
     constructor(props) {
@@ -15,6 +53,8 @@ class ConferenceParticipantSelf extends Component {
             active: false,
             hasVideo: false,
             sharesScreen: false,
+            isLandscape: props.isLandscape,
+            visible: props.visible
         }
         // this.speechEvents = null;
     }
@@ -36,6 +76,15 @@ class ConferenceParticipantSelf extends Component {
             this.setState({sharesScreen: false});
         }
     }
+
+    UNSAFE_componentWillReceiveProps(nextProps) {
+		this.setState({isLandscape: nextProps.isLandscape,
+		               hasVideo: nextProps.hasVideo,
+		               active: nextProps.active,
+		               visible: nextProps.visible
+		});
+    }
+
 
     componentWillUnmount() {
         // if (this.speechEvents !== null) {
@@ -61,14 +110,20 @@ class ConferenceParticipantSelf extends Component {
     }
 
     render() {
+        if (!this.state.visible)  {
+			return;
+        }
+        
         if (this.props.stream == null) {
-            return false;
+            return;
         }
 
-        // const tooltip = (
-        //     <Tooltip id="t-myself">{this.props.identity.displayName || this.props.identity.uri}</Tooltip>
-        // );
-
+        /*
+        const tooltip = (
+             <Tooltip id="t-myself">{this.props.identity.displayName || this.props.identity.uri}</Tooltip>
+        );
+        */
+        
         let muteIcon
         if (this.props.audioMuted) {
             muteIcon = (
@@ -77,22 +132,37 @@ class ConferenceParticipantSelf extends Component {
                 </View>
             );
         }
-
+        
+        let shiftX = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+        let shiftY = this.state.isLandscape ? 0 : 0;
+        
+		// Conditional style: top-right in portrait, shifted in landscape
+		
+        let container = this.props.big ? styles.containerBig : styles.container;
+        //console.log('container', container, shiftX, shiftY);
+        
         return (
-            <Surface style={styles.container}>
+            <Surface style={[container,  { transform: [{ translateX: shiftX}, { translateY: shiftY }]}]}>
                 {muteIcon}
-                <RTCView objectFit="cover" style={styles.video} ref="videoElement" poster="assets/images/transparent-1px.png" streamURL={this.props.stream ? this.props.stream.toURL() : null} mirror={true}/>
+                <RTCView objectFit="cover" 
+                         style={styles.video} 
+                         ref="videoElement" 
+                         poster="assets/images/transparent-1px.png" 
+                         streamURL={this.props.stream ? this.props.stream.toURL() : null} 
+                         mirror={true}/>
             </Surface>
         );
     }
 }
 
 ConferenceParticipantSelf.propTypes = {
+    visible: PropTypes.bool,
     stream: PropTypes.object.isRequired,
     identity: PropTypes.object.isRequired,
     audioMuted: PropTypes.bool.isRequired,
-    generatedVideoTrack: PropTypes.bool
+    generatedVideoTrack: PropTypes.bool,
+    isLandscape: PropTypes.bool,
+    big: PropTypes.bool
 };
-
 
 export default ConferenceParticipantSelf;

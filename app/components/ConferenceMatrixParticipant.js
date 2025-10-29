@@ -9,15 +9,98 @@ import LinearGradient from 'react-native-linear-gradient';
 import { RTCView } from 'react-native-webrtc';
 import { View } from 'react-native';
 
-import styles from '../assets/styles/blink/_ConferenceMatrixParticipant.scss';
+//import styles from '../assets/styles/ConferenceMatrixParticipant';
+
+import { StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    width: '100%',
+  },
+
+  portraitContainer: {
+    flexBasis: '50%',
+    height: '50%',
+  },
+
+  landscapeContainer: {
+    flexBasis: '50%',
+    width: '50%',
+  },
+
+  soloContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+  },
+
+  videoContainer: {
+    height: '100%',
+    width: '100%',
+  },
+
+  video: {
+    height: '100%',
+    width: '100%',
+  },
+
+  controlsTop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    left: 0,
+    zIndex: 10,
+    display: 'flex',
+    alignItems: 'center',
+    flexDirection: 'row',
+    maxHeight: 50,
+    minHeight: 50,
+    paddingLeft: 20,
+  },
+
+  badge: {
+    backgroundColor: '#5cb85c',
+    marginBottom: 10,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+
+  controls: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 10,
+    display: 'flex',
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    maxHeight: 114,
+    minHeight: 114,
+    paddingLeft: 20,
+  },
+  lead: {
+    color: '#fff',
+    marginBottom: 10,
+    marginLeft: 120,
+  },
+  status: {
+    color: '#fff',
+    fontSize: 8,
+    marginBottom: 16,
+    marginLeft: 5,
+  },
+});
 
 
 class ConferenceMatrixParticipant extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
         this.state = {
-            active: false,
             hasVideo: false,
             sharesScreen: false,
             audioMuted: false,
@@ -34,8 +117,21 @@ class ConferenceMatrixParticipant extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+
         if (nextProps.hasOwnProperty('status')) {
             this.setState({status: nextProps.status});
+        }
+
+        if (nextProps.hasOwnProperty('stream')) {
+            this.setState({stream: nextProps.stream});
+        }
+
+        if (nextProps.hasOwnProperty('hasVideo')) {
+            this.setState({hasVideo: nextProps.hasVideo});
+        }
+
+        if (nextProps.hasOwnProperty('audioMuted')) {
+            this.setState({audioMuted: nextProps.audioMuted});
         }
     }
 
@@ -44,6 +140,7 @@ class ConferenceMatrixParticipant extends Component {
         if (!this.props.pauseVideo && this.props.participant.videoPaused) {
             this.props.participant.resumeVideo();
         }
+
         // this.videoElement.current.oncontextmenu = (e) => {
         //     // disable right click for video elements
         //     e.preventDefault();
@@ -64,6 +161,7 @@ class ConferenceMatrixParticipant extends Component {
     }
 
     onParticipantStateChanged(oldState, newState) {
+        console.log('onParticipantStateChanged', newState);
         if (newState === 'established') {
             this.maybeAttachStream();
         }
@@ -84,8 +182,12 @@ class ConferenceMatrixParticipant extends Component {
 
     maybeAttachStream() {
         const streams = this.props.participant.streams;
+        //console.log('maybeAttachStream', streams);
+
         if (streams.length > 0) {
-            this.setState({stream: streams[0], hasVideo: streams[0].getVideoTracks().length > 0});
+            this.setState({stream: streams[0], 
+                          hasVideo: streams[0].getVideoTracks().length > 0});
+
             // const options = {
             //     interval: 150,
             //     play: false
@@ -130,40 +232,31 @@ class ConferenceMatrixParticipant extends Component {
             );
         }
 
-        let style = null;
-        if (this.props.isTablet === true && this.props.useTwoRows) {
-            style = styles.portraitTabletContainer;
-            if (this.props.isLandscape) {
-                style = styles.landscapeTabletContainer;
-            }
-        }
-
         const remoteStreamUrl = this.state.stream ? this.state.stream.toURL() : null
+        //console.log('remoteStreamUrl', remoteStreamUrl);
         return (
-            <View style={[styles.container, this.props.large ? styles.soloContainer : null, this.props.pauseVideo ? {display: 'none'} : null, style]}>
-                {activeIcon}
-                {participantInfo}
-                <View style={styles.videoContainer}>
-                    <RTCView
-                        objectFit='cover'
-                        style={styles.video}
-                        poster="assets/images/transparent-1px.png"
-                        ref={this.videoElement}
-                        streamURL={remoteStreamUrl}
-                    />
-                </View>
-            </View>
+			<View style={[{ flex: 1, width: '100%', height: '100%'}]}>
+				{activeIcon}
+				{participantInfo}
+				<View style={styles.videoContainer}>
+					<RTCView
+						objectFit='cover'
+						style={styles.video}
+						poster="assets/images/transparent-1px.png"
+						ref={this.videoElement}
+						streamURL={remoteStreamUrl}
+					/>
+				</View>
+			</View>
         );
     }
 }
 
 ConferenceMatrixParticipant.propTypes = {
     participant: PropTypes.object.isRequired,
-    large: PropTypes.bool,
     isLocal: PropTypes.bool,
-    isTablet: PropTypes.bool,
-    isLandscape: PropTypes.bool,
-    status: PropTypes.string
+    status: PropTypes.string,
+    audioMuted: PropTypes.bool
 };
 
 export default ConferenceMatrixParticipant;

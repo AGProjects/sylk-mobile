@@ -3,7 +3,19 @@ import PropTypes from 'prop-types';
 import utils from '../utils';
 import { Text, View, Platform } from 'react-native'
 import { Avatar} from 'react-native-paper';
-import styles from '../assets/styles/blink/_Avatar.scss';
+import { StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  avatarLabelAndroid: {
+    marginTop: -3,
+    marginLeft: 0,
+  },
+  avatarLabeliOS: {
+    marginTop: 0,
+    marginLeft: 0,
+  },
+});
+
 
 const UserIcon = (props) => {
 
