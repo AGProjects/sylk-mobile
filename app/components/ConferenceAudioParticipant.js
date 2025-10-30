@@ -12,7 +12,9 @@ const styles = StyleSheet.create({
   card: {
     height: 60,
     borderWidth: 0,
-    borderColor: 'white'
+    borderColor: 'white',
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   
   displayName: {
@@ -72,8 +74,10 @@ const styles = StyleSheet.create({
   },
 
   userIconContainer: {
-    paddingRight: 5,
-    paddingLeft: 5
+    paddingRight: 0,
+    paddingLeft: 10,
+    justifyContent: 'center',
+    alignItems: 'center',    
   },
 
   userButtonsContainer: {
@@ -175,7 +179,7 @@ class ConferenceAudioParticipant extends Component {
                 description={identity.uri}
                 descriptionStyle={styles.uri}
                 left={props => <View style={styles.userIconContainer}>
-                                  <UserIcon size={50} identity={identity}/>
+                                  <UserIcon size={40} identity={identity}/>
                                </View>
                       }
                 right={props =>

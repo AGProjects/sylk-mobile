@@ -8,11 +8,12 @@ import momentFormat from 'moment-duration-format';
 import { Card, IconButton, Button, Caption, Title, Subheading, List, Text, Menu} from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
-import styles from '../assets/styles/blink/_ContactCard.scss';
 import UserIcon from './UserIcon';
 import { GiftedChat } from 'react-native-gifted-chat'
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 import {Keyboard} from 'react-native';
+
+import styles from '../assets/styles/ContactCard';
 
 import utils from '../utils';
 

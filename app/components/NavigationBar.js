@@ -80,6 +80,7 @@ class NavigationBar extends Component {
     }
     
     get hasFiles() {
+        return true;
         return this.state.selectedContact && Object.keys(this.state.sharedFiles).indexOf(this.state.selectedContact.uri) > -1 && this.state.sharedFiles[this.state.selectedContact.uri].lenght > 0;
     }
     
@@ -467,6 +468,7 @@ class NavigationBar extends Component {
 		const { width, height } = Dimensions.get('window');
 		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - 48 : width;
 		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+		const as = 40; //avatar size
 
         return (
 			<View style={{ width: navBarWidth}}>
@@ -486,7 +488,12 @@ class NavigationBar extends Component {
 
 				{this.props.selectedContact ?
 					<View style={styles.avatarContent}>
-							<UserIcon size={35} identity={this.props.selectedContact}/>
+						{this.props.selectedContact.photo ||
+						!this.props.selectedContact.email ? (
+							<UserIcon size={as} identity={this.props.selectedContact}/>
+						) : (
+							<Gravatar options={{email: this.props.selectedContact.email, parameters: { "size": as, "d": "mm" }, secure: true}} style={[styles.gravatar, {width: as, height: as}]} />
+						)}
 					</View>
 				: null}
                                   
@@ -583,7 +590,7 @@ class NavigationBar extends Component {
                         : null
                         }
 
-                        {!isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
+                        {false && !isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
 
@@ -604,7 +611,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && tags.indexOf('test') === -1?
+                        {!this.state.inCall && tags.indexOf('test') === -1 && !tags.indexOf('favorite') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title={deleteTitle}/>
                         : null}
                         
@@ -707,8 +714,10 @@ class NavigationBar extends Component {
                 />
 
                 <DeleteFileTransfers
+                    selectedContact={this.state.selectedContact}
                     show={this.state.showDeleteFileTransfers}
                     close={this.closeDeleteFileTransfers}
+                    selectedContact={this.state.selectedContact}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={this.state.displayName}
                     deleteFilesFunc={this.props.deleteFiles}

@@ -22,14 +22,20 @@ import AudioRecord from 'react-native-audio-record';
 import uuid from 'react-native-uuid';
 import RNFetchBlob from "rn-fetch-blob";
 import fileType from 'react-native-file-type';
+import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+import Sound from 'react-native-sound';
+import SoundPlayer from 'react-native-sound-player';
 
 import styles from '../assets/styles/ReadyBox';
+
+const audioRecorderPlayer = new AudioRecorderPlayer();
 
 
 class ReadyBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+        this.recordingStopTimer = null;
 
         this.state = {
             targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
@@ -69,7 +75,8 @@ class ReadyBox extends Component {
             sourceContact: this.props.sourceContact,
 			keyboardVisible: false,
 			searchMessages: this.props.searchMessages,
-			searchString: ''
+			searchString: '',
+			recordingDuration: 0
         };
         this.ended = false;
 
@@ -131,6 +138,11 @@ class ReadyBox extends Component {
         if (nextProps.searchString) {
             this.setState({'searchString': nextProps.searchString});
         }
+        
+        if ('recordingDuration' in nextProps) {
+            this.setState({recordingDuration: nextProps.recordingDuration});
+        }
+
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                         myContacts: nextProps.myContacts,
@@ -183,7 +195,6 @@ class ReadyBox extends Component {
     componentWillUnmount() {
         this.keyboardDidShowListener.remove();
         this.keyboardDidHideListener.remove();
-
         this.ended = true;
     }
 
@@ -308,8 +319,19 @@ class ReadyBox extends Component {
         if (this.state.selectedContact) {
             return false;
         }
+        
+        if (this.state.recording || this.state.playing) {
+            return false;
+        }
 
         if (this.state.shareToContacts) {
+            return false;
+        }
+        return true;
+    }
+
+    get showCallButtons() {
+        if (this.state.recording || this.state.playing || this.state.recordingFile) {
             return false;
         }
         return true;
@@ -319,11 +341,15 @@ class ReadyBox extends Component {
         if (!this.state.selectedContact) {
             return false;
         }
+
+        if (!this.state.recordingFile) {
+            return false;
+        }
         return true;
     }
 
-    get showAudioCancelButton() {
-        if (!this.state.audioRecording) {
+    get showAudioDeleteButton() {
+        if (!this.state.recordingFile) {
             return false;
         }
         return true;
@@ -334,7 +360,11 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.audioRecording) {
+	    if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+            return false;
+        }
+	 
+        if (this.state.recordingFile) {
             return false;
         }
         return true;
@@ -535,7 +565,7 @@ class ReadyBox extends Component {
     }
 
     handleVideoCall(event) {
-        console.log('handleVideoCall')
+        //console.log('handleVideoCall')
         let uri;
 
         if (this.state.selectedContact) {
@@ -565,7 +595,7 @@ class ReadyBox extends Component {
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
         Keyboard.dismiss();
-        console.log('handleConferenceCall options', options);
+        //console.log('handleConferenceCall options', options);
         this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants});
         this.props.hideConferenceModalFunc();
     }
@@ -620,7 +650,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.audioRecording) {
+        if (this.state.recordingFile) {
             return true;
         }
 
@@ -653,7 +683,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.audioRecording) {
+        if (this.state.recordingFile) {
             return true;
         }
 
@@ -723,12 +753,55 @@ class ReadyBox extends Component {
             return (<Button style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
         }
 
+        if (key === "previewAudio") {
+            return (<Button style={buttonStyle} onPress={() => {this.previewAudio()}}>{title}</Button>);
+        }
+
         if (key === "sendAudio") {
             return (<Button style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
         }
 
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
+
+    async previewAudio () {
+		this.setState({playing: true});
+
+		const path = this.state.recordingFile.startsWith('file://')
+		  ? this.state.recordingFile
+		  : 'file://' + this.state.recordingFile;
+  
+        try {
+			const msg = await audioRecorderPlayer.startPlayer(path);
+			this.setState({playing: true});
+	
+			audioRecorderPlayer.addPlayBackListener((e) => {
+				if (e.duration === e.currentPosition) {
+					this.setState({playing: false});
+				}
+	
+				this.setState({
+				  currentPositionSec: e.currentPosition,
+				  currentDurationSec: e.duration,
+				  playTime: audioRecorderPlayer.mmssss(Math.floor(e.currentPosition)),
+				  duration: audioRecorderPlayer.mmssss(Math.floor(e.duration)),
+				});
+			});
+        } catch (e) {
+			console.log('previewAudio error', e);
+        }
+    };
+
+    pausePreviewAudio = async () => {
+		this.setState({playing: false});
+        await audioRecorderPlayer.pausePlayer();
+    };
+
+    onStopPlay = async () => {
+        this.setState({playing: false});
+        audioRecorderPlayer.stopPlayer();
+        audioRecorderPlayer.removePlayBackListener();
+    };
 
     bounceNavigation() {
         if (this.ended) {
@@ -769,8 +842,9 @@ class ReadyBox extends Component {
             conferenceEnabled = false;
         }
 
-        if (this.state.audioRecording) {
-        return [
+        if (this.state.recordingFile) {
+			return [
+              {key: "previewAudio", title: 'Play', enabled: true, selected: false},
               {key: "deleteAudio", title: 'Delete', enabled: true, selected: false},
               {key: "sendAudio", title: 'Send', enabled: true, selected: false}
               ];
@@ -837,7 +911,7 @@ class ReadyBox extends Component {
         if (event) {
             event.preventDefault();
         }
-        console.log('Scan QR code...');
+        //console.log('Scan QR code...');
         this.props.toggleQRCodeScannerFunc();
     }
 
@@ -853,13 +927,14 @@ class ReadyBox extends Component {
              return false;
         }
 
-        if (this.state.audioRecording) {
+        if (this.state.recordingFile) {
              return false;
         }
         return true;
     }
 
     get showQRCodeButton() {
+        return false;
         if (!this.props.canSend()) {
             return false;
         }
@@ -874,14 +949,14 @@ class ReadyBox extends Component {
 
     async recordAudio() {
         const micAllowed = await this.props.requestMicPermission('recordAudio');
-        console.log('micAllowed', micAllowed);
 
         if (!micAllowed) {
+            console.log('Mic not allowed');
             return;
         }
 
         if (!this.state.recording) {
-            if (this.state.audioRecording) {
+            if (this.state.recordingFile) {
                 this.deleteAudio();
             } else {
                 this.onStartRecord();
@@ -974,14 +1049,14 @@ class ReadyBox extends Component {
     }
 
     async sendAudioFile() {
-        if (this.state.audioRecording) {
+        if (this.state.recordingFile) {
             this.setState({audioSendFinished: true});
             setTimeout(() => {
                 this.setState({audioSendFinished: false});
             }, 10);
-            let msg = await this.file2GiftedChat(this.state.audioRecording);
+            let msg = await this.file2GiftedChat(this.state.recordingFile);
             this.transferFile(msg);
-            this.setState({audioRecording: null});
+            this.setState({recordingFile: null, recordingDuration: 0});
         }
     }
 
@@ -990,25 +1065,23 @@ class ReadyBox extends Component {
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
     }
 
-    deleteAudio(event) {
+    deleteAudioAction(event) {
+        //console.log('deleteAudioAction');
         event.preventDefault();
-        Keyboard.dismiss();
-        this.props.deleteAudio();
+        this.deleteAudio();
     }
 
     async recordAudio() {
-        /*
+        //console.log('Start recording by user...');
+
         const micAllowed = await this.props.requestMicPermission('recordAudio');
-        console.log('micAllowed', micAllowed);
 
         if (!micAllowed) {
             return;
         }
-        */
-
 
         if (!this.state.recording) {
-            if (this.state.audioRecording) {
+            if (this.state.recordingFile) {
                 this.deleteAudio();
             } else {
                 this.onStartRecord();
@@ -1019,90 +1092,94 @@ class ReadyBox extends Component {
     }
 
     deleteAudio() {
-        console.log('Delete audio');
-        this.setState({audioRecording: null, recording: false});
-        if (this.recordingStopTimer !== null) {
-            clearTimeout(this.recordingStopTimer);
-            this.recordingStopTimer = null;
-        }
+        //console.log('Delete audio');
+        this.setState({recordingFile: null, 
+					   recordingDuration: 0,
+                       recording: false, 
+                       playing: false});
     }
 
+	stopRecordingTimer() {
+		//console.log('Ready box: stopRecordingTimer');
+		if (this.recordingStopTimer !== null) {
+		    clearTimeout(this.recordingStopTimer);
+			this.recordingStopTimer = null;
+		}
+	}
+        
     async onStartRecord () {
-        console.log('Start recording...');
-        this.setState({recording: true});
-        this.recordingStopTimer = setTimeout(() => {
-            this.stopRecording();
-        }, 20000);
-
-        if (!AudioRecord) {
-            AudioRecord.init(options);
-        }
+		const audioOptions = {
+			sampleRate: 16000,  // default 44100
+			channels: 1,        // 1 or 2, default 1
+			bitsPerSample: 16,  // 8 or 16, default 16
+			audioSource: 6,     // android only (see below)
+			wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
+		};
+		
+		//console.log('Start audio recording...')
 
         try {
+            AudioRecord.init(audioOptions);
+			// Register listener for incoming audio data
+			AudioRecord.on('data', (data) => {
+			  // `data` is base64-encoded audio chunk
+			  //console.log('Audio chunk received:', data.length);
+			  // You can store or process the chunk here
+			});
             AudioRecord.start();
+			this.setState({recording: true});
+
+			this.recordingStopTimer = setTimeout(() => {
+				//console.log('Stop recording by timer...');
+				this.onStopRecord();
+			}, 30000);
+
         } catch (e) {
             console.log(e.message);
         }
     };
 
     stopRecording() {
-        console.log('Stop recording...');
-        this.setState({recording: false});
-        if (this.recordingStopTimer !== null) {
-            clearTimeout(this.recordingStopTimer);
-            this.recordingStopTimer = null;
-        }
-        this.onRecording(false);
+        //console.log('Stop recording by user...');
         this.onStopRecord();
     }
 
     async onStopRecord () {
-        console.log('Stop recording...');
+        //console.log('onStopRecord...');
+        this.setState({recording: false});
+        this.stopRecordingTimer();
         const result = await AudioRecord.stop();
         this.audioRecorded(result);
-        this.setState({audioRecording: result});
+        this.setState({recordingFile: result});
     };
-
-    onRecording(state) {
-        this.setState({recording: state});
-        if (state) {
-            this.startRecordingTimer();
-        } else {
-            this.stopRecordingTimer()
-        }
-    }
 
     resetContact() {
         this.stopRecordingTimer()
         this.setState({
             recording: false,
-            audioRecording: null,
+            recordingFile: null,
+            recordingDuration: 0,
             audioSendFinished: false
         });
-    }
-
-    startRecordingTimer() {
-        let i = 0;
-        this.recordingTimer = setInterval(() => {
-            i = i + 1
-            this.setState({placeholder: 'Recording audio ' + i + 's'});
-        }, 1000);
-    }
-
-    stopRecordingTimer() {
-        if (this.recordingTimer) {
-            clearInterval(this.recordingTimer);
-            this.recordingTimer = null;
-        }
     }
 
     async audioRecorded(file) {
         if (file) {
             console.log('Audio recording ready to send', file);
-        } else {
-            console.log('Audio recording removed');
+            try {
+				const sound = new Sound(file, '', (error) => {
+				  if (error) {
+					console.log('Failed to load the audio', error);
+					return;
+				  }
+				  const duration = Math.floor(sound.getDuration());
+				  this.setState({recordingDuration: duration});
+			    });
+			} catch (e) {
+				console.log('error', e);
+			}
+			this.setState({recording: false, recordingFile: file});
         }
-        this.setState({recording: false, audioRecording: file});
     }
 
     render() {
@@ -1249,6 +1326,20 @@ class ReadyBox extends Component {
                                   </View>
                                   : null }
 
+                                  {this.state.recordingFile ?
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={greenButtonClass}
+                                            size={32}
+                                            onPress={this.state.playing ? this.pausePreviewAudio : this.previewAudio }
+                                            icon={this.state.playing ? "pause" : "play"}
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
+
+
                                   {this.showAudioRecordButton?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
@@ -1263,7 +1354,7 @@ class ReadyBox extends Component {
                                   </View>
                                   : null }
 
-                                  {this.showAudioCancelButton ?
+                                  {this.showAudioDeleteButton ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1275,7 +1366,8 @@ class ReadyBox extends Component {
                                     </TouchableHighlight>
                                   </View>
                                   : null }
-
+                                  
+                                  {this.showCallButtons ? 
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1287,7 +1379,9 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
+                                  : null }
 
+                                  {this.showCallButtons? 
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1299,6 +1393,7 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
+                                  : null }
 
                                   { this.state.shareToContacts ?
                                   <View style={styles.buttonContainer}>
@@ -1332,7 +1427,7 @@ class ReadyBox extends Component {
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
                                             style={blueButtonClass}
-                                            disabled={!this.state.audioRecording}
+                                            disabled={!this.state.recordingFile}
                                             size={32}
                                             onPress={this.sendAudioFile}
                                             icon="share"
@@ -1456,6 +1551,7 @@ class ReadyBox extends Component {
                             toggleSearchMessages = {this.props.toggleSearchMessages}
                             searchMessages = {this.state.searchMessages}
                             searchString = {this.state.searchString}
+                            recordAudio = {this.recordAudio}
                         />
                         }
 
@@ -1471,10 +1567,15 @@ class ReadyBox extends Component {
                     : null
                     }
 
-                    { this.state.audioRecording  ?
+                    { this.state.recordingFile  ?
                         <View style={styles.recordingContainer}>
                             <Title style={styles.activityTitle}>{activityTitle}</Title>
+                            {this.state.recordingDuration ?
+                            <Text style={styles.subtitle}>{this.state.recordingDuration + ' seconds'}</Text>
+                            :null}
+                            
                         </View>
+
                     : null
                     }
 

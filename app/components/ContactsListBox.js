@@ -23,9 +23,6 @@ import ImageViewer from 'react-native-image-zoom-viewer';
 import path from 'react-native-path';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 
-import Sound from 'react-native-sound';
-import SoundPlayer from 'react-native-sound-player';
-
 import moment from 'moment';
 import momenttz from 'moment-timezone';
 import Video from 'react-native-video';
@@ -35,7 +32,7 @@ import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
 
-import styles from '../assets/styles/blink/_ContactsListBox.scss';
+import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
 
 
@@ -80,13 +77,6 @@ const getAudioDuration = (filePath) => {
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
 
-const options = {
-    sampleRate: 16000,  // default 44100
-    channels: 1,        // 1 or 2, default 1
-    bitsPerSample: 16,  // 8 or 16, default 16
-    audioSource: 6,     // android only (see below)
-    wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
-};
 
 const styles1 = StyleSheet.create({
   audioLabel: {
@@ -312,10 +302,8 @@ class ContactsListBox extends Component {
             call: this.props.call,
             isTablet: this.props.isTablet,
             keys: this.props.keys,
-            recording: false,
             playing: false,
             texting: false,
-            audioRecording: null,
             cameraAsset: null,
             placeholder: this.default_placeholder,
             audioSendFinished: false,
@@ -328,10 +316,9 @@ class ContactsListBox extends Component {
         }
 
         this.ended = false;
-        this.recordingTimer = null;
         this.outgoingPendMessages = {};
+
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
-        this.listenforSoundNotifications()
     }
 
     componentDidMount() {
@@ -340,11 +327,9 @@ class ContactsListBox extends Component {
 
     componentWillUnmount() {
         this.ended = true;
-        this.stopRecordingTimer()
     }
 
     backPressed() {
-       this.stopRecordingTimer()
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -512,23 +497,6 @@ class ContactsListBox extends Component {
         }
     }
 
-    listenforSoundNotifications() {
-     // Subscribe to event(s) you want when component mounted
-        this._onFinishedPlayingSubscription = SoundPlayer.addEventListener('FinishedPlaying', ({ success }) => {
-          //console.log('finished playing', success)
-          this.setState({playing: false, placeholder: this.default_placeholder});
-        })
-        this._onFinishedLoadingSubscription = SoundPlayer.addEventListener('FinishedLoading', ({ success }) => {
-          //console.log('finished loading', success)
-        })
-        this._onFinishedLoadingFileSubscription = SoundPlayer.addEventListener('FinishedLoadingFile', ({ success, name, type }) => {
-          //console.log('finished loading file', success, name, type)
-        })
-        this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
-          //console.log('finished loading url', success, url)
-        })
-    }
-
 	  getAudioDuration = (filePath, messageId) => {
 		const Sound = require('react-native-sound'); // import dynamically
 		const sound = new Sound(filePath, '', (error) => {
@@ -607,7 +575,11 @@ class ContactsListBox extends Component {
 
     renderCustomActions = props =>
     (
-      <CustomChatActions {...props} audioRecorded={this.audioRecorded} stopPlaying={this.stopPlaying} onRecording={this.onRecording} texting={this.state.texting} audioSendFinished={this.state.audioSendFinished} playing={this.state.playing} sendingImage={this.state.cameraAsset !==null} selectedContact={this.state.selectedContact}/>
+      <CustomChatActions {...props} 
+         recordAudio={this.props.recordAudio} 
+         texting={this.state.texting} 
+         sendingImage={this.state.cameraAsset !==null} 
+         selectedContact={this.state.selectedContact}/>
     )
 
     customInputToolbar = props => {
@@ -625,80 +597,12 @@ class ContactsListBox extends Component {
        this.setState({texting: (text.length > 0)})
     }
 
-    async recordAudio() {
-        const micAllowed = await this.props.requestMicPermission();
-        console.log('micAllowed', micAllowed);
-
-        if (!micAllowed) {
-            return;
-        }
-
-        if (!this.state.recording) {
-            if (this.state.audioRecording) {
-                this.deleteAudio();
-            } else {
-                this.onStartRecord();
-            }
-        } else {
-            this.onStopRecord();
-        }
-    }
-
-    deleteAudio() {
-        console.log('Delete audio');
-        this.setState({audioRecording: null, recording: false});
-        if (this.recordingStopTimer !== null) {
-            clearTimeout(this.recordingStopTimer);
-            this.recordingStopTimer = null;
-        }
-    }
-
-    async onStartRecord () {
-        console.log('Start recording...');
-        this.setState({recording: true});
-        this.recordingStopTimer = setTimeout(() => {
-            this.stopRecording();
-        }, 20000);
-
-        if (!AudioRecord) {
-            AudioRecord.init(options);
-        }
-
-        try {
-            AudioRecord.start();
-        } catch (e) {
-            console.log(e.message);
-        }
-    };
-
-    stopRecording() {
-        console.log('Stop recording...');
-        this.setState({recording: false});
-        if (this.recordingStopTimer !== null) {
-            clearTimeout(this.recordingStopTimer);
-            this.recordingStopTimer = null;
-        }
-        this.onRecording(false);
-        this.onStopRecord();
-    }
-
-    async onStopRecord () {
-        console.log('Stop recording...');
-        const result = await AudioRecord.stop();
-        this.audioRecorded(result);
-        this.setState({audioRecording: result});
-    };
-
     resetContact() {
-        this.stopRecordingTimer()
         this.outgoingPendMessages = {};
         this.setState({
-            recording: false,
             texting: false,
-            audioRecording: null,
             cameraAsset: null,
-            placeholder: this.default_placeholder,
-            audioSendFinished: false
+            placeholder: this.default_placeholder
         });
     }
 
@@ -713,32 +617,6 @@ class ContactsListBox extends Component {
           ></Composer>
         )
       }
-
-    onRecording(state) {
-        this.setState({recording: state});
-        if (state) {
-            this.startRecordingTimer();
-        } else {
-            this.stopRecordingTimer()
-        }
-    }
-
-    startRecordingTimer() {
-        let i = 0;
-        this.setState({placeholder: 'Recording audio'});
-        this.recordingTimer = setInterval(() => {
-            i = i + 1
-            this.setState({placeholder: 'Recording audio ' + i + 's'});
-        }, 1000);
-    }
-
-    stopRecordingTimer() {
-        if (this.recordingTimer) {
-            clearInterval(this.recordingTimer);
-            this.recordingTimer = null;
-            this.setState({placeholder: this.default_placeholder});
-        }
-    }
 
     updateMessageMetadata(metadata) {
         let renderMessages = this.state.renderMessages;
@@ -840,181 +718,124 @@ class ContactsListBox extends Component {
     }
 
     async startPlaying(message) {
-        if (this.state.playing || this.state.recording) {
-            console.log('Already playing or recording');
+        if (this.state.playing) {
+            console.log('Already playing');
             return;
         }
 
 		this.getAudioDuration(message.audio, message._id);
 
-        this.setState({playing: true, placeholder: 'Playing audio message'});
         message.metadata.playing = true;
         this.updateMessageMetadata(message.metadata);
+        
+		const path = message.audio.startsWith('file://') ? message.audio : 'file://' + message.audio;
 
-        if (Platform.OS === "android") {
-            const msg = await audioRecorderPlayer.startPlayer(message.audio);
-            console.log('Audio playback started', message.audio);
-            audioRecorderPlayer.addPlayBackListener((e) => {
-                //console.log('duration', e.duration, e.currentPosition);
-                if (e.duration === e.currentPosition) {
-                    this.setState({playing: false, placeholder: this.default_placeholder});
-                    //console.log('Audio playback ended', message.audio);
-                    message.metadata.playing = false;
-                    this.updateMessageMetadata(message.metadata);
-                }
-                this.setState({
-                    currentPositionSec: e.currentPosition,
-                    currentDurationSec: e.duration,
-                    playTime: audioRecorderPlayer.mmssss(Math.floor(e.currentPosition)),
-                    duration: audioRecorderPlayer.mmssss(Math.floor(e.duration)),
-                });
-            });
-        } else {
-            /*
-            console.log('startPlaying', file);
-
-            this.sound = new Sound(file, '', error => {
-                if (error) {
-                    console.log('failed to load the file', file, error);
-                }
-            });
-            return;
-            */
-            try {
-                SoundPlayer.playUrl('file://'+message.audio);
-                this.setState({playing: true, placeholder: 'Playing audio message'});
-            } catch (e) {
-                console.log(`cannot play the sound file`, e)
-            }
-
-            try {
-                  const info = await SoundPlayer.getInfo() // Also, you need to await this because it is async
-                  console.log('Sound info', info) // {duration: 12.416, currentTime: 7.691}
-                } catch (e) {
-                  console.log('There is no song playing', e)
-            }
+        try {
+			const msg = await audioRecorderPlayer.startPlayer(path);
+			console.log(msg);
+			this.setState({playing: true, placeholder: 'Playing audio message'});
+	
+			audioRecorderPlayer.addPlayBackListener((e) => {
+				if (e.duration === e.currentPosition) {
+					this.setState({playing: false, placeholder: this.default_placeholder});
+					//console.log('Audio playback ended', message.audio);
+					message.metadata.playing = false;
+					this.updateMessageMetadata(message.metadata);
+				}
+				this.setState({
+					currentPositionSec: e.currentPosition,
+					currentDurationSec: e.duration,
+					playTime: audioRecorderPlayer.mmssss(Math.floor(e.currentPosition)),
+					duration: audioRecorderPlayer.mmssss(Math.floor(e.duration)),
+				});
+			});
+        } catch (e) {
+			console.log('Error', e);
         }
     };
 
     async stopPlaying(message) {
-        console.log('Audio playback ended', message.audio);
+        //console.log('Audio playback ended', message.audio);
         this.setState({playing: false, placeholder: this.default_placeholder});
         message.metadata.playing = false;
         this.updateMessageMetadata(message.metadata);
-        if (Platform.OS === "android") {
-            const msg = await audioRecorderPlayer.stopPlayer();
-        } else {
-            SoundPlayer.stop();
-        }
-    }
-
-    async audioRecorded(file) {
-        const placeholder = file ? 'Delete or send audio...' : this.default_placeholder;
-        if (file) {
-            console.log('Audio recording ready to send', file);
-        } else {
-            console.log('Audio recording removed');
-        }
-        this.setState({recording: false, placeholder: placeholder, audioRecording: file});
+		const msg = await audioRecorderPlayer.stopPlayer();
     }
 
     renderSend = (props) => {
         let chatRightActionsContainer = Platform.OS === 'ios' ? styles.chatRightActionsContaineriOS : styles.chatRightActionsContainer;
-        if (this.state.recording) {
-            return (
-                  <View style={styles.chatSendContainer}>
-                  </View>
-            );
-        } else {
-            if (this.state.cameraAsset) {
-                return (
-                    <Send {...props}>
-                      <View style={styles.chatSendContainer}>
-                      <TouchableOpacity onPress={this.deleteCameraAsset}>
-                        <Icon
-                          style={chatRightActionsContainer}
-                          type="font-awesome"
-                          name="delete"
-                          size={20}
-                          color='red'
-                        />
-                     </TouchableOpacity>
-                      <TouchableOpacity onPress={this.sendCameraAsset}>
-                        <Icon
-                          type="font-awesome"
-                          name="send"
-                          style={styles.chatSendArrow}
-                          size={20}
-                          color='gray'
-                        />
-                        </TouchableOpacity>
-                      </View>
-                    </Send>
-            );
+		if (this.state.cameraAsset) {
+			return (
+				<Send {...props}>
+				  <View style={styles.chatSendContainer}>
+				  <TouchableOpacity onPress={this.deleteCameraAsset}>
+					<Icon
+					  style={chatRightActionsContainer}
+					  type="font-awesome"
+					  name="delete"
+					  size={20}
+					  color='red'
+					/>
+				 </TouchableOpacity>
+				  <TouchableOpacity onPress={this.sendCameraAsset}>
+					<Icon
+					  type="font-awesome"
+					  name="send"
+					  style={styles.chatSendArrow}
+					  size={20}
+					  color='gray'
+					/>
+					</TouchableOpacity>
+				  </View>
+				</Send>
+		);
 
-            } else if (this.state.audioRecording) {
-            return (
-                <Send {...props}>
-                  <View style={styles.chatSendContainer}>
-                  <TouchableOpacity onPress={this.sendAudioFile}>
-                    <Icon
-                      type="font-awesome"
-                      name="send"
-                      style={styles.chatSendArrow}
-                      size={20}
-                      color='gray'
-                    />
-                    </TouchableOpacity>
-                  </View>
-                </Send>
-            );
-            } else {
+		} else {
 
-            if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.tags.indexOf('test') > -1)) {
-                return <View></View>;
-            } else {
-                return (
-                    <Send {...props}>
-                      <View style={styles.chatSendContainer}>
-                        {this.state.texting ?
-                        null
-                        :
-                      <TouchableOpacity onPress={this._launchCamera}>
-                        <Icon
-                          style={chatRightActionsContainer}
-                          type="font-awesome"
-                          name="camera"
-                          size={20}
-                          color='gray'
-                        />
-                        </TouchableOpacity>
-                        }
-                        {this.state.texting ?
-                        null
-                        :
-                      <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
-                        <Icon
-                          style={chatRightActionsContainer}
-                          type="font-awesome"
-                          name="paperclip"
-                          size={20}
-                          color='gray'
-                        />
-                        </TouchableOpacity>
-                        }
-                        <Icon
-                          type="font-awesome"
-                          name="send"
-                          style={styles.chatSendArrow}
-                          size={20}
-                          color={'gray'}
-                        />
-                      </View>
-                    </Send>
-                );
-                }
-            }
-        }
+		if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.tags.indexOf('test') > -1)) {
+			return <View></View>;
+		} else {
+			return (
+				<Send {...props}>
+				  <View style={styles.chatSendContainer}>
+					{this.state.texting ?
+					null
+					:
+				  <TouchableOpacity onPress={this._launchCamera}>
+					<Icon
+					  style={chatRightActionsContainer}
+					  type="font-awesome"
+					  name="camera"
+					  size={20}
+					  color='gray'
+					/>
+					</TouchableOpacity>
+					}
+					{this.state.texting ?
+					null
+					:
+				  <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
+					<Icon
+					  style={chatRightActionsContainer}
+					  type="font-awesome"
+					  name="paperclip"
+					  size={20}
+					  color='gray'
+					/>
+					</TouchableOpacity>
+					}
+					<Icon
+					  type="font-awesome"
+					  name="send"
+					  style={styles.chatSendArrow}
+					  size={20}
+					  color={'gray'}
+					/>
+				  </View>
+				</Send>
+			);
+			}
+		}
     };
 
     setTargetUri(uri, contact) {
@@ -1309,18 +1130,6 @@ class ContactsListBox extends Component {
     sendCameraAsset() {
         this.transferFile(this.state.cameraAsset);
         this.setState({cameraAsset: null, placeholder: this.default_placeholder});
-    }
-
-    async sendAudioFile() {
-        if (this.state.audioRecording) {
-            this.setState({audioSendFinished: true, placeholder: this.default_placeholder});
-            setTimeout(() => {
-                this.setState({audioSendFinished: false});
-            }, 10);
-            let msg = await this.props.file2GiftedChat(this.state.audioRecording);
-            this.transferFile(msg);
-            this.setState({audioRecording: null});
-        }
     }
 
     async _pickDocument() {
@@ -1777,43 +1586,75 @@ class ContactsListBox extends Component {
         );
     };
 
-  renderMessageAudio = (props) => {
-    const { currentMessage } = props;
-    const { audioDurations } = this.state;
+	renderMessageAudio = (props) => {
+	  const { currentMessage } = props;
+	  const { audioDurations } = this.state;
+	
+	  // Load duration if not already loaded
+	  if (currentMessage.audio && !audioDurations[currentMessage._id]) {
+		// this.getAudioDuration(currentMessage.audio, currentMessage._id);
+	  }
+	
+	  // Get duration string
+	  const durationLabel = audioDurations[currentMessage._id]
+		? `Audio message (${audioDurations[currentMessage._id]}s)`
+		: 'Audio message';
+	
+	  const isIncoming = currentMessage.direction === 'incoming';
+	  const labelPadding =  isIncoming ? {paddingLeft: 10} : {paddingLeft: 0};
 
-    // Load duration if not already loaded
-    if (currentMessage.audio && !audioDurations[currentMessage._id]) {
-      //this.getAudioDuration(currentMessage.audio, currentMessage._id);
-    }
-
-    // Get duration string
-    const durationLabel = audioDurations[currentMessage._id]
-      ? `Audio message (${audioDurations[currentMessage._id]}s)`
-      : 'Audio message';
-
-    let playAudioButtonStyle =
-      Platform.OS === 'ios' ? styles.playAudioButtoniOS : styles.playAudioButton;
-
-    return (
-      <View style={styles.audioContainer}>
-        <TouchableHighlight style={styles.roundshape}>
-          <IconButton
-            size={28}
-            onPress={() =>
-              currentMessage.metadata.playing
-                ? this.stopPlaying(currentMessage)
-                : this.startPlaying(currentMessage)
-            }
-            style={playAudioButtonStyle}
-            icon={currentMessage.metadata.playing ? 'pause' : 'play'}
-          />
-        </TouchableHighlight>
-
-        {/* Display the label with duration */}
-        <Text style={styles1.audioLabel}>{durationLabel}</Text>
-      </View>
-    );
-  };
+	  return (
+		<View
+		  style={[
+			styles.audioContainer,
+			{ flexDirection: 'row', alignItems: 'center' },
+		  ]}
+		>
+		  {/* Icon on left for incoming, right for outgoing */}
+		  {isIncoming && (
+			<TouchableHighlight style={styles.roundshape}>
+			  <IconButton
+				size={28}
+				onPress={() =>
+				  currentMessage.metadata.playing
+					? this.stopPlaying(currentMessage)
+					: this.startPlaying(currentMessage)
+				}
+				style={styles.playAudioButton}
+				icon={currentMessage.metadata.playing ? 'pause' : 'play'}
+			  />
+			</TouchableHighlight>
+		  )}
+	
+		  {/* Text grows naturally */}
+		  <Text
+			style={[
+			  styles1.audioLabel,
+			  { marginHorizontal: 8, flexShrink: 1},
+			  labelPadding
+			  , // prevents overflow
+			]}
+		  >
+			{durationLabel}
+		  </Text>
+	
+		  {!isIncoming && (
+			<TouchableHighlight style={styles.roundshape}>
+			  <IconButton
+				size={28}
+				onPress={() =>
+				  currentMessage.metadata.playing
+					? this.stopPlaying(currentMessage)
+					: this.startPlaying(currentMessage)
+				}
+				style={styles.playAudioButton}
+				icon={currentMessage.metadata.playing ? 'pause' : 'play'}
+			  />
+			</TouchableHighlight>
+		  )}
+		</View>
+	  );
+	};
 
     videoError() {
         console.log('Video streaming error');
@@ -2405,7 +2246,8 @@ ContactsListBox.propTypes = {
     sortBy: PropTypes.string,
     toggleSearchMessages: PropTypes.func,
     searchMessages: PropTypes.bool,
-    searchString: PropTypes.string
+    searchString: PropTypes.string,
+    recordAudio: PropTypes.func
 };
 
 

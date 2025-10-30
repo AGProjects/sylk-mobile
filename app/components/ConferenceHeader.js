@@ -325,7 +325,7 @@ class ConferenceHeader extends React.Component {
                     {this.state.participants > 1 ?
                     <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
                     : null}
-                    {!this.props.audioOnly ?
+                    {!this.props.audioOnly && this.props.participants > 0?
                     <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
                     : null}
                     

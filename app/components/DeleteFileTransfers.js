@@ -2,15 +2,13 @@ import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View, Platform } from 'react-native';
-import UserIcon from './UserIcon';
-import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, RadioButton, Checkbox, Switch } from 'react-native-paper';
+import { Chip, Dialog, Portal, Text, Button, Menu, Surface, TextInput, Paragraph, RadioButton, Checkbox, Switch } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
-import { Picker } from '@react-native-picker/picker';
-
-
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+import UserIcon from './UserIcon';
+import {Gravatar, GravatarApi} from 'react-native-gravatar';
 
-import styles from '../assets/styles/blink/_DeleteFileTransfers.scss';
+import styles from '../assets/styles/DeleteFileTransfers';
 
 
 class DeleteFileTransfers extends Component {
@@ -23,13 +21,22 @@ class DeleteFileTransfers extends Component {
 
     UNSAFE_componentWillReceiveProps(nextProps) {
         let sharedFiles = nextProps.uri in nextProps.sharedFiles ? nextProps.sharedFiles[nextProps.uri]: {};
+		if (!this.state.show && nextProps.show) {
+			const filter = {incoming: true, 
+							outgoing: true, 
+							period: this.getPeriodFilterDate(), 
+							periodType: 'after'}
+
+			this.props.getFiles(this.props.uri, filter);	
+		}
 
         this.setState({show: nextProps.show,
                        displayName: nextProps.displayName,
                        username: nextProps.uri && nextProps.uri ? nextProps.uri.split('@')[0] : null,
                        uri: nextProps.uri,
                        sharedFiles: sharedFiles,
-                       confirm: nextProps.confirm
+                       confirm: nextProps.confirm,
+                       selectedContact: nextProps.selectedContact
                        });
     }
 
@@ -59,11 +66,6 @@ class DeleteFileTransfers extends Component {
     
 	componentDidMount() {
 	    this.setState(this.defaultState());
-        const filter = {incoming: true, 
-                        outgoing: true, 
-                        period: this.getPeriodFilterDate(), 
-                        periodType: 'after'}
-		this.props.getFiles(this.props.uri, filter);
     }
 
     deleteMessages(event) {
@@ -176,69 +178,69 @@ class DeleteFileTransfers extends Component {
 		return utcDate;
 	}
 
-    renderPeriodDropdown() {
-        const periodOptions = [
-            { key: 'all', label: 'All' },
-            { key: '1', label: 'Last day' },
-            { key: '2', label: 'Last two days' },
-            { key: '7', label: 'Last week' },
-            { key: '30', label: 'Last month' },
-            { key: '60', label: 'Last 60 days' },
-            { key: '-92', label: 'Older than three months' },
-            { key: '-365', label: 'Older than one year' }
-        ];
-
-        return (
-            <View style={{ marginVertical: 8, marginLeft: 20, marginRight: 40 }}>
-                <View style={{
-                    borderWidth: 1,
-                    borderColor: '#ccc',
-                    borderRadius: 8,
-                    overflow: 'hidden',
-                    justifyContent: 'center',
-                    height: 50
-                }}>
-				<Picker
-					selectedValue={this.state.periodFilterKey}
-					onValueChange={(key) => {
-						let periodType = 'after'; // default for positive values and "all"
-				
-						const num = Number(key);
-						if (!isNaN(num) && num < 0) {
-							periodType = 'before';
-						}
-
-						console.log('Set days to', key);	
-						this.setState({
-							periodFilterKey: key,
-							periodType
-						});
-
-						const filter = {incoming: this.state.incoming, 
-										outgoing: this.state.outgoing, 
-										period: this.getPeriodFilterDate(key), 
-										periodType: periodType}
-					
-						this.props.getFiles(this.props.uri, filter);
-
-					}}
-					mode="dropdown"
-					style={{ height: '100%', width: '100%' }}
-					itemStyle={{ height: 50 }}
+	renderPeriodDropdown() {
+		const periodOptions = [
+			{ key: 'all', label: 'All' },
+			{ key: '1', label: 'Last day' },
+			{ key: '2', label: 'Last two days' },
+			{ key: '7', label: 'Last week' },
+			{ key: '30', label: 'Last month' },
+			{ key: '60', label: 'Last 60 days' },
+			{ key: '-92', label: 'Older than three months' },
+			{ key: '-365', label: 'Older than one year' }
+		];
+	
+		return (
+			<View style={{ marginVertical: 8, marginLeft: 20, marginRight: 40 }}>
+				<Menu
+					visible={this.state.menuVisible}
+					onDismiss={() => this.setState({ menuVisible: false })}
+					anchor={
+						<Button
+							mode="outlined"
+							onPress={() => this.setState({ menuVisible: true })}
+							style={{ width: '100%', justifyContent: 'space-between' }}
+							contentStyle={{ height: 50 }}
+							labelStyle={{ color: 'black' }}
+							icon="menu-down"
+						>
+							{periodOptions.find(opt => opt.key === this.state.periodFilterKey)?.label || 'Select period'}
+						</Button>
+					}
 				>
 					{periodOptions.map(option => (
-						<Picker.Item
+						<Menu.Item
 							key={option.key}
-							label={option.label}
-							value={option.key}
+							onPress={() => {
+								let periodType = 'after';
+								const num = Number(option.key);
+								if (!isNaN(num) && num < 0) {
+									periodType = 'before';
+								}
+	
+								this.setState({
+									periodFilterKey: option.key,
+									periodType,
+									menuVisible: false
+								});
+	
+								const filter = {
+									incoming: this.state.incoming,
+									outgoing: this.state.outgoing,
+									period: this.getPeriodFilterDate(option.key),
+									periodType
+								};
+	
+								this.props.getFiles(this.props.uri, filter);
+							}}
+							title={option.label}
 						/>
 					))}
-				</Picker>
+				</Menu>
+			</View>
+		);
+	}
 
-                </View>
-            </View>
-        );
-    }
     
     render() {
 		const sharedFiles = JSON.parse(JSON.stringify(this.state.sharedFiles));
@@ -278,16 +280,24 @@ class DeleteFileTransfers extends Component {
         let otherFiles = 'others' in this.state.sharedFiles ? this.state.sharedFiles['others'].length: 0;
 
 		const isDisabled = allIds.length === 0;
-
+		const as = 50;
+		
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.close}>
                     <Surface style={styles.container}>
                         <View style={styles.titleContainer}>
                             <View style={styles.titleContainer}>
-                            { this.state.uri ?
-                                <UserIcon style={styles.avatar} identity={identity}/>
-                            : null}
+                            {this.state.selectedContact ? 
+								<View style={styles.avatarContent}>
+									{this.state.selectedContact.photo || this.state.selectedContact.email ? (
+										<UserIcon size={as} identity={this.state.selectedContact}/>
+									) : (
+										<Gravatar options={{email: this.state.selectedContact.email, parameters: { "size": as, "d": "mm" }, secure: true}} style={[styles.gravatar, {width: as, height: as}]} />
+									)}
+								</View>
+							: null}
+
                             </View>
 
                             <View style={styles.titleContainer}>
@@ -406,6 +416,7 @@ class DeleteFileTransfers extends Component {
 
 DeleteFileTransfers.propTypes = {
     show               : PropTypes.bool,
+    selectedContact    : PropTypes.object,
     close              : PropTypes.func.isRequired,
     uri                : PropTypes.string,
     displayName        : PropTypes.string,

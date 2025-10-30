@@ -20,6 +20,13 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  subtitle: {
+    paddingTop: 25,
+    fontSize: 18,
+    color: 'white',
+    textAlign: 'center',
+  },
+
   historyLandscapeContainer: {
     marginTop: 0,
     width: '100%',

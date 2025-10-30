@@ -69,18 +69,43 @@ function appendLeadingZeroes(n){
 }
 
 function timestampedLog() {
-    let current_datetime = new Date();
-    let formatted_date = current_datetime.getFullYear() + "-" + appendLeadingZeroes(current_datetime.getMonth() + 1) + "-" + appendLeadingZeroes(current_datetime.getDate()) + " " + appendLeadingZeroes(current_datetime.getHours()) + ":" + appendLeadingZeroes(current_datetime.getMinutes()) + ":" + appendLeadingZeroes(current_datetime.getSeconds());
-    let message = formatted_date;
+  const current_datetime = new Date();
+  const formatted_date =
+    current_datetime.getFullYear() +
+    '-' +
+    appendLeadingZeroes(current_datetime.getMonth() + 1) +
+    '-' +
+    appendLeadingZeroes(current_datetime.getDate()) +
+    ' ' +
+    appendLeadingZeroes(current_datetime.getHours()) +
+    ':' +
+    appendLeadingZeroes(current_datetime.getMinutes()) +
+    ':' +
+    appendLeadingZeroes(current_datetime.getSeconds());
 
-    for (var i = 0; i < arguments.length; i++) {
-        let txt = arguments[i] ? arguments[i].toString() : '';
-        message = message + ' ' + txt;
+  let message = formatted_date;
+
+  for (let i = 0; i < arguments.length; i++) {
+    let arg = arguments[i];
+    let txt;
+
+    if (typeof arg === 'object') {
+      try {
+        txt = JSON.stringify(arg, null, 2);
+      } catch (e) {
+        txt = '[Unserializable object]';
+      }
+    } else {
+      txt = String(arg);
     }
 
-    log2file(message);
-    //console.log(message);
+    message += ' ' + txt;
+  }
+
+  log2file(message);
+  // console.log(message);
 }
+
 
 
 function generateUniqueId() {

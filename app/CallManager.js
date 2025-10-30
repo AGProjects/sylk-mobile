@@ -636,28 +636,33 @@ export default class CallManager extends events.EventEmitter {
         this._emitSessionsChange(true);
     }
 
-    handleConference(callUUID, room, from_uri, displayName, mediaType, outgoingMedia) {
+    handleConference(callUUID, room, from_uri, displayName, outgoingMedia, origin) {
         if (this.unmounted()) {
             return;
         }
 
+        utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room, outgoingMedia);
+
         if (this._incoming_conferences.has(callUUID)) {
-            return;
+            let existingConferenceRequest = this._incoming_conferences.get(callUUID);
+			if (origin == 'push') {
+			    utils.timestampedLog('CallKeep: update outgoing media');
+				existingConferenceRequest =  {room: room, from: from_uri, outgoingMedia: outgoingMedia};
+				this.outgoingMedia = outgoingMedia;
+			}
+
+        } else {
+            const newConferenceRequest = {room: room, from: from_uri, outgoingMedia: outgoingMedia};
+			this._incoming_conferences.set(callUUID, newConferenceRequest);
         }
 
 		let els = room.split('@');
         //room = els[0];
 
 		displayName = 'Conference room ' + room;        
+		utils.timestampedLog('outgoingMedia set to', outgoingMedia);
 
-        const hasVideo = mediaType === 'video' ? true : false;
-
-        this._incoming_conferences.set(callUUID, {room: room, from: from_uri});
-        this.outgoingMedia = outgoingMedia;
-
-        utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room);
-
-        this.showAlertPanel(callUUID, room, displayName, hasVideo);
+        this.showAlertPanel(callUUID, room, displayName, outgoingMedia.video);
 
         this._timeouts.set(callUUID, setTimeout(() => {
             //utils.timestampedLog('Callkeep: conference timeout', callUUID);
@@ -680,7 +685,7 @@ export default class CallManager extends events.EventEmitter {
         }
 
 		if (Platform.OS === 'android') {
-		    console.log('skip alert panel on android');
+		    //console.log('skip alert panel on android');
 			return;
 		}
 

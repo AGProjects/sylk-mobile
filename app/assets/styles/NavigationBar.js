@@ -5,6 +5,14 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
 
+  gravatar: {
+    width: 50,
+    height: 50,
+    borderWidth: 0,
+    borderColor: 'white',
+    borderRadius: 50,
+  },
+  
   titleContainer: {},
 
   title: {

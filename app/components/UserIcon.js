@@ -10,15 +10,15 @@ const styles = StyleSheet.create({
     marginTop: -3,
     marginLeft: 0,
   },
+
   avatarLabeliOS: {
     marginTop: 0,
-    marginLeft: 0,
+    marginLeft: 3,
   },
 });
 
 
 const UserIcon = (props) => {
-
     if (!props.identity) {
         return (null)
     }

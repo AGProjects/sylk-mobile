@@ -41,7 +41,6 @@ import ConferenceCarousel from './ConferenceCarousel';
 import ConferenceParticipant from './ConferenceParticipant';
 import ConferenceMatrixParticipant from './ConferenceMatrixParticipant';
 import ConferenceParticipantSelf from './ConferenceParticipantSelf';
-import InviteParticipantsModal from './InviteParticipantsModal';
 import ConferenceAudioParticipantList from './ConferenceAudioParticipantList';
 import ConferenceAudioParticipant from './ConferenceAudioParticipant';
 import {renderBubble } from './ContactsListBox';
@@ -1739,10 +1738,12 @@ class ConferenceBox extends Component {
 
         if (this.state.participants.length > 0 && !this.state.chatView) {
             this.overlayTimer = setTimeout(() => {
-                this.setState({callOverlayVisible: false});
-				StatusBar.setHidden(true, 'fade');   // hide
-				if (Platform.OS === 'android') {
-					Immersive.on();
+                if (!this.state.chatView) {
+					this.setState({callOverlayVisible: false});
+					StatusBar.setHidden(true, 'fade');   // hide
+					if (Platform.OS === 'android') {
+						Immersive.on();
+					}
 				}
             }, 15000);
         }
@@ -1750,7 +1751,7 @@ class ConferenceBox extends Component {
 
     toggleFullScreen() {
 		//console.log(' --toggleFullScreen');
-		if (this.state.callOverlayVisible && !this.state.chatView && !this.props.audioOnly) {			
+		if (this.state.callOverlayVisible && !this.state.chatView && !this.props.audioOnly && this.conferenceStarted) {			
 			this.setState({callOverlayVisible: !this.state.callOverlayVisible});
 			StatusBar.setHidden(true, 'fade');   // hide
 			if (Platform.OS === 'android') {
@@ -1829,6 +1830,10 @@ class ConferenceBox extends Component {
 	}
 
     get showMyself() {
+        if (this.state.chatView && !this.props.audioOnly) {
+			return true;
+        }
+
 		if (this.state.participants.length == 3) {
 			return false;
 		}
@@ -2189,23 +2194,6 @@ class ConferenceBox extends Component {
         let _identity;
         let participants_uris = [];
         let sessionButtons = floatingButtons;
-/*
-        let inviteParticipantsModal = (
-                    <InviteParticipantsModal
-                        show={this.state.showInviteModal && !this.state.reconnectingCall}
-                        inviteParticipants={this.inviteParticipants}
-                        previousParticipants={this.state.previousParticipants}
-                        alreadyInvitedParticipants={alreadyInvitedParticipants}
-                        currentParticipants={this.state.participants.map((p) => {return p.identity.uri})}
-                        close={this.toggleInviteModal}
-                        room={this.state.remoteUri}
-                        defaultDomain = {this.props.defaultDomain}
-                        accountId = {this.props.call.localIdentity._uri}
-                        notificationCenter = {this.props.notificationCenter}
-                        lookupContacts = {this.props.lookupContacts}
-                    />
-                    );
-            */
 
         let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
@@ -2268,7 +2256,6 @@ class ConferenceBox extends Component {
                         timestamp={p.timestamp}
                         isLocal={false}
                         status={status}
-                        supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                     />
                 );
             });
@@ -2333,7 +2320,6 @@ class ConferenceBox extends Component {
                         isLocal={false}
                         status={p.status}
                         extraButtons={extraButtons}
-                        supportsVideo={this.state.call ? this.state.call.supportsVideo: false}
                     />
                 );
             });
@@ -2412,7 +2398,7 @@ class ConferenceBox extends Component {
 			  borderColor: 'gray',
 			  width: this.state.isLandscape ? '50%' : '100%',
 			  marginTop: this.state.isLandscape ? 0 : 0,
-	          borderWidth: debugBorderWidth || 1,
+	          borderWidth: debugBorderWidth,
 			  borderColor: 'gray'
 			};
 
@@ -2820,11 +2806,11 @@ class ConferenceBox extends Component {
 		  flexDirection: this.state.isLandscape ? 'row' : 'column',
 		  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
 		  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
-		  height: '100%',
 		  marginTop: 0,
 		  borderColor: 'blue',
 		  borderWidth: debugBorderWidth,
 		  marginBottom: 0,
+		  position: 'relative'
 		};
 					
 		let videoWidth = this.state.chatView ? '50%' : '100%' ;
@@ -2843,7 +2829,7 @@ class ConferenceBox extends Component {
 	    
 		chatContainer = {
 			...(this.state.isLandscape ? {} : {flex: 1}),
-		  borderWidth: 1,
+		  borderWidth: 0,
 		  borderColor: 'gray',
 		  width: '100%',
 		};
@@ -3023,13 +3009,26 @@ class ConferenceBox extends Component {
 			mediaContainer.height = 0;
 		}
 				
-		const corner = {
+		let corner = {
 		  ...corners[this.state.myVideoCorner],
 		};
 
+        if (this.state.chatView) {
+			 corner = corners['topLeft'];
+		}
+					
         const gridLayoutContainer = this.getVideoLayout().container;
         const videoObjectsCount = videos.length;
-        
+        const myselfContainer = {
+				  position: 'absolute',
+				  top: 0,
+				  left: 0,
+				  right: 0,
+				  bottom: 0,
+				  zIndex: 1000,
+				  pointerEvents: 'box-none'
+				};
+
 		if (debugBorderWidth) {
 			const values = {
 			  corners,
@@ -3044,9 +3043,9 @@ class ConferenceBox extends Component {
 			  buttonsContainer,
 			  conferenceContainer,
 			  mediaContainer,
+			  myselfContainer,
 			  videoGridContainer,
-			  gridLayoutContainer,
-			  videoObjectsCount
+			  gridLayoutContainer
 			};
 
 			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
@@ -3173,6 +3172,7 @@ class ConferenceBox extends Component {
 				}
 
 				{this.state.chatView && Platform.OS === 'ios'?	
+
 					<GiftedChat
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
 					  messages={renderMessages}
@@ -3196,22 +3196,13 @@ class ConferenceBox extends Component {
 				<View style={styles.carouselContainer}>
 					<ConferenceCarousel align={'right'}>
 						{participants}
-					    visible={this.state.activeSpeakers.length == 0}
 					</ConferenceCarousel>
 				</View>
 				}
 
 			</View>
 			  <View
-				style={{
-				  position: 'absolute',
-				  top: 0,
-				  left: 0,
-				  right: 0,
-				  bottom: 0,
-				  zIndex: 1000,
-				}}
-				pointerEvents="box-none" // allows touches to pass through except for children
+				style={myselfContainer}
 			  >
 				<View
 				  style={{

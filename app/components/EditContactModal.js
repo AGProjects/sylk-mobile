@@ -4,6 +4,8 @@ import { Text, Button, Surface, TextInput, Switch, Checkbox } from 'react-native
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import PropTypes from 'prop-types';
 import utils from '../utils';
+import UserIcon from './UserIcon';
+import {Gravatar, GravatarApi} from 'react-native-gravatar';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
@@ -85,6 +87,8 @@ const EditContactModal = ({
   if (publicKey) {
 	  title = 'Public key';
   }
+  
+  const as = 50;
 
   return (
     <Modal
@@ -106,6 +110,32 @@ const EditContactModal = ({
             <TouchableWithoutFeedback onPress={() => {}}>
 
    		    <Surface style={containerStyles.modalSurface}>
+				{selectedContact ? (
+				  <View
+					style={{
+					  position: 'absolute',
+					  top: 16,
+					  left: 16,
+					  zIndex: 10,
+					}}
+				  >
+					{selectedContact.photo || selectedContact.email ? (
+					  <UserIcon size={50} identity={selectedContact} />
+					) : (
+					  <Gravatar
+						options={{
+						  email: selectedContact.email,
+						  parameters: { size: 50, d: 'mm' },
+						  secure: true,
+						}}
+						style={{ width: 50, height: 50, borderRadius: 25 }}
+					  />
+					)}
+				  </View>
+				) : null}
+
+
+
             {/* Modal content start */}
 				<Text style={containerStyles.title}>{title}</Text>
 
@@ -114,7 +144,7 @@ const EditContactModal = ({
                     <Text style={styles.subtitle}>{uri}</Text>
 					<ScrollView
 					  style={{
-						height: 430,
+						height: 300,
 						backgroundColor: '#f0f0f0',
 						borderRadius: 4,
 						borderWidth: 1,

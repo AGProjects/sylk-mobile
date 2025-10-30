@@ -203,8 +203,7 @@ class Sylk extends Component {
         this.startTimestamp = new Date();
         this.phoneWasLocked = false;
         this.defaultDomain = config.defaultDomain;
-        this.fileSharingUrl = config.wsServer + '/filesharing';
-        this.fileTransferUrl = config.wsServer + '/filetransfer';
+        
         this.defaultConferenceDomain = 'videoconference.sip2sip.info';
        
         this.boundProximityDetect = this._proximityDetect.bind(this);
@@ -364,6 +363,11 @@ class Sylk extends Component {
         this._onFinishedLoadingURLSubscription = null
 
         this.cancelRingtoneTimer = null;
+        
+        let server = config.wsServer;
+        server = server.replace(/^wss:\/\//, 'https://');
+        this.fileSharingUrl = server + '/filesharing';
+        this.fileTransferUrl = server + '/filetransfer';
 
         this.sync_pending_items = [];
         this.signup = {};
@@ -2198,6 +2202,9 @@ componentWillUnmount() {
         utils.timestampedLog('-- App did mount');
         this._loaded = true;
         
+        this.getFiles();
+        
+        
           // Add a short delay to give background handler time to write
 		  setTimeout(() => {
 			this.checkFCMPendingActions();
@@ -2625,9 +2632,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     handleFirebasePush(notification) {
-        console.log("FCM in app handle notification", notification);
+        utils.timestampedLog("FCM in app handle notification", notification);
+        //console.log(notification);
         let event = notification.event;
         const callUUID = notification['session-id'];
+        const account = notification['account'];
         const from = notification['from_uri'];
         const to = notification['to_uri'];
         const displayName = notification['from_display_name'];
@@ -2641,18 +2650,22 @@ f you want to fully control the UI and avoid automatic system notifications, you
         if (event === 'incoming_conference_request') {
             utils.timestampedLog('FCM app event: incoming conference', callUUID);
             if (!from || !to) {
+                console.log('Missing from or to');
                 return;
             }
-            if (to !== this.state.accountId) {
+            if (account !== this.state.accountId) {
+                console.log('Not for my account');
                 return
             }
-            this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
+            this.incomingConference(callUUID, to, from, displayName, outgoingMedia, 'push');
         } else if (event === 'incoming_session') {
             utils.timestampedLog('FCM app event: incoming call', callUUID);
             if (!from) {
+                console.log('Missing from');
                 return;
             }
             if (to !== this.state.accountId) {
+                console.log('Not for my account');
                 return
             }
             this.incomingCallFromPush(callUUID, from, displayName, mediaType);
@@ -4283,6 +4296,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
                         if (this.state.keys && this.state.keys.public !== key) {
                             utils.timestampedLog('showImportPrivateKeyModal 2');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
+                            console.log(this.state.keys.public);
+                            console.log(key);
+                            
                         } else {
                             utils.timestampedLog('Local and server PGP keys are the same');
                             keyStatus.existsLocal = true;
@@ -5041,7 +5057,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         } else if (event === 'incoming_conference_request') {
             utils.timestampedLog('Push notification: incoming conference', callUUID);
             this.startedByPush = true;
-            this.incomingConference(callUUID, to, from, displayName, outgoingMedia);
+            this.incomingConference(callUUID, to, from, displayName, outgoingMedia, 'push');
 
         } else if (event === 'cancel') {
             utils.timestampedLog('Push notification: cancel call', callUUID);
@@ -5085,14 +5101,12 @@ f you want to fully control the UI and avoid automatic system notifications, you
         });
     }
 
-    incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}) {
+    incomingConference(callUUID, to, from, displayName, outgoingMedia={audio: true, video: true}, origin) {
         if (this.unmounted) {
             return;
         }
 
-        const mediaType = outgoingMedia.video ? 'video' : 'audio';
-
-        utils.timestampedLog('Incoming', mediaType, 'conference invite from', from, displayName, 'to room', to);
+        utils.timestampedLog('Incoming conference invite from', from, displayName, 'to room', to, outgoingMedia);
 
         if (this.state.account && from === this.state.account.id) {
             utils.timestampedLog('Reject conference call from myself', callUUID);
@@ -5101,13 +5115,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         if (this.autoRejectIncomingCall(callUUID, from, to)) {
+            console.log('autoRejectIncomingCall');
             return;
         }
 
         let incomingContact = this.newContact(from, displayName);
 
         //this.setState({incomingCallUUID: callUUID, incomingContact: incomingContact});
-        this.callKeeper.handleConference(callUUID, to, from, displayName, mediaType, outgoingMedia);
+        this.callKeeper.handleConference(callUUID, to, from, displayName, outgoingMedia, origin);
     }
 
     escalateToConference(participants) {
@@ -5147,8 +5162,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         if (this.isConference()) {
             return;
         }            
-        
-		this.incomingConference(data.id, data.room, data.originator.uri, data.originator.displayName);
+        const media = {audio: true, video: true}
+		this.incomingConference(data.id, data.room, data.originator.uri, data.originator.displayName, media, 'websocket');
     }
 
     updateLinkingURL = (event) => {
@@ -5254,7 +5269,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     // allow app to wake up
                     this.backToForeground();
                     const media = {audio: true, video: mediaType === 'video'}
-                    this.incomingConference(callUUID, to, from, displayName, media);
+                    this.incomingConference(callUUID, to, from, displayName, media, 'url');
                 }
             } else if (event === 'wakeup') {
                 console.log('wakeup from Linking');
@@ -5385,7 +5400,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				payload.data.to_uri,
 				payload.data.from_uri,
 				payload.data.from_display_name, // fixed small typo here too
-				media
+				media,
+				'push'
 			  );
 			}
 	
@@ -6265,11 +6281,13 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async uploadFile(file_transfer) {
-        //console.log('uploadFile', file_transfer);
+        console.log('uploadFile', file_transfer);
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
         let remote_url = file_transfer.url;
+		remote_url = remote_url.replace(/^wss:\/\//, 'https://');
+
         let uri = file_transfer.receiver.uri;
 
         if (!file_transfer.filetype) {
@@ -8190,6 +8208,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async getFiles(uri, filter) {
+        //console.log('-- Get files for', uri, filter);
+        
         if (this.unmounted) {
 			return;
         }
@@ -8198,21 +8218,23 @@ f you want to fully control the UI and avoid automatic system notifications, you
 			return;
         }
 
-        console.log('Get files for', uri, filter);
+        let params = [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId];
     
         let incoming = filter.incoming;
         let outgoing = filter.outgoing;
         let period = filter.period;
         let periodType = filter.periodType || 'after';
     
-        
         let sharedFiles = this.state.sharedFiles;
         let metadata;
         let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
         let found = 0;
-        let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";       
-        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+        
+        let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
+        
+        await this.ExecuteQuery(query, params).then((results) => {
             let rows = results.rows;
+            console.log('rows', rows);
             for (let i = 0; i < rows.length; i++) {
                var item = rows.item(i);
                try {
@@ -8270,10 +8292,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
             }
 
 			sharedFiles[uri] = message_ids;
+			console.log('sharedFiles', sharedFiles);
 			this.setState({sharedFiles: sharedFiles});
 
         }).catch((error) => {
-            console.log('deleteFiles SQL error:', error);
+            console.log('----getFiles SQL error:', error);
         });   
     }
     
@@ -10906,7 +10929,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let myContacts = this.state.myContacts;
         
         if (this.state.rejectNonContacts && direction == 'incoming') {
-            if (!(from in this.state.myContacts)) {
+            if (!(uri in this.state.myContacts)) {
 				console.log('skip history entry from unknown address', uri);                
 				return;
             }
