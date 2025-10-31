@@ -80,8 +80,22 @@ class NavigationBar extends Component {
     }
     
     get hasFiles() {
+        if (!this.state.selectedContact) {
+			return false;
+        } 
+        
+        if (Object.keys(this.state.sharedFiles).indexOf(this.state.selectedContact.uri) === -1) {
+			return false;
+        }
+
+        const message_ids = this.state.sharedFiles[this.state.selectedContact.uri];
+        const hasAny = Object.values(message_ids).some(arr => arr.length > 0);
+
+        if (!hasAny) {
+			return false;
+        }
+
         return true;
-        return this.state.selectedContact && Object.keys(this.state.sharedFiles).indexOf(this.state.selectedContact.uri) > -1 && this.state.sharedFiles[this.state.selectedContact.uri].lenght > 0;
     }
     
     get hasMessages() {
@@ -97,7 +111,13 @@ class NavigationBar extends Component {
 
         let displayName = nextProps.selectedContact ? nextProps.selectedContact.name : nextProps.displayName;
         let organization = nextProps.selectedContact ? nextProps.selectedContact.organization : nextProps.organization;
-
+        
+        if ('selectedContact' in nextProps) {
+			this.setState({selectedContact: nextProps.selectedContact});
+            if (nextProps.selectedContact && nextProps.selectedContact != this.state.selectedContact) {
+				this.props.getFiles(nextProps.selectedContact.uri);
+			}
+        }
         this.setState({registrationState: nextProps.registrationState,
                        connection: nextProps.connection,
                        syncConversations: nextProps.syncConversations,
@@ -115,7 +135,6 @@ class NavigationBar extends Component {
                        publicKey: nextProps.publicKey,
                        showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
                        showGenerateKeysModal: nextProps.showGenerateKeysModal,
-                       selectedContact: nextProps.selectedContact,
                        messages: nextProps.messages,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
                        blockedUris: nextProps.blockedUris,
@@ -541,6 +560,7 @@ class NavigationBar extends Component {
                 {statusColor == 'greenXXX' ?
                     <Icon name={statusIcon} size={20} color={statusColor} />
                 : null }
+                
 
                 { this.state.selectedContact?
                     <Menu
@@ -590,13 +610,14 @@ class NavigationBar extends Component {
                         : null
                         }
 
-                        {false && !isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
-                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
-                        : null}
-
                         {!isConference && !this.state.searchMessages && this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
+
+                        {!isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
+                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
+                        : null}
+
 
                         {!isConference && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
@@ -611,7 +632,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && tags.indexOf('test') === -1 && !tags.indexOf('favorite') === -1 ?
+                        {!this.state.inCall && tags.indexOf('test') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title={deleteTitle}/>
                         : null}
                         

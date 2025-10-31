@@ -1409,10 +1409,7 @@ class ContactsListBox extends Component {
 			options.push('Delete');
 			icons.push(<Icon name="delete" size={20} />);
 
-            let showResend = currentMessage.failed || (currentMessage.direction === 'outgoing' && !currentMessage.sent && !currentMessage.received && !currentMessage.pending);
-            if (currentMessage.metadata && currentMessage.metadata.error) {
-                showResend = false;
-            }
+            let showResend = currentMessage.metadata && currentMessage.metadata.error;
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {

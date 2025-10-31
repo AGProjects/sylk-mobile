@@ -17,57 +17,13 @@ const styles = StyleSheet.create({
     marginTop: 150,
   },
 
-  localVideoContainer: {
-    justifyContent: 'flex-end',
-  },
-
   video: {
     width: '100%',
     height: '100%',
     // object-fit: cover → React Native: use resizeMode in <Video> component
   },
 
-  localVideo: {
-    position: 'absolute',
-    height: 80,
-    width: 100,
-    backgroundColor: 'white',
-    top: 10,
-    left: 10,
-    borderRadius: 10,
-    // object-fit: cover → use resizeMode: 'cover' in component props
-  },
-
-  portraitButtonContainer: {
-    flexDirection: 'row',
-    marginTop: 'auto',
-    marginBottom: 50,
-    paddingLeft: 20,
-    paddingRight: 20,
-    justifyContent: 'flex-end', // React Native uses justifyContent
-  },
-
-  landscapeButtonContainer: {
-    flexDirection: 'row',
-    marginBottom: 0,
-    justifyContent: 'center', // margin: auto not supported
-  },
-
-  tabletPortraitButtonContainer: {
-    flexDirection: 'row',
-    marginBottom: 40,
-    bottom: 60,
-    justifyContent: 'center',
-  },
-
-  tabletLandscapeButtonContainer: {
-    flexDirection: 'row',
-    marginBottom: 0,
-    bottom: 60,
-    justifyContent: 'center',
-  },
-
-  buttonContainer: {
+  buttonsContainer: {
     position: 'absolute',
     left: 0,
     bottom: 0,
@@ -76,6 +32,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     borderWidth: 0, // React Native uses borderWidth
+	zIndex: 100,
+  },
+
+  portraitbuttonsContainer: {
+    flexDirection: 'row',
+    marginTop: 'auto',
+    marginBottom: 50,
+    paddingLeft: 20,
+    paddingRight: 20,
+    justifyContent: 'flex-end', // React Native uses justifyContent
+  },
+
+  landscapebuttonsContainer: {
+    flexDirection: 'row',
+    marginBottom: 0,
+    justifyContent: 'center', // margin: auto not supported
+  },
+
+  tabletPortraitbuttonsContainer: {
+    flexDirection: 'row',
+    marginBottom: 40,
+    bottom: 60,
+    justifyContent: 'center',
+  },
+
+  tabletLandscapebuttonsContainer: {
+    flexDirection: 'row',
+    marginBottom: 0,
+    bottom: 60,
+    justifyContent: 'center',
   },
 
   roundshape: {

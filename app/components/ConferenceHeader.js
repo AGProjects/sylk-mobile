@@ -11,8 +11,6 @@ import momentFormat from 'moment-duration-format';
 import { Text, Appbar, Menu, Divider } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import SylkAppbarContent from './SylkAppbarContent';
-
 const styles = StyleSheet.create({
   container: {
     position: 'absolute', // float above video
@@ -255,7 +253,7 @@ class ConferenceHeader extends React.Component {
 				marginTop: -topInset,
 				width: navBarWidth,
 				height: this.props.height,
-			}
+		}
 				
        if (Platform.OS === 'ios') {
              if (this.state.isLandscape) {

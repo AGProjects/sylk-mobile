@@ -47,12 +47,12 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
 
-  checkBoxRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start',
-    alignItems: 'center',
-    marginBottom: 5,
-  },
+	checkBoxRow: {
+	  flexDirection: 'row',     // align checkbox/switch and text horizontally
+	  alignItems: 'center',     // vertically center items
+	  marginLeft: 20,           // space from the left edge
+	  marginBottom: 10,         // space between rows
+	},
 
   checkButton: {
     margin: 10,

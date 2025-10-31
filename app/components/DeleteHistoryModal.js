@@ -8,7 +8,96 @@ import { Menu } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
-import styles from '../assets/styles/blink/_DeleteHistoryModal.scss';
+
+import { StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  container: {
+    padding: 10,
+    margin: 0,
+  },
+
+  title: {
+    padding: 0,
+    fontSize: 24,
+    textAlign: 'center',
+  },
+
+  body: {
+    padding: 10,
+    fontSize: 16,
+    textAlign: 'center',
+  },
+
+  avatar: {
+    // You can add avatar-specific styling here if needed
+  },
+
+  button: {
+    margin: 10,
+  },
+
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    paddingBottom: 20,
+  },
+
+  checkBoxGroupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+
+  checkBoxRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    marginLeft: 20,
+    marginBottom: 10,
+  },
+
+  checkButton: {
+    margin: 10,
+    width: 70,
+  },
+
+	titleContainer: {
+	  flexDirection: 'column', // stack elements vertically
+	  alignItems: 'center',    // center horizontally
+	},
+
+  /* --- Container for the dropdown --- */
+  periodDropdownContainer: {
+    flexDirection: 'column',
+    marginVertical: 8,
+    width: '100%',
+  },
+
+  /* Label above the dropdown */
+  periodDropdownLabel: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 4,
+  },
+
+  /* Style for the picker itself */
+  periodPicker: {
+    height: 50,
+    width: '100%',
+    borderRadius: 8,
+    backgroundColor: '#f0f0f0', // light gray
+    paddingHorizontal: 8,
+  },
+
+  /* Optional: individual picker item styling */
+  periodPickerItem: {
+    color: '#333',
+    fontSize: 14,
+  },
+});
+
 
 class DeleteHistoryModal extends Component {
     constructor(props) {
@@ -221,7 +310,6 @@ class DeleteHistoryModal extends Component {
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <Surface style={styles.container}>
                             <View style={styles.titleContainer}>
-                                {this.state.uri && <UserIcon style={styles.avatar} identity={identity} />}
                                 <Dialog.Title style={styles.title}>Delete contact</Dialog.Title>
                             </View>
 
@@ -252,9 +340,7 @@ class DeleteHistoryModal extends Component {
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
                         <View style={styles.titleContainer}>
-                            {this.state.uri && <UserIcon style={styles.avatar} identity={identity} />}
                             <Dialog.Title style={styles.title}>
                                 {this.state.myself && !this.state.selectedContact ? 'Wipe device' : 'Delete messages'}
                             </Dialog.Title>
@@ -262,7 +348,7 @@ class DeleteHistoryModal extends Component {
 
                         {this.state.uri ? (
                             <Text style={styles.body}>
-                                Select what {what} with {remote_label} would you like to delete
+                                Select the messages exchanged with {remote_label} that you want to delete: 
                             </Text>
                         ) : (
                             <Text style={styles.body}>
@@ -362,7 +448,6 @@ class DeleteHistoryModal extends Component {
                                 {deleteLabel}
                             </Button>
                         </View>
-                    </Surface>
                 </DialogType>
             </Portal>
         );

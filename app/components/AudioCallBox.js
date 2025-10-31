@@ -272,6 +272,8 @@ class AudioCallBox extends Component {
         let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS         : styles.greenButton;
         let hangupButtonClass        = Platform.OS === 'ios' ? styles.hangupButtoniOS        : styles.hangupButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
+        
+        let userIconSize = this.props.orientation === 'landscape' ? 75: 150;
 
         return (
             <View style={styles.container}>
@@ -289,10 +291,11 @@ class AudioCallBox extends Component {
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
                     terminatedReason={this.state.terminatedReason}
+                    isLandscape={this.props.orientation === 'landscape'}
                 />
 
 				<View style={userIconContainerClass}>
-					<UserIcon identity={remoteIdentity} size={150} active={this.state.active} />
+					<UserIcon identity={remoteIdentity} size={userIconSize} active={this.state.active} />
 				</View>
 
 				<Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>

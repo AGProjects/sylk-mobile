@@ -205,8 +205,6 @@ class Sylk extends Component {
         this.defaultDomain = config.defaultDomain;
         
         this.defaultConferenceDomain = 'videoconference.sip2sip.info';
-       
-        this.boundProximityDetect = this._proximityDetect.bind(this);
         
         this._initialState = {
             appState: null,
@@ -553,6 +551,45 @@ class Sylk extends Component {
 
         this.db = null;
         this.initSQL();
+
+        if (Platform.OS === 'android') {
+			this.checkInstaller();
+
+			this.boundProximityDetect = this._proximityDetect.bind(this);
+			this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
+	
+			DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
+			DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
+        }
+
+    }
+
+    _proximityDetect(data) {
+        if (!this.state.proximityEnabled) {
+            return;
+        }
+
+        if (this.state.headsetIsPlugged) {
+            utils.timestampedLog('Proximity disabled when headset is plugged');
+            return;
+        }
+
+        //utils.timestampedLog('Proximity changed, isNear is', data.isNear);
+
+        if (data.isNear) {
+           this.speakerphoneOff();
+        } else {
+           this.speakerphoneOn();
+        }
+    }
+
+    _wiredHeadsetDetect(data) {
+        console.log('-- Wired headset:', data);
+        // {'isPlugged': boolean, 'hasMic': boolean, 'deviceName': string }
+        this.setState({'headsetIsPlugged': data.isPlugged});
+        if (data.isPlugged) {
+           this.speakerphoneOff();
+        }
     }
 
     async requestPermissions() {
@@ -2100,8 +2137,8 @@ class Sylk extends Component {
 componentWillUnmount() {
     utils.timestampedLog('App will unmount');
 
-    if (this.proximityListener) this.proximityListener.unsubscribe();
-
+    //if (this.proximityListener) this.proximityListener.unsubscribe();
+        
     if (this.appStateSubscription) {
         this.appStateSubscription.remove();
         this.appStateSubscription = null;
@@ -2262,14 +2299,8 @@ componentWillUnmount() {
             this.setState({fontScale: fontScale});
         });
 
-        this.keyboardDidShowListener = Keyboard.addListener(
-              'keyboardDidShow',
-              this._keyboardDidShow
-            );
-        this.keyboardDidHideListener = Keyboard.addListener(
-              'keyboardDidHide',
-              this._keyboardDidHide
-            );
+        this.keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', this._keyboardDidShow);
+        this.keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', this._keyboardDidHide);
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
         // Start a timer that runs once after X milliseconds
@@ -2297,20 +2328,20 @@ componentWillUnmount() {
         });
 
  		await this.listenForPushNotifications();
-        this.listenforSoundNotifications();
 
+        /*
 		this.proximityListener = new ProximitySensor({ interval: 100 }).subscribe(
 		  ({ proximity }) => {
+		    console.log('proximity detect:', proximity); 
 			this.boundProximityDetect(proximity);
 		  },
 		  (error) => {
 			console.warn("Proximity sensor error:", error);
 		  }
 		);
-
-        this.checkVersion();
-        
-        this.checkInstaller();
+		*/
+		
+        this.checkVersion();       
     }
 
 	async checkInstaller() {
@@ -2514,23 +2545,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 console.log("Error fetching app store version occurred", err);
             });
         }
-    }
-
-    listenforSoundNotifications() {
-      // console.log('listenforSoundNotifications...');
-     // Subscribe to event(s) you want when component mounted
-        this._onFinishedPlayingSubscription = SoundPlayer.addEventListener('FinishedPlaying', ({ success }) => {
-          //console.log('finished playing', success)
-        })
-        this._onFinishedLoadingSubscription = SoundPlayer.addEventListener('FinishedLoading', ({ success }) => {
-          //console.log('finished loading', success)
-        })
-        this._onFinishedLoadingFileSubscription = SoundPlayer.addEventListener('FinishedLoadingFile', ({ success, name, type }) => {
-          //console.log('finished loading file', success, name, type)
-        })
-        this._onFinishedLoadingURLSubscription = SoundPlayer.addEventListener('FinishedLoadingURL', ({ success, url }) => {
-          //console.log('finished loading url', success, url)
-        })
     }
 
     handleiOSNotification(notification) {
@@ -2793,9 +2807,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         this.hideInternalAlertPanel('cancel');
 
-        if (this.callKeeper._acceptedCalls.has(callUUID)) {
-            return;
-        }
 
         utils.timestampedLog('Push notification: cancel call', callUUID);
 
@@ -2804,16 +2815,20 @@ f you want to fully control the UI and avoid automatic system notifications, you
             if (!this.callKeeper._cancelledCalls.has(callUUID)) {
                 utils.timestampedLog('Cancel incoming call that did not arrive on web socket', callUUID);
                 this.callKeeper.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
-                if (this.startedByPush) {
-                    this.resetStartedByPush('cancelIncomingCall')
-                    if (this.currentRoute) {
-                        this.changeRoute('/ready', 'incoming_call_cancelled');
-                    }
-                }
+				this.resetStartedByPush('cancelIncomingCall')
+				if (this.currentRoute) {
+					this.changeRoute('/ready', 'incoming_call_cancelled');
+					this._notificationCenter.postSystemNotification('Incoming call was cancelled');
+				}
 
                 this.updateLoading(null, 'cancel_incoming_call');
             }
             return;
+        } else {
+			if (this.callKeeper._acceptedCalls.has(callUUID)) {
+                utils.timestampedLog('Call was already accepted', callUUID);
+				return;
+			}
         }
 
         if (call.state === 'incoming') {
@@ -2828,7 +2843,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     _proximityDetect(data) {
-        console.log('_proximityDetect', data);
+        //console.log('_proximityDetect', data);
 
         if (!this.state.proximityEnabled) {
             return;
@@ -8208,7 +8223,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async getFiles(uri, filter) {
-        //console.log('-- Get files for', uri, filter);
+        //console.log('-- Get files for', uri, filter={});
         
         if (this.unmounted) {
 			return;
@@ -8218,55 +8233,49 @@ f you want to fully control the UI and avoid automatic system notifications, you
 			return;
         }
 
-        let params = [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId];
-    
-        let incoming = filter.incoming;
-        let outgoing = filter.outgoing;
-        let period = filter.period;
-        let periodType = filter.periodType || 'after';
-    
-        let sharedFiles = this.state.sharedFiles;
-        let metadata;
-        let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
-        let found = 0;
-        
+		let sharedFiles = this.state.sharedFiles;
+		let metadata;
+		let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
+		let found = 0;
+
         let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
-        
+        let params = [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId];
+
+        let { incoming = true, outgoing = true, period = null, periodType = 'after' } = filter || {};
+
+		incoming = filter?.incoming || incoming;
+		outgoing = filter?.incoming || incoming;
+		period = filter?.period || period;
+		periodType = filter?.periodType || periodType;
+		
         await this.ExecuteQuery(query, params).then((results) => {
             let rows = results.rows;
-            console.log('rows', rows);
+            //console.log('Got', rows.length);
             for (let i = 0; i < rows.length; i++) {
-               var item = rows.item(i);
                try {
-                   timestamp = new Date(JSON.parse(item.timestamp, _parseSQLDate));
-	   		   } catch (error) {
-				   console.log('parse timestamp error:', error);
-				   continue;
-			   }
-			   
-			   //console.log(timestamp);
-
-               if (filter.period) {
-                   if (filter.periodType == 'before') {
-						if (timestamp > filter.period) {
-						   continue;
+				   var item = rows.item(i);
+				   timestamp = new Date(JSON.parse(item.timestamp, _parseSQLDate));
+				   	
+				   if (period) {
+					   if (periodType == 'before') {
+							if (timestamp > period) {
+							   continue;
+							}
+						} else {
+							if (timestamp < period) {
+							   continue;
+							}
 						}
-					} else {
-						if (timestamp < filter.period) {
-						   continue;
-						}
-					}
-               }
-
-               if (!incoming && item.direction === 'incoming') {
-				   continue;
-               }
-
-               if (!outgoing && item.direction === 'outgoing') {
-				   continue;
-               }
-
-               try {
+				   }
+	
+				   if (!incoming && item.direction === 'incoming') {
+					   continue;
+				   }
+	
+				   if (!outgoing && item.direction === 'outgoing') {
+					   continue;
+				   }
+	
                    metadata = JSON.parse(item.metadata);
                    if (!metadata.local_url) {
 					   continue;
@@ -8286,13 +8295,13 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				   found = found + 1;
 	
                } catch (e) {
-                   console.log('deleteFiles error:', e);
+                   console.log('getFiles row error:', e);
                    continue;
                }
             }
 
 			sharedFiles[uri] = message_ids;
-			console.log('sharedFiles', sharedFiles);
+			//console.log('sharedFiles', sharedFiles[uri]);
 			this.setState({sharedFiles: sharedFiles});
 
         }).catch((error) => {

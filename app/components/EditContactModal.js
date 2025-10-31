@@ -180,18 +180,9 @@ const EditContactModal = ({
                       >
                         Copy
                       </Button>
-                      <Button
-                        mode="contained"
-                        style={styles.button}
-                        disabled={myself}
-                        onPress={handleDeletePublicKey}
-                        icon="delete"
-                      >
-                        {confirm ? 'Confirm delete' : 'Delete'}
-                      </Button>
                     </View>
 
-                    <Text style={styles.small}>If the key is deleted messages to {uri} will not be encrypted until a new key is received</Text>
+                    <Text style={styles.small}>You can use this key with other software that uses OpenPGP for encryption</Text>
 
                   </>
                 ) : (

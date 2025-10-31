@@ -5,10 +5,12 @@ import classNames from 'classnames';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
 import autoBind from 'auto-bind';
-import { Appbar } from 'react-native-paper';
+import { Appbar, Menu, Divider } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { Colors } from 'react-native-paper';
 import SylkAppbarContent from './SylkAppbarContent';
+import { Platform, Dimensions} from 'react-native';
+import { initialWindowMetrics } from 'react-native-safe-area-context';
 
 import styles from '../assets/styles/AudioCall';
 
@@ -38,7 +40,11 @@ class CallOverlay extends React.Component {
             remoteUri: this.props.remoteUri,
             localMedia: this.props.localMedia,
             remoteDisplayName: this.props.remoteDisplayName,
-            reconnectingCall: this.props.reconnectingCall
+            reconnectingCall: this.props.reconnectingCall,
+            isLandscape: this.props.isLandscape,
+            menuVisible: false,
+            showUsage: false,
+            enableMyVideo: this.props.enableMyVideo
         }
 
         this.duration = null;
@@ -88,12 +94,18 @@ class CallOverlay extends React.Component {
                            nextProps.call.direction});
         }
 
+        if ('showUsage' in nextProps) {
+			this.setState({showUsage: nextProps.showUsage});
+        }
+
         this.setState({remoteDisplayName: nextProps.remoteDisplayName,
                        remoteUri: nextProps.remoteUri,
                        media: nextProps.media,
                        localMedia: nextProps.localMedia,
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
-                       terminatedReason: nextProps.terminatedReason
+                       terminatedReason: nextProps.terminatedReason,
+                       isLandscape: nextProps.isLandscape,
+                       enableMyVideo: nextProps.enableMyVideo
                        });
     }
 
@@ -125,6 +137,27 @@ class CallOverlay extends React.Component {
         }
 
         this.setState({callState: newState});
+    }
+
+    handleMenu(event) {
+        switch (event) {
+            case 'hangup':
+                this.props.hangupCall();
+                break;
+            case 'myVideo':
+                this.props.toggleMyVideo();
+                break;
+			case 'toggleUsage':
+				this.setState({showUsage: !this.state.showUsage});
+                break;
+            case 'swapVideo':
+                this.props.swapVideo();
+                break;
+            default:
+                break;
+        }
+
+        this.setState({menuVisible: false});
     }
 
     startTimer() {
@@ -162,7 +195,7 @@ class CallOverlay extends React.Component {
 
             if (this.duration) {
                 callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
-                callDetail = 'Duration: ' + this.duration;
+                callDetail = this.duration + 's';
             } else {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting call...';
@@ -186,6 +219,8 @@ class CallOverlay extends React.Component {
                     callDetail = 'Media established';
                 } else if (this.state.callState) {
                     callDetail = toTitleCase(this.state.callState);
+                } else if (!this.state.call) {
+					callDetail = 'Waiting for server call...';
                 } else if (!this.state.localMedia) {
                     if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;
@@ -195,37 +230,92 @@ class CallOverlay extends React.Component {
                 }
             }
 
-            //console.log(' --- render overlay', this.state.callState, this.state.terminatedReason);
-            if (this.props.info) {
-                //callDetail = callDetail + ' - ' + this.props.info;
+            //console.log(' --- render overlay', this.state.callState, this.state.call);
+            if (this.props.info && this.state.showUsage) {
+                callDetail = callDetail + ' ' + this.props.info;
             }
 
             let mediaLabel = 'Audio call';
 
             if (this.state.media) {
-                mediaLabel = toTitleCase(this.state.media) + ' call with ' + displayName;
+                mediaLabel = displayName;
             }
+            
+			const { width, height } = Dimensions.get('window');
+	
+			const topInset = initialWindowMetrics?.insets.top || 0;
+			const bottomInset = initialWindowMetrics?.insets.bottom || 0;
 
-            if (this.state.remoteUri && this.state.remoteUri.search('videoconference') > -1) {
-                displayName = this.state.remoteUri.split('@')[0];
+			let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
+			let myUsageTitle = this.state.showUsage ? 'Hide bandwidth' : 'Show bandwidth';
+			
+			//console.log(this.state.showUsage);
 
-                header = (
-                    <Appbar.Header style={{backgroundColor: 'black'}} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
-                        <SylkAppbarContent
-                            title={`Room ${displayName}`} subtitle={callDetail}
+			let barContainer = {
+				backgroundColor: 'rgba(34,34,34,.7)',
+				marginLeft: this.state.isLandscape ? - bottomInset : 0,
+				marginTop: 0,
+				width: this.state.isLandscape ? width - bottomInset: width,
+				height: 60,
+			}
+			
+		   if (Platform.OS === 'ios') {
+				 if (this.state.isLandscape) {
+					 barContainer = {
+						backgroundColor: 'rgba(34,34,34,.7)',
+						height: 60,
+						marginLeft: -topInset,
+						width: width - topInset - bottomInset,
+						height: this.props.height,
+					}
+				} else {
+					barContainer = {
+					  backgroundColor: 'rgba(34,34,34,.7)',
+					  height: 60,
+					  width: width,
+					  marginTop: -topInset
+					};
+				}
+			}
+        
+			header = (
+				<Appbar.Header style={[barContainer]}
+						dark={true}
+						>
+					<Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
+					<SylkAppbarContent
+						title={mediaLabel} subtitle={callDetail}
+					/>
+
+                { this.state.callState == 'established'?
+
+                <Menu
+                    visible={this.state.menuVisible}
+                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    anchor={
+                    <View style={{ marginLeft: 50}}>
+                        <Appbar.Action
+                            ref={this.menuRef}
+                            color="white"
+                            icon="menu"
+                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
                         />
-                    </Appbar.Header>
-                );
-            } else {
-                header = (
-                    <Appbar.Header style={styles.appbarContainer} statusBarHeight={Platform.OS === "ios" ? 0 : undefined} dark>
-                        <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
-                        <SylkAppbarContent
-                            title={mediaLabel} subtitle={callDetail}
-                        />
-                    </Appbar.Header>
-                );
-            }
+                        </View>
+                    }
+                >
+                    <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
+                    <Menu.Item onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
+                    <Menu.Item onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
+                    
+					<Divider />
+
+                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
+
+                </Menu>
+                : null}
+                
+				</Appbar.Header>
+			);
         }
 
         return header
@@ -246,7 +336,12 @@ CallOverlay.propTypes = {
     videoCodec: PropTypes.string,
     info: PropTypes.string,
     goBackFunc: PropTypes.func,
-    callState : PropTypes.object
+    callState : PropTypes.object,
+    isLandscape: PropTypes.bool,
+    toggleMyVideo: PropTypes.func,
+    swapVideo: PropTypes.func,
+    enableMyVideo: PropTypes.bool,
+    hangupCall: PropTypes.func
 };
 
 export default CallOverlay;

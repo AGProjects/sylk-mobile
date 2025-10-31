@@ -21,7 +21,8 @@ class LocalMedia extends Component {
             historyEntry: this.props.historyEntry,
             participants: this.props.participants,
             reconnectingCall: this.props.reconnectingCall,
-            terminatedReason: this.props.terminatedReason
+            terminatedReason: this.props.terminatedReason,
+            orientation: this.props.orientation
         };
     }
 
@@ -40,6 +41,7 @@ class LocalMedia extends Component {
         this.setState({historyEntry: nextProps.historyEntry,
                       participants: nextProps.participants,
                       reconnectingCall: nextProps.reconnectingCall,
+                      orientation: nextProps.orientation,
                       terminatedReason: nextProps.terminatedReason});
     }
 
@@ -83,6 +85,7 @@ class LocalMedia extends Component {
                     reconnectingCall = {this.state.reconnectingCall}
                     media = {this.props.media}
                     goBackFunc = {this.props.goBackFunc}
+                    isLandscape = {this.state.orientation === 'landscape'}
                 />
 
                 {this.showSaveDialog() ?
@@ -149,7 +152,8 @@ LocalMedia.propTypes = {
     media               : PropTypes.string,
     showLogs            : PropTypes.func,
     goBackFunc          : PropTypes.func,
-    terminatedReason    : PropTypes.string
+    terminatedReason    : PropTypes.string,
+    orientation         : PropTypes.string
 };
 
 
