@@ -501,7 +501,6 @@ ContactCard.propTypes = {
     messages       : PropTypes.array,
     pinned         : PropTypes.bool,
     unread         : PropTypes.array,
-    sendPublicKey  : PropTypes.func,
     fontScale      : PropTypes.number,
     selectMode     : PropTypes.bool,
     accountId      : PropTypes.string

@@ -1,12 +1,12 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
+import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
-import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time} from 'react-native-gifted-chat'
+import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer} from 'react-native-gifted-chat'
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
 import MessageInfoModal from './MessageInfoModal';
 import EditMessageModal from './EditMessageModal';
@@ -22,6 +22,7 @@ import { IconButton} from 'react-native-paper';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import path from 'react-native-path';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
+import { Keyboard } from 'react-native';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -77,160 +78,6 @@ const getAudioDuration = (filePath) => {
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
 
-
-const styles1 = StyleSheet.create({
-  audioLabel: {
-    marginLeft: 0,
-    marginTop: 10,
-    alignSelf: 'center',
-    fontSize: 14,
-    color: 'white', // <-- change this to any color you want
-  },
-});
-
-// Note: copy and paste all styles in App.js from my repository
-function  renderBubble (props) {
-        let leftColor = 'green';
-        let rightColor = '#fff';
-
-        if (props.currentMessage.failed) {
-            rightColor = 'red';
-            leftColor = 'red';
-        } else {
-            if (props.currentMessage.pinned) {
-                rightColor = '#2ecc71';
-                leftColor = '#2ecc71';
-            }
-        }
-
-        if (props.currentMessage.image) {
-            return (
-              <Bubble
-                {...props}
-                wrapperStyle={{
-                  right: {
-                    backgroundColor: '#fff',
-                    alignSelf: 'stretch',
-                    marginLeft: 0
-                  },
-                  left: {
-                    backgroundColor: '#fff',
-                    alignSelf: 'stretch',
-                    marginRight: 0
-                  }
-                }}
-                textProps={{
-                    style: {
-                      color: props.position === 'left' ? '#000' : '#000',
-                    },
-                  }}
-                  textStyle={{
-                    left: {
-                      color: '#fff',
-                    },
-                    right: {
-                      color: '#000',
-                    },
-                  }}
-              />
-            )
-        } else if (props.currentMessage.video) {
-            return (
-              <Bubble
-                {...props}
-                wrapperStyle={{
-                  right: {
-                    backgroundColor: '#000',
-                    alignSelf: 'stretch',
-                    marginLeft: 0
-                  },
-                  left: {
-                    backgroundColor: '#000',
-                    alignSelf: 'stretch',
-                    marginRight: 0
-                  }
-                 }}
-
-                 textProps={{
-                    style: {
-                      color: props.position === 'left' ? '#fff' : '#fff',
-                    },
-                  }}
-                  textStyle={{
-                    left: {
-                      color: '#000',
-                    },
-                    right: {
-                      color: '#000',
-                    },
-                  }}
-              />
-            )
-        } else if (props.currentMessage.audio) {
-            if (props.currentMessage.metadata.filesize < 2000) {
-            return null;
-            }
-        
-            return (
-              <Bubble
-                {...props}
-                wrapperStyle={{
-                  right: {
-                    backgroundColor: 'transparent',
-                  },
-                  left: {
-                    backgroundColor: 'transparent',
-                  }
-                 }}
-
-                 textProps={{
-                    style: {
-                      color: props.position === 'left' ? '#fff' : '#fff',
-                    },
-                  }}
-                  textStyle={{
-                    left: {
-                      color: '#000',
-                    },
-                    right: {
-                      color: '#000',
-                    },
-                  }}
-              />
-            )
-        } else {
-            return (
-              <Bubble
-                {...props}
-                 wrapperStyle={{
-                    left: {
-                      backgroundColor: leftColor,
-                    },
-                    right: {
-                      backgroundColor: rightColor,
-                    },
-                  }}
-                  textProps={{
-                    style: {
-                      color: props.position === 'left' ? '#fff' : '#000',
-                    },
-                  }}
-                  textStyle={{
-                    left: {
-                      color: '#fff',
-                    },
-                    right: {
-                      color: '#000',
-                    },
-                  }}
-
-                style={styles.bubbleContainer}
-              />
-            )
-        }
-    }
-
-
 class ContactsListBox extends Component {
     constructor(props) {
         super(props);
@@ -267,6 +114,8 @@ class ContactsListBox extends Component {
                 });
             }
         }
+        
+        this.replyMessages = {}
 
         this.state = {
             accountId: this.props.account ? this.props.account.id : null,
@@ -312,23 +161,46 @@ class ContactsListBox extends Component {
             sourceContact: this.props.sourceContact,
             audioDurations: {},
             searchMessages: this.props.searchMessages,
-            searchString: this.props.searchString
+            searchString: this.props.searchString,
+            replyingTo: null,
+            keyboardVisible: false,
+            bubbleWidths: {}
         }
 
         this.ended = false;
         this.outgoingPendMessages = {};
+        this.prevValues = {};
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
     }
 
     componentDidMount() {
+        this.keyboardDidShowListener = Keyboard.addListener(
+              'keyboardDidShow',
+              this._keyboardDidShow
+            );
+        this.keyboardDidHideListener = Keyboard.addListener(
+              'keyboardDidHide',
+              this._keyboardDidHide
+            );
+
         this.ended = false;
     }
 
     componentWillUnmount() {
+        this.keyboardDidShowListener.remove();
+        this.keyboardDidHideListener.remove();
+
         this.ended = true;
     }
 
+	  handleBubbleLayout = (id, event) => {
+		const width = event.nativeEvent.layout.width;
+		this.setState(prev => ({
+		  bubbleWidths: { ...prev.bubbleWidths, [id]: width },
+		}));
+	  };
+  
     backPressed() {
     }
 
@@ -337,6 +209,9 @@ class ContactsListBox extends Component {
         if (this.ended) {
             return;
         }
+        
+        //console.log('Update contacts', nextProps.selectedContact);
+
 
         if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
             this.setState({myInvitedParties: nextProps.myInvitedParties});
@@ -379,6 +254,10 @@ class ContactsListBox extends Component {
             this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: nextProps.pinned});
         }
 
+        if (nextProps.hasOwnProperty('keyboardVisible')) {
+            this.setState({keyboardVisible: nextProps.keyboardVisible});
+        }
+
         if (nextProps.selectedContact !== this.state.selectedContact) {
             //console.log('Selected contact changed to', nextProps.selectedContact);
             this.resetContact()
@@ -391,11 +270,11 @@ class ContactsListBox extends Component {
             } else {
                 this.setState({renderMessages: []});
             }
-        };
+        }
 
-        if (nextProps.myContacts !== this.state.myContacts) {
+        //if (nextProps.myContacts !== this.state.myContacts) {
             this.setState({myContacts: nextProps.myContacts});
-        };
+        //};
 
         if (nextProps.selectedContact) {
             let renderMessages = [];
@@ -416,6 +295,11 @@ class ContactsListBox extends Component {
                         }
                     }
                 }
+            }
+            
+            if (nextProps.myContacts && nextProps.selectedContact && nextProps.selectedContact.uri in nextProps.myContacts) {
+				this.replyMessages = nextProps.myContacts[nextProps.selectedContact.uri].replyMessages;
+				//console.log('update replyMessages', this.replyMessages);
             }
 
             let delete_ids = [];
@@ -495,6 +379,15 @@ class ContactsListBox extends Component {
                 this.setState({isTyping: false});
             }, 3000);
         }
+    }
+
+    _keyboardDidShow(e) {
+       this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
+    }
+
+    _keyboardDidHide() {
+        this.setState({keyboardVisible: false, keyboardHeight: 0, replyingTo: null});
+        this.textInputRef?.blur();
     }
 
 	  getAudioDuration = (filePath, messageId) => {
@@ -577,21 +470,10 @@ class ContactsListBox extends Component {
     (
       <CustomChatActions {...props} 
          recordAudio={this.props.recordAudio} 
-         texting={this.state.texting} 
+         texting={this.state.texting || this.state.replyingTo} 
          sendingImage={this.state.cameraAsset !==null} 
          selectedContact={this.state.selectedContact}/>
     )
-
-    customInputToolbar = props => {
-      return (
-        <InputToolbar
-          {...props}
-          renderActions={this.renderCustomActions}
-          renderComposer={() => {this.renderComposer}}
-          containerStyle={styles.chatInsideRightActionsContainer}
-        />
-      );
-    };
 
     chatInputChanged(text) {
        this.setState({texting: (text.length > 0)})
@@ -606,17 +488,322 @@ class ContactsListBox extends Component {
         });
     }
 
-    renderComposer(props) {
-        return(
-          <Composer
+renderBubble(props) {
+  const { currentMessage, messages } = props;
+
+  // Minimal change: adjust top corners only
+  const bubbleRadius = 16;
+
+  let leftColor = 'green';
+  let rightColor = '#fff';
+
+  if (currentMessage.failed) {
+    rightColor = 'red';
+    leftColor = 'red';
+  } else if (currentMessage.pinned) {
+    rightColor = '#2ecc71';
+    leftColor = '#2ecc71';
+  }
+
+  // Find original message if this is a reply
+  let originalMessage = null;
+  if (currentMessage.replyTo && messages) {
+    originalMessage = messages.find(m => m._id === currentMessage.replyTo);
+  }
+
+  const MIN_BUBBLE_WIDTH = 120;
+  const MAX_BUBBLE_WIDTH = '80%';
+
+  const measuredWidth = this.state.bubbleWidths[currentMessage._id] || 0;
+  const bubbleWidth = Math.max(measuredWidth, MIN_BUBBLE_WIDTH);
+
+const previewWrapperStyle = {
+  borderTopLeftRadius: bubbleRadius,
+  borderTopRightRadius: bubbleRadius,
+};
+
+  const replyPreviewContainer =
+    currentMessage.direction == 'incoming'
+      ? styles.replyPreviewContainerIncoming
+      : styles.replyPreviewContainerOutgoing;
+
+  const hasPreview = !!originalMessage; // for top corner radius
+
+  // Reply Preview UI
+  const replyPreview = originalMessage ? (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={() => {
+        if (this.chatListRef && originalMessage._id) {
+          this.scrollToMessage(originalMessage._id);
+        }
+      }}
+    >
+      <View
+        style={[
+          replyPreviewContainer,
+          {
+            alignSelf:
+              currentMessage.direction === 'incoming'
+                ? 'flex-start'
+                : 'flex-end',
+            minWidth: MIN_BUBBLE_WIDTH,
+            maxWidth: MAX_BUBBLE_WIDTH,
+            width: bubbleWidth,
+            ...previewWrapperStyle, // <-- add bottom corner rounding
+          },
+        ]}
+      >
+        <View style={styles.replyLine} />
+
+        {originalMessage.image ? (
+          <Image
+            source={{ uri: originalMessage.image }}
+            style={{
+              width: '85%',
+              height: 100,
+            }}
+            resizeMode="cover"
+          />
+        ) : (
+          <Text
+            style={styles.replyPreviewText}
+            numberOfLines={3}
+            ellipsizeMode="tail"
+          >
+            {originalMessage.text}
+          </Text>
+        )}
+      </View>
+    </TouchableOpacity>
+  ) : null;
+
+  if (
+    currentMessage.direction == 'incoming' &&
+    currentMessage.metadata &&
+    currentMessage.metadata.filename &&
+    currentMessage.metadata.filename.endsWith('.asc')
+  ) {
+    //return null;
+  }
+
+  const leftWrapper = {
+    backgroundColor: leftColor,
+    borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
+    borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
+  };
+  const rightWrapper = {
+    backgroundColor: rightColor,
+    borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
+    borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
+  };
+
+  return (
+    <View style={{ flex: 1, alignSelf: 'stretch', borderColor: 'green', borderWidth: 0 }}>
+      {replyPreview}
+      {currentMessage.image ? (
+        <Bubble
           {...props}
-          onTextChanged={(text) => this.setState({ composerText: text })}
-          text={this.state.composerText}
-          multiline={true}
-          placeholderTextColor={'red'}
-          ></Composer>
-        )
-      }
+          wrapperStyle={{
+            left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
+            right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
+          }}
+          textProps={{ style: { color: props.position === 'left' ? '#000' : '#000' } }}
+          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+          renderCustomView={() => (
+            <View
+              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+              style={{ position: 'absolute', width: '100%', height: '100%' }}
+            />
+          )}
+        />
+      ) : currentMessage.video ? (
+        <Bubble
+          {...props}
+          wrapperStyle={{
+            left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
+            right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
+          }}
+          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
+          textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+          renderCustomView={() => (
+            <View
+              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+              style={{ position: 'absolute', width: '100%', height: '100%' }}
+            />
+          )}
+        />
+      ) : currentMessage.audio ? (
+        <Bubble
+          {...props}
+          wrapperStyle={{
+            left: { ...leftWrapper, backgroundColor: 'transparent' },
+            right: { ...rightWrapper, backgroundColor: 'transparent' },
+          }}
+          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
+          textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+          renderCustomView={() => (
+            <View
+              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+              style={{ position: 'absolute', width: '100%', height: '100%' }}
+            />
+          )}
+        />
+      ) : (
+        <Bubble
+          {...props}
+          wrapperStyle={{
+            left: { ...leftWrapper },
+            right: { ...rightWrapper },
+          }}
+          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#000' } }}
+          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+          renderCustomView={() => (
+            <View
+              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+              style={{ position: 'absolute', width: '100%', height: '100%' }}
+            />
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
+
+	// Custom Input Toolbar
+	customInputToolbar = (props) => {
+	  const { replyingTo } = this.state;
+	
+	  return (
+		<InputToolbar
+		  {...props}
+		  containerStyle={styles.inputToolbar} // full width
+		  renderActions={!replyingTo ? this.renderCustomActions : null} // left buttons
+		  renderComposer={(composerProps) => this.renderComposer(composerProps, replyingTo)}
+		/>
+	  );
+	};
+
+	renderComposer = (composerProps, replyingTo) => {
+	  function capitalizeFirstLetter(str) {
+		if (!str) return "";
+		return str[0].toUpperCase() + str.slice(1);
+	  }
+	
+	  let name = this.state.selectedContact.uri;
+	  if (this.state.selectedContact.name) {
+		name = this.state.selectedContact.name;
+	  } else {
+		name = capitalizeFirstLetter(name.split('@')[0]);
+	  }
+	
+	  return (
+		<View style={{ flex: 1 }}>
+	
+		  {/* Full-width Reply Preview */}
+		  {replyingTo && (
+			<View style={[styles.replyPreviewContainer, 
+			    {
+				  borderWidth: 0,
+				  marginBottom: 5,           // spacing below
+				  marginTop: 5,              // optional spacing above
+				  paddingVertical: 6,        // inner vertical padding
+				  paddingHorizontal: 8,      // optional horizontal padding
+				  position: 'relative',
+				  borderBottomWidth: 1,
+				  borderBottomColor: '#ccc',
+				  borderRadius: 8,           // optional rounded corners
+				  backgroundColor: '#f9f9f9' // optional background for better visual separation
+				},
+			]}>
+	
+			  {/* Vertical Green Line */}
+			  <View style={styles.replyLine} />
+	
+			  {/* Thumbnail for image replies */}
+			  {replyingTo.image && (
+				<Image
+				  source={{ uri: replyingTo.image }}
+				  style={{
+					width: 40,
+					height: 40,
+					borderRadius: 4,
+					marginRight: 6,
+				  }}
+				  resizeMode="cover"
+				/>
+			  )}
+	
+			  {/* Username + Text (only if not an image reply) */}
+			  {!replyingTo.image && (
+				<View style={{ flex: 1 }}>
+				  <Text
+					style={styles.replyText}
+					numberOfLines={2}
+					ellipsizeMode="tail"
+				  >
+					{replyingTo.text}
+				  </Text>
+				</View>
+			  )}
+	
+			  {/* Close Button: positioned top-right */}
+			  <TouchableOpacity
+				onPress={() => {
+				  this.setState({ replyingTo: null });
+				  Keyboard.dismiss();
+				  composerProps.onTextChanged(""); // clear input
+				  this.textInputRef?.blur();
+				}}
+				style={{
+				  position: 'absolute',
+				  top: 5,
+				  right: 22,
+				  zIndex: 10,
+				}}
+				activeOpacity={0.9}
+			  >
+				<View style={styles.closeButtonCircle}>
+				  <Icon name="close" size={22} color="#fff" />
+				</View>
+			  </TouchableOpacity>
+	
+			</View>
+		  )}
+	
+		  {/* Real TextInput */}
+		  <View
+			style={{
+			  justifyContent: 'center',
+			  alignSelf: 'stretch', // make it fill horizontally
+			}}
+		  >
+			<TextInput
+			  ref={(r) => (this.textInputRef = r)}
+			  style={{
+				fontSize: 16,
+				borderWidth: 0,
+				borderColor: 'red',
+				paddingVertical: Platform.OS === 'ios' ? 12 : 0,
+				paddingHorizontal: 8,
+				lineHeight: 20,
+				minHeight: 36,
+				maxHeight: 100,
+				textAlignVertical: 'center',
+				color: '#000',
+			  }}
+			  placeholder={replyingTo ? 'Reply with...' : 'Type a message...'}
+			  placeholderTextColor="#999"
+			  multiline
+			  onChangeText={composerProps.onTextChanged}
+			  value={composerProps.text}
+			/>
+		  </View>
+	
+		</View>
+	  );
+	};
 
     updateMessageMetadata(metadata) {
         let renderMessages = this.state.renderMessages;
@@ -762,81 +949,96 @@ class ContactsListBox extends Component {
 		const msg = await audioRecorderPlayer.stopPlayer();
     }
 
-    renderSend = (props) => {
-        let chatRightActionsContainer = Platform.OS === 'ios' ? styles.chatRightActionsContaineriOS : styles.chatRightActionsContainer;
-		if (this.state.cameraAsset) {
-			return (
-				<Send {...props}>
-				  <View style={styles.chatSendContainer}>
-				  <TouchableOpacity onPress={this.deleteCameraAsset}>
-					<Icon
-					  style={chatRightActionsContainer}
-					  type="font-awesome"
-					  name="delete"
-					  size={20}
-					  color='red'
-					/>
-				 </TouchableOpacity>
-				  <TouchableOpacity onPress={this.sendCameraAsset}>
-					<Icon
-					  type="font-awesome"
-					  name="send"
-					  style={styles.chatSendArrow}
-					  size={20}
-					  color='gray'
-					/>
-					</TouchableOpacity>
-				  </View>
-				</Send>
-		);
+renderSend = (props) => {
+  let chatActionContainer = styles.chatActionContainer;
 
-		} else {
+  if (this.state.cameraAsset) {
+    return (
+      <Send
+        {...props}
+        containerStyle={{
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 0,
+        }}
+      >
+        <View style={styles.chatRightActionsContainer}>
+          <TouchableOpacity onPress={this.deleteCameraAsset}>
+            <Icon
+              style={chatActionContainer}
+              type="font-awesome"
+              name="delete"
+              size={20}
+              color='red'
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={this.sendCameraAsset}>
+            <Icon
+              type="font-awesome"
+              name="send"
+              style={styles.chatSendArrow}
+              size={20}
+              color='gray'
+            />
+          </TouchableOpacity>
+        </View>
+      </Send>
+    );
+  } else {
 
-		if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.tags.indexOf('test') > -1)) {
-			return <View></View>;
-		} else {
-			return (
-				<Send {...props}>
-				  <View style={styles.chatSendContainer}>
-					{this.state.texting ?
-					null
-					:
-				  <TouchableOpacity onPress={this._launchCamera}>
-					<Icon
-					  style={chatRightActionsContainer}
-					  type="font-awesome"
-					  name="camera"
-					  size={20}
-					  color='gray'
-					/>
-					</TouchableOpacity>
-					}
-					{this.state.texting ?
-					null
-					:
-				  <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
-					<Icon
-					  style={chatRightActionsContainer}
-					  type="font-awesome"
-					  name="paperclip"
-					  size={20}
-					  color='gray'
-					/>
-					</TouchableOpacity>
-					}
-					<Icon
-					  type="font-awesome"
-					  name="send"
-					  style={styles.chatSendArrow}
-					  size={20}
-					  color={'gray'}
-					/>
-				  </View>
-				</Send>
-			);
-			}
-		}
-    };
+    if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.tags.indexOf('test') > -1)) {
+      return <View />;
+    }
+
+    let showButtons = !this.state.texting && !this.state.replyingTo;
+    
+    return (
+      <Send
+        {...props}
+        containerStyle={{
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 0,
+        }}
+      >
+        <View style={styles.chatRightActionsContainer}>
+          {showButtons && (
+            <TouchableOpacity onPress={this._launchCamera}>
+              <Icon
+                style={chatActionContainer}
+                type="font-awesome"
+                name="camera"
+                size={20}
+                color='gray'
+              />
+            </TouchableOpacity>
+          )}
+
+          {showButtons && (
+            <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
+              <Icon
+                style={chatActionContainer}
+                type="font-awesome"
+                name="paperclip"
+                size={20}
+                color='gray'
+              />
+            </TouchableOpacity>
+          )}
+
+          <Icon
+            type="font-awesome"
+            name="send"
+            style={styles.chatSendArrow}
+            size={20}
+            color='gray'
+          />
+        </View>
+      </Send>
+    );
+  }
+};
+
 
     setTargetUri(uri, contact) {
         //console.log('Set target uri uri in history list', uri);
@@ -891,7 +1093,6 @@ class ContactsListBox extends Component {
             pinned={this.state.pinned}
             unread={item.unread}
             toggleBlocked={this.props.toggleBlocked}
-            sendPublicKey={this.props.sendPublicKey}
             selectMode={this.state.selectMode}
             accountId = {this.state.accountId}
             />);
@@ -955,18 +1156,18 @@ class ContactsListBox extends Component {
         }
 
         messages.forEach((message) => {
-            /*
-              sent: true,
-              // Mark the message as received, using two tick
-              received: true,
-              // Mark the message as pending with a clock loader
-              pending: true,
-            */
+            //console.log('this.state.replyingTo', this.state.replyingTo);
             message.encrypted = this.state.selectedContact && this.state.selectedContact.publicKey ? 2 : 0;
+            if (this.state.replyingTo) {
+				message.replyTo = this.state.replyingTo._id;
+				this.replyMessages[message._id] = this.state.replyingTo._id;
+			} else {
+			    message.replyTo = null;
+			}
             this.props.sendMessage(uri, message);
         });
-
-        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
+        
+        this.setState({replyingTo: null, renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
     searchedContact(uri, contact=null) {
@@ -1383,6 +1584,11 @@ class ContactsListBox extends Component {
     }
 
     onLongMessagePress(context, currentMessage) {
+    
+        if (this.state.keyboardVisible) {
+			return;
+        }
+    
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
         }
@@ -1390,7 +1596,13 @@ class ContactsListBox extends Component {
         let icons = [];
         //console.log('---- currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
+
             let options = []
+            if (currentMessage.direction == 'incoming') {
+				options.push('Reply');
+				icons.push(<Icon name="arrow-left" size={20} />);
+			}
+
             if (currentMessage.metadata && !currentMessage.metadata.error) {
                 if (this.isMessageEditable(currentMessage)) {
                     options.push('Edit');
@@ -1430,7 +1642,6 @@ class ContactsListBox extends Component {
                 }
             }
 
-            //options.push('Info');
             if (!currentMessage.metadata.error) {
                 options.push('Forward');
                 icons.push(<Icon name="arrow-right" size={20} />);
@@ -1490,6 +1701,8 @@ class ContactsListBox extends Component {
                     this.handleShare(currentMessage, true);
                 } else if (action.startsWith('Forward')) {
                     this.props.forwardMessageFunc(currentMessage, this.state.targetUri);
+                } else if (action.startsWith('Reply')) {
+                    this.replyMessage(currentMessage);
                 } else if (action === 'Resend') {
                     this.props.reSendMessage(currentMessage, this.state.targetUri);
                 } else if (action === 'Save') {
@@ -1583,6 +1796,13 @@ class ContactsListBox extends Component {
         );
     };
 
+	replyMessage = (message) => {
+	  this.setState({ replyingTo: message }, () => {
+		// Wait one tick so the input is mounted before focusing
+		setTimeout(() => this.textInputRef?.focus() , 100);
+	  });
+	};
+
 	renderMessageAudio = (props) => {
 	  const { currentMessage } = props;
 	  const { audioDurations } = this.state;
@@ -1626,7 +1846,7 @@ class ContactsListBox extends Component {
 		  {/* Text grows naturally */}
 		  <Text
 			style={[
-			  styles1.audioLabel,
+			  styles.audioLabel,
 			  { marginHorizontal: 8, flexShrink: 1},
 			  labelPadding
 			  , // prevents overflow
@@ -1666,9 +1886,12 @@ class ContactsListBox extends Component {
 
     renderMessageText(props) {
         const { currentMessage } = props;
+        const extraStyles = currentMessage.replyTo ? {minWidth: 120} : {};
+        
+        
         if (currentMessage.video) {
             return (
-                <View style={styles.photoMenuContainer}>
+                <View style={[styles.photoMenuContainer, extraStyles]}>
                     <IconButton
                         style={styles.photoMenu}
                         size={20}
@@ -1686,7 +1909,7 @@ class ContactsListBox extends Component {
             );
         } else if (currentMessage.audio) {
             return (
-                <View style={styles.photoMenuContainer}>
+                <View style={[styles.photoMenuContainer, extraStyles]}>
                     <IconButton
                         style={styles.photoMenu}
                         size={20}
@@ -1696,7 +1919,7 @@ class ContactsListBox extends Component {
             );
         } else if (currentMessage.image) {
             return (
-                <View style={styles.photoMenuContainer}>
+                <View style={[styles.photoMenuContainer, extraStyles]}>
                     <IconButton
                         style={styles.photoMenu}
                         size={20}
@@ -1714,7 +1937,7 @@ class ContactsListBox extends Component {
             );
         } else {
             return (
-                <View style={styles.messageTextContainer}>
+                <View style={[styles.messageTextContainer, extraStyles]}>
                     <MessageText
                         {...props}
                         customTextStyle={styles.messageText}
@@ -1822,7 +2045,7 @@ class ContactsListBox extends Component {
         let messages = this.state.renderMessages;
         let contacts = [];
         //console.log('----');
-
+                
         //console.log('--- Render contacts with filter', this.state.filter);
         //console.log('--- Render contacts', this.state.selectedContact);
         //console.log(this.state.renderMessages);
@@ -1834,6 +2057,7 @@ class ContactsListBox extends Component {
         let chatInputClass = this.customInputToolbar;
 
         if (this.state.selectedContact) {
+
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                chatInputClass = this.noChatInputToolbar;
            }
@@ -1844,6 +2068,7 @@ class ContactsListBox extends Component {
            if (this.state.searchMessages) {
                chatInputClass = this.noChatInputToolbar;
            }
+            
 
         } else if (!this.state.chat) {
             chatInputClass = this.noChatInputToolbar;
@@ -2047,9 +2272,31 @@ class ContactsListBox extends Component {
         }
 
         let showLoadEarlier = (this.state.myContacts && this.state.selectedContact && this.state.selectedContact.uri in this.state.myContacts && this.state.myContacts[this.state.selectedContact.uri].totalMessages && this.state.myContacts[this.state.selectedContact.uri].totalMessages > messages.length) ? true: false;
+        
+
+		messages.forEach((m) => {
+		  //console.log(m._id, m.direction, m.text, m.replyTo);
+		
+		  if (m._id in this.replyMessages) {
+			// mutate the object directly
+			m.replyTo = this.replyMessages[m._id];
+		  } else {
+			m.replyTo = null;
+		  }
+		});
 
         messages.forEach((m) => {
+		  //console.log(m._id, m.direction, m.text, m.replyTo);
         });
+
+        let i = 1;
+        let logText = '\n'; // initialize empty string
+
+        for (const m of messages.slice().reverse()) {
+		  //console.log(i, m._id, m.direction, m.text, m.replyTo);
+		  logText += `${i} ${m._id} ${m.direction} ${m.text} ${m.replyTo || ''}\n`;
+		  i = i + 1;
+		}
 
         let addSpacer = false;
 		if (Platform.OS === 'android') {
@@ -2068,6 +2315,29 @@ class ContactsListBox extends Component {
 		  );
 		}
   
+        // debug
+        let debug = false;
+       
+        let replyMessages = this.replyMessages;    
+          
+  		if (debug) {
+			const values = {
+			  replyMessages
+			};
+
+			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
+		
+			Object.entries(values).forEach(([key, value]) => {
+			  const prev = this.prevValues[key];
+			   const paddedKey = key.padStart(maxKeyLength, ' '); // right
+			  if (JSON.stringify(prev) !== JSON.stringify(value)) {
+				console.log(paddedKey, value);
+			  }
+			});
+
+			this.prevValues = values;
+		}
+
         //console.log('this.state.selectedContact', this.state.selectedContact);
         return (
             <SafeAreaView style={container}>
@@ -2098,7 +2368,7 @@ class ContactsListBox extends Component {
                   onLongPress={this.onLongMessagePress}
                   onPress={this.onMessagePress}
                   renderInputToolbar={chatInputClass}
-                  renderBubble={renderBubble}
+				  renderBubble={(props) => this.renderBubble({ ...props, messages: filteredMessages })}
                   renderMessageText={this.renderMessageText}
                   renderMessageImage={this.renderMessageImage}
                   renderMessageAudio={this.renderMessageAudio}
@@ -2117,6 +2387,8 @@ class ContactsListBox extends Component {
                   isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
                   isTyping={this.state.isTyping}
+                  keyboardShouldPersistTaps={"handled"}
+                  keyboardDismissMode={"interactive"}
                   onInputTextChanged={text => this.chatInputChanged(text)}
                 />
 
@@ -2128,7 +2400,7 @@ class ContactsListBox extends Component {
                 <GiftedChat innerRef={this.chatListRef}
                   messages={filteredMessages}
                   renderInputToolbar={() => { return null }}
-                  renderBubble={renderBubble}
+				  renderBubble={(props) => this.renderBubble({ ...props, messages: filteredMessages })}
                   renderMessageText={this.renderMessageText}
                   renderMessageImage={this.renderMessageImage}
                   renderMessageAudio={this.renderMessageAudio}
@@ -2216,7 +2488,6 @@ ContactsListBox.propTypes = {
     pinMessage      : PropTypes.func,
     unpinMessage    : PropTypes.func,
     deleteMessages   : PropTypes.func,
-    sendPublicKey   : PropTypes.func,
     inviteContacts  : PropTypes.bool,
     shareToContacts   : PropTypes.bool,
     selectedContacts: PropTypes.array,
@@ -2249,4 +2520,3 @@ ContactsListBox.propTypes = {
 
 
 export default ContactsListBox;
-exports.renderBubble = renderBubble;

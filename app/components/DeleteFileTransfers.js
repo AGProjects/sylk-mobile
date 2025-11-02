@@ -321,7 +321,6 @@ class DeleteFileTransfers extends Component {
             </View>
           ) : null}
 
-          {!isDisabled ? (
             <View style={styles.checkBoxRow}>
               {Platform.OS === 'ios' ? (
                 <Switch value={this.state.incoming} onValueChange={this.toggleIncoming} />
@@ -330,9 +329,7 @@ class DeleteFileTransfers extends Component {
               )}
               <Text style={{ marginLeft: 8 }}>Incoming</Text>
             </View>
-          ) : null}
 
-          {!isDisabled ? (
             <View style={styles.checkBoxRow}>
               {Platform.OS === 'ios' ? (
                 <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
@@ -341,7 +338,6 @@ class DeleteFileTransfers extends Component {
               )}
               <Text style={{ marginLeft: 8 }}>Outgoing</Text>
             </View>
-          ) : null}
 
           {canDeleteRemote && !isDisabled ? (
             <View style={styles.checkBoxRow}>

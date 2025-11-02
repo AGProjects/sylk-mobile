@@ -1245,12 +1245,13 @@ class Sylk extends Component {
                     myContacts[item.uri].tags = item.tags ? item.tags.split(',') : [];
                     myContacts[item.uri].participants = item.participants ? item.participants.split(',') : [];
                     myContacts[item.uri].unread = item.unread_messages ? item.unread_messages.split(',') : [];
-                    myContacts[item.uri].lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
-                    myContacts[item.uri].lastMessage = item.last_message === '' ? null : item.last_message;
                     myContacts[item.uri].timestamp = timestamp;
                     myContacts[item.uri].lastCallId = item.last_call_id;
                     myContacts[item.uri].lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
                     myContacts[item.uri].lastCallDuration = item.last_call_duration;
+                    myContacts[item.uri].replyMessages = {}
+                    myContacts[item.uri].lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
+                    myContacts[item.uri].lastMessage = item.last_message === '' ? null : item.last_message;
 
                     let ab_contacts = this.lookupContacts(item.uri);
                     if (ab_contacts.length > 0) {
@@ -5659,6 +5660,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
     }
 
+    sendPublicKeyToUri(uri) {
+        // Send outgoing messages
+        if (this.state.account && this.state.keys && this.state.keys.public) {
+            console.log('Send my PGP public key to', uri);
+            this.state.account.sendMessage(uri, this.state.keys.public, 'text/pgp-public-key');
+        }
+    }
+
     async saveOutgoingRawMessage(id, from_uri, to_uri, content, contentType) {
         let timestamp = new Date();
         let params;
@@ -6098,7 +6107,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         myContacts[uri].publicKey = key;
 
         this.saveSylkContact(uri, myContacts[uri], 'savePublicKey');
-        this.sendPublicKey(uri);
+        this.sendPublicKeyToUri(uri);
     }
 
     async savePublicKeySync(uri, key) {
@@ -6173,7 +6182,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 }
             }
         });
-        //console.log(message);
+        
+        if (contentType != 'text/plain') {
+			//console.log('sentMessage', message);
+        }
         //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
     }
 
@@ -6183,7 +6195,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         message.received = false;
         message.direction = 'outgoing';
 
-        //console.log('--- sendMessage', uri, message);
+        //console.log('--- sendMessage', uri);
+        //console.log(message);
 
         let renderMessages = this.state.messages;
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
@@ -6201,6 +6214,37 @@ f you want to fully control the UI and avoid automatic system notifications, you
         message.contentType = contentType;
         message.content = message.text
         message.content_type = contentType;
+		let selectedContact = this.state.selectedContact;
+		let myContacts = this.state.myContacts;
+
+		if (message.replyTo) {
+			try { 
+				const rId = uuid.v4()
+				const replyContent = {messageId: message._id,
+									  replyId:  message.replyTo,
+									  sender: this.state.accountId,
+									  receiver: uri
+									};
+	
+				const giftedChatMessage = {
+							  _id: rId,
+							  key: rId,
+							  createdAt: new Date(),
+							  metadata: {},
+							  text: JSON.stringify(replyContent),
+							};
+	
+				 selectedContact.replyMessages[message._id] = message.replyTo;
+				 myContacts[uri].replyMessages[message._id] = message.replyTo;
+				 
+				 console.log('selectedContact.replyMessages',selectedContact.replyMessages);
+	
+				this.saveOutgoingMessage(uri, giftedChatMessage, 0, 'application/sylk-message-reply');
+				this._sendMessage(uri, giftedChatMessage.text, rId, 'application/sylk-message-reply', message.createdAt);
+			} catch (e) {
+				console.log(e);
+			}
+		}
 
         if (contentType === 'application/sylk-file-transfer') {
             let file_transfer = message.metadata;
@@ -6235,11 +6279,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
             file_transfer.url = this.fileTransferUrl + '/' + file_transfer.sender.uri + '/' + file_transfer.receiver.uri + '/' + file_transfer.transfer_id + '/' + file_transfer.filename;
             message.metadata = file_transfer;
             this.uploadFile(message.metadata);
-        }
+        }        
 
         if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
-                utils.timestampedLog('Outgoing message', message._id, 'encrypted', 'to', uri);
+                utils.timestampedLog('-----  Outgoing message', message._id, 'encrypted', 'to', uri);
                 this.saveOutgoingMessage(uri, message, 1);
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
             }).catch((error) => {
@@ -6259,9 +6303,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
-            //console.log('Added render message', message._id, message.contentType);
+            console.log('Added render message', message._id, message.contentType);
             renderMessages[uri].push(message);
-            let selectedContact = this.state.selectedContact;
             selectedContact.lastMessage = this.buildLastMessage(message)
             selectedContact.timestamp = message.createdAt;
             selectedContact.direction = 'outgoing';
@@ -6349,13 +6392,13 @@ f you want to fully control the UI and avoid automatic system notifications, you
         public_keys = public_keys.trim();
 
         if (utils.isFileEncryptable(file_transfer) && public_keys.length > 0) {
-            this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
+            //this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
 
             try {
                 let encrypted_file = local_url + '.asc';
                 await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
                 utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted', 'keys length', public_keys.length);
-                this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
+                //this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
                 let base64_content = await RNFS.readFile(encrypted_file, 'base64');
                 let checksum = utils.getPGPCheckSum(base64_content);
 
@@ -6368,7 +6411,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
                 content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
                 await RNFS.writeFile(encrypted_file, content, 'utf8');
-                this.updateFileTransferBubble(file_transfer, 'File encrypted');
+                //this.updateFileTransferBubble(file_transfer, 'File encrypted');
                 file_transfer.filetype = file_transfer.filetype;
                 local_url = local_url + ".asc";
                 remote_url = remote_url + '.asc';
@@ -6408,7 +6451,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         xhr.open('POST', remote_url);
         xhr.setRequestHeader('content-type', file_transfer.filetype);
 		this.updateStorageForContact(uri, 0, file_transfer.filesize);
-        this.updateFileTransferBubble(file_transfer, 'Uploading file...', file_transfer);
+        //this.updateFileTransferBubble(file_transfer, 'Uploading file...', file_transfer);
         console.log('Uploading file', file_transfer.filename, 'of', file_transfer.filesize, 'bytes');
 
         xhr.send({ uri: 'file://'+ local_url });
@@ -6420,7 +6463,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     var progress = Math.floor((event.loaded/event.total) * 100);
                     //console.log('Upload ' + progress + '%!');
                     file_transfer.progress = progress;
-                    this.updateFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
+                    //this.updateFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
                 }
             };
         }
@@ -6526,14 +6569,16 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async saveOutgoingMessage(uri, message, encrypted=0, content_type="text/plain") {
-        //console.log('saveOutgoingMessage',  message._id, content_type, message.metadata);
+        if (content_type != "text/plain") {
+			//console.log('saveOutgoingMessage', message, content_type);
+        }
 
         // sent -> null
         // pending -> 1
         // received -> null
         // failed -> null
 
-        if (content_type !== 'application/sylk-file-transfer') {
+        if (content_type !== 'application/sylk-file-transfer' && content_type !== 'application/sylk-message-reply') {
             this.saveOutgoingChatUri(uri, message);
         }
 
@@ -7437,7 +7482,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 if (file_transfer.filesize < max_transfer_size) {
                     this.downloadFile(file_transfer);
                 } else {
-                    this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to download');
+                    //this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to download');
                     console.log('File transfer is too large');
                 }
             }
@@ -7534,14 +7579,15 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }).begin((tinfo) => {
              if (tinfo.expectedBytes) {
 				 console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
-				 this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
+				 //this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
              }
         }).progress((pdata) => {
             if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
 				const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
 				const progress = Math.ceil(percent);
 				file_transfer.progress = progress;
-				this.updateFileTransferBubble(file_transfer, 'Downloading ' + file_transfer.filename + ' ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
+//				this.updateFileTransferBubble(file_transfer, 'Downloading ' + file_transfer.filename + ' ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
+				this.updateFileTransferBubble(file_transfer, 'Downloading ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
             }
         }).done(() => {
 			RNFetchBlob.fs.stat(tmp_file_path).then(stat => {
@@ -7556,7 +7602,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				}
 
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
-					this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' download finished');
+					//this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' download finished');
 					this.saveDownloadTask(id, file_transfer.url, file_path);
 					if (this.state.callContact) {
 						this.getMessages(this.state.callContact.uri);
@@ -7657,7 +7703,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
  		    const perc = logProgress(position, file_transfer.filesize);
             if (perc) {
-     			this.updateFileTransferBubble(file_transfer, 'Decrypting ' + perc + '% ' + file_transfer.filename + ', press to cancel...');
+     			//this.updateFileTransferBubble(file_transfer, 'Decrypting ' + perc + '% ' + file_transfer.filename + ', press to cancel...');
  			}
   
             const chunk = await RNFS.read(inputPath, CHUNK_SIZE, position, 'utf8');
@@ -7795,7 +7841,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     		await this.updateFileTransferSql(file_transfer, 1, true);
 		}
 
-		this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + ', press to cancel...');
+		//this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + ', press to cancel...');
 		console.log('---');
 		console.log(this.decryptRequests);
 		
@@ -8029,6 +8075,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         if (uri in myContacts) {
             myContacts[uri].totalMessages = total;
+            myContacts[uri].replyMessages = {};
         }
 
         query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
@@ -8059,6 +8106,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             let file_path;
             let file_transfer;
             let contentTypes = {};
+            let found_reply = false;
 
             let last_content = null;
 
@@ -8094,6 +8142,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
                 const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
                 enc = parseInt(item.encrypted);
+                
+                //console.log('item.content_type', item.content_type );
 
                 if (is_encrypted && enc !== 3) {
                     myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
@@ -8132,6 +8182,15 @@ f you want to fully control the UI and avoid automatic system notifications, you
                         continue;
                     } else if (item.content_type === 'text/pgp-public-key-imported') {
                         continue;
+                    } else if (item.content_type === 'application/sylk-message-reply') {
+                        try {
+							const replayMessage = JSON.parse(content);
+							myContacts[orig_uri].replyMessages[replayMessage.messageId] = replayMessage.replyId;
+							found_reply = true;
+						} catch (error) {
+							console.log('Cannot parse reply')
+						}
+						continue;
                     } else {
                         console.log('Unknown message', item.msg_id, 'type', item.content_type);
                         myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
@@ -8203,6 +8262,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     myContacts[orig_uri].lastMessage = last_message;
                     myContacts[orig_uri].lastMessageId = last_message_id;
                     this.saveSylkContact(uri, myContacts[orig_uri], 'getMessages');
+                    this.setState({myContacts: myContacts});
+                }
+                
+                if (found_reply) {
                     this.setState({myContacts: myContacts});
                 }
             }
@@ -8385,9 +8448,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
 		if (filter.deleteContact) {
 			this.removeContact(orig_uri);
-			return;
-		} else if (deleteAll) {
-			return;
 		}
 
         let query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
@@ -8549,7 +8609,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     playMessageSound(direction='incoming') {
-        console.log('---- playMessageSound', this.state.appState);
+        console.log('---- playMessageSound');
         let must_play_sound = true;
 
         if (this.state.dnd) {
@@ -9160,6 +9220,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     async incomingMessage(message) {
         utils.timestampedLog('Incoming message', message.id, message.contentType, 'received');
         // Handle incoming messages
+
         this.saveLastSyncId(message.id);
 
         if (message.content.indexOf('?OTRv3') > -1) {
@@ -9196,7 +9257,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     console.log('Failed to decrypt message', message.id, error);
                     this.saveSystemMessage(message.sender.uri, 'Received message encrypted with wrong key', 'incoming');
                     this.sendDispositionNotification(message, 'error', true);
-                    this.sendPublicKey(message.sender.uri);
+                    this.sendPublicKeyToUri(message.sender.uri);
                 });
             }
         } else {
@@ -9217,6 +9278,25 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         this.saveIncomingMessage(message, decryptedBody);
+
+	    if (message.contentType === 'application/sylk-message-reply') {
+			let myContacts = this.state.myContacts;
+
+			try {
+				const replayMessage = JSON.parse(message.content);
+				if (!myContacts[message.sender.uri].hasOwnProperty('replyMessages')) {
+					myContacts[message.sender.uri].replyMessages = {}
+				}
+					
+				myContacts[message.sender.uri].replyMessages[replayMessage.messageId] = replayMessage.replyId;
+				this.setState({myContacts: myContacts});
+
+			} catch (error) {
+				console.log('Cannot parse reply payload')
+			}
+			return;
+		}
+
         let renderMessages = this.state.messages;
 
         let gMsg = utils.sylk2GiftedChat(message, decryptedBody, 'incoming');
@@ -11299,7 +11379,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     saveContact = {this.saveContact}
                     deleteContact = {this.deleteContact}
                     removeContact = {this.removeContact}
-                    sendPublicKey = {this.sendPublicKey}
+                    sendPublicKey = {this.sendPublicKeyToUri}
                     deletePublicKey = {this.deletePublicKey}
                     showImportModal = {this.showImportPrivateKeyModal}
                     syncConversations = {this.state.syncConversations}
@@ -11380,7 +11460,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     pinMessage = {this.pinMessage}
                     unpinMessage = {this.unpinMessage}
                     selectContact = {this.selectContact}
-                    sendPublicKey = {this.sendPublicKey}
                     inviteContacts = {this.state.inviteContacts}
                     shareToContacts = {this.state.shareToContacts}
                     selectedContacts = {this.state.selectedContacts}

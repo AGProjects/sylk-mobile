@@ -70,7 +70,6 @@ class ReadyBox extends Component {
             showQRCodeScanner: this.props.showQRCodeScanner,
             keys: this.props.keys,
             isTexting: this.props.isTexting,
-            keyboardVisible: this.props.keyboardVisible,
             contentTypes: this.props.contentTypes,
             sourceContact: this.props.sourceContact,
 			keyboardVisible: false,
@@ -278,7 +277,7 @@ class ReadyBox extends Component {
 
     get showNavigationBar() {
         if (this.state.keyboardVisible) {
-            return;
+            //return;
         }
 
         if (this.state.selectedContact) {
@@ -290,7 +289,6 @@ class ReadyBox extends Component {
         }
 
         return true;
-
     }
 
     get showSearchBar() {
@@ -798,6 +796,9 @@ class ReadyBox extends Component {
     };
 
     onStopPlay = async () => {
+        if (!this.state.playing) {
+			return;
+        }
         this.setState({playing: false});
         audioRecorderPlayer.stopPlayer();
         audioRecorderPlayer.removePlayBackListener();
@@ -1068,6 +1069,7 @@ class ReadyBox extends Component {
     deleteAudioAction(event) {
         //console.log('deleteAudioAction');
         event.preventDefault();
+        this.onStopPlay();
         this.deleteAudio();
     }
 
@@ -1481,79 +1483,78 @@ class ReadyBox extends Component {
                         containerStyle={styles.QRcodeContainer}
                      />
                       :
-                        <ContactsListBox
-                            contacts={this.state.contacts}
-                            targetUri={this.state.targetUri}
-                            fontScale = {this.state.fontScale}
-                            orientation={this.props.orientation}
-                            setTargetUri={this.handleSearch}
-                            selectedContact={this.state.selectedContact}
-                            isTablet={this.state.isTablet}
-                            chat={this.state.chat && !this.state.inviteContacts}
-                            isLandscape={this.state.isLandscape}
-                            account={this.props.account}
-                            password={this.props.password}
-                            config={this.props.config}
-                            refreshHistory={this.props.refreshHistory}
-                            refreshFavorites={this.props.refreshFavorites}
-                            localHistory={this.props.localHistory}
-                            saveHistory={this.props.saveHistory}
-                            myDisplayName={this.state.myDisplayName}
-                            myPhoneNumber={this.props.myPhoneNumber}
-                            saveConference={this.props.saveConference}
-                            myInvitedParties = {this.state.myInvitedParties}
-                            favoriteUris={this.props.favoriteUris}
-                            blockedUris={this.props.blockedUris}
-                            filter={this.state.historyCategoryFilter}
-                            periodFilter={this.state.historyPeriodFilter}
-                            defaultDomain={this.props.defaultDomain}
-                            saveContact={this.props.saveContact}
-                            myContacts = {this.state.myContacts}
-                            messages = {this.state.messages}
-                            sendMessage = {this.props.sendMessage}
-                            reSendMessage = {this.props.reSendMessage}
-                            deleteMessages = {this.props.deleteMessages}
-                            expireMessage = {this.props.expireMessage}
-                            deleteMessage = {this.props.deleteMessage}
-                            getMessages = {this.props.getMessages}
-                            pinMessage = {this.props.pinMessage}
-                            unpinMessage = {this.props.unpinMessage}
-                            confirmRead = {this.props.confirmRead}
-                            sendPublicKey = {this.props.sendPublicKey}
-                            inviteContacts = {this.state.inviteContacts}
-                            shareToContacts = {this.state.shareToContacts}
-                            selectedContacts = {this.state.selectedContacts}
-                            toggleFavorite={this.props.toggleFavorite}
-                            toggleAutoanswer={this.props.toggleAutoanswer}
-                            toggleBlocked={this.props.toggleBlocked}
-                            togglePinned = {this.props.togglePinned}
-                            pinned = {this.state.pinned}
-                            loadEarlierMessages = {this.props.loadEarlierMessages}
-                            newContactFunc = {this.props.newContactFunc}
-                            messageZoomFactor = {this.state.messageZoomFactor}
-                            isTyping = {this.state.isTyping}
-                            call = {this.state.call}
-                            keys = {this.state.keys}
-                            downloadFunc = {this.props.downloadFunc}
-                            decryptFunc = {this.props.decryptFunc}
-                            messagesCategoryFilter = {this.state.messagesCategoryFilter}
-                            isTexting = {this.state.isTexting}
-                            forwardMessageFunc = {this.props.forwardMessageFunc}
-                            requestCameraPermission = {this.props.requestCameraPermission}
-                            requestStoragePermissions = {this.props.requestStoragePermissions}
-                            requestMicPermission = {this.props.requestMicPermission}
-                            requestStoragePermission = {this.props.requestStoragePermission}
-                            startCall = {this.props.startCall}
-                            sourceContact = {this.state.sourceContact}
-                            file2GiftedChat = {this.file2GiftedChat}
-                            postSystemNotification = {this.props.postSystemNotification}
-                            sortBy = {this.state.sortBy}
-                            toggleSearchMessages = {this.props.toggleSearchMessages}
-                            searchMessages = {this.state.searchMessages}
-                            searchString = {this.state.searchString}
-                            recordAudio = {this.recordAudio}
-                        />
-                        }
+					<ContactsListBox
+						contacts={this.state.contacts}
+						targetUri={this.state.targetUri}
+						fontScale = {this.state.fontScale}
+						orientation={this.props.orientation}
+						setTargetUri={this.handleSearch}
+						selectedContact={this.state.selectedContact}
+						isTablet={this.state.isTablet}
+						chat={this.state.chat && !this.state.inviteContacts}
+						isLandscape={this.state.isLandscape}
+						account={this.props.account}
+						password={this.props.password}
+						config={this.props.config}
+						refreshHistory={this.props.refreshHistory}
+						refreshFavorites={this.props.refreshFavorites}
+						localHistory={this.props.localHistory}
+						saveHistory={this.props.saveHistory}
+						myDisplayName={this.state.myDisplayName}
+						myPhoneNumber={this.props.myPhoneNumber}
+						saveConference={this.props.saveConference}
+						myInvitedParties = {this.state.myInvitedParties}
+						favoriteUris={this.props.favoriteUris}
+						blockedUris={this.props.blockedUris}
+						filter={this.state.historyCategoryFilter}
+						periodFilter={this.state.historyPeriodFilter}
+						defaultDomain={this.props.defaultDomain}
+						saveContact={this.props.saveContact}
+						myContacts = {this.state.myContacts}
+						messages = {this.state.messages}
+						sendMessage = {this.props.sendMessage}
+						reSendMessage = {this.props.reSendMessage}
+						deleteMessages = {this.props.deleteMessages}
+						expireMessage = {this.props.expireMessage}
+						deleteMessage = {this.props.deleteMessage}
+						getMessages = {this.props.getMessages}
+						pinMessage = {this.props.pinMessage}
+						unpinMessage = {this.props.unpinMessage}
+						confirmRead = {this.props.confirmRead}
+						inviteContacts = {this.state.inviteContacts}
+						shareToContacts = {this.state.shareToContacts}
+						selectedContacts = {this.state.selectedContacts}
+						toggleFavorite={this.props.toggleFavorite}
+						toggleAutoanswer={this.props.toggleAutoanswer}
+						toggleBlocked={this.props.toggleBlocked}
+						togglePinned = {this.props.togglePinned}
+						pinned = {this.state.pinned}
+						loadEarlierMessages = {this.props.loadEarlierMessages}
+						newContactFunc = {this.props.newContactFunc}
+						messageZoomFactor = {this.state.messageZoomFactor}
+						isTyping = {this.state.isTyping}
+						call = {this.state.call}
+						keys = {this.state.keys}
+						downloadFunc = {this.props.downloadFunc}
+						decryptFunc = {this.props.decryptFunc}
+						messagesCategoryFilter = {this.state.messagesCategoryFilter}
+						isTexting = {this.state.isTexting}
+						forwardMessageFunc = {this.props.forwardMessageFunc}
+						requestCameraPermission = {this.props.requestCameraPermission}
+						requestStoragePermissions = {this.props.requestStoragePermissions}
+						requestMicPermission = {this.props.requestMicPermission}
+						requestStoragePermission = {this.props.requestStoragePermission}
+						startCall = {this.props.startCall}
+						sourceContact = {this.state.sourceContact}
+						file2GiftedChat = {this.file2GiftedChat}
+						postSystemNotification = {this.props.postSystemNotification}
+						sortBy = {this.state.sortBy}
+						toggleSearchMessages = {this.props.toggleSearchMessages}
+						searchMessages = {this.state.searchMessages}
+						searchString = {this.state.searchString}
+						recordAudio = {this.recordAudio}
+					/>
+					}
 
                     </View>
                     : null
@@ -1623,7 +1624,6 @@ class ReadyBox extends Component {
     }
 }
 
-
 ReadyBox.propTypes = {
     account         : PropTypes.object,
     password        : PropTypes.string.isRequired,
@@ -1662,7 +1662,6 @@ ReadyBox.propTypes = {
     deleteMessages  : PropTypes.func,
     pinMessage      : PropTypes.func,
     unpinMessage    : PropTypes.func,
-    sendPublicKey   : PropTypes.func,
     inviteContacts  : PropTypes.bool,
     shareToContacts  : PropTypes.bool,
     showQRCodeScanner      : PropTypes.bool,

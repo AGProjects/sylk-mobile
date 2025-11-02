@@ -4,7 +4,8 @@ import autoBind from 'auto-bind';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
 import AudioRecorderPlayer from 'react-native-audio-recorder-player'
 import {TouchableOpacity, View, Platform} from 'react-native'
-import styles from '../assets/styles/blink/_ContactsListBox.scss';
+
+import styles from '../assets/styles/ContactsListBox';
 
 class CustomActions extends React.Component {
     constructor(props) {
@@ -50,12 +51,10 @@ class CustomActions extends React.Component {
       }
 
     render() {
-        let chatLeftActionsContainer = Platform.OS === 'ios' ? styles.chatLeftActionsContaineriOS : styles.chatLeftActionsContainer;
-
         return (
-          <View style={{flexDirection: 'row'}}>
+          <View style={{flexDirection: 'row', alignItems: 'center'}}>
           <TouchableOpacity
-            style={[chatLeftActionsContainer]}
+            style={[styles.chatLeftActionsContainer]}
             onPress={this.onActionsPress}
           >
             {this.renderIcon()}

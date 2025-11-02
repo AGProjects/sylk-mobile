@@ -259,94 +259,83 @@ class VideoBox extends Component {
 	}
 
 	statistics(stats) {
-	  const { audio: audioData, video: videoData, remote } = stats.data;
-	  const { audio: audioRemoteData, video: videoRemoteData } = remote;
+	  const { audio, video, remote, connection } = stats.data;
+	  const audioInbound = audio?.inbound?.[0];
+	  const audioOutbound = audio?.outbound?.[0];
+	  const videoInbound = video?.inbound?.[0];
+	  const videoOutbound = video?.outbound?.[0];
 	
-	  const audioInbound = audioData?.inbound?.[0];
-	  const audioOutbound = audioData?.outbound?.[0];
-	  const videoInbound = videoData?.inbound?.[0];
-	  const videoOutbound = videoData?.outbound?.[0];
+	  const remoteAudioInbound = remote?.audio?.inbound?.[0];
+	  const remoteVideoInbound = remote?.video?.inbound?.[0];
 	
-	  const remoteAudioInbound = audioRemoteData?.inbound?.[0];
-	  const remoteVideoInbound = videoRemoteData?.inbound?.[0];
-	
-	  // Skip if we don’t have valid streams yet
 	  if (!videoOutbound && !audioOutbound) return;
 	
-	  // ---- Store previous stats for bitrate calculation ----
 	  if (!this.prevStats) this.prevStats = {};
 	  const now = Date.now();
 	
 	  const calcBitrate = (type, currentBytes, currentTimestamp) => {
 		const prev = this.prevStats[type];
-		if (!prev || prev.bytes === 0) {
+		if (!prev) {
 		  this.prevStats[type] = { bytes: currentBytes, ts: currentTimestamp };
 		  return 0;
 		}
-	
 		const bytesDelta = currentBytes - prev.bytes;
-		const timeDelta = (currentTimestamp - prev.ts) / 1000; // seconds
+		const timeDelta = (currentTimestamp - prev.ts) / 1000;
 		this.prevStats[type] = { bytes: currentBytes, ts: currentTimestamp };
-	
 		if (timeDelta <= 0 || bytesDelta < 0) return 0;
-		return (bytesDelta * 8) / timeDelta; // bits/sec
+		return (bytesDelta * 8) / timeDelta;
 	  };
 	
-	  // ---- Compute upload/download ----
 	  let bandwidthUpload = 0;
 	  let bandwidthDownload = 0;
 	
-	  if (videoOutbound) {
-		bandwidthUpload = calcBitrate('videoUpload', videoOutbound.bytesSent, videoOutbound.timestamp);
-	  }
-	
+	  if (videoOutbound) bandwidthUpload = calcBitrate('videoUpload', videoOutbound.bytesSent, videoOutbound.timestamp);
 	  if (videoInbound) {
-		// react-native-webrtc bug: bytesReceived often = 0 on Android
 		if (videoInbound.bytesReceived > 0) {
 		  bandwidthDownload = calcBitrate('videoDownload', videoInbound.bytesReceived, videoInbound.timestamp);
 		} else if (videoInbound.packetRate > 0) {
-		  // Fallback: estimate bitrate from packet rate × avg packet size (1200 bytes)
-		  const estBytesPerSec = videoInbound.packetRate * 1200;
-		  bandwidthDownload = estBytesPerSec * 8; // bits/sec
+		  bandwidthDownload = videoInbound.packetRate * 1200 * 8;
 		}
 	  }
-	  
-	  //console.log('bandwidthDownload', bandwidthDownload);
-	  //console.log('bandwidthUpload', bandwidthUpload)
 	
-	  // ---- Smooth over 2-second window ----
+	  // ---- Round Trip Time ----
+	  const rtt = connection?.currentRoundTripTime ? connection.currentRoundTripTime * 1000 : 0; // ms
+	
+	  // ---- Packet Loss ----
+	  const audioLoss = audioInbound && audioInbound.packetsLost
+		? (audioInbound.packetsLost / audioInbound.packetsReceived) * 100
+		: 0;
+	  const videoLoss = videoInbound && videoInbound.packetsLost
+		? (videoInbound.packetsLost / videoInbound.packetsReceived) * 100
+		: 0;
+	
+	  // ---- Smooth over 2 seconds ----
 	  this.bandwidthHistory = this.bandwidthHistory || [];
 	  this.bandwidthHistory.push({ ts: now, up: bandwidthUpload, down: bandwidthDownload });
 	
-	  // keep only last 2 seconds
 	  this.bandwidthHistory = this.bandwidthHistory.filter(d => now - d.ts < 2000);
 	
 	  const smoothUpload = this.bandwidthHistory.reduce((a, b) => a + b.up, 0) / this.bandwidthHistory.length || 0;
 	  const smoothDownload = this.bandwidthHistory.reduce((a, b) => a + b.down, 0) / this.bandwidthHistory.length || 0;
 	
-	  // ---- Format info ----
 	  const appendBits = bits => {
-		if (bits > 1_000_000) return (bits / 1_000_000).toFixed(1) + ' Mbits/s';
-		if (bits > 1_000) return (bits / 1_000).toFixed(1) + ' kbits/s';
+		if (bits > 1_000_000) return (bits / 1_000_000).toFixed(1) + ' Mbps';
+		if (bits > 1_000) return (bits / 1_000).toFixed(0) + ' kbps';
 		return bits.toFixed(0) + ' bits/s';
 	  };
 	
-	  let info = '';
-	  if (smoothDownload > 0 && smoothUpload > 0) {
-		info = `⇣${appendBits(smoothDownload)} ⇡${appendBits(smoothUpload)}`;
-	  } else if (smoothDownload > 0) {
-		info = `⇣${appendBits(smoothDownload)}`;
-	  } else if (smoothUpload > 0) {
-		info = `⇡${appendBits(smoothUpload)}`;
+	  //const info = `⇣${appendBits(smoothDownload)} ⇡${appendBits(smoothUpload)} | RTT: ${rtt.toFixed(0)} ms | Audio Loss: ${audioLoss.toFixed(1)}% | Video Loss: ${videoLoss.toFixed(1)}%`;
+	  let info = `⇣${appendBits(smoothDownload)} ${rtt.toFixed(0)} ms`;
+	  if (videoLoss > 10) {
+		  info = info + ` loss ${videoLoss.toFixed(0)}%`;
 	  }
 	
-	   
-	  // ---- Save to state ----
 	  this.setState(state => ({
 		statistics: [...state.statistics, { up: smoothUpload, down: smoothDownload }].slice(-MAX_POINTS),
 		info,
 	  }));
 	}
+
 
     hangupCall(event) {
         //event.preventDefault();
