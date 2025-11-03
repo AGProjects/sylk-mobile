@@ -75,7 +75,8 @@ class ReadyBox extends Component {
 			keyboardVisible: false,
 			searchMessages: this.props.searchMessages,
 			searchString: '',
-			recordingDuration: 0
+			recordingDuration: 0,
+			dark: this.props.dark
         };
         this.ended = false;
 
@@ -171,7 +172,8 @@ class ReadyBox extends Component {
                         isTexting: nextProps.isTexting,
                         keyboardVisible: nextProps.keyboardVisible,
                         contentTypes: nextProps.contentTypes,
-                        sourceContact: nextProps.sourceContact
+                        sourceContact: nextProps.sourceContact,
+                        dark: nextProps.dark
                         });
     }
 
@@ -359,6 +361,10 @@ class ReadyBox extends Component {
         }
 
 	    if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+            return false;
+        }
+
+	    if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@guest') > -1) {
             return false;
         }
 	 
@@ -1280,6 +1286,7 @@ class ReadyBox extends Component {
                                 inviteContacts={this.state.inviteContacts}
                                 searchMessages={this.state.searchMessages}
                                 autoFocus={this.state.searchMessages}
+                                dark={this.state.dark}
                             />
                         </View>
                         : null}
@@ -1553,6 +1560,7 @@ class ReadyBox extends Component {
 						searchMessages = {this.state.searchMessages}
 						searchString = {this.state.searchString}
 						recordAudio = {this.recordAudio}
+						dark = {this.state.dark}
 					/>
 					}
 
@@ -1700,7 +1708,8 @@ ReadyBox.propTypes = {
     postSystemNotification: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
     searchMessages: PropTypes.bool,
-    defaultConferenceDomain: PropTypes.string
+    defaultConferenceDomain: PropTypes.string,
+    dark: PropTypes.bool
 };
 
 

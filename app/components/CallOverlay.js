@@ -287,7 +287,7 @@ class CallOverlay extends React.Component {
 						title={mediaLabel} subtitle={callDetail}
 					/>
 
-                { this.state.callState == 'established'?
+                { this.state.callState == 'established' && this.state.media == 'video' ?
 
                 <Menu
                     visible={this.state.menuVisible}

@@ -1,510 +1,369 @@
-import React, { Component, Fragment} from 'react';
-import { View, SafeAreaView, FlatList, Platform } from 'react-native';
-import { Badge } from 'react-native-elements'
+import React, { Component, Fragment } from 'react';
+import { View, SafeAreaView, FlatList, Platform, StyleSheet } from 'react-native';
+import { Badge } from 'react-native-elements';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
-import { Card, IconButton, Button, Caption, Title, Subheading, List, Text, Menu} from 'react-native-paper';
-import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import {
+  Card,
+  Text
+} from 'react-native-paper';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import uuid from 'react-native-uuid';
 import UserIcon from './UserIcon';
-import { GiftedChat } from 'react-native-gifted-chat'
-import {Gravatar, GravatarApi} from 'react-native-gravatar';
-import {Keyboard} from 'react-native';
-
-import styles from '../assets/styles/ContactCard';
-
+import { Gravatar } from 'react-native-gravatar';
+import { GiftedChat } from 'react-native-gifted-chat';
 import utils from '../utils';
 
+// -------------------
+// Base styles
+// -------------------
+const styles = StyleSheet.create({
+  containerPortrait: {},
+  containerLandscape: {},
+
+  cardPortraitContainer: {
+    marginTop: 0.6,
+    borderRadius: 0,
+  },
+  cardLandscapeContainer: {
+    flex: 1,
+    marginLeft: 1,
+    marginTop: 1,
+    borderRadius: 0,
+  },
+  cardLandscapeTabletContainer: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 0,
+  },
+  cardPortraitTabletContainer: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 0,
+  },
+
+  rowContent: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+
+  cardContent: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+
+  title: {
+    fontSize: 16,
+    lineHeight: 18,
+    flex: 1,
+  },
+
+  titlePaddingSmall: { paddingTop: 0 },
+  titlePadding: { paddingTop: 12 },
+  titlePaddingSelect: { paddingTop: 25 },
+  titlePaddingBig: { paddingTop: 14 },
+
+  subtitle: {
+    paddingTop: 4,
+    fontSize: 16,
+    lineHeight: 20,
+    flex: 1,
+  },
+
+  description: {
+    fontSize: 12,
+    flex: 1,
+  },
+
+  avatarContent: { marginTop: 10 },
+
+  gravatar: {
+    width: 50,
+    height: 50,
+    borderWidth: 0,
+    borderColor: 'white',
+    borderRadius: 50,
+  },
+
+  smallGravatar: {
+    width: 25,
+    height: 25,
+    borderWidth: 2,
+    borderColor: 'white',
+    borderRadius: 25,
+  },
+
+  mainContent: { marginLeft: 10 },
+
+  rightContent: {
+    marginTop: 10,
+    marginLeft: 60,
+    marginRight: 10,
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+  },
+
+  selectBox: {
+    marginTop: 10,
+    marginLeft: 60,
+    marginRight: 10,
+    alignItems: 'flex-end',
+  },
+
+  storageText: {
+    fontSize: 12,
+    color: '#777',
+    marginTop: 4,
+  },
+
+  timestamp: {
+    fontSize: 12,
+    color: '#555',
+    marginTop: -5,
+  },
+
+  unreadRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    height: 16,
+    marginBottom: 4,
+  },
+
+  badgeContainer: {
+    marginRight: 4,
+    alignItems: 'center',
+    minWidth: 20,
+  },
+
+  badgeTextStyle: { fontSize: 10 },
+
+  selectedContact: { marginTop: 15 },
+  participants: { marginTop: 10 },
+  participant: { fontSize: 14 },
+  participantView: { marginBottom: 3 },
+
+  recordingLabel: { marginTop: 7 },
+});
+
+// -------------------
+// Dark mode styles
+// -------------------
+const darkStyles = StyleSheet.create({
+  card: {
+    backgroundColor: '#1e1e1e',
+  },
+  textPrimary: {
+    color: '#ffffff',
+  },
+  textSecondary: {
+    color: '#bbbbbb',
+  },
+  timestamp: {
+    color: '#999999',
+  },
+  badgeContainer: {
+    backgroundColor: '#333333',
+  },
+});
+
+// -------------------
+// Utility functions
+// -------------------
 function toTitleCase(str) {
-    return str.replace(
-        /\w\S*/g,
-        function(txt) {
-            return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
-        }
-    );
+  return str.replace(/\w\S*/g, txt =>
+    txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+  );
 }
 
 const Item = ({ nr, uri, name }) => (
   <View style={styles.participantView}>
-    {name !==  uri ?
-    <Text style={styles.participant}>{name} ({uri})</Text>
-    :
-    <Text style={styles.participant}>{uri}</Text>
-    }
-
+    {name !== uri ? (
+      <Text style={styles.participant}>
+        {name} ({uri})
+      </Text>
+    ) : (
+      <Text style={styles.participant}>{uri}</Text>
+    )}
   </View>
 );
 
-const renderItem = ({ item }) => (
- <Item nr={item.nr} uri={item.uri} name={item.name}/>
-);
+const renderItem = ({ item }) => <Item nr={item.nr} uri={item.uri} name={item.name} />;
 
 function isIp(ipaddress) {
-    if (/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ipaddress)) {
-        return (true);
-    }
-    return (false);
+  return /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(
+    ipaddress
+  );
 }
 
-
+// -------------------
+// Component
+// -------------------
 class ContactCard extends Component {
-    constructor(props) {
-        super(props);
-        autoBind(this);
-
-        this.state = {
-            id: this.props.contact.id,
-            contact: this.props.contact,
-            selectedContact: this.props.selectedContact,
-            invitedParties: this.props.invitedParties,
-            orientation: this.props.orientation,
-            isTablet: this.props.isTablet,
-            isLandscape: this.props.isLandscape,
-            favorite: (this.props.contact.tags.indexOf('favorite') > -1)? true : false,
-            blocked: (this.props.contact.tags.indexOf('blocked') > -1)? true : false,
-            confirmRemoveFavorite: false,
-            confirmPurgeChat: false,
-            messages: this.props.messages,
-            unread: this.props.unread,
-            chat: this.props.chat,
-            pinned: this.props.pinned,
-            fontScale: this.props.fontScale,
-            selectMode: this.props.selectMode
-        }
-
-        this.menuRef = React.createRef();
-    }
-
-    UNSAFE_componentWillReceiveProps(nextProps) {
-
-        this.setState({
-            id: nextProps.contact.id,
-            contact: nextProps.contact,
-            selectedContact: nextProps.selectedContact,
-            invitedParties: nextProps.invitedParties,
-            isLandscape: nextProps.isLandscape,
-            orientation: nextProps.orientation,
-            favorite: (nextProps.contact.tags.indexOf('favorite') > -1)? true : false,
-            blocked: (nextProps.contact.tags.indexOf('blocked') > -1)? true : false,
-            chat: nextProps.chat,
-            pinned: nextProps.pinned,
-            messages: nextProps.messages,
-            unread: nextProps.unread,
-            fontScale: nextProps.fontScale,
-            selectMode: nextProps.selectMode
-        });
-
-    }
-
-    buttonsEnabledForContact(contact) {
-       if (contact.tags && contact.tags.indexOf('blocked') > -1) {
-           return false
-       }
-
-       if (contact.tags && contact.tags.indexOf('@conference') > -1) {
-           return false
-       }
-
-       if (contact.uri.indexOf('@guest.') > -1) {
-            return false
-       }
-
-       if (contact.uri.indexOf('anonymous@') > -1) {
-            return false
-       }
-
-       if (contact.uri.indexOf('@videoconference') > -1) {
-            return false
-       }
-
-       let username = contact.uri.split('@')[0];
-       let isPhoneNumber = username ? username.match(/^(\+|0)(\d+)$/) : false;
-
-       if (isPhoneNumber) {
-           return false
-       }
-
-       return true;
-    }
-
-
-    shouldComponentUpdate(nextProps) {
-        //https://medium.com/sanjagh/how-to-optimize-your-react-native-flatlist-946490c8c49b
-        return true;
-    }
-
-    findObjectByKey(array, key, value) {
-        for (var i = 0; i < array.length; i++) {
-            if (array[i][key] === value) {
-                return array[i];
-            }
-        }
-        return null;
-    }
-
-    undo() {
-        this.setState({confirmRemoveFavorite: false,
-                       confirmDeleteChat: false,
-                       action: null});
-    }
-
-    onSendMessage(messages) {
-        messages.forEach((message) => {
-            // TODO send messages using account API
-        });
-        this.setState({messages: GiftedChat.append(this.state.messages, messages)});
-    }
-
-    setTargetUri(uri, contact) {
-        if (this.state.chat) {
-            return;
-        }
-        this.props.setTargetUri(uri, this.state.contact);
-    }
-
-    renderChatComposer () {
-        return null;
-    }
-
-    render () {
-        let showActions = this.state.contact.showActions &&
-                          this.state.contact.tags.indexOf('test') === -1 &&
-                          this.state.contact.tags !== ["synthetic"];
-
-        let tags = this.state.contact ? this.state.contact.tags : [];
-
-        let uri = this.state.contact.uri;
-        let username =  uri.split('@')[0];
-        let domain =  uri.split('@')[1];
-        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-
-        let name = this.state.contact.name;
-        if (this.state.contact.organization) {
-            name = name + ' - ' + this.state.contact.organization;
-        }
-
-        if (uri === this.props.accountId) {
-            name = 'Myself';
-        }
-
-        let contact_ts = '';
-
-        let participantsData = [];
-
-        let color = {};
-
-        let title = name || username;
-
-        let subtitle = uri;
-        let description = 'No calls or messages';
-
-        var todayStart = new Date();
-        todayStart.setHours(0,0,0,0);
-
-        if (this.state.contact.timestamp) {
-            description = moment(this.state.contact.timestamp).format('MMM D HH:mm');
-            if (this.state.contact.timestamp > todayStart) {
-                contact_ts = moment(this.state.contact.timestamp).format('HH:mm');
-            } else {
-                contact_ts = moment(this.state.contact.timestamp).format('MMM D');
-            }
-        }
-
-        if (name === uri) {
-            title = toTitleCase(username);
-        }
-
-        if (isPhoneNumber && isIp(domain)) {
-           title = 'Tel ' + username;
-           subtitle = 'From @' + domain;
-        }
-
-        if (utils.isAnonymous(uri)) {
-            //uri = 'anonymous@anonymous.invalid';
-            if (uri.indexOf('@guest.') > -1) {
-                subtitle = 'From the Web';
-            } else {
-                name = 'Anonymous';
-            }
-        }
-
-        if (!username || username.length === 0) {
-            if (isIp(domain)) {
-                title = 'IP domain';
-            } else if (domain.indexOf('guest.') > -1) {
-                title = 'Calls from the Web';
-            } else {
-                title = 'Domain';
-            }
-        }
-
-        let cardContainerClass = styles.portraitContainer;
-
-        if (this.state.isTablet) {
-            cardContainerClass = (this.state.orientation === 'landscape') ? styles.cardLandscapeTabletContainer : styles.cardPortraitTabletContainer;
-        } else {
-            cardContainerClass = (this.state.orientation === 'landscape') ? styles.cardLandscapeContainer : styles.cardPortraitContainer;
-        }
-
-        let cardHeight = this.state.fontScale <= 1 ? 75 : 70;
-        let duration;
-
-        if (this.state.contact.tags.indexOf('history') > -1) {
-            duration = moment.duration(this.state.contact.lastCallDuration, 'seconds').format('HH:mm:ss', {trim: false});
-
-            if (this.state.contact.direction === 'incoming' && this.state.contact.lastCallDuration === 0) {
-                duration = 'missed';
-            } else if (this.state.contact.direction === 'outgoing' && this.state.contact.lastCallDuration === 0) {
-                duration = 'cancelled';
-            }
-        }
-
-        if (this.state.contact.conference) {
-            let participants = this.state.contact.participants;
-            if (this.state.invitedParties && this.state.invitedParties.length > 0 ) {
-                participants = this.state.invitedParties;
-            }
-
-            if (participants && participants.length > 0) {
-                const p_text = participants.length > 1 ? 'participants' : 'participant';
-                subtitle = 'With ' + participants.length + ' ' + p_text;
-                let i = 1;
-                let contact_obj;
-                let dn;
-                let _item;
-                participants.forEach((participant) => {
-                    contact_obj = this.findObjectByKey(this.props.contacts, 'uri', participant);
-                    dn = contact_obj ? contact_obj.name : participant;
-                    _item = {nr: i, id: uuid.v4(), uri: participant, name: dn};
-                    participantsData.push(_item);
-                    i = i + 1;
-                });
-            } else {
-                subtitle = 'With no participants';
-            }
-        }
-
-        if (!name) {
-            title = uri;
-        }
-
-        if (duration === 'missed') {
-            subtitle = 'Last call missed from ', + uri;
-        } else if (duration === 'cancelled') {
-            subtitle = 'Last call cancelled to ' + uri;
-        } else {
-            subtitle = uri;
-        }
-
-        if (subtitle !== uri) {
-            subtitle = subtitle + ' ' + uri;
-        }
-
-        if (title.indexOf('@videoconference') > -1) {
-            title = name || username;
-            subtitle = 'Conference room';
-        }
-
-        if (uri === 'anonymous@anonymous.invalid') {
-            title = 'Anonymous caller';
-        } else {
-
-            let isAnonymous = uri.indexOf('@guest.') > -1;
-            if (isAnonymous) {
-                title = title + ' (Web call)';
-            }
-        }
-
-        if (duration && duration !== "00:00:00") {
-            let media = 'Audio call';
-            if (this.state.contact.lastCallMedia.indexOf('video') > -1) {
-                media = 'Video call';
-            }
-            description = description + ' (' + media + ' ' + duration + ')';
-        }
-
-        let greenButtonClass = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
-        let fileTransfersEnabled = true;
-
-        if (this.state.contact.tags.indexOf('test') > -1) {
-            fileTransfersEnabled = false;
-        }
-
-        if (uri.indexOf('@videoconference') > -1) {
-            fileTransfersEnabled = false;
-        }
-
-        if (uri.indexOf('@conference') > -1) {
-            fileTransfersEnabled = false;
-        }
-
-        if (isPhoneNumber) {
-            fileTransfersEnabled = false;
-        }
-
-        const container = this.state.isLandscape ? styles.containerLandscape : styles.containerPortrait;
-        const chatContainer = this.state.isLandscape ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
-
-        let showSubtitle = (showActions || this.state.isTablet || !description);
-        let label = this.state.contact.label ? (" (" + this.state.contact.label + ")" ) : '';
-        if (this.state.contact.lastMessage) {
-            subtitle = this.state.contact.lastMessage.split("\n")[0];
-            //description = description + ': ' + this.state.contact.lastMessage;
-        } else {
-            subtitle = subtitle + label;
-        }
-
-        let unread = (this.state.contact && this.state.contact.unread && !this.state.selectMode) ? this.state.contact.unread.length : 0;
-        let selectCircle = this.state.contact.selected ? 'check-circle' : 'circle-outline';
-
-        let titlePadding = styles.titlePadding;
-
-        if (this.state.fontScale < 1) {
-            titlePadding = styles.titlePaddingBig;
-        } else if (this.state.fontScale > 1.2) {
-            titlePadding = styles.titlePaddingSmall;
-        }
-        //console.log('selectedContact', this.state.selectedContact);
-
-        if (this.state.selectMode) {
-			titlePadding = styles.titlePaddingSelect;
-
-			return (
-            <Fragment>
-                <Card style={[cardContainerClass, {minHeight: cardHeight}]}
-                    onPress={() => {this.setTargetUri(uri, this.state.contact)}}
-                    >
-
-                <View style={styles.rowContent}>
-                    <Card.Content style={styles.cardContent}>
-                        <View style={styles.avatarContent}>
-                            { this.state.contact.photo || !this.state.contact.email ?
-                            <UserIcon identity={this.state.contact} size={50}/>
-                            :
-                             <Gravatar options={{email: this.state.contact.email, parameters: { "size": "10", "d": "mm" }, secure: true}} style={styles.smallGravatar} />
-                             }
-                        </View>
-
-                        <View style={styles.mainContent}>
-                            <Text variant="titleLarge" numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Text>
-                        </View>
-                    </Card.Content>
-
-                    <View style={styles.selectBox}>
-                        <Icon style={styles.selectedContact} name={selectCircle} size={20} />
-                    </View>
-
-                </View>
-                </Card>
-            </Fragment>
-            );
-
-        } else {
-
-            return (
-                <Fragment>
-                    <Card
-                        style={[cardContainerClass, {minHeight: cardHeight}]}
-                        onPress={() => {
-                            this.setTargetUri(uri, this.state.contact)
-                        }}>
-
-                        <View style={styles.rowContent}>
-                            <Card.Content style={styles.cardContent}>
-                                <View style={styles.avatarContent}>
-                                    {this.state.contact.photo ||
-                                    !this.state.contact.email ? (
-                                        <UserIcon size={50} identity={this.state.contact} unread={unread}/>
-                                    ) : (
-                                        <Gravatar options={{email: this.state.contact.email, parameters: { "size": "50", "d": "mm" }, secure: true}} style={styles.gravatar} />
-                                    )}
-                                </View>
-
-                                <View style={styles.mainContent}>
-                                    <Text variant="titleLarge" numberOfLines={1} style={[styles.title, titlePadding]}>{title}</Text>
-                                    <Text variant="titleMedium" numberOfLines={1} style={styles.subtitle}>{subtitle}</Text>
-
-                                    { this.state.fontScale <= 0.85
-                                        && !this.state.callButtonsEnabled
-                                        && <Text
-                                                variant="bodySmall"
-                                                numberOfLines={1}
-                                                style={styles.description}>
-                                            {this.state.contact.direction &&
-                                                <Icon
-                                                    name={this.state.contact.direction == 'incoming' ? 'arrow-bottom-left' : 'arrow-top-right'}/>
-                                            }
-                                            {description}
-                                            </Text>
-                                    }
-
-                            {participantsData && participantsData.length && showActions && false ?
-
-                            <View style={styles.participants}>
-                                <SafeAreaView style={styles.participant}>
-                                  <FlatList
-                                    horizontal={false}
-                                    data={participantsData}
-                                    renderItem={renderItem}
-                                    listKey={item => item.id}
-                                    key={item => item.id}
-                                  />
-                                </SafeAreaView>
-                            </View>
-                            : null}
-                        </View>
-                    </Card.Content>
-
-					<View style={styles.rightContent}>
-						{/* Unread badge + timestamp in a row */}
-						<View style={styles.unreadRow}>
-							{unread ? (
-								<Badge
-									value={unread}
-									status="error"
-									textStyle={styles.badgeTextStyle}
-									containerStyle={styles.badgeContainer}
-								/>
-							) : null}
-							{this.state.contact.tags.indexOf('synthetic') === -1 ?
-							<Text style={styles.timestamp}>{contact_ts}</Text>
-							: null}
-						</View>
-
-						<Text style={styles.storageText}>{this.state.contact.prettyStorage}</Text>
-
-					</View>
-
-                </View>
-                </Card>
-            </Fragment>
-            );
-        }
-    }
+  constructor(props) {
+    super(props);
+    autoBind(this);
+    this.state = {
+      ...props,
+      favorite: props.contact.tags.includes('favorite'),
+      blocked: props.contact.tags.includes('blocked'),
+      confirmRemoveFavorite: false,
+      confirmPurgeChat: false,
+    };
+  }
+
+  UNSAFE_componentWillReceiveProps(nextProps) {
+    this.setState({
+      ...nextProps,
+      favorite: nextProps.contact.tags.includes('favorite'),
+      blocked: nextProps.contact.tags.includes('blocked'),
+    });
+  }
+
+  setTargetUri(uri, contact) {
+    if (this.state.chat) return;
+    this.props.setTargetUri(uri, this.state.contact);
+  }
+
+  render() {
+    const isDark = this.props.darkMode;
+    const cardContainerClass = this.state.isTablet
+      ? this.state.orientation === 'landscape'
+        ? styles.cardLandscapeTabletContainer
+        : styles.cardPortraitTabletContainer
+      : this.state.orientation === 'landscape'
+      ? styles.cardLandscapeContainer
+      : styles.cardPortraitContainer;
+
+    const cardHeight = this.state.fontScale <= 1 ? 75 : 70;
+    const contact = this.state.contact;
+    const uri = contact.uri;
+    let title = contact.name || uri.split('@')[0];
+    let subtitle = contact.uri;
+    const unread = contact.unread?.length || 0;
+
+	if (uri.indexOf('@guest.') > -1) {
+		title = 'Anonymous caller';			
+	}
+
+	if (uri.indexOf('@videoconference.') > -1) {
+		title = 'Room ' + uri.split('@')[0];
+		subtitle = 'Video conference';		
+	}
+
+
+    return (
+      <Fragment>
+        <Card
+          style={[
+            cardContainerClass,
+            { minHeight: cardHeight },
+            isDark && darkStyles.card,
+          ]}
+          onPress={() => this.setTargetUri(uri, contact)}
+        >
+          <View style={styles.rowContent}>
+            <Card.Content style={styles.cardContent}>
+              <View style={styles.avatarContent}>
+                {contact.photo || !contact.email ? (
+                  <UserIcon size={50} identity={contact} unread={unread} />
+                ) : (
+                  <Gravatar
+                    options={{
+                      email: contact.email,
+                      parameters: { size: '50', d: 'mm' },
+                      secure: true,
+                    }}
+                    style={styles.gravatar}
+                  />
+                )}
+              </View>
+
+              <View style={styles.mainContent}>
+                <Text
+                  variant="titleLarge"
+                  numberOfLines={1}
+                  style={[
+                    styles.title,
+                    styles.titlePadding,
+                    isDark && darkStyles.textPrimary,
+                  ]}
+                >
+                  {title}
+                </Text>
+
+                <Text
+                  variant="titleMedium"
+                  numberOfLines={1}
+                  style={[
+                    styles.subtitle,
+                    isDark && darkStyles.textSecondary,
+                  ]}
+                >
+                  {subtitle}
+                </Text>
+              </View>
+            </Card.Content>
+
+            <View style={styles.rightContent}>
+              <View style={styles.unreadRow}>
+                {unread ? (
+                  <Badge
+                    value={unread}
+                    status="error"
+                    textStyle={styles.badgeTextStyle}
+                    containerStyle={[
+                      styles.badgeContainer,
+                      isDark && darkStyles.badgeContainer,
+                    ]}
+                  />
+                ) : null}
+                {contact.timestamp && (
+                  <Text
+                    style={[
+                      styles.timestamp,
+                      isDark && darkStyles.timestamp,
+                    ]}
+                  >
+                    {moment(contact.timestamp).format('HH:mm')}
+                  </Text>
+                )}
+              </View>
+              <Text
+                style={[styles.storageText, isDark && darkStyles.textSecondary]}
+              >
+                {contact.prettyStorage}
+              </Text>
+            </View>
+          </View>
+        </Card>
+      </Fragment>
+    );
+  }
 }
 
 ContactCard.propTypes = {
-    id             : PropTypes.string,
-    contact        : PropTypes.object,
-    selectedContact: PropTypes.object,
-    setTargetUri   : PropTypes.func,
-    chat           : PropTypes.bool,
-    orientation    : PropTypes.string,
-    isTablet       : PropTypes.bool,
-    isLandscape    : PropTypes.bool,
-    contacts       : PropTypes.array,
-    defaultDomain  : PropTypes.string,
-    accountId      : PropTypes.string,
-    favoriteUris   : PropTypes.array,
-    messages       : PropTypes.array,
-    pinned         : PropTypes.bool,
-    unread         : PropTypes.array,
-    fontScale      : PropTypes.number,
-    selectMode     : PropTypes.bool,
-    accountId      : PropTypes.string
+  id: PropTypes.string,
+  contact: PropTypes.object,
+  selectedContact: PropTypes.object,
+  setTargetUri: PropTypes.func,
+  chat: PropTypes.bool,
+  orientation: PropTypes.string,
+  isTablet: PropTypes.bool,
+  isLandscape: PropTypes.bool,
+  contacts: PropTypes.array,
+  defaultDomain: PropTypes.string,
+  accountId: PropTypes.string,
+  favoriteUris: PropTypes.array,
+  messages: PropTypes.array,
+  pinned: PropTypes.bool,
+  unread: PropTypes.array,
+  fontScale: PropTypes.number,
+  selectMode: PropTypes.bool,
+  darkMode: PropTypes.bool, // added
 };
-
 
 export default ContactCard;

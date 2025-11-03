@@ -164,7 +164,8 @@ class ContactsListBox extends Component {
             searchString: this.props.searchString,
             replyingTo: null,
             keyboardVisible: false,
-            bubbleWidths: {}
+            bubbleWidths: {},
+            dark: this.props.dark
         }
 
         this.ended = false;
@@ -371,7 +372,8 @@ class ContactsListBox extends Component {
                        showDeleteMessageModal: nextProps.showDeleteMessageModal,
                        selectMode: nextProps.shareToContacts || nextProps.inviteContacts,
                        searchMessages: nextProps.searchMessages,
-                       searchString: nextProps.searchString
+                       searchString: nextProps.searchString,
+                       dark: nextProps.dark
                        });
 
         if (nextProps.isTyping) {
@@ -699,7 +701,7 @@ const previewWrapperStyle = {
 	  }
 	
 	  return (
-		<View style={{ flex: 1 }}>
+		<View style={{ flex: 1}}>
 	
 		  {/* Full-width Reply Preview */}
 		  {replyingTo && (
@@ -785,7 +787,7 @@ const previewWrapperStyle = {
 				fontSize: 16,
 				borderWidth: 0,
 				borderColor: 'red',
-				paddingVertical: Platform.OS === 'ios' ? 12 : 0,
+				paddingVertical: Platform.OS === 'ios' ? 12 : 10,
 				paddingHorizontal: 8,
 				lineHeight: 20,
 				minHeight: 36,
@@ -800,7 +802,6 @@ const previewWrapperStyle = {
 			  value={composerProps.text}
 			/>
 		  </View>
-	
 		</View>
 	  );
 	};
@@ -1077,6 +1078,7 @@ renderSend = (props) => {
 
         return(
             <ContactCard
+            darkMode={this.state.dark}
             contact={item}
             selectedContact={this.state.selectedContact}
             setTargetUri={this.setTargetUri}
@@ -2390,6 +2392,7 @@ renderSend = (props) => {
                   keyboardShouldPersistTaps={"handled"}
                   keyboardDismissMode={"interactive"}
                   onInputTextChanged={text => this.chatInputChanged(text)}
+                  renderFooter={() => <View style={{ height: 10 }} />}
                 />
 
                 {addSpacer ? <KeyboardSpacer /> : null }
@@ -2515,7 +2518,8 @@ ContactsListBox.propTypes = {
     toggleSearchMessages: PropTypes.func,
     searchMessages: PropTypes.bool,
     searchString: PropTypes.string,
-    recordAudio: PropTypes.func
+    recordAudio: PropTypes.func,
+    dark: PropTypes.bool,
 };
 
 

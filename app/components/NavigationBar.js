@@ -482,6 +482,11 @@ class NavigationBar extends Component {
 			    }
 				subtitle = this.state.selectedContact.uri;
 			}
+			
+			if (this.state.selectedContact.uri.indexOf('@guest.') > -1) {
+				title = 'Anonymous caller';			
+			}
+
 		}
 
 		const { width, height } = Dimensions.get('window');
@@ -583,11 +588,11 @@ class NavigationBar extends Component {
                         {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {tags.indexOf('blocked') === -1 && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
 
-                        {tags.indexOf('blocked') === -1 ?
+                        {tags.indexOf('blocked') === -1 && isCallableUri ?
                         <Divider />
 						: null}
                                                 
-						{ !this.state.searchMessages ?
+						{ !this.state.searchMessages && !isAnonymous ?
 						<Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title={editTitle}/>
 						: null}
 
@@ -614,7 +619,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
 
-                        {!isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself?
+                        {!isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
 
@@ -622,13 +627,12 @@ class NavigationBar extends Component {
                         {!isConference && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
                         : null}
-                        <Divider />
-
+ 
                         {!isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
 
-                        {!isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
+                        {!isAnonymous && !isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
@@ -684,10 +688,6 @@ class NavigationBar extends Component {
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
 
-                        {false && !this.state.rejectNonContacts ?
-                        <Menu.Item onPress={() => this.handleMenu('anonymous')} icon={rejectIcon} title={rejectAnonymousTitle} />
-                        : null}
-                        
                         {false && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
                          : null }

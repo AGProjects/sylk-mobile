@@ -20,6 +20,7 @@ import VoipPushNotification from 'react-native-voip-push-notification';
 import { getApp } from '@react-native-firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ProximitySensor } from 'react-native-sensors';
+import { Appearance } from 'react-native';
 
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
@@ -75,6 +76,8 @@ import config from './config';
 import storage from './storage';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
+
+import DarkModeManager from './DarkModeManager';
 
 //import { registerForegroundListener } from '../firebase-messaging';
 
@@ -318,7 +321,8 @@ class Sylk extends Component {
             headsetIsPlugged: false,
             sortBy: 'timestamp',
             sharedFiles: {},
-            searchMessages: false
+            searchMessages: false,
+            dark: false
         };
 
         this.buildId = "20250923";
@@ -561,8 +565,18 @@ class Sylk extends Component {
 			DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
 			DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
         }
+        		
+		DarkModeManager.addListener((isDark) => {
+		    this.onDarkModeChanged(isDark); // optional callback
+		});
 
     }
+
+	  onDarkModeChanged(isDark) {
+		console.log('Dark mode is now', isDark);
+		this.setState({dark: isDark});
+		// You can update your class state or trigger a re-render in your app
+	  }
 
     _proximityDetect(data) {
         if (!this.state.proximityEnabled) {
@@ -1348,7 +1362,7 @@ class Sylk extends Component {
                             //console.log(item);
                             if (item.remoteParty in myContacts) {
                             } else {
-                                myContacts[item.remoteParty] = this.newContact(item.remoteParty);
+                                myContacts[item.remoteParty] = this.newContact(item.remoteParty, item.remoteParty, {src: 'cachedHistory'});
                             }
 
                             if (item.timezone && item.timezone !== undefined) {
@@ -1380,7 +1394,7 @@ class Sylk extends Component {
                         history.forEach((item) => {
                             if (item.remoteParty in myContacts) {
                             } else {
-                                myContacts[item.remoteParty] = this.newContact(item.remoteParty);
+                                myContacts[item.remoteParty] = this.newContact(item.remoteParty, item.remoteParty, {src: 'history'});
                             }
 
                             if (item.timezone && item.timezone !== undefined) {
@@ -1407,7 +1421,7 @@ class Sylk extends Component {
 
                  Object.keys(chatContacts).forEach((key) => {
                       if (!myContacts.hasOwnProperty(key)) {
-							myContacts[key] = this.newContact(key);
+							myContacts[key] = this.newContact(key, key, {src: 'chatContacts'});
 							try {
 								timestamp = JSON.parse(chatContacts[key], _parseSQLDate);
 								myContacts[key].timestamp = timestamp;
@@ -2239,6 +2253,8 @@ componentWillUnmount() {
     async componentDidMount() {
         utils.timestampedLog('-- App did mount');
         this._loaded = true;
+        
+		this.setState({dark: DarkModeManager.isDark()});
         
         this.getFiles();
         
@@ -3236,7 +3252,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
             if (this.state.enrollment) {
                 let myContacts = this.state.myContacts;
-                myContacts[this.state.account.id] = this.newContact(this.state.account.id, this.state.displayName);
+                myContacts[this.state.account.id] = this.newContact(this.state.account.id, this.state.displayName, {src: 'enrollment'});
                 myContacts[this.state.account.id].email = this.state.email;
                 this.saveSylkContact(this.state.account.id, myContacts[this.state.account.id], 'enrollment');
             }
@@ -8424,7 +8440,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
 		
 		if (deleteAll) {
 			console.log('Delete all messages exchanged with', uri);
-			this.addJournal(orig_uri, 'removeConversation');
+			if (uri.indexOf('@guest.') === -1) {
+				this.addJournal(orig_uri, 'removeConversation');
+			}
 
 			let dir = RNFS.DocumentDirectoryPath + '/conference/' + uri + '/files';
 			RNFS.unlink(dir).then((success) => {
@@ -8762,6 +8780,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     removeContact(uri) {
         console.log('removeContact', uri);
         let myContacts = this.state.myContacts;
+        
         this.deleteSylkContact(uri);
 
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
@@ -10181,12 +10200,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     deleteContact(uri) {
-        
+        console.log('deleteContact', uri);
         uri = uri.trim().toLowerCase();
 
         if (uri.indexOf('@') === -1) {
             uri = uri + '@' + this.defaultDomain;
         }
+
+        //this.deleteSylkContact(uri);
 
         let myContacts = this.state.myContacts;
 
@@ -10212,7 +10233,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     newContact(uri, name=null, data={}) {
-        //console.log('Create new contact', uri, data);
+        console.log('Create new contact', uri, data.src);
         let current_datetime = new Date();
 
         if (data.src !== 'init') {
@@ -11498,6 +11519,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     toggleSearchMessages = {this.toggleSearchMessages}
                     searchMessages = {this.state.searchMessages}
                     defaultConferenceDomain = {this.defaultConferenceDomain}
+                    dark = {this.state.dark}
                 />
 
                 <ImportPrivateKeyModal

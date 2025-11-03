@@ -1,56 +1,38 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, TextInput, Searchbar  } from 'react-native-paper';
+import { Searchbar } from 'react-native-paper';
 import autoBind from 'auto-bind';
 
 class URIInput extends React.Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
         this.state = {
             selecting: false,
             shareToContacts: this.props.shareToContacts,
             inviteContacts: this.props.inviteContacts,
             searchMessages: this.props.searchMessages,
-            defaultValue: this.props.defaultValue
+            defaultValue: this.props.defaultValue,
         };
 
         this.uriInput = React.createRef();
         this.clicked = false;
-        this.autoComplete;
     }
 
     componentDidMount() {
-        // this.autoComplete = autocomplete('#uri-input', { hint: false }, [
-        //     {
-        //         source: (query, cb) => {
-        //             let data = this.props.data.filter((item) => {
-        //                 return item.startsWith(query);
-        //             });
-        //             cb(data);
-        //         },
-        //         displayKey: String,
-        //         templates: {
-        //             suggestion: (suggestion) => {
-        //                 return suggestion;
-        //             }
-        //         }
-        //     }
-        // ]).on('autocomplete:selected', (event, suggestion, dataset) => {
-        //     this.setValue(suggestion);
-        // });
-
         if (this.props.autoFocus) {
             this.uriInput.current.focus();
         }
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({shareToContacts: nextProps.shareToContacts, 
-                       inviteContacts: nextProps.inviteContacts, 
-                       searchMessages: nextProps.searchMessages,
-                       defaultValue: nextProps.defaultValue
-                       });
+        this.setState({
+            shareToContacts: nextProps.shareToContacts,
+            inviteContacts: nextProps.inviteContacts,
+            searchMessages: nextProps.searchMessages,
+            defaultValue: nextProps.defaultValue,
+        });
     }
 
     componentDidUpdate(prevProps) {
@@ -77,21 +59,18 @@ class URIInput extends React.Component {
     onInputKeyDown(event) {
         switch (event.which) {
             case 13:
-                // ENTER
                 if (this.state.selecting) {
-                    this.setState({selecting: false});
+                    this.setState({ selecting: false });
                 } else {
                     this.props.onSelect(event.target.value);
                 }
                 break;
             case 27:
-                // ESC
-                this.setState({selecting: false});
+                this.setState({ selecting: false });
                 break;
             case 38:
             case 40:
-                // UP / DOWN ARROW
-                this.setState({selecting: true});
+                this.setState({ selecting: true });
                 break;
             default:
                 break;
@@ -99,50 +78,52 @@ class URIInput extends React.Component {
     }
 
     onInputBlur(event) {
-        // focus was lost, reset selecting state
         if (this.state.selecting) {
-            this.setState({selecting: false});
+            this.setState({ selecting: false });
         }
         this.clicked = false;
     }
 
     render() {
         let placeholder = 'Search contacts';
-        if (this.state.shareToContacts) {
-            placeholder = 'Select contacts to share...';
-        }
+        if (this.state.shareToContacts) placeholder = 'Select contacts to share...';
+        if (this.state.inviteContacts) placeholder = 'Select contacts to invite...';
+        if (this.state.searchMessages) placeholder = 'Search messages';
 
-        if (this.state.inviteContacts) {
-            placeholder = 'Select contacts to invite...';
-        }
+        // Only apply dark mode colors if dark prop is true
+        const darkColors = this.props.dark
+            ? {
+                  backgroundColor: '#121212',
+                  textColor: '#ffffff',
+                  iconColor: '#bbbbbb',
+                  placeholderColor: '#aaaaaa',
+              }
+            : {};
 
-        if (this.state.searchMessages) {
-            placeholder = 'Search messages';
-        }
-        
         return (
             <Searchbar
+                ref={this.uriInput}
                 mode="flat"
                 label="Enter address"
-                ref={this.uriInput}
-                 style={{backgroundColor: 'black', 
-                         marginLeft: 10,
-                         width: 100
-                 }} 
-                
+                value={this.state.defaultValue}
+                placeholder={placeholder}
                 onChangeText={this.onInputChange}
                 onKeyDown={this.onInputKeyDown}
                 onBlur={this.onInputBlur}
                 onPress={this.onInputClick}
-                value={this.state.defaultValue}
                 autoCapitalize="none"
                 autoCorrect={false}
-                required
-                clearIcon="close" 
+                clearIcon="close"
                 showClearIcon={true}
-                style={{ iconColor: 'gray' }}
                 autoFocus={this.props.autoFocus}
-                placeholder={placeholder}
+                style={{
+                    ...(darkColors.backgroundColor ? { backgroundColor: darkColors.backgroundColor } : {}),
+                }}
+                inputStyle={{
+                    ...(darkColors.textColor ? { color: darkColors.textColor } : {}),
+                }}
+                iconColor={darkColors.iconColor}
+                placeholderTextColor={darkColors.placeholderColor}
             />
         );
     }
@@ -153,11 +134,10 @@ URIInput.propTypes = {
     autoFocus: PropTypes.bool.isRequired,
     onChange: PropTypes.func.isRequired,
     onSelect: PropTypes.func.isRequired,
-    shareToContacts  : PropTypes.bool,
-    inviteContacts  : PropTypes.bool,
-    searchMessages: PropTypes.bool
-    
+    shareToContacts: PropTypes.bool,
+    inviteContacts: PropTypes.bool,
+    searchMessages: PropTypes.bool,
+    dark: PropTypes.bool, // <-- dark mode as prop
 };
-
 
 export default URIInput;
