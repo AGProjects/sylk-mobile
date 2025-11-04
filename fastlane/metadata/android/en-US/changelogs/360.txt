@@ -1,0 +1,13 @@
+Added dark theme synchronized with the system settings
+Added PGP private key backup  and restore
+Added immersive views for full screen in both landscape and portrait mode
+Added selective deletion of files and messages passed on type and period 
+Added metadata exchange for file transfers
+Added individual messages replies
+Video conferences now support speaker selection
+Audio only conferences have text chat
+Video of myself can me moved, toggled with the main view or hidden 
+Scale down photos before sending them out
+One to one calls improvement
+Improved UI elements
+Overall bug fixes

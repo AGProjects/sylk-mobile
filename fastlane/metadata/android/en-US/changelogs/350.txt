@@ -1,0 +1,4 @@
+ * Added backup and restore private keys
+ * GUI improvemens
+ * Improve multiple party conferencing
+ * Bug fixes
