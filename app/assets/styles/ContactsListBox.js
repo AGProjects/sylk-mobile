@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
   },
 
   photoMenuText: {
-    paddingTop: 5,
+    paddingTop: 7,
   },
 
 	inputToolbar: {

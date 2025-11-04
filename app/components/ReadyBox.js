@@ -76,7 +76,8 @@ class ReadyBox extends Component {
 			searchMessages: this.props.searchMessages,
 			searchString: '',
 			recordingDuration: 0,
-			dark: this.props.dark
+			dark: this.props.dark,
+			messagesMetadata: this.props.messagesMetadata
         };
         this.ended = false;
 
@@ -173,7 +174,8 @@ class ReadyBox extends Component {
                         keyboardVisible: nextProps.keyboardVisible,
                         contentTypes: nextProps.contentTypes,
                         sourceContact: nextProps.sourceContact,
-                        dark: nextProps.dark
+                        dark: nextProps.dark,
+                        messagesMetadata: nextProps.messagesMetadata
                         });
     }
 
@@ -1561,6 +1563,7 @@ class ReadyBox extends Component {
 						searchString = {this.state.searchString}
 						recordAudio = {this.recordAudio}
 						dark = {this.state.dark}
+						messagesMetadata = {this.state.messagesMetadata}
 					/>
 					}
 
@@ -1709,7 +1712,8 @@ ReadyBox.propTypes = {
     toggleSearchMessages: PropTypes.func,
     searchMessages: PropTypes.bool,
     defaultConferenceDomain: PropTypes.string,
-    dark: PropTypes.bool
+    dark: PropTypes.bool,
+    messagesMetadata: PropTypes.object,
 };
 
 

@@ -1120,6 +1120,8 @@ PODS:
     - React-Core
   - react-native-image-picker (6.0.0):
     - React-Core
+  - react-native-image-resizer (1.4.5):
+    - React-Core
   - react-native-randombytes (3.6.1):
     - React-Core
   - react-native-receive-sharing-intent (2.0.0):
@@ -1450,6 +1452,7 @@ DEPENDENCIES:
   - react-native-fast-openpgp (from `../node_modules/react-native-fast-openpgp`)
   - react-native-get-random-values (from `../node_modules/react-native-get-random-values`)
   - react-native-image-picker (from `../node_modules/react-native-image-picker`)
+  - react-native-image-resizer (from `../node_modules/react-native-image-resizer`)
   - react-native-randombytes (from `../node_modules/react-native-randombytes`)
   - react-native-receive-sharing-intent (from `../node_modules/react-native-receive-sharing-intent`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
@@ -1624,6 +1627,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-get-random-values"
   react-native-image-picker:
     :path: "../node_modules/react-native-image-picker"
+  react-native-image-resizer:
+    :path: "../node_modules/react-native-image-resizer"
   react-native-randombytes:
     :path: "../node_modules/react-native-randombytes"
   react-native-receive-sharing-intent:
@@ -1802,6 +1807,7 @@ SPEC CHECKSUMS:
   react-native-fast-openpgp: a88817558063d0f66584497459d963051b00d7f2
   react-native-get-random-values: c89ae16e7b9bb5c06dfe77225556df584344293a
   react-native-image-picker: c083dc5ccaaf45994b18bde99b24b7e02ca29cf4
+  react-native-image-resizer: 17b2d73c030975b6543395c7e7368bc8774c5efa
   react-native-randombytes: 3c8f3e89d12487fd03a2f966c288d495415fc116
   react-native-receive-sharing-intent: cbd6daac89f5e84c231fe0d8e5453490cc431193
   react-native-safe-area-context: 758e894ca5a9bd1868d2a9cfbca7326a2b6bf9dc

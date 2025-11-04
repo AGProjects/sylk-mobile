@@ -84,7 +84,7 @@ class ContactsListBox extends Component {
         autoBind(this);
 
         this.chatListRef = React.createRef();
-        this.default_placeholder = 'Enter message...'
+        this.default_placeholder = 'Type a message...'
 
         let renderMessages = [];
         if (this.props.selectedContact) {
@@ -115,8 +115,6 @@ class ContactsListBox extends Component {
             }
         }
         
-        this.replyMessages = {}
-
         this.state = {
             accountId: this.props.account ? this.props.account.id : null,
             password: this.props.password,
@@ -154,6 +152,7 @@ class ContactsListBox extends Component {
             playing: false,
             texting: false,
             cameraAsset: null,
+            photoMsg: null,
             placeholder: this.default_placeholder,
             audioSendFinished: false,
             messagesCategoryFilter: this.props.messagesCategoryFilter,
@@ -165,7 +164,10 @@ class ContactsListBox extends Component {
             replyingTo: null,
             keyboardVisible: false,
             bubbleWidths: {},
-            dark: this.props.dark
+            dark: this.props.dark,
+			messagesMetadata: this.props.messagesMetadata,
+			mediaLabels: {},
+			text: '',
         }
 
         this.ended = false;
@@ -298,10 +300,21 @@ class ContactsListBox extends Component {
                 }
             }
             
-            if (nextProps.myContacts && nextProps.selectedContact && nextProps.selectedContact.uri in nextProps.myContacts) {
-				this.replyMessages = nextProps.myContacts[nextProps.selectedContact.uri].replyMessages;
-				//console.log('update replyMessages', this.replyMessages);
+            /*
+            if (nextProps.myContacts && nextProps.selectedContact && nextProps.selectedContact != this.state.selectedContact) { 
+                const messagesMetadata = nextProps.myContacts[nextProps.selectedContact.uri].messagesMetadata
+                console.log('-- Refresh metadata');
+                //console.log(Object.keys(nextProps));
+                console.log(JSON.stringify(messagesMetadata, null, 2));
+				this.setState({
+					messagesMetadata: { ...messagesMetadata }
+				}, () => {
+					// This runs AFTER messagesMetadata is updated
+					this.setState({ mediaLabels: this.mediaLabels });
+				});
+    
             }
+            */
 
             let delete_ids = [];
             Object.keys(this.outgoingPendMessages).forEach((_id) => {
@@ -373,8 +386,12 @@ class ContactsListBox extends Component {
                        selectMode: nextProps.shareToContacts || nextProps.inviteContacts,
                        searchMessages: nextProps.searchMessages,
                        searchString: nextProps.searchString,
-                       dark: nextProps.dark
-                       });
+                       dark: nextProps.dark,
+                       messagesMetadata: nextProps.messagesMetadata
+                       }, () => {
+					// This runs AFTER messagesMetadata is updated
+					this.setState({ mediaLabels: this.mediaLabels });
+				});
 
         if (nextProps.isTyping) {
             setTimeout(() => {
@@ -453,6 +470,7 @@ class ContactsListBox extends Component {
         asset.preview = true;
 
         let msg = await this.props.file2GiftedChat(asset);
+        //console.log('asset', asset);
 
         let assetType = 'file';
         if (msg.video) {
@@ -463,8 +481,10 @@ class ContactsListBox extends Component {
 
         this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
-                        cameraAsset: msg,
-                        placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
+                        cameraAsset: asset,
+                        photoMsg: msg,
+                        //placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
+						placeholder: 'Photo note...'
                         });
     }
 
@@ -473,12 +493,12 @@ class ContactsListBox extends Component {
       <CustomChatActions {...props} 
          recordAudio={this.props.recordAudio} 
          texting={this.state.texting || this.state.replyingTo} 
-         sendingImage={this.state.cameraAsset !==null} 
+         sendingImage={this.state.photoMsg !==null} 
          selectedContact={this.state.selectedContact}/>
     )
 
     chatInputChanged(text) {
-       this.setState({texting: (text.length > 0)})
+       this.setState({texting: (text.length > 0), text: text})
     }
 
     resetContact() {
@@ -486,191 +506,192 @@ class ContactsListBox extends Component {
         this.setState({
             texting: false,
             cameraAsset: null,
+            photoMsg: null,
             placeholder: this.default_placeholder
         });
     }
 
-renderBubble(props) {
-  const { currentMessage, messages } = props;
-
-  // Minimal change: adjust top corners only
-  const bubbleRadius = 16;
-
-  let leftColor = 'green';
-  let rightColor = '#fff';
-
-  if (currentMessage.failed) {
-    rightColor = 'red';
-    leftColor = 'red';
-  } else if (currentMessage.pinned) {
-    rightColor = '#2ecc71';
-    leftColor = '#2ecc71';
-  }
-
-  // Find original message if this is a reply
-  let originalMessage = null;
-  if (currentMessage.replyTo && messages) {
-    originalMessage = messages.find(m => m._id === currentMessage.replyTo);
-  }
-
-  const MIN_BUBBLE_WIDTH = 120;
-  const MAX_BUBBLE_WIDTH = '80%';
-
-  const measuredWidth = this.state.bubbleWidths[currentMessage._id] || 0;
-  const bubbleWidth = Math.max(measuredWidth, MIN_BUBBLE_WIDTH);
-
-const previewWrapperStyle = {
-  borderTopLeftRadius: bubbleRadius,
-  borderTopRightRadius: bubbleRadius,
-};
-
-  const replyPreviewContainer =
-    currentMessage.direction == 'incoming'
-      ? styles.replyPreviewContainerIncoming
-      : styles.replyPreviewContainerOutgoing;
-
-  const hasPreview = !!originalMessage; // for top corner radius
-
-  // Reply Preview UI
-  const replyPreview = originalMessage ? (
-    <TouchableOpacity
-      activeOpacity={0.7}
-      onPress={() => {
-        if (this.chatListRef && originalMessage._id) {
-          this.scrollToMessage(originalMessage._id);
-        }
-      }}
-    >
-      <View
-        style={[
-          replyPreviewContainer,
-          {
-            alignSelf:
-              currentMessage.direction === 'incoming'
-                ? 'flex-start'
-                : 'flex-end',
-            minWidth: MIN_BUBBLE_WIDTH,
-            maxWidth: MAX_BUBBLE_WIDTH,
-            width: bubbleWidth,
-            ...previewWrapperStyle, // <-- add bottom corner rounding
-          },
-        ]}
-      >
-        <View style={styles.replyLine} />
-
-        {originalMessage.image ? (
-          <Image
-            source={{ uri: originalMessage.image }}
-            style={{
-              width: '85%',
-              height: 100,
-            }}
-            resizeMode="cover"
-          />
-        ) : (
-          <Text
-            style={styles.replyPreviewText}
-            numberOfLines={3}
-            ellipsizeMode="tail"
-          >
-            {originalMessage.text}
-          </Text>
-        )}
-      </View>
-    </TouchableOpacity>
-  ) : null;
-
-  if (
-    currentMessage.direction == 'incoming' &&
-    currentMessage.metadata &&
-    currentMessage.metadata.filename &&
-    currentMessage.metadata.filename.endsWith('.asc')
-  ) {
-    //return null;
-  }
-
-  const leftWrapper = {
-    backgroundColor: leftColor,
-    borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
-    borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
-  };
-  const rightWrapper = {
-    backgroundColor: rightColor,
-    borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
-    borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
-  };
-
-  return (
-    <View style={{ flex: 1, alignSelf: 'stretch', borderColor: 'green', borderWidth: 0 }}>
-      {replyPreview}
-      {currentMessage.image ? (
-        <Bubble
-          {...props}
-          wrapperStyle={{
-            left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
-            right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
-          }}
-          textProps={{ style: { color: props.position === 'left' ? '#000' : '#000' } }}
-          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
-          renderCustomView={() => (
-            <View
-              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
-              style={{ position: 'absolute', width: '100%', height: '100%' }}
-            />
-          )}
-        />
-      ) : currentMessage.video ? (
-        <Bubble
-          {...props}
-          wrapperStyle={{
-            left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
-            right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
-          }}
-          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
-          textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
-          renderCustomView={() => (
-            <View
-              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
-              style={{ position: 'absolute', width: '100%', height: '100%' }}
-            />
-          )}
-        />
-      ) : currentMessage.audio ? (
-        <Bubble
-          {...props}
-          wrapperStyle={{
-            left: { ...leftWrapper, backgroundColor: 'transparent' },
-            right: { ...rightWrapper, backgroundColor: 'transparent' },
-          }}
-          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
-          textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
-          renderCustomView={() => (
-            <View
-              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
-              style={{ position: 'absolute', width: '100%', height: '100%' }}
-            />
-          )}
-        />
-      ) : (
-        <Bubble
-          {...props}
-          wrapperStyle={{
-            left: { ...leftWrapper },
-            right: { ...rightWrapper },
-          }}
-          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#000' } }}
-          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
-          renderCustomView={() => (
-            <View
-              onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
-              style={{ position: 'absolute', width: '100%', height: '100%' }}
-            />
-          )}
-        />
-      )}
-    </View>
-  );
-}
+	renderBubble(props) {
+	  const { currentMessage, messages } = props;
+	
+	  // Minimal change: adjust top corners only
+	  const bubbleRadius = 16;
+	
+	  let leftColor = 'green';
+	  let rightColor = '#fff';
+	
+	  if (currentMessage.failed) {
+		rightColor = 'red';
+		leftColor = 'red';
+	  } else if (currentMessage.pinned) {
+		rightColor = '#2ecc71';
+		leftColor = '#2ecc71';
+	  }
+	
+	  // Find original message if this is a reply
+	  let originalMessage = null;
+	  if (currentMessage.replyId && messages) {
+		originalMessage = messages.find(m => m._id === currentMessage.replyId);
+	  }
+	
+	  const MIN_BUBBLE_WIDTH = 120;
+	  const MAX_BUBBLE_WIDTH = '80%';
+	
+	  const measuredWidth = this.state.bubbleWidths[currentMessage._id] || 0;
+	  const bubbleWidth = Math.max(measuredWidth, MIN_BUBBLE_WIDTH);
+	
+	const previewWrapperStyle = {
+	  borderTopLeftRadius: bubbleRadius,
+	  borderTopRightRadius: bubbleRadius,
+	};
+	
+	  const replyPreviewContainer =
+		currentMessage.direction == 'incoming'
+		  ? styles.replyPreviewContainerIncoming
+		  : styles.replyPreviewContainerOutgoing;
+	
+	  const hasPreview = !!originalMessage; // for top corner radius
+	
+	  // Reply Preview UI
+	  const replyPreview = originalMessage ? (
+		<TouchableOpacity
+		  activeOpacity={0.7}
+		  onPress={() => {
+			if (this.chatListRef && originalMessage._id) {
+			  this.scrollToMessage(originalMessage._id);
+			}
+		  }}
+		>
+		  <View
+			style={[
+			  replyPreviewContainer,
+			  {
+				alignSelf:
+				  currentMessage.direction === 'incoming'
+					? 'flex-start'
+					: 'flex-end',
+				minWidth: MIN_BUBBLE_WIDTH,
+				maxWidth: MAX_BUBBLE_WIDTH,
+				width: bubbleWidth,
+				...previewWrapperStyle, // <-- add bottom corner rounding
+			  },
+			]}
+		  >
+			<View style={styles.replyLine} />
+	
+			{originalMessage.image ? (
+			  <Image
+				source={{ uri: originalMessage.image }}
+				style={{
+				  width: '85%',
+				  height: 100,
+				}}
+				resizeMode="cover"
+			  />
+			) : (
+			  <Text
+				style={styles.replyPreviewText}
+				numberOfLines={3}
+				ellipsizeMode="tail"
+			  >
+				{originalMessage.text}
+			  </Text>
+			)}
+		  </View>
+		</TouchableOpacity>
+	  ) : null;
+	
+	  if (
+		currentMessage.direction == 'incoming' &&
+		currentMessage.metadata &&
+		currentMessage.metadata.filename &&
+		currentMessage.metadata.filename.endsWith('.asc')
+	  ) {
+		//return null;
+	  }
+	
+	  const leftWrapper = {
+		backgroundColor: leftColor,
+		borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
+		borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
+	  };
+	  const rightWrapper = {
+		backgroundColor: rightColor,
+		borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
+		borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
+	  };
+	
+	  return (
+		<View style={{ flex: 1, alignSelf: 'stretch', borderColor: 'green', borderWidth: 0 }}>
+		  {replyPreview}
+		  {currentMessage.image ? (
+			<Bubble
+			  {...props}
+			  wrapperStyle={{
+				left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
+				right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
+			  }}
+			  textProps={{ style: { color: props.position === 'left' ? '#000' : '#000' } }}
+			  textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+			  renderCustomView={() => (
+				<View
+				  onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+				  style={{ position: 'absolute', width: '100%', height: '100%' }}
+				/>
+			  )}
+			/>
+		  ) : currentMessage.video ? (
+			<Bubble
+			  {...props}
+			  wrapperStyle={{
+				left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
+				right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
+			  }}
+			  textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
+			  textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+			  renderCustomView={() => (
+				<View
+				  onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+				  style={{ position: 'absolute', width: '100%', height: '100%' }}
+				/>
+			  )}
+			/>
+		  ) : currentMessage.audio ? (
+			<Bubble
+			  {...props}
+			  wrapperStyle={{
+				left: { ...leftWrapper, backgroundColor: 'transparent' },
+				right: { ...rightWrapper, backgroundColor: 'transparent' },
+			  }}
+			  textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
+			  textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+			  renderCustomView={() => (
+				<View
+				  onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+				  style={{ position: 'absolute', width: '100%', height: '100%' }}
+				/>
+			  )}
+			/>
+		  ) : (
+			<Bubble
+			  {...props}
+			  wrapperStyle={{
+				left: { ...leftWrapper },
+				right: { ...rightWrapper },
+			  }}
+			  textProps={{ style: { color: props.position === 'left' ? '#fff' : '#000' } }}
+			  textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+			  renderCustomView={() => (
+				<View
+				  onLayout={(e) => this.handleBubbleLayout(currentMessage._id, e)}
+				  style={{ position: 'absolute', width: '100%', height: '100%' }}
+				/>
+			  )}
+			/>
+		  )}
+		</View>
+	  );
+	}
 
 
 	// Custom Input Toolbar
@@ -795,7 +816,7 @@ const previewWrapperStyle = {
 				textAlignVertical: 'center',
 				color: '#000',
 			  }}
-			  placeholder={replyingTo ? 'Reply with...' : 'Type a message...'}
+			  placeholder={replyingTo ? 'Reply with...' : this.state.placeholder}
 			  placeholderTextColor="#999"
 			  multiline
 			  onChangeText={composerProps.onTextChanged}
@@ -973,7 +994,7 @@ renderSend = (props) => {
               color='red'
             />
           </TouchableOpacity>
-          <TouchableOpacity onPress={this.sendCameraAsset}>
+          <TouchableOpacity onPress={this.sendPhoto}>
             <Icon
               type="font-awesome"
               name="send"
@@ -1124,52 +1145,129 @@ renderSend = (props) => {
     }
 
     sendEditedMessage(message, text) {
-        if (!this.state.selectedContact.uri) {
-           return;
-        }
+        const newId = uuid.v4();
+    
+        if (message.contentType === 'application/sylk-file-transfer') {
+			const transferId = message._id;
+			let metadataContent;
+			if (transferId in this.state.mediaLabels) {
+				metadataContent = this.state.messagesMetadata[message._id];
+				console.log('old metadataContent', metadataContent);
+				if (metadataContent.metadataId) {
+					this.props.deleteMessage(metadataContent.metadataId, this.state.selectedContact.uri);
+				}
+			}
+			
+			let messagesMetadata = this.state.messagesMetadata;
+			
+			//console.log('old message', message );
 
-        if (message.text === text) {
-            return;
-        }
+			metadataContent = {transferId: transferId, label:text, metadataId: newId};
+			let metadataMessage = {_id: newId,
+								   key: newId,
+								   createdAt: new Date(),
+								   metadata: metadataContent,
+								   text: JSON.stringify(metadataContent),
+								   };
 
-        this.props.deleteMessage(message._id, this.state.selectedContact.uri);
-
-        message._id = uuid.v4();
-        message.key = message._id;
-        message.text = text;
-
-        this.props.sendMessage(this.state.selectedContact.uri, message);
-    }
-
-    onSendMessage(messages) {
-        let uri;
-        if (!this.state.selectedContact) {
-            if (this.state.targetUri && this.state.chat) {
-                 let contacts = this.searchedContact(this.state.targetUri);
-                 if (contacts.length !== 1) {
-                     return;
-                }
-                 uri = contacts[0].uri;
-            } else {
-                return;
-            }
+			messagesMetadata[transferId] = metadataContent;
+			console.log('new metadataContent', metadataContent);
+			this.setState({
+				messagesMetadata: { ...messagesMetadata }
+			}, () => {
+				// This runs AFTER messagesMetadata is updated
+				this.setState({ mediaLabels: this.mediaLabels });
+			});
+			this.props.sendMessage(this.state.selectedContact.uri, metadataMessage, 'application/sylk-message-metadata');
         } else {
-            uri = this.state.selectedContact.uri;
+			message._id = newId;
+			message.key = newId;
+			message.text = text;
+			this.props.deleteMessage(message._id, this.state.selectedContact.uri);
+			this.props.sendMessage(this.state.selectedContact.uri, message);
         }
+    }
+    
+    onSendMessage(messages) {
+		const uri = this.state.selectedContact.uri;
+		
+		if (this.state.photoMsg) {
+			this.sendPhoto()
+			return;
+		}
 
         messages.forEach((message) => {
             //console.log('this.state.replyingTo', this.state.replyingTo);
-            message.encrypted = this.state.selectedContact && this.state.selectedContact.publicKey ? 2 : 0;
             if (this.state.replyingTo) {
-				message.replyTo = this.state.replyingTo._id;
-				this.replyMessages[message._id] = this.state.replyingTo._id;
-			} else {
-			    message.replyTo = null;
+				const metadataContent = {messageId: message._id, replyId:  this.state.replyingTo._id};
+				const mId = uuid.v4();
+				const metadataMessage = {_id: mId,
+										 key: mId,
+										 createdAt: new Date(),
+										 metadata: metadataContent,
+										 text: JSON.stringify(metadataContent),
+										};
+
+                let messagesMetadata = this.state.messagesMetadata;
+				messagesMetadata[message._id] = metadataContent;
+				this.setState({scrollToBottom: true, messagesMetadata: messagesMetadata});
+                this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
 			}
+			message.encrypted = this.state.selectedContact && this.state.selectedContact.publicKey ? 2 : 0;
             this.props.sendMessage(uri, message);
         });
         
         this.setState({replyingTo: null, renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
+    }
+
+    sendPhoto() {
+        // TODO: send photo description if present
+        if (!this.state.selectedContact) {
+			return;
+        }
+
+        if (!this.state.photoMsg) {
+			return;
+        }
+
+
+        const uri = this.state.selectedContact.uri;
+        const text = this.state.text.trim();
+        const photoMsg = this.state.photoMsg;
+
+		this.setState({ text: '' });
+		this.textInputRef.clear?.();  // works for plain TextInput
+		this.textInputRef.blur?.();   // dismiss keyboard
+
+        this.setState({cameraAsset: null, 
+                       photoMsg: null,
+                       text: '',
+                       texting: false,
+                       placeholder: this.default_placeholder});
+                       
+        console.log('sendPhoto with label', text || 'Photo');
+
+		if (text) {
+			const transfer_id = photoMsg.metadata.transfer_id;
+			const mId = uuid.v4();
+			const metadataContent = {transferId: transfer_id, label: text, metadataId: mId};
+			const metadataMessage = {_id: mId,
+									 key: mId,
+									 createdAt: new Date(),
+									 metadata: metadataContent,
+									 text: JSON.stringify(metadataContent),
+									};
+			//console.log('metadataMessage', metadataMessage);
+
+			let messagesMetadata = this.state.messagesMetadata;
+			messagesMetadata[transfer_id] = metadataContent;
+			this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+			this.setState({scrollToBottom: true,
+						   messagesMetadata: messagesMetadata}
+						   );
+		}
+
+        this.transferFile(this.state.photoMsg);
     }
 
     searchedContact(uri, contact=null) {
@@ -1323,16 +1421,31 @@ renderSend = (props) => {
     }
 
     deleteCameraAsset() {
-        if (this.state.cameraAsset && this.state.cameraAsset.metadata.transfer_id in this.outgoingPendMessages) {
-            delete this.outgoingPendMessages[this.state.cameraAsset.metadata.transfer_id]
+        console.log('deleteCameraAsset');
+        if (this.state.photoMsg && this.state.photoMsg.metadata.transfer_id in this.outgoingPendMessages) {
+            delete this.outgoingPendMessages[this.state.photoMsg.metadata.transfer_id]
         }
-        this.setState({cameraAsset: null, placeholder: this.default_placeholder});
-        this.props.getMessages(this.state.selectedContact.uri);
-    }
 
-    sendCameraAsset() {
-        this.transferFile(this.state.cameraAsset);
-        this.setState({cameraAsset: null, placeholder: this.default_placeholder});
+        // When cancelling or discarding an asset
+        if (this.state.cameraAsset) {
+			const fileUri = this.state.cameraAsset.uri.replace('file://', ''); // remove scheme
+			  RNFS.unlink(fileUri)
+			  .then(() => console.log('Temp file deleted'))
+			  .catch(err => console.log('Error deleting temp file', err));
+		  }
+
+		this.setState(prevState => ({
+		  renderMessages: prevState.renderMessages.filter(
+			m => m._id !== prevState.photoMsg._id
+		  ),
+		  placeholder: this.default_placeholder,
+		  photoMsg: null,
+		  cameraAsset: null,
+		  text: ''
+		}));
+
+		this.textInputRef.clear?.();  // works for plain TextInput
+		this.textInputRef.blur?.();   // dismiss keyboard
     }
 
     async _pickDocument() {
@@ -1587,10 +1700,6 @@ renderSend = (props) => {
 
     onLongMessagePress(context, currentMessage) {
     
-        if (this.state.keyboardVisible) {
-			return;
-        }
-    
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
         }
@@ -1605,11 +1714,12 @@ renderSend = (props) => {
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
 
+			if (this.isMessageEditable(currentMessage)) {
+				options.push('Edit');
+				icons.push(<Icon name="file-document-edit" size={20} />);
+			}
+
             if (currentMessage.metadata && !currentMessage.metadata.error) {
-                if (this.isMessageEditable(currentMessage)) {
-                    options.push('Edit');
-                    icons.push(<Icon name="file-document-edit" size={20} />);
-                }
                 if (currentMessage.metadata && currentMessage.metadata.local_url) {
                     options.push('Open')
                     icons.push(<Icon name="folder-open" size={20} />);
@@ -1657,20 +1767,20 @@ renderSend = (props) => {
             if  (currentMessage && currentMessage.metadata) {
 				//console.log('mesage metadata:', currentMessage.metadata);
 				if (currentMessage.metadata.filename) {
-					if (currentMessage.metadata.filename.error) {
-						options.push('Download again');
-						icons.push(<Icon name="cloud-download" size={20} />);
-						if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
-							options.push('Decrypt');
-							icons.push(<Icon name="table-key" size={20} />);
-						}
-	
-					} else {
+
 					    if (!currentMessage.metadata.local_url) {					
 							options.push('Download');
 							icons.push(<Icon name="cloud-download" size={20} />);
+						} else {
+						options.push('Download again');
+						icons.push(<Icon name="cloud-download" size={20} />);
+						/*
+						if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
+							options.push('Decrypt');
+							icons.push(<Icon name="table-key" size={20} />);
+						}*/
+
 						}
-					}					
 				} else {
 					options.push('Email');
 					icons.push(<Icon name="email" size={20} />);
@@ -1734,16 +1844,13 @@ renderSend = (props) => {
             return false;
         }
 
-        if (message.image || message.audio || message.video) {
-            return false;
-        }
-
-        if (message.metadata && message.metadata.filename) {
+        if (message.audio || message.video) {
             return false;
         }
 
         return true;
     }
+
 
     closeDeleteMessageModal() {
         this.setState({showDeleteMessageModal: false});
@@ -1888,9 +1995,19 @@ renderSend = (props) => {
 
     renderMessageText(props) {
         const { currentMessage } = props;
-        const extraStyles = currentMessage.replyTo ? {minWidth: 120} : {};
-        
-        
+        const extraStyles = currentMessage.replyId ? {minWidth: 120} : {};
+
+        let mediaLabel = this.state.mediaLabels[currentMessage._id] || currentMessage.text ;
+        // Create a temporary props object with overridden text
+
+		const labelProps = {
+		  ...props,
+		  currentMessage: {
+			...currentMessage,
+			text: mediaLabel // only override the text
+		  }
+		};
+
         if (currentMessage.video) {
             return (
                 <View style={[styles.photoMenuContainer, extraStyles]}>
@@ -1928,12 +2045,12 @@ renderSend = (props) => {
                         icon="menu"
                     />
 
-                    <View style={styles.photoMenuText}>
-                    <MessageText
-                        {...props}
-                        customTextStyle={styles.messageText}
-                    />
-                    </View>
+					  <View style={styles.photoMenuText}>
+						<MessageText
+						  {...labelProps}
+						  customTextStyle={styles.messageText} // keeps your original styling
+						/>
+					  </View>
 
                 </View>
             );
@@ -1952,7 +2069,7 @@ renderSend = (props) => {
 
     renderTime = (props) => {
         const { currentMessage } = props;
-
+    
         if (currentMessage.metadata && currentMessage.metadata.preview) {
             return null;
         }
@@ -1987,6 +2104,7 @@ renderSend = (props) => {
             )
         } else {
             return (
+			<View style={{ alignItems: 'flex-end' }}> 
               <Time
               {...props}
                 timeTextStyle={{
@@ -1998,6 +2116,7 @@ renderSend = (props) => {
                   }
                 }}
               />
+			</View>
             )
         }
       }
@@ -2011,6 +2130,27 @@ renderSend = (props) => {
           });
     }
 
+	get replyMessages() {
+	  if (!this.state.messagesMetadata) return {};
+	
+	  return Object.fromEntries(
+		Object.entries(this.state.messagesMetadata)
+		  .filter(([, value]) => value.replyId)      // keep only those with replyId
+		  .map(([key, value]) => [key, value.replyId]) // return key -> replyId
+	  );
+	}
+
+	get mediaLabels() {
+	  const data = this.state.messagesMetadata;  // ✅ correct property name
+	  if (!data) return {};
+	
+	  return Object.fromEntries(
+		Object.entries(data)
+		  .map(([key, value]) => [key, value.label])
+		  .filter(([, label]) => label !== undefined && label !== null)
+	  );
+	}
+	
     get showChat() {
        if (this.state.selectedContact) {
            if (this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) {
@@ -2277,26 +2417,26 @@ renderSend = (props) => {
         
 
 		messages.forEach((m) => {
-		  //console.log(m._id, m.direction, m.text, m.replyTo);
+		  //console.log(m._id, m.direction, m.text, m.replyId);
 		
-		  if (m._id in this.replyMessages) {
+		  if (m._id in this.state.messagesMetadata) {
 			// mutate the object directly
-			m.replyTo = this.replyMessages[m._id];
+			m.replyId = this.state.messagesMetadata[m._id].replyId;
 		  } else {
-			m.replyTo = null;
+			m.replyId = null;
 		  }
 		});
 
         messages.forEach((m) => {
-		  //console.log(m._id, m.direction, m.text, m.replyTo);
+		  //console.log(m._id, m.direction, m.text, m.replyId);
         });
 
         let i = 1;
         let logText = '\n'; // initialize empty string
 
         for (const m of messages.slice().reverse()) {
-		  //console.log(i, m._id, m.direction, m.text, m.replyTo);
-		  logText += `${i} ${m._id} ${m.direction} ${m.text} ${m.replyTo || ''}\n`;
+		  //console.log(i, m._id, m.direction, m.text, m.replyId);
+		  logText += `${i} ${m._id} ${m.direction} ${m.text} ${m.replyId || ''}\n`;
 		  i = i + 1;
 		}
 
@@ -2319,26 +2459,35 @@ renderSend = (props) => {
   
         // debug
         let debug = false;
+        
+        //debug = true;
        
-        let replyMessages = this.replyMessages;    
+        const messagesMetadata = this.state.messagesMetadata; 
+        const replyMessages = this.replyMessages;
+        const mediaLabels = this.state.mediaLabels;
           
-  		if (debug) {
+		if (debug) {
 			const values = {
-			  replyMessages
+				messagesMetadata,
+				replyMessages,
+				mediaLabels
 			};
-
+		
 			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
 		
 			Object.entries(values).forEach(([key, value]) => {
-			  const prev = this.prevValues[key];
-			   const paddedKey = key.padStart(maxKeyLength, ' '); // right
-			  if (JSON.stringify(prev) !== JSON.stringify(value)) {
-				console.log(paddedKey, value);
-			  }
+				const prev = this.prevValues[key];
+				const paddedKey = key.padStart(maxKeyLength, ' '); // right-align key
+				if (JSON.stringify(prev) !== JSON.stringify(value)) {
+					console.log('DEBUG', Platform.OS, paddedKey, JSON.stringify(value, null, 2));
+				}
 			});
-
+		
 			this.prevValues = values;
 		}
+		
+		const footerHeightReply = Platform.OS === 'android' ? 60: 0;
+		const footerHeight = Platform.OS === 'android' ? 10: 0;
 
         //console.log('this.state.selectedContact', this.state.selectedContact);
         return (
@@ -2391,8 +2540,9 @@ renderSend = (props) => {
                   isTyping={this.state.isTyping}
                   keyboardShouldPersistTaps={"handled"}
                   keyboardDismissMode={"interactive"}
+				  text={this.state.text}
                   onInputTextChanged={text => this.chatInputChanged(text)}
-                  renderFooter={() => <View style={{ height: 10 }} />}
+                  renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
                 />
 
                 {addSpacer ? <KeyboardSpacer /> : null }
@@ -2443,6 +2593,7 @@ renderSend = (props) => {
                 message={this.state.message}
                 close={this.closeEditMessageModal}
                 sendEditedMessage={this.sendEditedMessage}
+                mediaLabels={this.mediaLabels}
             />
 
             <ShareMessageModal
@@ -2520,6 +2671,7 @@ ContactsListBox.propTypes = {
     searchString: PropTypes.string,
     recordAudio: PropTypes.func,
     dark: PropTypes.bool,
+    messagesMetadata: PropTypes.object
 };
 
 

@@ -11,14 +11,18 @@ class EditMessageModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        this.state = {
-            changedText: props.message ? props.message.text : '',
-        };
+
+        this.state = {changedText: props.message ? props.message.text : ''};
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
         if (nextProps.message && nextProps.message !== this.props.message) {
-            this.setState({ changedText: nextProps.message.text });
+            let text = nextProps.message ? nextProps.message.text : '';
+		
+			if (nextProps.message && nextProps.message._id in nextProps.mediaLabels) {
+				text = nextProps.mediaLabels[nextProps.message._id];
+			}
+            this.setState({ changedText: text });
         }
     }
 
@@ -87,6 +91,7 @@ EditMessageModal.propTypes = {
     close: PropTypes.func.isRequired,
     sendEditedMessage: PropTypes.func.isRequired,
     message: PropTypes.object,
+    mediaLabels: PropTypes.object
 };
 
 export default EditMessageModal;

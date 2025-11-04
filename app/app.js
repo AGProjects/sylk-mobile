@@ -21,6 +21,7 @@ import { getApp } from '@react-native-firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ProximitySensor } from 'react-native-sensors';
 import { Appearance } from 'react-native';
+import ImageResizer from 'react-native-image-resizer';
 
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
@@ -63,7 +64,7 @@ import NavigationBar from './components/NavigationBar';
 import Preview from './components/Preview';
 import CallManager from './CallManager';
 import SQLite from 'react-native-sqlite-storage';
-//SQLite.DEBUG(true);
+//SQLite.DEBUG(true);console.log('content', content);
 SQLite.enablePromise(true);
 
 import xtype from 'xtypejs';
@@ -163,6 +164,14 @@ if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
     //bundleId = 'com.agprojects.sylk-ios.dev';
 }
+
+const unreadCounterTypes = new Set([
+  'text/html',
+  'text/plain',
+  'application/sylk-file-transfer'
+]);
+
+
 
 const mainStyle = StyleSheet.create({
 
@@ -1263,7 +1272,7 @@ class Sylk extends Component {
                     myContacts[item.uri].lastCallId = item.last_call_id;
                     myContacts[item.uri].lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
                     myContacts[item.uri].lastCallDuration = item.last_call_duration;
-                    myContacts[item.uri].replyMessages = {}
+                    myContacts[item.uri].messagesMetadata = {}
                     myContacts[item.uri].lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
                     myContacts[item.uri].lastMessage = item.last_message === '' ? null : item.last_message;
 
@@ -1723,6 +1732,20 @@ class Sylk extends Component {
             console.log(create_table_accounts);
             console.log('SQL accounts table creation error:', error);
         });
+
+/*
+// purge
+        try {  
+		let q = `DELETE FROM messages WHERE content_type LIKE 'application/sylk-message%'`;
+        this.ExecuteQuery(q).then((result) => {
+			 console.log('purged metadata rows', result.rowsAffected);
+           
+        }).catch((error) => {
+        });
+        } catch (e) {
+        console.log('delete error:', e);
+        }
+*/
 
         this.upgradeSQLTables();
     }
@@ -2663,7 +2686,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     handleFirebasePush(notification) {
-        utils.timestampedLog("FCM in app handle notification", notification);
+        //utils.timestampedLog("FCM in app handle notification", notification);
         //console.log(notification);
         let event = notification.event;
         const callUUID = notification['session-id'];
@@ -4313,23 +4336,23 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 }
             }
         } else {
-            account.checkIfKeyExists((key) => {
-                keyStatus.serverPublicKey = key;
+            account.checkIfKeyExists((serverKey) => {
+                keyStatus.serverPublicKey = serverKey;
 
-                if (key) {
+                if (serverKey) {
                     utils.timestampedLog('PGP key exists on server');
 
-                    //utils.timestampedLog('My server public key:', key);
+                    //utils.timestampedLog('My server public key:', serverKey);
                     //console.log('Keys status:', keyStatus.keys);
 
                     keyStatus.existsOnServer = true;
-                    //console.log('PGP public key on server', key);
+                    //console.log('PGP public key on server', serverKey);
                     if (this.state.keys) {
-                        if (this.state.keys && this.state.keys.public !== key) {
+                        if (this.state.keys && this.state.keys.public !== serverKey) {
                             utils.timestampedLog('showImportPrivateKeyModal 2');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
-                            console.log(this.state.keys.public);
-                            console.log(key);
+                            //console.log(this.state.keys.public);
+                            console.log('Server key:', serverKey);
                             
                         } else {
                             utils.timestampedLog('Local and server PGP keys are the same');
@@ -6211,7 +6234,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         message.received = false;
         message.direction = 'outgoing';
 
-        //console.log('--- sendMessage', uri);
+        console.log('--- sendMessage', uri, contentType);
         //console.log(message);
 
         let renderMessages = this.state.messages;
@@ -6233,33 +6256,19 @@ f you want to fully control the UI and avoid automatic system notifications, you
 		let selectedContact = this.state.selectedContact;
 		let myContacts = this.state.myContacts;
 
-		if (message.replyTo) {
-			try { 
-				const rId = uuid.v4()
-				const replyContent = {messageId: message._id,
-									  replyId:  message.replyTo,
-									  sender: this.state.accountId,
-									  receiver: uri
-									};
-	
-				const giftedChatMessage = {
-							  _id: rId,
-							  key: rId,
-							  createdAt: new Date(),
-							  metadata: {},
-							  text: JSON.stringify(replyContent),
-							};
-	
-				 selectedContact.replyMessages[message._id] = message.replyTo;
-				 myContacts[uri].replyMessages[message._id] = message.replyTo;
-				 
-				 console.log('selectedContact.replyMessages',selectedContact.replyMessages);
-	
-				this.saveOutgoingMessage(uri, giftedChatMessage, 0, 'application/sylk-message-reply');
-				this._sendMessage(uri, giftedChatMessage.text, rId, 'application/sylk-message-reply', message.createdAt);
-			} catch (e) {
-				console.log(e);
-			}
+		if (contentType === 'application/sylk-message-metadata') {
+		     const metadataContent = message.metadata;
+		     const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+		     console.log('outgoing metadata message', message._id, metadataContent);
+
+			 selectedContact.messagesMetadata[mId] = metadataContent;
+			 myContacts[uri].messagesMetadata[mId] = metadataContent;
+
+			 this.setState({myContacts: myContacts, selectedContact: selectedContact});
+
+			 this.saveOutgoingMessage(uri, message, 0, contentType);
+			 this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
+			 return;
 		}
 
         if (contentType === 'application/sylk-file-transfer') {
@@ -6319,7 +6328,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
 
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
-            console.log('Added render message', message._id, message.contentType);
+            //console.log('Added render message', message._id, message.contentType);
             renderMessages[uri].push(message);
             selectedContact.lastMessage = this.buildLastMessage(message)
             selectedContact.timestamp = message.createdAt;
@@ -6354,13 +6363,53 @@ f you want to fully control the UI and avoid automatic system notifications, you
         return true;
     }
 
+		async resizeBeforeUpload(localUrl) {
+		  //console.log('Image to resize', localUrl); 
+		  try {
+			const resized = await ImageResizer.createResizedImage(
+			  localUrl,          // image URI
+			  600,               // width
+			  600,               // height
+			  'JPEG',            // format
+			  80,                // quality
+			  0,                 // rotation
+			  undefined,         // outputPath
+			  false,             // keepMeta (false = strip EXIF)
+			  { onlyScaleDown: true } // don't upscale smaller images
+			);
+		
+			//console.log('Image resized:', resized);
+			return resized;  // new file path to upload
+		  } catch (err) {
+			console.error('Image resize failed:', err);
+			return null;
+		  }
+		}
+
     async uploadFile(file_transfer) {
-        console.log('uploadFile', file_transfer);
+        //console.log('uploadFile', file_transfer);
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
         let remote_url = file_transfer.url;
 		remote_url = remote_url.replace(/^wss:\/\//, 'https://');
+
+        if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
+            // scale down local_url file to 600px width
+            const resized = await this.resizeBeforeUpload(local_url);
+            if (resized) {
+                try {
+					file_transfer.filesize = resized.size;
+					file_transfer.filetype = 'image/jpg';
+					file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
+					file_transfer.path = resized.path;
+					local_url = resized.path;
+					//console.log('New transfer', file_transfer);
+				} catch (e) {
+					console.log('error resize', e);
+				}
+            }
+        }
 
         let uri = file_transfer.receiver.uri;
 
@@ -6563,7 +6612,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async deleteConferenceMessage(room, message) {
-        console.log('Delete conference message', message._id);
+        //console.log('Delete conference message', message._id);
         let messages = this.state.messages;
 
         var params = [message._id];
@@ -6585,16 +6634,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async saveOutgoingMessage(uri, message, encrypted=0, content_type="text/plain") {
-        if (content_type != "text/plain") {
-			//console.log('saveOutgoingMessage', message, content_type);
-        }
+		//console.log('saveOutgoingMessage', message._id, content_type);
 
         // sent -> null
         // pending -> 1
         // received -> null
         // failed -> null
 
-        if (content_type !== 'application/sylk-file-transfer' && content_type !== 'application/sylk-message-reply') {
+        if (content_type !== 'application/sylk-file-transfer' && content_type !== 'application/sylk-message-metadata') {
             this.saveOutgoingChatUri(uri, message);
         }
 
@@ -6617,7 +6664,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         // mark message status
         // state can be failed or accepted
 
-        utils.timestampedLog('Outgoing message', id, 'is', state);
+        //utils.timestampedLog('Outgoing message', id, 'state is', state);
 
         if (state === 'accepted') {
             // pending 1 -> 0
@@ -6701,7 +6748,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             }
         }
 
-        utils.timestampedLog('Message', id, 'is', state);
+        //utils.timestampedLog('Message state', id, 'changed to', state);
         let query;
 
         const failed_states = ['failed', 'error', 'forbidden'];
@@ -6790,8 +6837,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async deleteMessage(id, uri, remote=true, after=false) {
-
-        utils.timestampedLog('Message', id, 'is deleted', after);
+        //utils.timestampedLog('Message', id, 'is deleted');
+        console.log('deleteMessage', id);
         let query;
 
         let message_ids = [id];
@@ -6836,6 +6883,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             this.deleteFilesForMessage(_id, uri);
             if (remote) {
                this.addJournal(_id, 'removeMessage', {uri: uri});
+               //console.log('add journal 1');
             }
         }
     }
@@ -7211,6 +7259,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             console.log('Message', id, 'pinned');
             this.updateRenderMessageState(id, 'pinned')
             this.addJournal(id, 'pinMessage');
+
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -7224,7 +7273,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
         this.ExecuteQuery(query, [id]).then((results) => {
             this.updateRenderMessageState(id, 'unpinned')
             this.addJournal(id, 'unPinMessage');
-            console.log('Message', id, 'unpinned');
         }).catch((error) => {
             console.log('SQL query:', query);
             console.log('SQL error:', error);
@@ -7232,7 +7280,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
      }
 
      async addJournal(id, action, data={}) {
-        console.log('Add journal entry:', action, id);
+        //console.log('Add journal entry:', action, id);
         this.mySyncJournal[uuid.v4()] = {id: id, action: action, data: data};
         this.replayJournal();
      }
@@ -7390,10 +7438,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
 	async sendDispositionNotification(message, state='displayed', save=false) {
-        //console.log('sendDispositionNotification', state, 'app state', this.state.appState);
+
+        if (message.content_type == 'application/sylk-message-metadata') {
+			return;
+        }
+
         let id = message.msg_id || message.id || message.transfer_id;
         let uri =  message.sender ? message.sender.uri : message.from_uri;
-        utils.timestampedLog('Message', id, 'IMDN state is', state);
+        //utils.timestampedLog('Message', id, 'IMDN state is', state);
 
         if (!this.canSend()) {
             console.log('IMDN for', id, state, 'will be sent later');
@@ -7407,14 +7459,14 @@ f you want to fully control the UI and avoid automatic system notifications, you
                         let received = (state === 'delivered') ? 1 : 2;
                         let query = "UPDATE messages set received = ? where msg_id = ? and account = ?";
                         this.ExecuteQuery(query, [received, id, this.state.accountId]).then((results) => {
-                            utils.timestampedLog('IMDN for', id, 'saved');
+                            utils.timestampedLog('IMDN for', id, message.content_type, 'saved');
                         }).catch((error) => {
-                            utils.timestampedLog('IMDN for', id, 'save error:', error.message);
+                            utils.timestampedLog('IMDN for', id, message.content_type, 'save error:', error.message);
                         });
                     }
                     resolve(true);
                 } else {
-                    utils.timestampedLog('IMDN for', id, state, 'sent failed,', error);
+                    utils.timestampedLog('IMDN for', id, message.content_type, state, 'sent failed,', error);
                     resolve(false);
                 }
             });
@@ -8091,7 +8143,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         if (uri in myContacts) {
             myContacts[uri].totalMessages = total;
-            myContacts[uri].replyMessages = {};
         }
 
         query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
@@ -8122,7 +8173,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             let file_path;
             let file_transfer;
             let contentTypes = {};
-            let found_reply = false;
+            let foundMetadata = false;
 
             let last_content = null;
 
@@ -8159,7 +8210,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
                 enc = parseInt(item.encrypted);
                 
-                //console.log('item.content_type', item.content_type );
+                //console.log('SQL item.msg_id', uri, item.content_type);
 
                 if (is_encrypted && enc !== 3) {
                     myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
@@ -8198,19 +8249,21 @@ f you want to fully control the UI and avoid automatic system notifications, you
                         continue;
                     } else if (item.content_type === 'text/pgp-public-key-imported') {
                         continue;
-                    } else if (item.content_type === 'application/sylk-message-reply') {
+                    } else if (['application/sylk-message-metadata', 'application/sylk-message-reply'].includes(item.content_type)) {
+                        content = content;                    
                         try {
-							const replayMessage = JSON.parse(content);
-							myContacts[orig_uri].replyMessages[replayMessage.messageId] = replayMessage.replyId;
-							found_reply = true;
+							const metadataContent = JSON.parse(content);
+							const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+							myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+							foundMetadata = true;
 						} catch (error) {
-							console.log('Cannot parse reply')
+							console.log('Cannot parse metadataMessage', content, item);
 						}
 						continue;
                     } else {
                         console.log('Unknown message', item.msg_id, 'type', item.content_type);
                         myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-                        this.deleteMessage(item.msg_id, item.to_uri);
+                        //this.deleteMessage(item.msg_id, item.to_uri);
                         continue;
                     }
 
@@ -8281,12 +8334,18 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     this.setState({myContacts: myContacts});
                 }
                 
-                if (found_reply) {
-                    this.setState({myContacts: myContacts});
-                }
             }
 
-            this.setState({messages: messages, decryptingMessages: decryptingMessages});
+			if (foundMetadata) {
+				this.setState({myContacts: myContacts});
+				const keyCount = Object.keys(myContacts[uri].messagesMetadata).length;
+				console.log(Platform.OS, 'metadatas', keyCount);
+				
+			}
+
+            this.setState({messages: messages, 
+						   messagesMetadata: myContacts[uri].messagesMetadata,
+                           decryptingMessages: decryptingMessages});
 
             let i = 1;
             messages_to_decrypt.forEach((item) => {
@@ -8627,7 +8686,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     playMessageSound(direction='incoming') {
-        console.log('---- playMessageSound');
+        //console.log('---- playMessageSound');
         let must_play_sound = true;
 
         if (this.state.dnd) {
@@ -9009,6 +9068,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         let gMsg;
         let purgeMessages = this.state.purgeMessages;
+        let direction;
 
         messages.forEach((message) => {
             if (this.signOut) {
@@ -9038,7 +9098,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 return;
             }
 
-            //console.log('Process journal', i, 'of', messages.length, message.contentType, uri, message.timestamp);
+            direction = message.sender.uri === this.state.account.id ? 'outgoing': 'incoming';
+            
+            if  (message.contentType !== 'message/imdn') {
+				console.log('Process journal', i, 'of', messages.length, direction, message.contentType, uri);
+            }
 
             let d = new Date(2019);
 
@@ -9141,53 +9205,80 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 this.add_sync_pending_item(message.id);
 
                 if (message.sender.uri === this.state.account.id) {
-                    if (message.contentType !== 'application/sylk-contact-update') {
-                        if (myContacts[uri].tags.indexOf('blocked') > -1) {
-                            return;
-                        }
+					 if (message.contentType === 'application/sylk-message-metadata') {
+						 try {
+							 const metadataContent = JSON.parse(message.content);
+							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
+							 myContacts[uri].messagesMetadata[mId] = metadataContent;
+						 } catch (e) {
+							 console.log("error parsing metadataContent", message.content);
+						 }
+					} else {
+						if (message.contentType !== 'application/sylk-contact-update') {
+							if (myContacts[uri].tags.indexOf('blocked') > -1) {
+								return;
+							}
+	
+							if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
+								myContacts[uri].tags.push('chat');
+							}
 
-                        if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
-                            myContacts[uri].tags.push('chat');
-                        }
-                        lastMessages[uri] = message.id;
-
-                        if (message.timestamp > myContacts[uri].timestamp) {
-                            updateContactUris[uri] = message.timestamp;
-                            myContacts[uri].timestamp = message.timestamp;
-                        }
+							lastMessages[uri] = message.id;
+	
+							if (message.timestamp > myContacts[uri].timestamp) {
+								updateContactUris[uri] = message.timestamp;
+								myContacts[uri].timestamp = message.timestamp;
+							}
+						}
                     }
+
                     stats.outgoing = stats.outgoing + 1;
                     this.outgoingMessageSync(message);
+
                 } else {
-                    if (myContacts[uri].tags.indexOf('blocked') > -1) {
-                        return;
-                    }
+					 if (message.contentType === 'application/sylk-message-metadata') {
+						 try {
+							 const metadataContent = JSON.parse(message.content);
+							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
+							 myContacts[uri].messagesMetadata[mId] = metadataContent;
+						 } catch (e) {
+							 console.log("error parsing metadataContent", message.content);
+						 }
+					} else {
 
-                    if (message.timestamp > myContacts[uri].timestamp) {
-                        updateContactUris[uri] = message.timestamp;
-                        myContacts[uri].timestamp = message.timestamp;
-                    }
+						if (myContacts[uri].tags.indexOf('blocked') > -1) {
+							return;
+						}
+	
+						if (message.timestamp > myContacts[uri].timestamp) {
+							updateContactUris[uri] = message.timestamp;
+							myContacts[uri].timestamp = message.timestamp;
+						}
+	
+						if (message.contentType === 'application/sylk-file-transfer') {
+							gMsg = utils.sylk2GiftedChat(message, '', 'incoming');
+							myContacts[uri].lastMessage  = this.buildLastMessage(gMsg);
+							myContacts[uri].lastMessageId = message.id;
+							myContacts[uri].lastCallDuration = null;
+							myContacts[uri].direction = 'incoming';
+						}
+	
+						if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+							this.mustPlayIncomingSoundAfterSync = true;
+						}
+						if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
+							myContacts[uri].tags.push('chat');
+						}
+	
+						lastMessages[uri] = message.id;
+	
+						if (message.dispositionNotification.indexOf('display') > -1) {
+							if (unreadCounterTypes.has(message.contentType)) {
+								myContacts[uri].unread.push(message.id);
+							}
+						}
+					}
 
-                    if (message.contentType === 'application/sylk-file-transfer') {
-                        gMsg = utils.sylk2GiftedChat(message, '', 'incoming');
-                        myContacts[uri].lastMessage  = this.buildLastMessage(gMsg);
-                        myContacts[uri].lastMessageId = message.id;
-                        myContacts[uri].lastCallDuration = null;
-                        myContacts[uri].direction = 'incoming';
-                    }
-
-                    if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
-                        this.mustPlayIncomingSoundAfterSync = true;
-                    }
-                    if (myContacts[uri].tags.indexOf('chat') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
-                        myContacts[uri].tags.push('chat');
-                    }
-
-                    lastMessages[uri] = message.id;
-
-                    if (message.dispositionNotification.indexOf('display') > -1) {
-                        myContacts[uri].unread.push(message.id);
-                    }
                     stats.incoming = stats.incoming + 1;
                     this.incomingMessageSync(message);
                 }
@@ -9209,7 +9300,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         this.setState({messages: renderMessages,
                        updateContactUris: updateContactUris,
                        deletedContacts: deletedContacts,
-                       purgeMessages: purgeMessages
+                       purgeMessages: purgeMessages,
+                       myContacts: myContacts
                        });
 
         this.remove_sync_pending_item('sync_in_progress');
@@ -9237,7 +9329,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async incomingMessage(message) {
-        utils.timestampedLog('Incoming message', message.id, message.contentType, 'received');
+        console.log('Incoming message', message.id, message.contentType, 'from', message.sender.uri);
         // Handle incoming messages
 
         this.saveLastSyncId(message.id);
@@ -9286,7 +9378,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     handleIncomingMessage(message, decryptedBody=null) {
-        //console.log('handleIncomingMessage', this.state.appState)
+        console.log(Platform.OS, 'handleIncomingMessage', message.contentType)
         let content = decryptedBody || message.content;
         if (!this.state.selectedContact || this.state.selectedContact.uri !== message.sender.uri) {
             if (this.state.appState === 'foreground') {
@@ -9298,20 +9390,32 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         this.saveIncomingMessage(message, decryptedBody);
 
-	    if (message.contentType === 'application/sylk-message-reply') {
+        if (['application/sylk-message-metadata', 'application/sylk-message-reply'].includes(message.contentType)) {
 			let myContacts = this.state.myContacts;
+			let selectedContact = this.state.selectedContact;
 
 			try {
-				const replayMessage = JSON.parse(message.content);
-				if (!myContacts[message.sender.uri].hasOwnProperty('replyMessages')) {
-					myContacts[message.sender.uri].replyMessages = {}
+				const metadataContent = JSON.parse(message.content);
+				const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+
+				console.log('incoming metadata message:', metadataContent);
+
+				if (!myContacts[message.sender.uri].hasOwnProperty('messagesMetadata')) {
+					myContacts[message.sender.uri].messagesMetadata = {}
 				}
 					
-				myContacts[message.sender.uri].replyMessages[replayMessage.messageId] = replayMessage.replyId;
-				this.setState({myContacts: myContacts});
+				myContacts[message.sender.uri].messagesMetadata[mId] = metadataContent;
+				if (selectedContact) {
+					if (!selectedContact.hasOwnProperty('messagesMetadata')) {
+						selectedContact.messagesMetadata = {}
+					}
+					selectedContact.messagesMetadata[mId] = metadataContent;
+				}
+				this.setState({myContacts: myContacts, 
+				               selectedContact: selectedContact});
 
 			} catch (error) {
-				console.log('Cannot parse reply payload')
+				console.log('Cannot parse metadata payload')
 			}
 			return;
 		}
@@ -9366,7 +9470,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async incomingMessageSync(message) {
-        utils.timestampedLog('Sync incoming message', message.id);
+        //console.log('incomingMessageSync', message.id, message.contentType);
         // Handle incoming messages
         if (message.content.indexOf('?OTRv3') > -1) {
             this.remove_sync_pending_item(message.id);
@@ -9402,7 +9506,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async outgoingMessage(message) {
-        console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
+        //console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
 
         this.saveLastSyncId(message.id);
         let gMsg;
@@ -9552,7 +9656,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async outgoingMessageSync(message) {
-        //console.log('Sync outgoing message', message.id, 'to', message.receiver);
+        //console.log('outgoingMessageSync', message.id, message.contentType , 'to', message.receiver);
 
         if (message.content.indexOf('?OTRv3') > -1) {
             this.remove_sync_pending_item(message.id);
@@ -9678,7 +9782,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async updateFileTransferSql(file_transfer, encrypted=0, reset=false) {
-        console.log('updateFileTransferSql reset;', reset)
+        //console.log('updateFileTransferSql reset;', reset)
         let query = "SELECT * from messages where msg_id = ? and account = ?";
         await this.ExecuteQuery(query, [file_transfer.transfer_id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -9747,6 +9851,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     async saveOutgoingMessageSqlBatch(message, decryptedBody=null, is_encrypted=false) {
+        //console.log('saveOutgoingMessageSqlBatch', message.contentType);
+
         let pending = 0;
         let sent = 0;
         let received = null;
@@ -9802,9 +9908,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state) VALUES "
 
-        //if (this.pendingNewSQLMessages.length > 0) {
-            //console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
-        //}
+        if (this.pendingNewSQLMessages.length > 0) {
+            console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
+        }
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
         this.pendingNewSQLMessages = [];
@@ -9875,11 +9981,12 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
             }).catch((error) => {
                 //console.log('SQL error inserting bulk messages:', error.message);
+
                 pendingNewSQLMessages.forEach((values) => {
                     this.ExecuteQuery(query, values).then((result) => {
                         this.newSyncMessagesCount = this.newSyncMessagesCount + 1;
                     }).catch((error) => {
-                        id = values[2];
+                       id = values[2];
                         if (error.message.indexOf('SQLITE_CONSTRAINT_PRIMARYKEY') > -1) {
                             // todo update file transfer status
                             if (values[6] === 'application/sylk-file-transfer') {
@@ -9901,6 +10008,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
                                     received = 0;
                                 }
                                 this.updateFileTransferMessageSql(id, content, pending, sent, received, state);
+                            } else {
+								console.log('SQL error inserting each message:', error.message);
+								console.log('query', query);
+								console.log('values', values);
                             }
 
                         } else {
@@ -10083,7 +10194,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 myContacts[uri].timestamp = message.timestamp;
             }
 
-            myContacts[uri].unread.push(message.id);
+			if (unreadCounterTypes.has(message.contentType)) {
+				myContacts[uri].unread.push(message.id);
+            }
+
             myContacts[uri].direction = 'incoming';
             myContacts[uri].lastCallDuration = null;
             if (myContacts[uri].tags.indexOf('chat') === -1) {
@@ -10131,6 +10245,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
         let received = 0;
         let imdn_msg;
+
         //console.log('saveIncomingMessageSync', message);
 
         if (message.dispositionNotification.indexOf('display') === -1) {
@@ -10138,7 +10253,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
             received = 2;
         } else {
             if (message.dispositionNotification.indexOf('positive-delivery') > -1) {
-                imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri}
+                imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri, content_type: message.contentType}
                 let result = await this.sendDispositionNotification(imdn_msg, 'delivered');
                 console.log('IMDN promise', result);
                 if (result) {
@@ -10233,7 +10348,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     newContact(uri, name=null, data={}) {
-        console.log('Create new contact', uri, data.src);
+        //console.log('Create new contact', uri, data.src);
         let current_datetime = new Date();
 
         if (data.src !== 'init') {
@@ -11199,6 +11314,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         history.forEach((item) => {
             uri = item.uri;
+            //console.log('saveHistory', uri);
 
             must_save = false;
             if (this.state.blockedUris.indexOf(uri) > -1) {
@@ -11222,27 +11338,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				}
 			}
 
-            if (uri in myContacts) {
-            } else {
-                contact = this.newContact(uri);
-                if (!contact) {
-                    console.log('No valid contact for', uri);
-                    return;
-                }
-
-                myContacts[uri] = contact;
-                let contacts = this.lookupContacts(uri)
-
-                if (contacts.length > 0) {
-                    myContacts[uri].name = contacts[0].name;
-                    myContacts[uri].tags = contacts[0].tags;
-                    myContacts[uri].photo = contacts[0].photo;
-                    myContacts[uri].label = contacts[0].label;
-                }
-
-                myContacts[uri].timestamp = item.timestamp;
-                must_save = true;
+            if (!(uri in myContacts)) {
+				return;
             }
+
+			contact = myContacts[uri];
 
             if (item.timestamp > myContacts[uri].timestamp) {
                 myContacts[uri].timestamp = item.timestamp;
@@ -11298,7 +11398,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
             if (must_save) {
                 this.saveSylkContact(uri, this.state.myContacts[uri], 'saveHistory');
             }
-
          });
 
          this.setState({missedCalls: missedCalls});
@@ -11358,6 +11457,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         } else {
             publicKey = this.state.keys ? this.state.keys.public: null;
         }
+        
+        const messagesMetadata = (this.state.selectedContact && this.state.selectedContact.uri in this.state.myContacts) ? this.state.myContacts[this.state.selectedContact.uri].messagesMetadata : {};
         
         return (
             <Fragment>
@@ -11520,6 +11621,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     searchMessages = {this.state.searchMessages}
                     defaultConferenceDomain = {this.defaultConferenceDomain}
                     dark = {this.state.dark}
+                    messagesMetadata = {messagesMetadata}
                 />
 
                 <ImportPrivateKeyModal

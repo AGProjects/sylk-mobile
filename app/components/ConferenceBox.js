@@ -20,7 +20,6 @@ import VideoPlayer from 'react-native-video-player';
 import { initialWindowMetrics } from 'react-native-safe-area-context';
 import Immersive from 'react-native-immersive';
 import { getStatusBarHeight } from 'react-native-status-bar-height';
-import ExtraDimensions from 'react-native-extra-dimensions-android';
 
 import { useEffect, useRef } from 'react';
 
@@ -2761,7 +2760,7 @@ class ConferenceBox extends Component {
 		const statusBarHeight = getStatusBarHeight(); 
 		let navigationBarHeight = 0;
 		if (Platform.OS === 'android') {
-            navigationBarHeight = ExtraDimensions.get('SOFT_MENU_BAR_HEIGHT');
+            navigationBarHeight = bottomInset;
         }
 
         const videoGridContainer = styles.videoGridContainer;
