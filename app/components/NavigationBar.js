@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text, IconButton } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
-import { SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
+import { initialWindowMetrics } from 'react-native-safe-area-context';
 
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
@@ -490,18 +490,35 @@ class NavigationBar extends Component {
 		}
 
 		const { width, height } = Dimensions.get('window');
-		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - 48 : width;
-		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
-		const as = 40; //avatar size
+		const topInset = initialWindowMetrics?.insets.top || 0;
+		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
+		const leftInset = initialWindowMetrics?.insets.left || 0;
+		const rightInset = initialWindowMetrics?.insets.right || 0;
 
+		let navBarWidth = width;
+		let marginLeft = this.state.isLandscape ? - bottomInset : 0;
+
+		const as = 40; //avatar size
+		
+		if (Platform.OS === 'ios') {
+			marginLeft = this.state.isLandscape ? - topInset : 0;
+			navBarWidth = this.state.isLandscape ? width - bottomInset - topInset: width;
+		} else {
+			navBarWidth = this.state.isLandscape ? width - bottomInset : width;
+		}
+		
+		let barStyles = {backgroundColor: 'black', 
+                         marginLeft: marginLeft,
+                         width: navBarWidth,
+                         borderWidth: 0,
+                         borderColor: 'red'
+                 };
+    
         return (
 			<View style={{ width: navBarWidth}}>
                          
             <Appbar.Header 
-                 style={{backgroundColor: 'black', 
-                         marginLeft: marginLeft,
-                         width: navBarWidth
-                 }} 
+                 style={barStyles} 
                  statusBarHeight={Platform.OS === "ios" ? 0 : undefined} 
                  dark
                  >
@@ -583,19 +600,19 @@ class NavigationBar extends Component {
 
                         { false ? <Menu.Item onPress={() => this.handleMenu('searchMessages')} icon="search" title={searchTitle}/> : null}
 
-                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
-                        {tags.indexOf('blocked') === -1 && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
-
-                        {tags.indexOf('blocked') === -1 && isCallableUri ?
-                        <Divider />
-						: null}
-                                                
 						{ !this.state.searchMessages && !isAnonymous ?
 						<Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title={editTitle}/>
 						: null}
 
+						{isCallableUri?
+                        <Divider />
+						: null}
+
+                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {tags.indexOf('blocked') === -1 && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
+                                                
                         { !this.state.searchMessages && this.hasMessages && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
@@ -614,6 +631,10 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
                         : null
                         }
+
+						{!isConference && !this.state.searchMessages && this.props.publicKey ?
+                        <Divider />
+                        : null}
 
                         {!isConference && !this.state.searchMessages && this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
@@ -634,6 +655,10 @@ class NavigationBar extends Component {
 
                         {!isAnonymous && !isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
+                        : null}
+
+                        {!this.state.inCall && tags.indexOf('test') === -1 ?
+                        <Divider />
                         : null}
 
                         {!this.state.inCall && tags.indexOf('test') === -1 ?
@@ -695,9 +720,9 @@ class NavigationBar extends Component {
                         {!this.state.inCall ?
                         <Divider />
                          : null }
-                        {false ?
+
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
-                        :null}
+
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
                         {!this.state.inCall ?

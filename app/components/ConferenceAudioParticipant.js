@@ -174,7 +174,6 @@ class ConferenceAudioParticipant extends Component {
             <List.Item
                 style={styles.card}
                 title={identity.displayName||identity.uri}
-                key={identity.uri}
                 titleStyle={styles.displayName}
                 description={identity.uri}
                 descriptionStyle={styles.uri}

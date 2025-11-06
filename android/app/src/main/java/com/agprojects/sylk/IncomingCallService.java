@@ -456,6 +456,8 @@ public class IncomingCallService extends Service {
 				builder.addAction(0, "Accept", acceptAudioPendingIntent);
 			}
 		
+			builder.setGroup("call_" + callId);
+			builder.setGroupSummary(false);
 			Notification fullNotification = builder.build();
 		
 			// Show notification

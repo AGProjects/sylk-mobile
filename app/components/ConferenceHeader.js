@@ -231,17 +231,17 @@ class ConferenceHeader extends React.Component {
         if (this.state.info && callDetail) {
             //callDetail = callDetail + ' - ' + this.state.info;
         }
-        
-        //console.log('callDetail', callDetail);
-
-        let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
-		const { width, height } = Dimensions.get('window');
-		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - 48 : width;
-		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
         let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
-
+        
+		const { width, height } = Dimensions.get('window');
 		const topInset = initialWindowMetrics?.insets.top || 0;
 		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
+
+        let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
+
+		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - bottomInset : width;
+		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? - bottomInset : 0;
+
 /*
 				<Appbar.Action color="white" onPress={() => this.handleMenu('invite')} icon="account-plus" />
 				<Appbar.Action color="white" onPress={() => this.handleMenu('share')} icon="share-variant" />
@@ -257,24 +257,23 @@ class ConferenceHeader extends React.Component {
 				
        if (Platform.OS === 'ios') {
              if (this.state.isLandscape) {
-                let w = this.props.audioOnly ? topInset : bottomInset
 				 barContainer = {
 					backgroundColor: 'rgba(34,34,34,.7)',
-				    height: 60,
+				    height: this.props.height,
 					marginLeft: -topInset,
-					width: width - topInset - w,
+					width: width - topInset - bottomInset,
 					height: this.props.height,
 				}
 			} else {
 				barContainer = {
 				  backgroundColor: 'rgba(34,34,34,.7)',
-				  height: 60,
+				  height: this.props.height,
 				  width: width,
 				  marginTop: -topInset
 				};
 			}
         }
-
+        
         return (
 			<Appbar.Header
 			  style={[barContainer]}
@@ -320,7 +319,7 @@ class ConferenceHeader extends React.Component {
                 >
                     <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
                     <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share web link..." />
-                    {this.state.participants > 1 ?
+                    {this.state.participants > 1 && !this.state.audioOnly?
                     <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
                     : null}
                     {!this.props.audioOnly && this.props.participants > 0?

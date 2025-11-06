@@ -41,6 +41,9 @@ import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downl
 import {check, request, PERMISSIONS, RESULTS, openSettings} from 'react-native-permissions';
 import {decode as atob, encode as btoa} from 'base-64';
 import notifee, { AndroidImportance } from '@notifee/react-native';
+import mime from 'react-native-mime-types';
+import { StatusBar } from 'react-native';
+import { LogBox } from 'react-native';
 
 registerGlobals();
 
@@ -79,7 +82,9 @@ import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
 import DarkModeManager from './DarkModeManager';
+const { SharedDataModule } = NativeModules;
 
+  
 //import { registerForegroundListener } from '../firebase-messaging';
 
 // import {
@@ -104,6 +109,13 @@ import DarkModeManager from './DarkModeManager';
 
 // import { AgentEventTypes } from "@aries-framework/core/build/agent/Events";
 // import {agentDependencies} from '@aries-framework/react-native';
+
+// Ignore all SQLite warnings
+LogBox.ignoreLogs([
+  'SQLite',
+  'Possible unhandled promise rejection',
+  'RNFB_SILENCE'
+]);
 
 var randomString = require('random-string');
 
@@ -205,6 +217,13 @@ function _parseSQLDate(key, value) {
         };
     }
 })();
+
+
+notifee.onBackgroundEvent(async ({ type, detail }) => {
+  if (type === EventType.ACTION_PRESS) {
+    console.log('User pressed an action in the background', detail.pressAction);
+  }
+});
 
 class Sylk extends Component {
     constructor() {
@@ -331,7 +350,8 @@ class Sylk extends Component {
             sortBy: 'timestamp',
             sharedFiles: {},
             searchMessages: false,
-            dark: false
+            dark: false,
+            fullScreen: false
         };
 
         this.buildId = "20250923";
@@ -406,6 +426,7 @@ class Sylk extends Component {
         this.mustPlayIncomingSoundAfterSync = false;
         this.ringbackActive = false;
         this.callEventListener = null;
+        this.sharedAndroidFiles = [];
 
         this.callKeeper = new CallManager(RNCallKeep,
                                                 this.showAlertPanel,
@@ -579,8 +600,91 @@ class Sylk extends Component {
 		    this.onDarkModeChanged(isDark); // optional callback
 		});
 
-    }
+     }
 
+	async purgeSharedFiles() {
+	 for (const file of this.sharedAndroidFiles) {
+		try {
+			if (await RNFS.exists(file.filePath)) {
+				await RNFS.unlink(file.filePath);
+				console.log('Deleted', file.filePath);
+			}
+		} catch (err) {
+			console.warn('Error purgeSharedFiles file', err);
+		}
+	}
+	
+	  if (Platform.OS === 'ios') {
+		  try {
+			const result = await SharedDataModule.purgeAppGroupContainer();
+			//console.log('[JS] App Group container purged:', result);
+		  } catch (err) {
+			console.error('[JS] Failed to purge App Group container:', err);
+		  }
+	  }
+	}
+
+	async fetchSharedItemsiOS() {
+		if (Platform.OS !== 'ios') {
+			return;
+		} 
+
+	    //console.log('---fetchSharedItemsiOS');
+	    //this.purgeSharedFiles();
+
+		  // 1. Get the App Group container path
+		  const appGroupPath = await SharedDataModule.appGroupContainerPath();
+		  
+		  const sharedFiles = await this.getSharedFiles();
+		  if (sharedFiles.length === 0) {
+			  //console.log('No shared files');
+			  return;
+		  }
+
+		  //console.log('Shared container:', appGroupPath);
+		  sharedFiles.forEach((file) => {
+		      file.filePath = file.path; 
+		      file.fileName = file.name;
+		      file.mimeType = mime.lookup(file.name); 
+		      console.log(file);
+		  });
+
+ 		    console.log('Share', sharedFiles.length, 'items');
+			this.setState({shareToContacts: true,
+						   shareContent: sharedFiles,
+						   selectedContact: null});
+
+			let what = 'Share text with contacts';
+			let item = files[0];
+			if (item.weblink) {
+				what = 'Share web link with contacts';
+			}
+
+			if (item.path) {
+				what = 'Share file with contacts';
+			}
+
+			this._notificationCenter.postSystemNotification(what);
+		  
+	  }
+  
+	async getSharedFiles() {
+	  try {
+		const appGroupPath = await SharedDataModule.appGroupContainerPath();
+	
+		// List all files in the App Group container
+		const files = await RNFS.readDir(appGroupPath);
+	
+		// Filter files that start with 'share-'
+		const shareFiles = files.filter(file => file.name.startsWith('share-'));
+	
+		return shareFiles;
+	  } catch (err) {
+		console.error('[JS] Error listing App Group files:', err);
+		return [];
+	  }
+	}
+	
 	  onDarkModeChanged(isDark) {
 		console.log('Dark mode is now', isDark);
 		this.setState({dark: isDark});
@@ -1467,7 +1571,8 @@ class Sylk extends Component {
             this.refreshNavigationItems();
 
             setTimeout(() => {
-                this.fetchSharedItems('start_up');
+                this.fetchSharedItemsAndroid('start_up');
+				this.fetchSharedItemsiOS();
                 if (this.initialChatContact) {
                     //console.log('Starting chat with', this.initialChatContact);
                     if (this.initialChatContact in this.state.myContacts) {
@@ -2276,16 +2381,15 @@ componentWillUnmount() {
     async componentDidMount() {
         utils.timestampedLog('-- App did mount');
         this._loaded = true;
-        
+    
 		this.setState({dark: DarkModeManager.isDark()});
         
         this.getFiles();
-        
-        
+                
           // Add a short delay to give background handler time to write
 		  setTimeout(() => {
 			this.checkFCMPendingActions();
-		  }, 100); // 0.5–1s is usually enough
+		  }, 100); // 0.5�1s is usually enough
         
 		if (Platform.OS === 'android') {
 			const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
@@ -2472,32 +2576,6 @@ componentWillUnmount() {
 			this.handleFirebasePush(msg);
 		  }
 		});
-
-/*
-notification: {
-  android: {
-    sound: 'default',
-    priority: 1,
-    imageUrl: 'https://icanblink.com/apple-touch-icon-180x180.png',
-    channelId: 'sylk-messages-sound'
-  },
-  body: 'From ag@ag-projects.com',
-  title: 'New message'
-}
-
-f you want to fully control the UI and avoid automatic system notifications, you must send a data-only payload — remove the notification object from the message you send through FCM.
-✅ Example (data-only):
-{
-  "to": "<device-token>",
-  "data": {
-    "event": "message",
-    "to_uri": "ag@sylk.link",
-    "from_uri": "ag@ag-projects.com"
-  },
-  "priority": "high",
-  "content_available": true
-}
-*/
 
 		// --- Background messages ---
 		messaging(app).setBackgroundMessageHandler(async remoteMessage => {
@@ -3000,25 +3078,30 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     _handleAppStateChange = nextAppState => {
-        //utils.timestampedLog('----- APP state changed', this.state.appState, '->', nextAppState);
-
-        if (nextAppState === this.state.appState) {
-            return;
-        }
+        //utils.timestampedLog('--- APP state changed', this.state.appState, '->', nextAppState);
+        
+        const oldState = this.state.appState;
 
         this.setState({appState: nextAppState});
         
         if (nextAppState === 'active') {
             this.respawnConnection(nextAppState);
-            this.fetchSharedItems('app_active');
+            this.fetchSharedItemsAndroid('app_active');
+            this.fetchSharedItemsiOS();
 
             if (Platform.OS === 'ios') {
-                if (this.state.selectedContact) {
-                    setTimeout(() => {
-                        this.confirmRead(this.state.selectedContact.uri);
-                    }, 100);
-                }
+				setTimeout(() => {
+					if (this.state.selectedContact) {
+						this.confirmRead(this.state.selectedContact.uri);
+					}
+				}, 100);
             }
+        } else {
+            if (oldState == 'active') {
+                //this.endShareContent();
+                this.setFullScreen(false);
+				this.purgeSharedFiles();
+			}
         }
     }
 
@@ -3365,7 +3448,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 		const updatedStorageUsage = [...this.state.storageUsage];
 	
 		try {
-			// 1️⃣ Update specific contact in myContacts
 			if (updatedContacts[contactKey]) {
 				const prevSize = updatedContacts[contactKey].storage || 0;
 				const newSize = Math.max(prevSize - removedSize + addedSize, 0);
@@ -3383,7 +3465,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				};
 			}
 	
-			// 2️⃣ Update storageUsage array
 			const idx = updatedStorageUsage.findIndex(item => item.remote_party === contactKey);
 			const netChange = addedSize - removedSize;
 	
@@ -3403,7 +3484,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				});
 			}
 	
-			// 3️⃣ Update synthetic "all" contact
 			const allIdx = updatedStorageUsage.findIndex(item => item.remote_party === 'all');
 			if (allIdx >= 0) {
 				const prevAll = updatedStorageUsage[allIdx].size || 0;
@@ -3415,15 +3495,12 @@ f you want to fully control the UI and avoid automatic system notifications, you
 				};
 			}
 	
-			// 4️⃣ Sort by size descending
 			updatedStorageUsage.sort((a, b) => b.size - a.size);
 	
-			// 5️⃣ Update state
 			this.setState({
 				myContacts: updatedContacts,
 				storageUsage: updatedStorageUsage,
 			}, () => {
-				// ✅ Final log after state is updated
 				const updatedContactStorage = updatedContacts[contactKey]?.prettyStorage || "0 B";
 				const allStorage = updatedContacts['all']?.prettyStorage 
 					|| updatedStorageUsage.find(item => item.remote_party === 'all')?.prettySize 
@@ -4350,7 +4427,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     if (this.state.keys) {
                         if (this.state.keys && this.state.keys.public !== serverKey) {
                             utils.timestampedLog('showImportPrivateKeyModal 2');
-                            this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
+                            //this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                             //console.log(this.state.keys.public);
                             console.log('Server key:', serverKey);
                             
@@ -4575,9 +4652,9 @@ f you want to fully control the UI and avoid automatic system notifications, you
         const media = options.video ? 'video' : 'audio';
 
         if (participantsToInvite) {
-            utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri, 'with', participantsToInvite);
+            utils.timestampedLog('Will start conference', callUUID, 'to', targetUri, 'with', participantsToInvite);
         } else {
-            utils.timestampedLog('Will start', media, 'conference', callUUID, 'to', targetUri);
+            utils.timestampedLog('Will start conference', callUUID, 'to', targetUri);
         }
 
         const micAllowed = await this.requestMicPermission('callKeepStartConference');
@@ -5070,7 +5147,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
     outgoingConference(call) {
         // called by sylrtc.js when an outgoing conference starts
-        //console.log('outgoingConference');
         call.on('stateChanged', this.callStateChanged);
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
@@ -5140,10 +5216,10 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     backToForeground() {
-        //console.log('backToForeground...');
-        if (this.state.appState !== 'active') {
+        console.log('backToForeground...');
+        if (this.callKeeper) {
 			this.callKeeper.backToForeground();
-        }
+		}
 
         if (this.state.accountId && this.state.accountVerified) {
             this.handleRegistration(this.state.accountId, this.state.password);
@@ -5344,7 +5420,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                 }
             } else if (event === 'shared_content') {
                 console.log('Media Link: ', url_parts[2]);
-                this.fetchSharedItems('Linking');
+                this.fetchSharedItemsAndroid('Linking');
             } else {
                  utils.timestampedLog('Error: Invalid external URL event', event);
             }
@@ -5354,21 +5430,29 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     autoRejectIncomingCall(callUUID, from, to) {
-        //utils.timestampedLog('Check auto reject call from', from);
+        utils.timestampedLog('Check auto reject call from', from);
         if (this.state.blockedUris) {
-            if (this.state.blockedUris.indexOf(from) > -1 || (this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1 && (from === 'anonymous@anonymous.invalid' || from.indexOf('@guest.') > -1))) {
+            console.log('blockedUris', this.state.blockedUris);
+            if (this.state.blockedUris.indexOf(from) > -1) { 
                 utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
                 this.callKeeper.rejectCall(callUUID);
                 this._notificationCenter.postSystemNotification('Call rejected', {body: `from ${from}`});
                 return true;
             }
+
+			const fromDomain = '@' + from.split('@')[1]
+			if (this.state.blockedUris && this.state.blockedUris.indexOf(fromDomain) > -1) {
+				utils.timestampedLog('Reject call', callUUID, 'from blocked domain', fromDomain);
+				this.callKeeper.rejectCall(callUUID);
+				this._notificationCenter.postSystemNotification('Call rejected', {body: `from domain ${fromDomain}`});
+				return true;
+			}
         }
         
         if (this.state.rejectNonContacts) {
-            if (from in this.state.myContacts) {
-				utils.timestampedLog('Caller is in my contacts list');
-            } else {        
+            if (!(from in this.state.myContacts)) {
 				utils.timestampedLog('Reject call', callUUID, 'from caller not in contacts list');
+				this.callKeeper.rejectCall(callUUID);
  				return true;
            }
         }
@@ -5376,23 +5460,17 @@ f you want to fully control the UI and avoid automatic system notifications, you
         if (this.state.rejectAnonymous) {
 			if (from.indexOf('@guest') > -1) {
 				utils.timestampedLog('Reject call', callUUID, 'from anonymous caller');
+				this.callKeeper.rejectCall(callUUID);
 				return true;
 			}
 	
 			if (from.indexOf('anonymous') > -1) {
 				utils.timestampedLog('Reject call', callUUID, 'from anonymous caller');
+				this.callKeeper.rejectCall(callUUID);
 				return true;
 			}
         }
         
-        const fromDomain = '@' + from.split('@')[1]
-        if (this.state.blockedUris && this.state.blockedUris.indexOf(fromDomain) > -1) {
-            utils.timestampedLog('Reject call', callUUID, 'from blocked domain', fromDomain);
-            this.callKeeper.rejectCall(callUUID);
-            this._notificationCenter.postSystemNotification('Call rejected', {body: `from domain ${fromDomain}`});
-            return true;
-        }
-
         if (this.state.currentCall && this.state.incomingCall && this.state.currentCall === this.state.incomingCall && this.state.incomingCall.id !== callUUID) {
             utils.timestampedLog('Reject second incoming call');
             this.callKeeper.rejectCall(callUUID);
@@ -5436,7 +5514,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 	  for (const key of keys) {
 		if (key.startsWith('incomingCall:')) {
 		  try {
-			const pendingJson = await AsyncStorage.getItem(key); // ✅ await here
+			const pendingJson = await AsyncStorage.getItem(key);
 			if (!pendingJson) continue;
 	
 			const payload = JSON.parse(pendingJson);
@@ -5516,7 +5594,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 			}
         }
 
-        //this.backToForeground();
+        this.backToForeground();
 
         this.goToReadyNowAndCancelTimer();
 
@@ -6396,18 +6474,23 @@ f you want to fully control the UI and avoid automatic system notifications, you
 
         if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
             // scale down local_url file to 600px width
-            const resized = await this.resizeBeforeUpload(local_url);
-            if (resized) {
-                try {
-					file_transfer.filesize = resized.size;
-					file_transfer.filetype = 'image/jpg';
-					file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
-					file_transfer.path = resized.path;
-					local_url = resized.path;
-					//console.log('New transfer', file_transfer);
-				} catch (e) {
-					console.log('error resize', e);
+            if (!file_transfer.fullSize) {
+				const resized = await this.resizeBeforeUpload(local_url);
+				if (resized) {
+					try {
+						file_transfer.filesize = resized.size;
+						file_transfer.filetype = 'image/jpg';
+						file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
+						file_transfer.path = resized.path;
+						local_url = resized.path;
+						console.log('resized');
+						//console.log('New transfer', file_transfer);
+					} catch (e) {
+						console.log('error resize', e);
+					}
 				}
+			} else {
+				console.log('do not resize');
             }
         }
 
@@ -8339,8 +8422,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
 			if (foundMetadata) {
 				this.setState({myContacts: myContacts});
 				const keyCount = Object.keys(myContacts[uri].messagesMetadata).length;
-				console.log(Platform.OS, 'metadatas', keyCount);
-				
+				//console.log(Platform.OS, 'metadatas', keyCount);
 			}
 
             this.setState({messages: messages, 
@@ -10009,9 +10091,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
                                 }
                                 this.updateFileTransferMessageSql(id, content, pending, sent, received, state);
                             } else {
-								console.log('SQL error inserting each message:', error.message);
-								console.log('query', query);
-								console.log('values', values);
+								if (error.message.indexOf('SQLITE_CONSTRAINT_PRIMARYKEY') === -1) {
+									console.log('SQL error inserting each message:', error.message);
+									console.log('query', query);
+									console.log('values', values);
+								}
                             }
 
                         } else {
@@ -10792,10 +10876,6 @@ f you want to fully control the UI and avoid automatic system notifications, you
         let blockedUris = this.state.blockedUris;
         let myContacts = this.state.myContacts;
 
-        if (uri.indexOf('@guest.') > -1) {
-            uri = 'anonymous@anonymous.invalid';
-        }
-
         if (uri in myContacts) {
         } else {
             myContacts[uri] = this.newContact(uri);
@@ -10870,20 +10950,108 @@ f you want to fully control the UI and avoid automatic system notifications, you
     }
 
     forwardMessage(message, uri) {
+        console.log('forwardMessage', uri, message);
         // this will show the main interface to select one or more contacts
+        
         this.setState({shareToContacts: true,
                        forwardContent: message,
                        selectedContact: null,
                        sourceContact: this.state.selectedContact});
     }
 
-     fetchSharedItems(source) {
+    async file2GiftedChat(fileObject) {
+        var id = uuid.v4();
+        let uri = this.state.selectedContact.uri;
+
+        let filepath = fileObject.uri ? fileObject.uri : fileObject;
+        let basename = fileObject.fileName || filepath.split('\\').pop().split('/').pop();
+
+        basename = basename.replace(/\s|:/g, '_');
+
+        let file_transfer = { 'path': filepath,
+                              'filename': basename,
+                              'sender': {'uri': this.state.account.id},
+                              'receiver': {'uri': uri},
+                              'transfer_id': id,
+                              'direction': 'outgoing'
+                              };
+
+
+        if (filepath.startsWith('content://')) {
+            // on android we must copy this file early
+            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.account.id + "/" + uri + "/" + id + "/" + basename;
+            const dirname = path.dirname(localPath);
+            await RNFS.mkdir(dirname);
+            console.log('Copy', filepath, localPath);
+            await RNFS.copyFile(filepath, localPath);
+            filepath = localPath;
+            file_transfer.local_url = localPath;
+        }
+
+        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
+        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+        file_transfer.filesize = fileObject.fileSize || size;
+
+        if (fileObject.preview) {
+            file_transfer.preview = fileObject.preview;
+        }
+
+        if (fileObject.duration) {
+            file_transfer.duration = fileObject.duration;
+        }
+
+        if (fileObject.fileType) {
+            file_transfer.filetype = fileObject.fileType;
+        } else {
+            try {
+                let mime = await fileType(filepath);
+                if (mime.mime) {
+                    file_transfer.filetype = mime.mime;
+                }
+            } catch (e) {
+                console.log('Error getting mime type', e.message);
+            }
+        }
+
+        let text = utils.beautyFileNameForBubble(file_transfer);
+
+        let msg = {
+            _id: id,
+            key: id,
+            text: text,
+            metadata: file_transfer,
+            createdAt: new Date(),
+            direction: 'outgoing',
+            user: {}
+            }
+
+        if (utils.isImage(basename, file_transfer.filetype)) {
+            msg.image = filepath;
+        } else if (utils.isAudio(basename)) {
+            msg.audio = filepath;
+        } else if (utils.isVideo(basename) || file_transfer.duration) {
+            msg.video = filepath;
+        }
+
+        return msg;
+    }
+
+    contactStartShare() {
+		 this.setState({contactisSharing: true});    
+    }
+
+    contactStopShare() {
+		 this.setState({contactisSharing: false});    
+    }
+    
+     fetchSharedItemsAndroid(source) {
         //console.log('Fetch shared items', source);
         ReceiveSharingIntent.getReceivedFiles(files => {
             // files returns as JSON Array example
             //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
                 if (files.length > 0) {
-                    //console.log('Share', files.length, 'items');
+                    this.sharedAndroidFiles = files;
+                    console.log('Android share', files.length, 'items');
 
                     this.setState({shareToContacts: true,
                                    shareContent: files,
@@ -11091,6 +11259,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
         }
     }
 
+    setFullScreen(state) {
+        //console.log('fullScreen', state);
+		this.setState({fullScreen: state});
+    }
+
     endShareContent() {
         //console.log('endShareContent');
         let newSelectedContact = this.state.sourceContact;
@@ -11234,7 +11407,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                                                                         Width_Layout : event.nativeEvent.layout.width,
                                                                         Height_Layout : event.nativeEvent.layout.height
                                                                         }, ()=> this._detectOrientation())}>
-                        <SafeAreaView style={[styles.root, extraStyles]} edges={['bottom', 'top']}>
+                        <SafeAreaView style={[styles.root, extraStyles]} edges={this.state.fullScreen ? [] : ['top', 'bottom']}>
                             { Platform.OS === 'android' ?
                             <IncomingCallModal
                                 contact={this.state.incomingContact}
@@ -11462,6 +11635,8 @@ f you want to fully control the UI and avoid automatic system notifications, you
         
         return (
             <Fragment>
+               { !this.state.fullScreen ?
+
                 <NavigationBar
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
@@ -11538,6 +11713,7 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     searchString = {this.state.searchString}
                     isLandscape = {this.state.orientation === 'landscape'}
                 />
+                : null}
 
                 <ReadyBox
                     account = {this.state.account}
@@ -11622,6 +11798,11 @@ f you want to fully control the UI and avoid automatic system notifications, you
                     defaultConferenceDomain = {this.defaultConferenceDomain}
                     dark = {this.state.dark}
                     messagesMetadata = {messagesMetadata}
+                    file2GiftedChat = {this.file2GiftedChat}
+					contactStartShare = {this.contactStartShare}
+					contactStopShare = {this.contactStopShare}
+					fullScreen = {this.state.fullScreen}
+					setFullScreen = {this.setFullScreen}
                 />
 
                 <ImportPrivateKeyModal

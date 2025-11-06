@@ -21,6 +21,7 @@
 		1F31872026495CFF0096C518 /* message_received.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871A26495CFF0096C518 /* message_received.wav */; };
 		1F31872126495CFF0096C518 /* message_sent.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871B26495CFF0096C518 /* message_sent.wav */; };
 		1F31872226495CFF0096C518 /* participant_left.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871C26495CFF0096C518 /* participant_left.wav */; };
+		1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */; };
 		1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */; };
 		1FC06CBE2A793D9300F8D5A3 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */; };
 		1FC06CC12A793D9300F8D5A3 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */; };
@@ -105,6 +106,8 @@
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = sylk/Info.plist; sourceTree = "<group>"; };
 		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = sylk/main.m; sourceTree = "<group>"; };
 		16F8C88D0BB542C7BDD8C492 /* Octicons.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = Octicons.ttf; path = "../node_modules/react-native-vector-icons/Fonts/Octicons.ttf"; sourceTree = "<group>"; };
+		1F0E77B32EBB567700A8F23B /* sylk-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "sylk-Bridging-Header.h"; sourceTree = "<group>"; };
+		1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "sylk-Bridging-Header.h"; sourceTree = "<group>"; };
 		1F207F1327F35DF9000C83CA /* beluga_in.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_in.wav; path = ../app/assets/sounds/beluga_in.wav; sourceTree = "<group>"; };
 		1F207F1427F35DF9000C83CA /* beluga_out.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_out.wav; path = ../app/assets/sounds/beluga_out.wav; sourceTree = "<group>"; };
 		1F31871726495CFF0096C518 /* hangup_tone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = hangup_tone.wav; path = ../app/assets/sounds/hangup_tone.wav; sourceTree = "<group>"; };
@@ -115,6 +118,7 @@
 		1F31871C26495CFF0096C518 /* participant_left.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_left.wav; path = ../app/assets/sounds/participant_left.wav; sourceTree = "<group>"; };
 		1F5DAB96285FA8CE001F479D /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ios; sourceTree = "<group>"; };
 		1F5DAB97285FA8DE001F479D /* Indy.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Indy.framework; path = Pods/Indy/IndySdk/Indy.framework; sourceTree = "<group>"; };
+		1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SharedDataModule.m; sourceTree = "<group>"; };
 		1F9B147A2EA80A04001BA597 /* APNSTokenModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = APNSTokenModule.h; path = sylk/APNSTokenModule.h; sourceTree = "<group>"; };
 		1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = APNSTokenModule.m; path = sylk/APNSTokenModule.m; sourceTree = "<group>"; };
 		1FC06CAA2A793D2200F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -227,6 +231,7 @@
 		13B07FAE1A68108700A75B9A /* sylk */ = {
 			isa = PBXGroup;
 			children = (
+				1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
 				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
 				642006F924364F8D00F214A5 /* GoogleService-Info.plist */,
@@ -234,11 +239,13 @@
 				13B07FB01A68108700A75B9A /* AppDelegate.m */,
 				1F9B147A2EA80A04001BA597 /* APNSTokenModule.h */,
 				1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */,
+				1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				13B07FB11A68108700A75B9A /* LaunchScreen.xib */,
 				13B07FB71A68108700A75B9A /* main.m */,
 				5B38C2D580B08521626A73B6 /* PrivacyInfo.xcprivacy */,
+				1F0E77B32EBB567700A8F23B /* sylk-Bridging-Header.h */,
 			);
 			name = sylk;
 			sourceTree = "<group>";
@@ -503,6 +510,7 @@
 					};
 					13B07F861A680F5B00A75B9A = {
 						DevelopmentTeam = 4DFEFUDLKZ;
+						LastSwiftMigration = 1620;
 					};
 					1FC06CBA2A793D9300F8D5A3 = {
 						CreatedOnToolsVersion = 14.3.1;
@@ -902,6 +910,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */,
 				13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */,
 				1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */,
 				13B07FC11A68108700A75B9A /* main.m in Sources */,
@@ -1029,11 +1038,12 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = DA31B39832F5224A7B4B4695 /* Pods-sylk.debug.xcconfig */;
 			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 185;
+				CURRENT_PROJECT_VERSION = 191;
 				DEAD_CODE_STRIPPING = YES;
+				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1043,7 +1053,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 14;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 3.5.9;
+				MARKETING_VERSION = 3.6.5;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1052,6 +1062,9 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios";
 				PRODUCT_NAME = sylk;
+				SWIFT_OBJC_BRIDGING_HEADER = "sylk-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
@@ -1061,10 +1074,11 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = F90FBC0C67DA3EBA1B6FA8DE /* Pods-sylk.release.xcconfig */;
 			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 185;
+				CURRENT_PROJECT_VERSION = 191;
+				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1074,7 +1088,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 14;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 3.5.9;
+				MARKETING_VERSION = 3.6.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -1082,6 +1096,8 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios";
 				PRODUCT_NAME = sylk;
+				SWIFT_OBJC_BRIDGING_HEADER = "sylk-Bridging-Header.h";
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
 			};

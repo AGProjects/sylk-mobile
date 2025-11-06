@@ -4,6 +4,7 @@ import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
+import { initialWindowMetrics } from 'react-native-safe-area-context';
 
 import { red } from '../colors'; 
 
@@ -77,7 +78,8 @@ class ReadyBox extends Component {
 			searchString: '',
 			recordingDuration: 0,
 			dark: this.props.dark,
-			messagesMetadata: this.props.messagesMetadata
+			messagesMetadata: this.props.messagesMetadata,
+			fullScreen:  this.props.fullScreen
         };
         this.ended = false;
 
@@ -144,7 +146,6 @@ class ReadyBox extends Component {
             this.setState({recordingDuration: nextProps.recordingDuration});
         }
 
-
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                         myContacts: nextProps.myContacts,
                         messages: nextProps.messages,
@@ -175,7 +176,8 @@ class ReadyBox extends Component {
                         contentTypes: nextProps.contentTypes,
                         sourceContact: nextProps.sourceContact,
                         dark: nextProps.dark,
-                        messagesMetadata: nextProps.messagesMetadata
+                        messagesMetadata: nextProps.messagesMetadata,
+                        fullScreen: nextProps.fullScreen
                         });
     }
 
@@ -237,6 +239,7 @@ class ReadyBox extends Component {
 
        if (!filter) {
            if (!this.state.historyPeriodFilter) {
+               /*
                let sortBy;
                if (this.state.sortBy == 'timestamp') {
 				   this.props.postSystemNotification('Sort by used storage');
@@ -246,6 +249,7 @@ class ReadyBox extends Component {
 				   sortBy = 'timestamp';
                }
 			   this.setState({'sortBy': sortBy});
+			   */
            }
            this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
        } else if (filter === 'today' || filter === 'yesterday') {
@@ -281,7 +285,7 @@ class ReadyBox extends Component {
 
     get showNavigationBar() {
         if (this.state.keyboardVisible) {
-            //return;
+            return;
         }
 
         if (this.state.selectedContact) {
@@ -333,7 +337,7 @@ class ReadyBox extends Component {
     }
 
     get showCallButtons() {
-        if (this.state.recording || this.state.playing || this.state.recordingFile) {
+        if (this.state.recording || this.state.playing || this.state.recordingFile || this.state.shareToContacts) {
             return false;
         }
         return true;
@@ -377,6 +381,14 @@ class ReadyBox extends Component {
     }
 
     get showButtonsBar() {
+        if (this.state.fullScreen) {
+            return false;
+        }
+
+        if (this.state.shareToContacts) {
+			return true;
+        }
+    
         if (this.state.historyCategoryFilter === 'blocked') {
             return false;
         }
@@ -402,7 +414,7 @@ class ReadyBox extends Component {
         }
 
         if (!this.state.targetUri) {
-            return true;
+            return false;
         }
 
         /*
@@ -915,7 +927,7 @@ class ReadyBox extends Component {
               {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
               ];
     }
-
+    
     toggleQRCodeScanner(event) {
         if (event) {
             event.preventDefault();
@@ -981,89 +993,13 @@ class ReadyBox extends Component {
         this.props.recordAudio();
     }
 
-    async file2GiftedChat(fileObject) {
-        var id = uuid.v4();
-        let uri = this.state.selectedContact.uri;
-
-        let filepath = fileObject.uri ? fileObject.uri : fileObject;
-        let basename = fileObject.fileName || filepath.split('\\').pop().split('/').pop();
-
-        basename = basename.replace(/\s|:/g, '_');
-
-        let file_transfer = { 'path': filepath,
-                              'filename': basename,
-                              'sender': {'uri': this.props.account.id},
-                              'receiver': {'uri': uri},
-                              'transfer_id': id,
-                              'direction': 'outgoing'
-                              };
-
-        if (filepath.startsWith('content://')) {
-            // on android we must copy this file early
-            const localPath = RNFS.DocumentDirectoryPath + "/" + this.props.account.id + "/" + uri + "/" + id + "/" + basename;
-            const dirname = path.dirname(localPath);
-            await RNFS.mkdir(dirname);
-            console.log('Copy', filepath, localPath);
-            await RNFS.copyFile(filepath, localPath);
-            filepath = localPath;
-            file_transfer.local_url = localPath;
-        }
-
-        let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
-        const { size } = await RNFetchBlob.fs.stat(stats_filename);
-        file_transfer.filesize = fileObject.fileSize || size;
-
-        if (fileObject.preview) {
-            file_transfer.preview = fileObject.preview;
-        }
-
-        if (fileObject.duration) {
-            file_transfer.duration = fileObject.duration;
-        }
-
-        if (fileObject.fileType) {
-            file_transfer.filetype = fileObject.fileType;
-        } else {
-            try {
-                let mime = await fileType(filepath);
-                if (mime.mime) {
-                    file_transfer.filetype = mime.mime;
-                }
-            } catch (e) {
-                console.log('Error getting mime type', e.message);
-            }
-        }
-
-        let text = utils.beautyFileNameForBubble(file_transfer);
-
-        let msg = {
-            _id: id,
-            key: id,
-            text: text,
-            metadata: file_transfer,
-            createdAt: new Date(),
-            direction: 'outgoing',
-            user: {}
-            }
-
-        if (utils.isImage(basename, file_transfer.filetype)) {
-            msg.image = filepath;
-        } else if (utils.isAudio(basename)) {
-            msg.audio = filepath;
-        } else if (utils.isVideo(basename) || file_transfer.duration) {
-            msg.video = filepath;
-        }
-
-        return msg;
-    }
-
     async sendAudioFile() {
         if (this.state.recordingFile) {
             this.setState({audioSendFinished: true});
             setTimeout(() => {
                 this.setState({audioSendFinished: false});
             }, 10);
-            let msg = await this.file2GiftedChat(this.state.recordingFile);
+            let msg = await this.props.file2GiftedChat(this.state.recordingFile);
             this.transferFile(msg);
             this.setState({recordingFile: null, recordingDuration: 0});
         }
@@ -1271,13 +1207,47 @@ class ReadyBox extends Component {
         }
 
         let extraStyles = {paddingBottom: Platform.OS === 'android' ? 0 : 0};
+		const topInset = initialWindowMetrics?.insets.top || 0;
+		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
+		const leftInset = initialWindowMetrics?.insets.left || 0;
+		const rightInset = initialWindowMetrics?.insets.right || 0;
+
 		const { width, height } = Dimensions.get('window');
 		const isLandscape = width > height;
-		const marginRight = isLandscape && Platform.OS === 'android' ? 48 : 0;
+		const marginRight = isLandscape && Platform.OS === 'android' ? bottomInset : 0;
+
+		let containerWidth = width;
+		if (Platform.OS === 'ios') {
+			if (isLandscape) {
+				containerWidth = containerWidth - bottomInset - topInset;
+			}
+		} 
+		
         return (
             <Fragment>
-                <View style={[styles.container, {marginRight: marginRight}]}>
+                <View style={[styles.container, {width: containerWidth, marginRight: marginRight, borderColor: 'white', borderWidth: 0}]}>
                     <View >
+                    {this.state.selectedContact && this.state.searchMessages?
+                    <View style={styles.navigationContainer}>
+                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                            horizontal={true}
+                            ref={(ref) => { this.navigationRef = ref; }}
+                              onScrollToIndexFailed={info => {
+                                const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                wait.then(() => {
+                                  if (!this.state.selectedContact) {
+                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  }
+                                });
+                              }}
+                            data={this.navigationItems}
+                            extraData={this.state}
+                            keyExtractor={(item, index) => item.key}
+                            renderItem={this.renderNavigationItem}
+                        />
+                    </View>
+                    : null}
+
                         {this.showSearchBar && !this.state.isLandscape ?
                         <View style={URIContainerClass}>
                             <URIInput
@@ -1323,7 +1293,7 @@ class ReadyBox extends Component {
                             :
 
                             <View style={buttonGroupClass}>
-                                  {!this.state.selectedContact ?
+                                  {!this.state.selectedContact && !this.state.shareToContacts?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1555,7 +1525,7 @@ class ReadyBox extends Component {
 						requestStoragePermission = {this.props.requestStoragePermission}
 						startCall = {this.props.startCall}
 						sourceContact = {this.state.sourceContact}
-						file2GiftedChat = {this.file2GiftedChat}
+						file2GiftedChat = {this.props.file2GiftedChat}
 						postSystemNotification = {this.props.postSystemNotification}
 						sortBy = {this.state.sortBy}
 						toggleSearchMessages = {this.props.toggleSearchMessages}
@@ -1564,12 +1534,38 @@ class ReadyBox extends Component {
 						recordAudio = {this.recordAudio}
 						dark = {this.state.dark}
 						messagesMetadata = {this.state.messagesMetadata}
+						contactStartShare = {this.props.contactStartShare}
+						contactStopShare = {this.props.contactStopShare}
+						setFullScreen = {this.props.setFullScreen}
+						fullScreen = {this.state.fullScreen}
 					/>
 					}
 
                     </View>
                     : null
                     }
+
+                    {this.showNavigationBar && !this.state.selectedContact ?
+                    <View style={styles.navigationContainer}>
+                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                            horizontal={true}
+                            ref={(ref) => { this.navigationRef = ref; }}
+                              onScrollToIndexFailed={info => {
+                                const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                wait.then(() => {
+                                  if (!this.state.selectedContact) {
+                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  }
+                                });
+                              }}
+                            data={this.navigationItems}
+                            extraData={this.state}
+                            keyExtractor={(item, index) => item.key}
+                            renderItem={this.renderNavigationItem}
+                        />
+                    </View>
+                    : null}
+
 
                     { this.state.recording  ?
                         <View style={styles.recordingContainer}>
@@ -1591,26 +1587,6 @@ class ReadyBox extends Component {
                     : null
                     }
 
-                    {this.showNavigationBar ?
-                    <View style={styles.navigationContainer}>
-                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                            horizontal={true}
-                            ref={(ref) => { this.navigationRef = ref; }}
-                              onScrollToIndexFailed={info => {
-                                const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                wait.then(() => {
-                                  if (!this.state.selectedContact) {
-                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
-                                  }
-                                });
-                              }}
-                            data={this.navigationItems}
-                            extraData={this.state}
-                            keyExtractor={(item, index) => item.key}
-                            renderItem={this.renderNavigationItem}
-                        />
-                    </View>
-                    : null}
 
                     {this.state.isTablet && 0?
                     <View style={styles.footer}>
@@ -1714,6 +1690,11 @@ ReadyBox.propTypes = {
     defaultConferenceDomain: PropTypes.string,
     dark: PropTypes.bool,
     messagesMetadata: PropTypes.object,
+    file2GiftedChat : PropTypes.func,
+    contactStartShare: PropTypes.func,
+    contactStopShare: PropTypes.func,
+    setFullScreen: PropTypes.func,
+    fullScreen: PropTypes.bool
 };
 
 

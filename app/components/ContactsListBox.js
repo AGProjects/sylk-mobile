@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
+import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -18,11 +18,12 @@ import OpenPGP from "react-native-fast-openpgp";
 import DocumentPicker from 'react-native-document-picker';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import VideoPlayer from 'react-native-video-player';
-import { IconButton} from 'react-native-paper';
+import { IconButton, Checkbox} from 'react-native-paper';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import path from 'react-native-path';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 import { Keyboard } from 'react-native';
+import { StatusBar } from 'react-native';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -32,6 +33,9 @@ import CameraRoll from "@react-native-camera-roll/camera-roll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
+import { ActivityIndicator, Animated } from 'react-native';
+import dayjs from 'dayjs';
+
 
 import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
@@ -168,11 +172,18 @@ class ContactsListBox extends Component {
 			messagesMetadata: this.props.messagesMetadata,
 			mediaLabels: {},
 			text: '',
+			fullSize: false,
+			expandedImage: null,
+			fullScreen: this.props.fullScreen,
+			visibleMessageIds: [], 
+			renderedMessageIds: new Set(),
+			imageLoadingState: {}
         }
 
         this.ended = false;
         this.outgoingPendMessages = {};
         this.prevValues = {};
+        this.viewabilityConfig = { itemVisiblePercentThreshold: 20 };
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
     }
@@ -387,7 +398,8 @@ class ContactsListBox extends Component {
                        searchMessages: nextProps.searchMessages,
                        searchString: nextProps.searchString,
                        dark: nextProps.dark,
-                       messagesMetadata: nextProps.messagesMetadata
+                       messagesMetadata: nextProps.messagesMetadata,
+                       fullScreen: nextProps.fullScreen
                        }, () => {
 					// This runs AFTER messagesMetadata is updated
 					this.setState({ mediaLabels: this.mediaLabels });
@@ -436,6 +448,7 @@ class ContactsListBox extends Component {
                        }
         const cameraAllowed = await this.props.requestCameraPermission();
         if (cameraAllowed) {
+			this.props.contactStartShare()
             await launchCamera(options, this.cameraCallback);
         }
     }
@@ -446,6 +459,7 @@ class ContactsListBox extends Component {
                         mediaType: 'mixed',
                         formatAsMp4: true
                        }
+		this.props.contactStartShare()
         await launchImageLibrary(options, this.libraryCallback);
     }
 
@@ -454,23 +468,26 @@ class ContactsListBox extends Component {
             return;
         }
 
+		this.setState({fullSize: false});
         result.assets.forEach((asset) => {
             this.cameraCallback({assets: [asset]});
         });
+
+		this.props.contactStopShare()
     }
 
     async cameraCallback(result) {
         if (!result.assets || result.assets.length === 0) {
             return;
         }
-
+        
         this.setState({scrollToBottom: true});
+		this.props.contactStopShare()
 
         let asset = result.assets[0];
         asset.preview = true;
-
+        
         let msg = await this.props.file2GiftedChat(asset);
-        //console.log('asset', asset);
 
         let assetType = 'file';
         if (msg.video) {
@@ -483,6 +500,7 @@ class ContactsListBox extends Component {
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
                         cameraAsset: asset,
                         photoMsg: msg,
+						fullSize: false,
                         //placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
 						placeholder: 'Photo note...'
                         });
@@ -580,14 +598,14 @@ class ContactsListBox extends Component {
 			<View style={styles.replyLine} />
 	
 			{originalMessage.image ? (
-			  <Image
-				source={{ uri: originalMessage.image }}
-				style={{
-				  width: '85%',
-				  height: 100,
-				}}
-				resizeMode="cover"
-			  />
+				  <Image
+					source={{ uri: originalMessage.image }}
+					style={{
+					  width: '85%',
+					  height: 100,
+					}}
+					resizeMode="cover"
+				  />
 			) : (
 			  <Text
 				style={styles.replyPreviewText}
@@ -693,6 +711,18 @@ class ContactsListBox extends Component {
 	  );
 	}
 
+	onImagePress = (message) => {
+	  const { expandedImage } = this.state;
+	  //console.log('onImagePress', expandedImage, 'fullScreen', this.state.fullScreen);
+
+	  if (expandedImage) {
+		this.props.setFullScreen(false);
+		this.setState({ expandedImage: null });
+	  } else {
+		this.props.setFullScreen(true);
+		this.setState({ expandedImage: message });
+	  }
+	};
 
 	// Custom Input Toolbar
 	customInputToolbar = (props) => {
@@ -782,8 +812,9 @@ class ContactsListBox extends Component {
 				style={{
 				  position: 'absolute',
 				  top: 5,
-				  right: 22,
+				  right: 15,
 				  zIndex: 10,
+				  transform: [{ translateX: 35 }] 
 				}}
 				activeOpacity={0.9}
 			  >
@@ -985,15 +1016,6 @@ renderSend = (props) => {
         }}
       >
         <View style={styles.chatRightActionsContainer}>
-          <TouchableOpacity onPress={this.deleteCameraAsset}>
-            <Icon
-              style={chatActionContainer}
-              type="font-awesome"
-              name="delete"
-              size={20}
-              color='red'
-            />
-          </TouchableOpacity>
           <TouchableOpacity onPress={this.sendPhoto}>
             <Icon
               type="font-awesome"
@@ -1422,7 +1444,11 @@ renderSend = (props) => {
 
     deleteCameraAsset() {
         console.log('deleteCameraAsset');
-        if (this.state.photoMsg && this.state.photoMsg.metadata.transfer_id in this.outgoingPendMessages) {
+        if (!this.state.photoMsg) {
+			return;
+        }
+
+        if (this.state.photoMsg.metadata.transfer_id in this.outgoingPendMessages) {
             delete this.outgoingPendMessages[this.state.photoMsg.metadata.transfer_id]
         }
 
@@ -1482,68 +1508,76 @@ renderSend = (props) => {
         }
     };
 
-    renderMessageImageOld =(props) => {
-    /*
-        return(
-          <TouchableOpacity onPress={() => this.onMessagePress(context, props.currentMessage)}>
-            <Image
-              source={{ uri: props.currentMessage.image }}
-              style = {{
-              width: '98%',
-              height: Dimensions.get('window').width,
-              resizeMode: 'cover'
-            }}
-            />
-          </TouchableOpacity>
-        );
-*/
-        return (
-          <MessageImage
-            {...props}
-            imageStyle={{
-              width: '98%',
-              height: Dimensions.get('window').width,
-              resizeMode: 'cover'
-            }}
-          />
-    )
+  renderMessageImage = (props: any) => {
+    const { currentMessage } = props;
+    if (!currentMessage?.image) return null;
+
+    const id = currentMessage._id;
+    const isVisible = this.state.visibleMessageIds.includes(id);
+    const wasRendered = this.state.renderedMessageIds.has(id);
+    const isLoading = this.state.imageLoadingState[id];
+
+    // Only render placeholder for unseen + offscreen
+    if (!isVisible && !wasRendered) {
+      return (
+        <View
+          style={{
+            width: '100%',
+            height: Dimensions.get('window').width,
+            backgroundColor: '#eee',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          <ActivityIndicator size="small" color="#999" />
+        </View>
+      );
     }
 
-    renderMessageImage = (props: any) => {
-        // https://github.com/FaridSafi/react-native-gifted-chat/issues/1950
-        const images = [
-          {
-            url: props.currentMessage.image
-          }
-        ];
-
-/*
-          <TouchableOpacity
-            onPress={() => console.log('single press')}
-            onLongPress={() =>  console.log('longpress')}
-            style={{ backgroundColor: "transparent" }}
+    return (
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onPress={() => this.onImagePress(currentMessage)}
+        style={{
+          width: '100%',
+          height: Dimensions.get('window').width,
+          marginBottom: -5,
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+      >
+        {isLoading && (
+          <View
+            style={{
+              position: 'absolute',
+              zIndex: 2,
+              top: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
           >
-          </TouchableOpacity>
+            <ActivityIndicator size="large" color="#aaa" />
+          </View>
+        )}
 
-*/
-
-        return (
-            <FastImage
-              style={{
-                  width: '100%',
-                  height: Dimensions.get('window').width,
-                  marginBottom: -5
-              }}
-
-              source={{
-                // @ts-ignore
-                uri: props.currentMessage.image,
-                priority: FastImage.priority.normal
-              }}
-              resizeMode={FastImage.resizeMode.cover}
-            />
-        );
-      };
+        <FastImage
+          style={{
+            width: '100%',
+            height: '100%',
+            opacity: isLoading ? 0.5 : 1,
+          }}
+          source={{ uri: currentMessage.image, priority: FastImage.priority.normal }}
+          resizeMode={FastImage.resizeMode.cover}
+          onLoadStart={() => this.handleImageLoadStart(id)}
+          onLoadEnd={() => this.handleImageLoadEnd(id)}
+        />
+      </TouchableOpacity>
+    );
+  };
+  
 
 
     postChatSystemMessage(text, imagePath=null) {
@@ -1589,6 +1623,7 @@ renderSend = (props) => {
 
     async transferFile(msg) {
         msg.metadata.preview = false;
+	    msg.metadata.fullSize = this.state.fullSize;
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
     }
 
@@ -1625,6 +1660,10 @@ renderSend = (props) => {
     }
 
     onMessagePress(context, message) {
+        if (message.metadata && message.metadata.preview) {
+			return;
+        }
+    
         if (message.metadata && message.metadata.filename) {
             //console.log('File metadata', message.metadata.filename);
             let file_transfer = message.metadata;
@@ -1844,10 +1883,6 @@ renderSend = (props) => {
             return false;
         }
 
-        if (message.audio || message.video) {
-            return false;
-        }
-
         return true;
     }
 
@@ -1923,8 +1958,8 @@ renderSend = (props) => {
 	
 	  // Get duration string
 	  const durationLabel = audioDurations[currentMessage._id]
-		? `Audio message (${audioDurations[currentMessage._id]}s)`
-		: 'Audio message';
+		? `Audio recording of ${audioDurations[currentMessage._id]}s`
+		: 'Audio recording';
 	
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const labelPadding =  isIncoming ? {paddingLeft: 10} : {paddingLeft: 0};
@@ -2020,6 +2055,7 @@ renderSend = (props) => {
                     <View style={styles.photoMenuText}>
                     <MessageText
                         {...props}
+ 					    {...labelProps}
                         customTextStyle={styles.messageText}
                     />
                     </View>
@@ -2034,31 +2070,88 @@ renderSend = (props) => {
                         size={20}
                         icon="menu"
                     />
+						  <View style={styles.photoMenuText}>
+							<MessageText
+							  {...labelProps}
+							  customTextStyle={styles.messageText} // keeps your original styling
+							/>
+						  </View>
+
+
                 </View>
             );
         } else if (currentMessage.image) {
-            return (
-                <View style={[styles.photoMenuContainer, extraStyles]}>
-                    <IconButton
-                        style={styles.photoMenu}
-                        size={20}
-                        icon="menu"
-                    />
+            if (currentMessage.metadata.preview) {
+				return (
+                <View style={[{flexDirection: 'row', alignItems: 'center',
+					justifyContent: 'space-between', // distribute items evenly
+					paddingHorizontal: 8}, styles.photoMenuContainer, extraStyles]}>
 
-					  <View style={styles.photoMenuText}>
-						<MessageText
-						  {...labelProps}
-						  customTextStyle={styles.messageText} // keeps your original styling
-						/>
-					  </View>
+				<View style={{flexDirection: 'row', alignItems: 'center'}}>
+
+				<View
+				  style={{
+					borderWidth: this.state.fullSize ? 0 : 2,
+					borderColor: '#007AFF',
+					borderRadius: 2,
+					padding: 0,
+					transform: [{ scale: 0.6 }]
+				  }}
+				>
+					<Checkbox
+					  status={this.state.fullSize ? 'checked' : 'unchecked'}
+					  onPress={() => this.setState({ fullSize: !this.state.fullSize })}
+	
+					/>
+				 </View> 
+				  <Text style={styles.checkboxLabel}>Full size</Text>
+				  </View>
+      
+				  <IconButton
+					style={styles.deleteButton}
+					type="font-awesome"
+					size={20}
+					icon="delete"
+				    iconColor='red'
+					onPress={() => this.deleteCameraAsset()}
+				  />
 
                 </View>
-            );
+            ); 
+            } else {
+				return (
+					<View style={[styles.photoMenuContainer, extraStyles]}>
+						<IconButton
+							style={styles.photoMenu}
+							size={20}
+							icon="menu"
+						/>
+	
+						  <View style={styles.photoMenuText}>
+							<MessageText
+							  {...labelProps}
+							  customTextStyle={styles.messageText} // keeps your original styling
+							/>
+						  </View>
+					</View>
+				); 
+            }
         } else {
             return (
-                <View style={[styles.messageTextContainer, extraStyles]}>
+                <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>
+                     {currentMessage.metadata && currentMessage.metadata.filename ?
+					 <Icon
+					  type="font-awesome"
+					  name="file"
+					  style={styles.chatSendArrow}
+					  size={40}
+					  color='gray'
+					/>
+					: null}
+
                     <MessageText
                         {...props}
+                         {...labelProps}
                         customTextStyle={styles.messageText}
                     />
 
@@ -2067,59 +2160,49 @@ renderSend = (props) => {
   		}
     };
 
-    renderTime = (props) => {
-        const { currentMessage } = props;
-    
-        if (currentMessage.metadata && currentMessage.metadata.preview) {
-            return null;
-        }
 
-        if (currentMessage.video) {
-            return (
-              <Time
-              {...props}
-                timeTextStyle={{
-                  left: {
-                    color: 'white',
-                  },
-                  right: {
-                    color: 'white',
-                  }
-                }}
-              />
-            )
-        } else if (currentMessage.audio) {
-            return (
-              <Time
-              {...props}
-                timeTextStyle={{
-                  left: {
-                    color: 'white',
-                  },
-                  right: {
-                    color: 'white',
-                  }
-                }}
-              />
-            )
-        } else {
-            return (
-			<View style={{ alignItems: 'flex-end' }}> 
-              <Time
-              {...props}
-                timeTextStyle={{
-                  left: {
-                    color: 'black',
-                  },
-                  right: {
-                    color: 'black',
-                  }
-                }}
-              />
-			</View>
-            )
-        }
-      }
+renderTime = (props) => {
+  const { currentMessage, position } = props;
+
+  if (currentMessage.metadata?.preview) return null;
+
+  const isMedia = currentMessage.video || currentMessage.audio;
+  const textColor = isMedia ? 'white' : 'black';
+  const hasFileSize = !!currentMessage.metadata?.filesize;
+
+  // Helper to format bytes
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  };
+
+  // Format timestamp text 
+  const timeString = currentMessage.createdAt ? dayjs(currentMessage.createdAt).format('h:mm A'): '';
+  let text = hasFileSize ? `${formatFileSize(currentMessage.metadata.filesize)}  •  ${timeString}    `: timeString;
+	if (currentMessage.direction === 'incoming') {
+	    text = hasFileSize ? `    ${timeString} • ${formatFileSize(currentMessage.metadata.filesize)}` : timeString;
+	}
+
+  return (
+    <View style={{ alignItems: position === 'right' ? 'flex-end' : 'flex-start', paddingHorizontal: 6 }}>
+      <Text
+        style={[
+          props.timeTextStyle?.[position],
+          {
+            color: textColor,
+            fontSize: 11,
+            opacity: 0.85,
+          },
+        ]}
+      >
+        {text}
+      </Text>
+    </View>
+  );
+};
+
 
     scrollToMessage(id) {
         //console.log('scrollToMessage', id);
@@ -2141,7 +2224,7 @@ renderSend = (props) => {
 	}
 
 	get mediaLabels() {
-	  const data = this.state.messagesMetadata;  // ✅ correct property name
+	  const data = this.state.messagesMetadata;
 	  if (!data) return {};
 	
 	  return Object.fromEntries(
@@ -2152,6 +2235,10 @@ renderSend = (props) => {
 	}
 	
     get showChat() {
+		if (this.state.expandedImage) {
+			return false;
+		}    
+
        if (this.state.selectedContact) {
            if (this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) {
                return false;
@@ -2180,6 +2267,28 @@ renderSend = (props) => {
        return false;
     }
 
+
+  onViewableItemsChanged = ({ viewableItems }: { viewableItems: any[] }) => {
+    const visibleIds = viewableItems.map(v => v.item._id);
+    this.setState(prev => {
+      const updatedRendered = new Set(prev.renderedMessageIds);
+      visibleIds.forEach(id => updatedRendered.add(id));
+      return { visibleMessageIds: visibleIds, renderedMessageIds: updatedRendered };
+    });
+  };
+
+  handleImageLoadStart = (id: string) => {
+    this.setState(prev => ({
+      imageLoadingState: { ...prev.imageLoadingState, [id]: true },
+    }));
+  };
+  
+    handleImageLoadEnd = (id: string) => {
+    this.setState(prev => ({
+      imageLoadingState: { ...prev.imageLoadingState, [id]: false },
+    }));
+  };
+    
     render() {
         let searchExtraItems = [];
         let items = [];
@@ -2452,11 +2561,30 @@ renderSend = (props) => {
 		
 		// Filter messages that contain the search string (case-insensitive)
 		if (this.state.searchMessages && this.state.searchString && this.state.searchString.length > 1) {
-		  filteredMessages = messages.filter(msg => 
-			msg.text && msg.text.toLowerCase().includes(this.state.searchString.toLowerCase())
+			const searchLower = this.state.searchString.toLowerCase()
+
+		  const textMatches = messages.filter(
+			msg => msg.text && msg.text.toLowerCase().includes(searchLower)
 		  );
-		}
   
+		  const matchingMediaIds = Object.keys(this.state.mediaLabels).filter(id =>
+			this.state.mediaLabels[id].toLowerCase().includes(searchLower)
+		  );
+		
+		  const mediaMatches = messages.filter(msg =>
+			matchingMediaIds.includes(msg._id)
+		  );
+
+		  const uniqueMessages = [
+			...textMatches,
+			...mediaMatches.filter(
+			  m => !textMatches.some(tm => tm._id === m._id)
+			),
+		  ];
+		  filteredMessages = uniqueMessages;
+
+		}
+      
         // debug
         let debug = false;
         
@@ -2465,9 +2593,11 @@ renderSend = (props) => {
         const messagesMetadata = this.state.messagesMetadata; 
         const replyMessages = this.replyMessages;
         const mediaLabels = this.state.mediaLabels;
+        const shareToContacts = this.state.shareToContacts;
           
 		if (debug) {
 			const values = {
+			shareToContacts,
 				messagesMetadata,
 				replyMessages,
 				mediaLabels
@@ -2543,12 +2673,17 @@ renderSend = (props) => {
 				  text={this.state.text}
                   onInputTextChanged={text => this.chatInputChanged(text)}
                   renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
+				  listViewProps={{
+					  onViewableItemsChanged: this.onViewableItemsChanged,
+					  viewabilityConfig: this.viewabilityConfig
+					}}
                 />
 
                 {addSpacer ? <KeyboardSpacer /> : null }
 
               </View>
-              : (items.length === 1) ?
+
+              : (items.length === 1 && !this.state.expandedImage) ?
               <View style={[chatContainer, borderClass]}>
                 <GiftedChat innerRef={this.chatListRef}
                   messages={filteredMessages}
@@ -2573,6 +2708,27 @@ renderSend = (props) => {
               </View>
               : null
               }
+
+			{this.state.expandedImage && (	
+			
+			  <Modal
+				visible={true}
+				transparent={true}
+				onRequestClose={() => {
+					this.onImagePress(null);
+				}}
+			  >
+				<ImageViewer
+				  imageUrls={[{ url: this.state.expandedImage.image }]}
+				  enableSwipeDown
+				  onSwipeDown={() => this.onImagePress(null)}
+				  onClick={() => this.onImagePress(null)}
+				  backgroundColor="black"
+				  renderIndicator={() => null}
+				  saveToLocalByLongPress={false}
+				/>
+			  </Modal>
+			)}
 
             <DeleteMessageModal
                 show={this.state.showDeleteMessageModal}
@@ -2671,7 +2827,11 @@ ContactsListBox.propTypes = {
     searchString: PropTypes.string,
     recordAudio: PropTypes.func,
     dark: PropTypes.bool,
-    messagesMetadata: PropTypes.object
+    messagesMetadata: PropTypes.object,
+    contactStartShare: PropTypes.func,
+    contactStopShare: PropTypes.func,
+    setFullScreen: PropTypes.func,
+    fullScreen: PropTypes.bool
 };
 
 

@@ -44,7 +44,7 @@ const UserIcon = (props) => {
 
     if (props.identity.uri && props.identity.uri.search('anonymous') !== -1) {
          return (
-            <Avatar.Icon style={{backgroundColor: color}, styles.avatar} size={avatarSize} icon="user" />
+            <Avatar.Icon style={{backgroundColor: color}, styles.avatar} size={avatarSize} icon="account" />
                 );
     }
 

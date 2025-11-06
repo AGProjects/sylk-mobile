@@ -194,7 +194,7 @@ export default class CallManager extends events.EventEmitter {
             hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
         }
 
-        //utils.timestampedLog('Callkeep: will start call', callUUID, 'to', targetUri);
+        utils.timestampedLog('Callkeep: start call', callUUID, 'to', targetUri);
         this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
     }
 
@@ -379,7 +379,11 @@ export default class CallManager extends events.EventEmitter {
             let conference = this._incoming_conferences.get(callUUID);
 
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
-            this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
+			// don't hang-up the call now, otherwise iOS will not wake up the app
+            setTimeout(() => {
+				this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
+            }, 60000);
+            
             this.backToForeground();
 
             //utils.timestampedLog('Callkeep: will start conference to', conference.room);

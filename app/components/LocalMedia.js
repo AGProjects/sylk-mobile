@@ -72,12 +72,19 @@ class LocalMedia extends Component {
         const buttonSize = this.props.isTablet ? 40 : 34;
         const buttonContainerClass = this.props.isTablet ? styles.tabletButtonContainer : styles.buttonContainer;
 
+        let displayName = this.props.remoteDisplayName;
+
+        if (this.props.remoteUri.indexOf('@videoconference') > -1) {
+			const room = this.props.remoteUri.split('@')[0];        
+			displayName = 'Room ' + room;
+        }
+
         return (
             <Fragment>
                 <CallOverlay
                     show = {true}
                     remoteUri = {this.props.remoteUri}
-                    remoteDisplayName = {this.props.remoteDisplayName}
+                    remoteDisplayName = {displayName}
                     call = {this.props.call}
                     terminatedReason = {this.state.terminatedReason}
                     localMedia = {this.props.localMedia}
@@ -112,7 +119,8 @@ class LocalMedia extends Component {
                     </View>
                     </View>
                 :
-                <View style={buttonContainerClass}>
+
+                <View style={[{buttonContainerClass}, {marginBottom: 50}]}>
                           <TouchableHighlight style={styles.roundshape}>
                         <IconButton
                             size={buttonSize}
@@ -123,6 +131,7 @@ class LocalMedia extends Component {
                         </TouchableHighlight>
                 </View>
                 }
+
                 <View style={styles.container}>
                     <RTCView objectFit="cover"
                              style={[styles.video, videoStyle]}

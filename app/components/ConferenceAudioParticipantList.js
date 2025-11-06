@@ -14,6 +14,9 @@ const ConferenceAudioParticipantList = props => {
             <FlatList
                 data={props.children}
                 renderItem={({item}) => {return (item)}}
+				keyExtractor={(item, index) =>
+				  item.props.identity?.uri?.toString() || index.toString()
+				}
             />
         </Fragment>
     );

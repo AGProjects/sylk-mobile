@@ -129,5 +129,10 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+
+        <key>com.apple.security.application-groups</key>
+        <array>
+            <string>group.com.agprojects.sylk-ios</string>
+        </array>
 </dict>
 </plist>

@@ -2201,6 +2201,8 @@ class ConferenceBox extends Component {
         //console.log(this.state.statistics);
         let container = styles.container;
 
+		let { width, height } = Dimensions.get('window');
+
 		let mediaContainer = this.state.isLandscape ? styles.audioContainerLandscape : styles.audioContainer;
 		let conferenceContainer = this.state.isLandscape ? styles.conferenceContainerLandscape : styles.conferenceContainer;
 		let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
@@ -2223,6 +2225,7 @@ class ConferenceBox extends Component {
             this.state.participants.forEach((p) => {
                 _contact = this.foundContacts.get(p.identity._uri);
                 _identity = {uri: p.identity._uri.indexOf('@guest') > -1 ? 'From the web': p.identity._uri,
+                             key: p.identity._uri,
                              displayName: (_contact && _contact.displayName != p.identity._displayName) ? _contact.displayName : p.identity._displayName,
                              photo: _contact ? _contact.photo: null
                             };
@@ -2361,17 +2364,25 @@ class ConferenceBox extends Component {
 				marginTop: Platform.OS === 'ios' ? 0: topInset,
 				marginBottom: marginBottom,
 	            borderWidth: debugBorderWidth,
-			    borderColor: 'white'
+			    borderColor: 'white',
+			    width: width
  		    };
 
   		    conferenceHeader = {
   		      top: 0,
 			  height: 60,
-			  width: '100%',
+			  width: width,
 			  marginTop: 0,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'yellow'
 		    };
+
+            if (Platform.OS === 'ios' ) { 
+                if (this.state.isLandscape) {
+					conferenceHeader.width = conferenceHeader.width - bottomInset - topInset;
+					container.width = container.width - bottomInset - topInset;
+                }
+            }
 
 			conferenceContainer = {
 			  flex: 1,
@@ -2703,7 +2714,7 @@ class ConferenceBox extends Component {
 						<ConferenceMatrixParticipant
 							key = {p.id}
 							participant = {p}
-							pauseVideo={(idx >= 4) || (idx >= 2 && this.props.isTablet === false)}
+							pauseVideo={(idx >= 4)}
 							status={status}
 						/>
 					);
@@ -2821,7 +2832,6 @@ class ConferenceBox extends Component {
 		  borderWidth: debugBorderWidth,
 		};
 
-		let { width, height } = Dimensions.get('window');
 		let top = 0;
 	    //console.log('width', width);
 	    //console.log('height', height);
@@ -2838,15 +2848,16 @@ class ConferenceBox extends Component {
 		          if (this.fullScreen) {
 					 corners = {
 						  topLeft: { top: 0, left: 0 },
-						  topRight: { top: 0, right: bottomInset },
-						  bottomRight: { bottom: 0, right: bottomInset },
+						  topRight: { top: 0, right: 0 },
+						  bottomRight: { bottom: 0, right: 0 },
 						  bottomLeft: { bottom: 0, left: 0},
 						  id: 'ios-landscape'
 					};
 
 					container = {
-						width: this.fullScreen ? width - topInset: width,
+						width: this.fullScreen ? width: width,
 						height: height,
+						marginLeft: -topInset,
 						marginBottom: marginBottom,
 						borderWidth: debugBorderWidth,
 						borderColor: 'blue'
@@ -2863,7 +2874,7 @@ class ConferenceBox extends Component {
 
 					container = {
 						width: width - topInset - bottomInset,
-						height: '100%',
+						height: height,
 						marginBottom: marginBottom,
 						borderWidth: debugBorderWidth,
 						borderColor: 'blue'
@@ -2882,7 +2893,7 @@ class ConferenceBox extends Component {
 
 					mediaContainer = {
 					  width: this.state.isLandscape ? videoWidth : '100%',
-					  height: height - conferenceHeader.height - bottomInset,
+					  height: height - bottomInset - topInset + 30,
 					  borderColor: 'red',
 					  borderWidth: debugBorderWidth,
 					};
@@ -2901,8 +2912,8 @@ class ConferenceBox extends Component {
 				  corners = {
 					  topLeft: { top: this.fullScreen ? 0 : conferenceHeader.height + buttonsContainer.height, left: 0 },
 					  topRight: { top: this.fullScreen ? 0: conferenceHeader.height + buttonsContainer.height, right: 0 },
-					  bottomRight: { bottom: this.fullScreen ? bottomInset: 0, right: 0 },
-					  bottomLeft: { bottom: this.fullScreen ? bottomInset: 0, left: 0},
+					  bottomRight: { bottom: 0, right: 0 },
+					  bottomLeft: { bottom: 0, left: 0},
 					  id: 'ios-portrait'
 				  };
 
@@ -2911,9 +2922,9 @@ class ConferenceBox extends Component {
 				  top: 0,
 				  left: 0,
 				  flexDirection: 'column',
-				  marginTop: 0,
+				  marginTop: this.fullScreen ? -topInset : 0,
 				  width: width,
-				  height: this.fullScreen ? height - topInset: '100%',
+				  height: this.fullScreen ? height: '100%',
 				  marginBottom: marginBottom,
 				  borderWidth: debugBorderWidth,
 				  borderColor: 'green',
@@ -3238,7 +3249,7 @@ class ConferenceBox extends Component {
 				show={this.state.showDrawer && !this.state.reconnectingCall}
 				close={this.toggleDrawer}
 				isLandscape={this.state.isLandscape}
-				title="Conference room configuration"
+				title="Room configuration"
 			>
 				<View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
 					<View style={{flex: this.state.isLandscape ? 1 : 2}}>

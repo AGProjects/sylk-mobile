@@ -43,7 +43,7 @@ const ConferenceDrawerSpeakerSelectionWrapper = (props) => {
 
   return (
     <Fragment>
-      <Title>Active speakers</Title>
+      <Title>Speakers</Title>
 
       {/* ✅ New Cancel button */}
       {

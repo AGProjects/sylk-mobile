@@ -173,7 +173,7 @@ const styles = StyleSheet.create({
   },
 
   redButton: {
-    backgroundColor: 'red',
+    backgroundColor: 'orange',
   },
 
   disabledBlueButton: {

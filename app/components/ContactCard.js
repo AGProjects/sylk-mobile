@@ -109,8 +109,8 @@ const styles = StyleSheet.create({
 
   selectBox: {
     marginTop: 10,
-    marginLeft: 60,
-    marginRight: 10,
+    marginLeft: 50,
+    marginRight: 30,
     alignItems: 'flex-end',
   },
 
@@ -228,33 +228,42 @@ class ContactCard extends Component {
     this.props.setTargetUri(uri, this.state.contact);
   }
 
-  render() {
-    const isDark = this.props.darkMode;
-    const cardContainerClass = this.state.isTablet
-      ? this.state.orientation === 'landscape'
-        ? styles.cardLandscapeTabletContainer
-        : styles.cardPortraitTabletContainer
-      : this.state.orientation === 'landscape'
-      ? styles.cardLandscapeContainer
-      : styles.cardPortraitContainer;
+render() {
+  const isDark = this.props.darkMode;
+  const cardContainerClass = this.state.isTablet
+    ? this.state.orientation === 'landscape'
+      ? styles.cardLandscapeTabletContainer
+      : styles.cardPortraitTabletContainer
+    : this.state.orientation === 'landscape'
+    ? styles.cardLandscapeContainer
+    : styles.cardPortraitContainer;
 
-    const cardHeight = this.state.fontScale <= 1 ? 75 : 70;
-    const contact = this.state.contact;
-    const uri = contact.uri;
-    let title = contact.name || uri.split('@')[0];
-    let subtitle = contact.uri;
-    const unread = contact.unread?.length || 0;
+  const cardHeight = this.state.fontScale <= 1 ? 75 : 70;
+  const contact = this.state.contact;
+  const uri = contact.uri;
+  const unread = contact.unread?.length || 0;
 
-	if (uri.indexOf('@guest.') > -1) {
-		title = 'Anonymous caller';			
-	}
+  // Determine title and subtitle
+  let title = contact.name || uri.split('@')[0];
+  let subtitle = contact.uri;
 
-	if (uri.indexOf('@videoconference.') > -1) {
-		title = 'Room ' + uri.split('@')[0];
-		subtitle = 'Video conference';		
-	}
+  if (uri.indexOf('@guest.') > -1) {
+    title = 'Anonymous caller';
+  }
 
+  if (uri.indexOf('@videoconference.') > -1) {
+    title = 'Room ' + uri.split('@')[0];
+    subtitle = 'Video conference';
+  }
 
+  // Determine title padding based on fontScale and selectMode
+  let titlePadding = styles.titlePadding;
+  if (this.state.fontScale < 1) titlePadding = styles.titlePaddingBig;
+  if (this.state.fontScale > 1.2) titlePadding = styles.titlePaddingSmall;
+  if (this.state.selectMode) titlePadding = styles.titlePaddingSelect;
+
+  if (this.state.selectMode) {
+    // Render selectMode card
     return (
       <Fragment>
         <Card
@@ -286,22 +295,65 @@ class ContactCard extends Component {
                 <Text
                   variant="titleLarge"
                   numberOfLines={1}
-                  style={[
-                    styles.title,
-                    styles.titlePadding,
-                    isDark && darkStyles.textPrimary,
-                  ]}
+                  style={[styles.title, titlePadding, isDark && darkStyles.textPrimary]}
                 >
                   {title}
                 </Text>
+              </View>
+            </Card.Content>
 
+            <View style={styles.selectBox}>
+              <Icon
+                style={[styles.selectedContact, isDark && darkStyles.textSecondary]}
+                name={contact.selected ? 'check-circle' : 'circle-outline'}
+                size={20}
+              />
+            </View>
+          </View>
+        </Card>
+      </Fragment>
+    );
+  } else {
+    // Render normal card
+    return (
+      <Fragment>
+        <Card
+          style={[
+            cardContainerClass,
+            { minHeight: cardHeight },
+            isDark && darkStyles.card,
+          ]}
+          onPress={() => this.setTargetUri(uri, contact)}
+        >
+          <View style={styles.rowContent}>
+            <Card.Content style={styles.cardContent}>
+              <View style={styles.avatarContent}>
+                {contact.photo || !contact.email ? (
+                  <UserIcon size={50} identity={contact} unread={unread} />
+                ) : (
+                  <Gravatar
+                    options={{
+                      email: contact.email,
+                      parameters: { size: '50', d: 'mm' },
+                      secure: true,
+                    }}
+                    style={styles.gravatar}
+                  />
+                )}
+              </View>
+
+              <View style={styles.mainContent}>
+                <Text
+                  variant="titleLarge"
+                  numberOfLines={1}
+                  style={[styles.title, titlePadding, isDark && darkStyles.textPrimary]}
+                >
+                  {title}
+                </Text>
                 <Text
                   variant="titleMedium"
                   numberOfLines={1}
-                  style={[
-                    styles.subtitle,
-                    isDark && darkStyles.textSecondary,
-                  ]}
+                  style={[styles.subtitle, isDark && darkStyles.textSecondary]}
                 >
                   {subtitle}
                 </Text>
@@ -315,26 +367,16 @@ class ContactCard extends Component {
                     value={unread}
                     status="error"
                     textStyle={styles.badgeTextStyle}
-                    containerStyle={[
-                      styles.badgeContainer,
-                      isDark && darkStyles.badgeContainer,
-                    ]}
+                    containerStyle={[styles.badgeContainer, isDark && darkStyles.badgeContainer]}
                   />
                 ) : null}
                 {contact.timestamp && (
-                  <Text
-                    style={[
-                      styles.timestamp,
-                      isDark && darkStyles.timestamp,
-                    ]}
-                  >
+                  <Text style={[styles.timestamp, isDark && darkStyles.timestamp]}>
                     {moment(contact.timestamp).format('HH:mm')}
                   </Text>
                 )}
               </View>
-              <Text
-                style={[styles.storageText, isDark && darkStyles.textSecondary]}
-              >
+              <Text style={[styles.storageText, isDark && darkStyles.textSecondary]}>
                 {contact.prettyStorage}
               </Text>
             </View>
@@ -343,6 +385,8 @@ class ContactCard extends Component {
       </Fragment>
     );
   }
+}
+
 }
 
 ContactCard.propTypes = {

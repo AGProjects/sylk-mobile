@@ -24,6 +24,7 @@
 #import "APNSTokenModule.h"
 #import <UserNotifications/UserNotifications.h>
 #import <React/RCTBridge.h>
+#import <React/RCTEventDispatcher.h>
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTRootView.h>
 
@@ -43,10 +44,12 @@
 {
   self.moduleName = @"Sylk";
 
+    NSLog(@"[sylk_app] Application launch");
+
   if ([FIRApp defaultApp] == nil) {
     [FIRApp configure];
   }
-
+    
  // React Native setup
   RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
   RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
@@ -86,6 +89,11 @@
    return YES;
 
   //return [super application:application didFinishLaunchingWithOptions:launchOptions];
+}
+
+- (void)applicationDidBecomeActive:(UIApplication *)application
+{
+  NSLog(@"[sylk_app] Application ready");
 }
 
 - (void)registerNotificationCategories
@@ -340,6 +348,7 @@
             openURL:(NSURL *)url
             options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
 {
+  NSLog(@"[sylk_share] openURL called: %@", url);
   return [RCTLinkingManager application:application openURL:url options:options];
 }
 
