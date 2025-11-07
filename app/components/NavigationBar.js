@@ -682,13 +682,11 @@ class NavigationBar extends Component {
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                          : null }
-                        {!this.state.syncConversations && !this.state.inCall  ?
-                        <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
-                        : null}
+                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
                          : null }
-                        {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+
                         {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
                         {!this.state.inCall ?
                         <Divider />
@@ -713,12 +711,17 @@ class NavigationBar extends Component {
                         : null}
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
 
-                        {false && !this.state.inCall ?
-                        <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="wrench" title="App settings"/>
-                         : null }
 
                         {!this.state.inCall ?
                         <Divider />
+                         : null }
+
+                       {!this.state.syncConversations && !this.state.inCall  ?
+                        <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
+                        : null}
+ 
+                        {!this.state.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
                          : null }
 
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />

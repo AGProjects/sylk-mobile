@@ -1163,7 +1163,7 @@ class ReadyBox extends Component {
         if (this.state.isTablet) {
             URIContainerClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriInputBox : styles.portraitTabletUriInputBox;
         } else {
-            URIContainerClass = this.props.orientation === 'landscape' ? styles.landscapeUriInputBox : styles.portraitUriInputBox;
+            URIContainerClass = styles.portraitUriInputBox;
         }
 
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
@@ -1221,12 +1221,16 @@ class ReadyBox extends Component {
 			if (isLandscape) {
 				containerWidth = containerWidth - bottomInset - topInset;
 			}
-		} 
-		
+		} else {
+			if (isLandscape) {
+				containerWidth = containerWidth - bottomInset;
+			}
+		}
+
         return (
             <Fragment>
-                <View style={[styles.container, {width: containerWidth, marginRight: marginRight, borderColor: 'white', borderWidth: 0}]}>
-                    <View >
+                <View style={[styles.container, {width: containerWidth, marginRight: marginRight}]}>
+                    <View>
                     {this.state.selectedContact && this.state.searchMessages?
                     <View style={styles.navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
@@ -1248,7 +1252,7 @@ class ReadyBox extends Component {
                     </View>
                     : null}
 
-                        {this.showSearchBar && !this.state.isLandscape ?
+                        {this.showSearchBar?
                         <View style={URIContainerClass}>
                             <URIInput
                                 defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}

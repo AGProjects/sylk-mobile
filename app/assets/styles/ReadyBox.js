@@ -28,14 +28,13 @@ const styles = StyleSheet.create({
   },
 
   historyLandscapeContainer: {
-    marginTop: 0,
     width: '100%',
-    flex: 9,
+    flex: 1,
   },
 
   historyPortraitContainer: {
     width: '100%',
-    flex: 9,
+    flex: 1,
   },
 
   landscapeTitle: {
@@ -105,9 +104,7 @@ const styles = StyleSheet.create({
 
   landscapeUriInputBox: {
     textAlign: 'left',
-    flex: 1,
-    padding: 0,
-    marginTop: 4,
+    width: '100%',
   },
 
   landscapeTabletUriInputBox: {

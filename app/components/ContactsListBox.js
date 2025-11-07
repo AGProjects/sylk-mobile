@@ -171,13 +171,15 @@ class ContactsListBox extends Component {
             dark: this.props.dark,
 			messagesMetadata: this.props.messagesMetadata,
 			mediaLabels: {},
+			mediaRotations: {},
 			text: '',
 			fullSize: false,
 			expandedImage: null,
 			fullScreen: this.props.fullScreen,
 			visibleMessageIds: [], 
 			renderedMessageIds: new Set(),
-			imageLoadingState: {}
+			imageLoadingState: {},
+			rotation: 0
         }
 
         this.ended = false;
@@ -305,6 +307,7 @@ class ContactsListBox extends Component {
                     if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
                         let last_message_ts = this.state.renderMessages[0].createdAt;
                         if (renderMessages[0].createdAt > last_message_ts) {
+                            console.log('scrollToBottom here 1');
                             this.setState({scrollToBottom: true});
                         }
                     }
@@ -401,9 +404,12 @@ class ContactsListBox extends Component {
                        messagesMetadata: nextProps.messagesMetadata,
                        fullScreen: nextProps.fullScreen
                        }, () => {
-					// This runs AFTER messagesMetadata is updated
-					this.setState({ mediaLabels: this.mediaLabels });
-				});
+							// This runs AFTER messagesMetadata is updated
+							const mediaRotations = this.mediaRotations;
+							const mediaLabels = this.mediaLabels;
+							this.setState({ mediaLabels: mediaLabels, 
+							                mediaRotations: mediaRotations });
+					});
 
         if (nextProps.isTyping) {
             setTimeout(() => {
@@ -710,17 +716,23 @@ class ContactsListBox extends Component {
 		</View>
 	  );
 	}
-
+	
 	onImagePress = (message) => {
 	  const { expandedImage } = this.state;
-	  //console.log('onImagePress', expandedImage, 'fullScreen', this.state.fullScreen);
+	  console.log('onImagePress', 'fullScreen', this.state.fullScreen);
 
 	  if (expandedImage) {
 		this.props.setFullScreen(false);
-		this.setState({ expandedImage: null });
+		this.saveRotation(expandedImage);
+		this.setState({ expandedImage: null});
+		
 	  } else {
+	    let rotation = 0;
 		this.props.setFullScreen(true);
-		this.setState({ expandedImage: message });
+		if (message._id in this.state.mediaRotations) {
+			rotation = this.state.mediaRotations[message._id];
+		}
+		this.setState({ expandedImage: message, rotation: rotation});
 	  }
 	};
 
@@ -1167,43 +1179,50 @@ renderSend = (props) => {
     }
 
     sendEditedMessage(message, text) {
-        const newId = uuid.v4();
+        const mId = uuid.v4();
     
         if (message.contentType === 'application/sylk-file-transfer') {
+			let messagesMetadata = this.state.messagesMetadata;
+
 			const transferId = message._id;
 			let metadataContent;
+			let rotation = 0;
+
 			if (transferId in this.state.mediaLabels) {
 				metadataContent = this.state.messagesMetadata[message._id];
-				console.log('old metadataContent', metadataContent);
+				//console.log('old metadataContent', metadataContent);
+				rotation = metadataContent.rotation || 0;
+				delete messagesMetadata[transferId];
 				if (metadataContent.metadataId) {
 					this.props.deleteMessage(metadataContent.metadataId, this.state.selectedContact.uri);
 				}
 			}
-			
-			let messagesMetadata = this.state.messagesMetadata;
+
+			metadataContent = {transferId: transferId, label:text, metadataId: mId, rotation: rotation};
 			
 			//console.log('old message', message );
 
-			metadataContent = {transferId: transferId, label:text, metadataId: newId};
-			let metadataMessage = {_id: newId,
-								   key: newId,
+			let metadataMessage = {_id: mId,
+								   key: mId,
 								   createdAt: new Date(),
 								   metadata: metadataContent,
 								   text: JSON.stringify(metadataContent),
 								   };
 
 			messagesMetadata[transferId] = metadataContent;
-			console.log('new metadataContent', metadataContent);
+			//console.log('editMessage metadataContent', metadataContent);
 			this.setState({
 				messagesMetadata: { ...messagesMetadata }
 			}, () => {
 				// This runs AFTER messagesMetadata is updated
-				this.setState({ mediaLabels: this.mediaLabels });
+				let mediaLabels = this.mediaLabels;
+				//console.log('update mediaLabels', mediaLabels);
+				this.setState({ mediaLabels: mediaLabels});
 			});
 			this.props.sendMessage(this.state.selectedContact.uri, metadataMessage, 'application/sylk-message-metadata');
         } else {
-			message._id = newId;
-			message.key = newId;
+			message._id = mId;
+			message.key = mId;
 			message.text = text;
 			this.props.deleteMessage(message._id, this.state.selectedContact.uri);
 			this.props.sendMessage(this.state.selectedContact.uri, message);
@@ -1252,7 +1271,6 @@ renderSend = (props) => {
 			return;
         }
 
-
         const uri = this.state.selectedContact.uri;
         const text = this.state.text.trim();
         const photoMsg = this.state.photoMsg;
@@ -1283,6 +1301,7 @@ renderSend = (props) => {
 
 			let messagesMetadata = this.state.messagesMetadata;
 			messagesMetadata[transfer_id] = metadataContent;
+			console.log('sendPhoto metadataContent', metadataContent);
 			this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
 			this.setState({scrollToBottom: true,
 						   messagesMetadata: messagesMetadata}
@@ -1291,6 +1310,72 @@ renderSend = (props) => {
 
         this.transferFile(this.state.photoMsg);
     }
+
+	saveRotation(message) {
+	    let metadataContent;
+		console.log('rotation', this.state.rotation, message._id);
+		const uri = this.state.selectedContact.uri;
+		
+		if (!uri) {
+			return;
+		}
+		
+		if (!message) {
+			return;
+		}
+
+		const transferId = message.metadata.transfer_id;
+		let messagesMetadata = this.state.messagesMetadata;
+		
+		const mId = uuid.v4();
+		if (message._id in messagesMetadata) {
+			metadataContent = messagesMetadata[message._id];
+			console.log('old metadataContent', metadataContent);
+
+			if (metadataContent.rotation === this.state.rotation) {
+			    console.log('No rotation changes');
+				return;
+			}
+
+			delete messagesMetadata[message._id];
+			// remove old metadata message
+			this.props.deleteMessage(metadataContent.metadataId, uri);
+
+			metadataContent.rotation = this.state.rotation;
+			metadataContent.metadataId = mId;
+
+		} else {
+		    if (this.state.rotation == 0) {
+			    console.log('No rotation changes');
+				return;
+		    }
+			metadataContent = {transferId: transferId, 
+			                   label: 'Photo ', 
+			                   metadataId: mId, 
+			                   rotation: this.state.rotation};
+		}
+		
+		const metadataMessage = {_id: mId,
+								 key: mId,
+								 createdAt: new Date(),
+								 metadata: metadataContent,
+								 text: JSON.stringify(metadataContent),
+								};
+
+		messagesMetadata[transferId] = metadataContent;
+		console.log('saveRotation metadataContent', metadataContent);
+
+		this.setState({
+			messagesMetadata: { ...messagesMetadata }
+		}, () => {
+			// This runs AFTER messagesMetadata is updated
+			let mediaRotations = this.mediaRotations;
+			//console.log('update mediaRotations', mediaRotations);
+			this.setState({ mediaRotations: mediaRotations});
+		});
+
+		this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+	}
 
     searchedContact(uri, contact=null) {
         if (uri.indexOf(' ') > -1) {
@@ -1533,7 +1618,12 @@ renderSend = (props) => {
         </View>
       );
     }
-
+    
+    let rotation = 0;
+    if (currentMessage._id in this.state.mediaRotations) {
+        rotation = this.state.mediaRotations[currentMessage._id];
+	}
+    
     return (
       <TouchableOpacity
         activeOpacity={0.8}
@@ -1568,6 +1658,7 @@ renderSend = (props) => {
             width: '100%',
             height: '100%',
             opacity: isLoading ? 0.5 : 1,
+            transform: [{ rotate: `${rotation}deg` }]
           }}
           source={{ uri: currentMessage.image, priority: FastImage.priority.normal }}
           resizeMode={FastImage.resizeMode.cover}
@@ -2089,6 +2180,14 @@ renderSend = (props) => {
 
 				<View style={{flexDirection: 'row', alignItems: 'center'}}>
 
+                { Platform.OS === "android" ?
+					<Checkbox
+					  status={this.state.fullSize ? 'checked' : 'unchecked'}
+					  onPress={() => this.setState({ fullSize: !this.state.fullSize })}
+	
+					/>
+                :
+                
 				<View
 				  style={{
 					borderWidth: this.state.fullSize ? 0 : 2,
@@ -2104,6 +2203,7 @@ renderSend = (props) => {
 	
 					/>
 				 </View> 
+				 }
 				  <Text style={styles.checkboxLabel}>Full size</Text>
 				  </View>
       
@@ -2180,13 +2280,14 @@ renderTime = (props) => {
 
   // Format timestamp text 
   const timeString = currentMessage.createdAt ? dayjs(currentMessage.createdAt).format('h:mm A'): '';
-  let text = hasFileSize ? `${formatFileSize(currentMessage.metadata.filesize)}  •  ${timeString}    `: timeString;
+  
+  let text = hasFileSize ? `${formatFileSize(currentMessage.metadata.filesize)}  •  ${timeString}`: timeString;
 	if (currentMessage.direction === 'incoming') {
-	    text = hasFileSize ? `    ${timeString} • ${formatFileSize(currentMessage.metadata.filesize)}` : timeString;
+	    text = hasFileSize ? `${timeString} • ${formatFileSize(currentMessage.metadata.filesize)}` : timeString;
 	}
 
   return (
-    <View style={{ alignItems: position === 'right' ? 'flex-end' : 'flex-start', paddingHorizontal: 6 }}>
+    <View style={{ alignItems: position === 'right' ? 'flex-end' : 'flex-start', marginLeft: 10, marginRight:10, marginBottom:5 }}>
       <Text
         style={[
           props.timeTextStyle?.[position],
@@ -2231,6 +2332,17 @@ renderTime = (props) => {
 		Object.entries(data)
 		  .map(([key, value]) => [key, value.label])
 		  .filter(([, label]) => label !== undefined && label !== null)
+	  );
+	}
+
+	get mediaRotations() {
+	  const data = this.state.messagesMetadata;
+	  if (!data) return {};
+	
+	  return Object.fromEntries(
+		Object.entries(data)
+		  .map(([key, value]) => [key, value.rotation])
+		  .filter(([, rotation]) => rotation !== undefined && rotation !== null)
 	  );
 	}
 	
@@ -2289,6 +2401,11 @@ renderTime = (props) => {
     }));
   };
     
+  rotateImage() {
+    const newRotation = (this.state.rotation  + 90) % 360; 
+    this.setState({rotation: newRotation});
+  };
+  
     render() {
         let searchExtraItems = [];
         let items = [];
@@ -2593,14 +2710,16 @@ renderTime = (props) => {
         const messagesMetadata = this.state.messagesMetadata; 
         const replyMessages = this.replyMessages;
         const mediaLabels = this.state.mediaLabels;
+        const mediaRotations = this.state.mediaRotations;
         const shareToContacts = this.state.shareToContacts;
           
 		if (debug) {
 			const values = {
 			shareToContacts,
 				messagesMetadata,
-				replyMessages,
-				mediaLabels
+//				replyMessages,
+				mediaLabels,
+				mediaRotations
 			};
 		
 			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
@@ -2709,26 +2828,60 @@ renderTime = (props) => {
               : null
               }
 
-			{this.state.expandedImage && (	
-			
-			  <Modal
-				visible={true}
-				transparent={true}
-				onRequestClose={() => {
-					this.onImagePress(null);
-				}}
-			  >
-				<ImageViewer
-				  imageUrls={[{ url: this.state.expandedImage.image }]}
-				  enableSwipeDown
-				  onSwipeDown={() => this.onImagePress(null)}
-				  onClick={() => this.onImagePress(null)}
-				  backgroundColor="black"
-				  renderIndicator={() => null}
-				  saveToLocalByLongPress={false}
-				/>
-			  </Modal>
-			)}
+{this.state.expandedImage && (
+  <Modal
+    visible={true}
+    transparent={true}
+    onRequestClose={() => this.onImagePress(null)}
+  >
+    <ImageViewer
+      imageUrls={[{ url: this.state.expandedImage.image }]}
+      enableSwipeDown
+      onSwipeDown={() => this.onImagePress(null)}
+      onClick={() => this.onImagePress(null)}
+      backgroundColor="black"
+      renderIndicator={() => null}
+      saveToLocalByLongPress={false}
+      renderImage={(props) => (
+        <View
+          style={{
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Image
+            {...props}
+            style={[
+              props.style,
+              { transform: [{ rotate: `${this.state.rotation}deg` }] },
+            ]}
+          />
+        </View>
+      )}
+    />
+
+    <TouchableOpacity
+      onPress={this.rotateImage}
+      style={{
+        position: "absolute",
+        bottom: 40,
+        right: 30,
+        backgroundColor: "rgba(0,0,0,0.6)",
+        padding: 12,
+        borderRadius: 50,
+      }}
+    >
+	  <IconButton
+			type="font-awesome"
+			size={40}
+			icon="rotate-left"
+			iconColor="white"
+		  />
+    </TouchableOpacity>
+  </Modal>
+)}
+
+
 
             <DeleteMessageModal
                 show={this.state.showDeleteMessageModal}

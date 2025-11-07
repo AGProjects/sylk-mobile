@@ -79,6 +79,8 @@ class LocalMedia extends Component {
 			displayName = 'Room ' + room;
         }
 
+        const participants = this.state.participants ? this.state.participants.toString().replace(/,/g, ', '): '';
+
         return (
             <Fragment>
                 <CallOverlay
@@ -97,30 +99,30 @@ class LocalMedia extends Component {
 
                 {this.showSaveDialog() ?
                     <View style={styles.buttonContainer}>
-                    <Text style={styles.title}>Save conference maybe?</Text>
-                    <Text style={styles.subtitle}>Would you like to save participants {this.state.participants.toString().replace(/,/g, ', ')} for having another conference later?</Text>
-                    <Text style={styles.description}>You can find later it in your Favorites. </Text>
-
-                    <View style={styles.buttonRow}>
-
-                    <Button
-                        mode="contained"
-                        style={styles.savebutton}
-                        onPress={this.saveConference}
-                        icon="content-save"
-                    >Save</Button>
-
-                    <Button
-                        mode="contained"
-                        style={styles.backbutton}
-                        onPress={this.hangupCall}
-                        icon=""
-                    > Back</Button>
-                    </View>
+						<Text style={styles.title}>Save conference maybe?</Text>
+						<Text style={styles.subtitle}>Would you like to save participants {participants} for having another conference later?</Text>
+						<Text style={styles.description}>You can find later it in your Favorites. </Text>
+	
+						<View style={styles.buttonRow}>
+	
+						<Button
+							mode="contained"
+							style={styles.savebutton}
+							onPress={this.saveConference}
+							icon="content-save"
+						>Save</Button>
+	
+						<Button
+							mode="contained"
+							style={styles.backbutton}
+							onPress={this.hangupCall}
+							icon=""
+						> Back</Button>
+						</View>
                     </View>
                 :
 
-                <View style={[{buttonContainerClass}, {marginBottom: 50}]}>
+                <View style={buttonContainerClass}>
                           <TouchableHighlight style={styles.roundshape}>
                         <IconButton
                             size={buttonSize}

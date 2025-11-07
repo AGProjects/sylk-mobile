@@ -6337,10 +6337,11 @@ componentWillUnmount() {
 		if (contentType === 'application/sylk-message-metadata') {
 		     const metadataContent = message.metadata;
 		     const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-		     console.log('outgoing metadata message', message._id, metadataContent);
 
 			 selectedContact.messagesMetadata[mId] = metadataContent;
 			 myContacts[uri].messagesMetadata[mId] = metadataContent;
+			 
+		     console.log('outgoing metadata message', message._id, metadataContent);
 
 			 this.setState({myContacts: myContacts, selectedContact: selectedContact});
 
@@ -6441,15 +6442,15 @@ componentWillUnmount() {
         return true;
     }
 
-		async resizeBeforeUpload(localUrl) {
+		async resizeBeforeUpload(localUrl, size=600) {
 		  //console.log('Image to resize', localUrl); 
 		  try {
 			const resized = await ImageResizer.createResizedImage(
 			  localUrl,          // image URI
-			  600,               // width
-			  600,               // height
+			  size,               // width
+			  size,               // height
 			  'JPEG',            // format
-			  80,                // quality
+			  100,                // quality
 			  0,                 // rotation
 			  undefined,         // outputPath
 			  false,             // keepMeta (false = strip EXIF)
@@ -6475,7 +6476,7 @@ componentWillUnmount() {
         if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
             // scale down local_url file to 600px width
             if (!file_transfer.fullSize) {
-				const resized = await this.resizeBeforeUpload(local_url);
+				const resized = await this.resizeBeforeUpload(local_url, 600);
 				if (resized) {
 					try {
 						file_transfer.filesize = resized.size;
@@ -7221,7 +7222,7 @@ componentWillUnmount() {
         let uri;
         let changes = false;
 
-        //console.log('updateRenderMessageState', id, state, url);
+        console.log('updateRenderMessageState', id, state, url);
 
         query = "SELECT * from messages where msg_id = ? and account = ?";
         //console.log(query);
@@ -8257,6 +8258,7 @@ componentWillUnmount() {
             let file_transfer;
             let contentTypes = {};
             let foundMetadata = false;
+            let metadataTimstamps = {};
 
             let last_content = null;
 
@@ -8337,7 +8339,16 @@ componentWillUnmount() {
                         try {
 							const metadataContent = JSON.parse(content);
 							const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+
+							if (metadataContent.transferId && metadataContent.transferId in metadataTimstamps && metadataTimstamps[metadataContent.transferId] > item.unix_timestamp) {
+								//console.log('we have an old timestamp');
+								continue;
+							}
+
+							metadataTimstamps[mId] = item.unix_timestamp;
 							myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+							//console.log('DB metadataContent', item.msg_id, item.unix_timestamp, metadataContent);
+							
 							foundMetadata = true;
 						} catch (error) {
 							console.log('Cannot parse metadataMessage', content, item);
@@ -9183,7 +9194,7 @@ componentWillUnmount() {
             direction = message.sender.uri === this.state.account.id ? 'outgoing': 'incoming';
             
             if  (message.contentType !== 'message/imdn') {
-				console.log('Process journal', i, 'of', messages.length, direction, message.contentType, uri);
+				console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri);
             }
 
             let d = new Date(2019);
@@ -9200,16 +9211,15 @@ componentWillUnmount() {
                 return;
             }
 
-            if (message.contentType !== 'application/sylk-conversation-remove' && message.contentType !== 'application/sylk-message-remove' && uri && Object.keys(myContacts).indexOf(uri) === -1) {
+//            if (message.contentType !== 'application/sylk-conversation-remove' && message.contentType !== 'application/sylk-message-remove' && uri && Object.keys(myContacts).indexOf(uri) === -1) {
+            if (unreadCounterTypes.has(message.contentType) && Object.keys(myContacts).indexOf(uri) === -1) {
+
                 if (uri.indexOf('@') > -1 && !utils.isEmailAddress(uri)) {
                     //console.log('Skip bad uri', uri);
                     return;
                 }
-
-                //console.log('Will add a new contact', uri);
-                myContacts[uri] = this.newContact(uri);
+                myContacts[uri] = this.newContact(uri, uri, {'src': 'journal ' + direction});
                 myContacts[uri].timestamp = message.timestamp;
-                //this.setState({myContacts: myContacts});
             }
 
             //console.log('Sync', message.timestamp, message.contentType, uri);
@@ -9291,6 +9301,8 @@ componentWillUnmount() {
 						 try {
 							 const metadataContent = JSON.parse(message.content);
 							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
+							 console.log('new metadataContent from journal', metadataContent);
+							 
 							 myContacts[uri].messagesMetadata[mId] = metadataContent;
 						 } catch (e) {
 							 console.log("error parsing metadataContent", message.content);
@@ -9323,6 +9335,8 @@ componentWillUnmount() {
 							 const metadataContent = JSON.parse(message.content);
 							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
 							 myContacts[uri].messagesMetadata[mId] = metadataContent;
+							 console.log('new metadataContent from journal', metadataContent);
+
 						 } catch (e) {
 							 console.log("error parsing metadataContent", message.content);
 						 }
