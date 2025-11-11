@@ -135,7 +135,7 @@
     ];
 
     for (NSString *dir in searchDirs) {
-        NSLog(@"[DB Debug] Recursively searching in: %@", dir);
+        //NSLog(@"[DB Debug] Recursively searching in: %@", dir);
 
         NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:dir];
         NSString *file;
@@ -144,14 +144,14 @@
         while ((file = [enumerator nextObject])) {
             if ([[file lastPathComponent] isEqualToString:dbName]) {
                 NSString *fullPath = [dir stringByAppendingPathComponent:file];
-                NSLog(@"[DB Debug] Found sylk.db at: %@", fullPath);
+                //NSLog(@"[DB Debug] Found sylk.db at: %@", fullPath);
                 found = YES;
                 break; // stop at first match
             }
         }
 
         if (!found) {
-            NSLog(@"[DB Debug] sylk.db not found in %@", dir);
+            //NSLog(@"[DB Debug] sylk.db not found in %@", dir);
         }
     }
 }
@@ -174,18 +174,18 @@
             NSString *fullDir = [baseDir stringByAppendingPathComponent:sub];
             NSString *dbPath = [fullDir stringByAppendingPathComponent:dbName];
             if ([fm fileExistsAtPath:dbPath]) {
-                NSLog(@"[Push DB] Found database at: %@", dbPath);
+                NSLog(@"[sylk_app] Found database at: %@", dbPath);
                 return dbPath;
             }
         }
     }
 
-    NSLog(@"[Push DB] sylk.db not found in any known location");
+    NSLog(@"[sylk_app] sylk.db not found in any known location");
     return nil;
 }
 
 - (NSDictionary *)getContactsByTagForAccount:(NSString *)account {
-    NSLog(@"[Push DB] getContactsByTagForAccount called with account = %@", account);
+    NSLog(@"[sylk_app] getContactsByTagForAccount called with account = %@", account);
 
     NSMutableArray *allContacts = [NSMutableArray array];
     NSMutableArray *blockedContacts = [NSMutableArray array];
@@ -196,7 +196,7 @@
 
         sqlite3 *db = NULL;
         if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
-            NSLog(@"[Push DB] Failed to open database, returning empty arrays");
+            NSLog(@"[sylk_app] Failed to open database, returning empty arrays");
             return @{ @"all": @[], @"blocked": @[] };
         }
 
@@ -224,16 +224,16 @@
 
             sqlite3_finalize(stmt);
         } else {
-            NSLog(@"[Push DB] Failed to prepare statement, returning empty arrays");
+            NSLog(@"[sylk_app] Failed to prepare statement, returning empty arrays");
         }
 
         sqlite3_close(db);
 
     } @catch (NSException *exception) {
-        NSLog(@"[Push DB] Exception in getContactsByTagForAccount: %@ - %@, returning empty arrays", exception.name, exception.reason);
+        NSLog(@"[sylk_app] Exception in getContactsByTagForAccount: %@ - %@, returning empty arrays", exception.name, exception.reason);
     }
 
-    NSLog(@"[Push DB] Returning contacts: all=%lu blocked=%lu",
+    NSLog(@"[sylk_app] Returning contacts: all=%lu blocked=%lu",
           (unsigned long)allContacts.count, (unsigned long)blockedContacts.count);
 
     return @{ @"all": allContacts ?: @[], @"blocked": blockedContacts ?: @[] };
@@ -241,7 +241,7 @@
 
 - (BOOL)isAccountActive:(NSString *)account fromUri:(NSString *)fromUri allUrisSet:(NSSet<NSString *> *)uniqueUris {
     if (account.length == 0) {
-        NSLog(@"[Push DB] isAccountActive called with empty account, returning YES (fail-safe)");
+        NSLog(@"[sylk_app] isAccountActive called with empty account, returning YES (fail-safe)");
         return YES;
     }
 
@@ -249,7 +249,7 @@
     NSString *dbPath = [self sylkDatabasePath];
 
     if (!dbPath || ![fm fileExistsAtPath:dbPath]) {
-        NSLog(@"[Push DB] Database file not found, returning YES (fail-safe allow call)");
+        NSLog(@"[sylk_app] Database file not found, returning YES (fail-safe allow call)");
         return YES;
     }
 
@@ -262,18 +262,18 @@
 
     @try {
         if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
-            NSLog(@"[Push DB] Failed to open database, returning YES (fail-safe)");
+            NSLog(@"[sylk_app] Failed to open database, returning YES (fail-safe)");
             return YES;
         }
 
         NSString *query = @"SELECT active, dnd, reject_anonymous, reject_non_contacts FROM accounts WHERE account = ?";
         if (sqlite3_prepare_v2(db, [query UTF8String], -1, &stmt, NULL) != SQLITE_OK) {
-            NSLog(@"[Push DB] Failed to prepare statement, returning YES (fail-safe)");
+            NSLog(@"[sylk_app] Failed to prepare statement, returning YES (fail-safe)");
             return YES;
         }
 
         if (sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT) != SQLITE_OK) {
-            NSLog(@"[Push DB] Failed to bind account parameter, returning YES (fail-safe)");
+            NSLog(@"[sylk_app] Failed to bind account parameter, returning YES (fail-safe)");
             return YES;
         }
 
@@ -288,16 +288,16 @@
             rejectAnonymous = (rejectAnonStr != NULL) ? ([@(sqlite3_column_double(stmt, 2)) doubleValue] != 0) : NO;
             rejectNonContacts = (rejectNonContactsStr != NULL) ? ([@(sqlite3_column_double(stmt, 3)) doubleValue] != 0) : NO;
 
-            NSLog(@"[Push DB] account flags: active=%@ dnd=%@ rejectAnonymous=%@ rejectNonContacts=%@",
+            NSLog(@"[sylk_app] account flags: active=%@ dnd=%@ rejectAnonymous=%@ rejectNonContacts=%@",
                   isActive ? @"YES" : @"NO",
                   isDnd ? @"YES" : @"NO",
                   rejectAnonymous ? @"YES" : @"NO",
                   rejectNonContacts ? @"YES" : @"NO");
         } else {
-            NSLog(@"[Push DB] No account row found for %@, defaulting to allow call", account);
+            NSLog(@"[sylk_app] No account row found for %@, defaulting to allow call", account);
         }
     } @catch (NSException *ex) {
-        NSLog(@"[Push DB] Exception checking account rules: %@ - %@, proceeding anyway", ex.name, ex.reason);
+        NSLog(@"[sylk_app] Exception checking account rules: %@ - %@, proceeding anyway", ex.name, ex.reason);
         isActive = YES; // fail-safe
     } @finally {
         if (stmt) sqlite3_finalize(stmt);
@@ -306,22 +306,22 @@
 
     // --- apply call rules ---
     if (rejectNonContacts && ![uniqueUris containsObject:fromUri]) {
-        NSLog(@"[Push DB] Caller %@ not in contacts", fromUri);
+        NSLog(@"[sylk_app] Caller %@ not in contacts", fromUri);
         return NO;
     }
 
     if (([fromUri containsString:@"anonymous"] || [fromUri containsString:@"@guest."]) && rejectAnonymous) {
-        NSLog(@"[Push DB] Anonymous caller %@", fromUri);
+        NSLog(@"[sylk_app] Anonymous caller %@", fromUri);
         return NO;
     }
 
     if (isDnd) {
-        NSLog(@"[Push DB] DND active");
+        NSLog(@"[sylk_app] DND active");
         return NO;
     }
 
     if (!isActive) {
-        NSLog(@"[Push DB] Account inactive");
+        NSLog(@"[sylk_app] Account inactive");
         return NO;
     }
 
@@ -407,7 +407,7 @@ continueUserActivity:(NSUserActivity *)userActivity
 - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
 {
     NSString *hexToken = [self hexStringFromDeviceToken:deviceToken];
-    NSLog(@"[APNs] Device token: %@", hexToken);
+    NSLog(@"[sylk_app] Device token: %@", hexToken);
 
     // Send token to RN via APNSTokenModule
     APNSTokenModule *module = [self.bridge moduleForClass:[APNSTokenModule class]];
@@ -424,7 +424,7 @@ continueUserActivity:(NSUserActivity *)userActivity
 
 - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
 {
-  NSLog(@"[VoIP Push] Failed to register for remote notifications: %@", error);
+  NSLog(@"[sylk_app] Failed to register for remote notifications: %@", error);
   [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
 }
 
@@ -432,7 +432,7 @@ continueUserActivity:(NSUserActivity *)userActivity
 - (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
                                               fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
 {
-  NSLog(@"[VoIP Push] Got a notification");
+  NSLog(@"[sylk_app] Got a notification");
 
   NSString *eventType = userInfo[@"event"];
   NSLog(@"Value of eventType = %@", eventType);
@@ -480,7 +480,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     withCompletionHandler:(void (^)(void))completion
 {
     NSDictionary *userInfo = payload.dictionaryPayload ?: @{};
-    NSLog(@"[VoIP Push notification] Raw Payload: %@", userInfo);
+    //NSLog(@"[sylk_app]Raw Payload: %@", userInfo);
 
     // --- nil-safe extraction ---
     NSString *(^coerceString)(id) = ^NSString *(id obj) {
@@ -498,14 +498,14 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSString *toUri = [[coerceString(userInfo[@"to_uri"]) lowercaseString] copy];
     NSString *account = [[coerceString(userInfo[@"account"]) lowercaseString] copy];
 
-    NSLog(@"[VoIP Push] event = %@", event);
-    NSLog(@"[VoIP Push] calluuid = %@", calluuid);
-    NSLog(@"[VoIP Push] callId = %@", callId);
-    NSLog(@"[VoIP Push] mediaType = %@", mediaType);
-    NSLog(@"[VoIP Push] callerName = %@", callerName);
-    NSLog(@"[VoIP Push] fromUri = %@", fromUri);
-    NSLog(@"[VoIP Push] toUri = %@", toUri);
-    NSLog(@"[VoIP Push] account = %@", account);
+    NSLog(@"[sylk_app] event = %@", event);
+    NSLog(@"[sylk_app] calluuid = %@", calluuid);
+    NSLog(@"[sylk_app] callId = %@", callId);
+    NSLog(@"[sylk_app] mediaType = %@", mediaType);
+    NSLog(@"[sylk_app] callerName = %@", callerName);
+    NSLog(@"[sylk_app] fromUri = %@", fromUri);
+    NSLog(@"[sylk_app] toUri = %@", toUri);
+    NSLog(@"[sylk_app] account = %@", account);
 
     // --- cancel event ---
     if ([event isEqualToString:@"cancel"]) {
@@ -525,15 +525,15 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     // --- determine lookup account ---
     NSString *lookupAccount = ([event isEqualToString:@"incoming_session"]) ? toUri : account;
-    NSLog(@"[VoIP Push] lookupAccount = %@", lookupAccount);
+    NSLog(@"[sylk_app] lookupAccount = %@", lookupAccount);
 
     // --- fetch contacts safely ---
     NSDictionary *contactsMap = @{ @"all": @[], @"blocked": @[] };
     @try {
         contactsMap = [self getContactsByTagForAccount:lookupAccount];
-        NSLog(@"[VoIP Push] fetched contacts for account %@", lookupAccount);
+        NSLog(@"[sylk_app] fetched contacts for account %@", lookupAccount);
     } @catch (NSException *ex) {
-        NSLog(@"[VoIP Push] Exception fetching contacts: %@ - %@", ex.name, ex.reason);
+        NSLog(@"[sylk_app] Exception fetching contacts: %@ - %@", ex.name, ex.reason);
         contactsMap = @{ @"all": @[], @"blocked": @[] };
     }
 
@@ -541,14 +541,14 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSArray *blocked = contactsMap[@"blocked"] ?: @[];
     NSSet<NSString *> *uniqueUris = [NSSet setWithArray:allUris];
 
-    //NSLog(@"[VoIP Push] allUris = %@", allUris);
-    //NSLog(@"[VoIP Push] blocked = %@", blocked);
+    //NSLog(@"[sylk_app] allUris = %@", allUris);
+    //NSLog(@"[sylk_app] blocked = %@", blocked);
 
     BOOL accountAllowed = YES;
     @try {
         accountAllowed = [self isAccountActive:lookupAccount fromUri:fromUri allUrisSet:uniqueUris];
     } @catch (NSException *ex) {
-        NSLog(@"[VoIP Push] Exception checking account rules: %@ - %@", ex.name, ex.reason);
+        NSLog(@"[sylk_app] Exception checking account rules: %@ - %@", ex.name, ex.reason);
         accountAllowed = YES; // fail-safe allow call
     }
     
@@ -559,7 +559,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     // --- check blocked list ---
     if ([blocked containsObject:fromUri]) {
-        NSLog(@"[VoIP Push] Caller %@ is blocked", fromUri);
+        NSLog(@"[sylk_app] Caller %@ is blocked", fromUri);
         if (completion) completion();
         return;
     }
@@ -587,7 +587,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
                             // completion handled by RNVoipPushNotificationManager
                         }];
         } @catch (NSException *ex) {
-            NSLog(@"[VoIP Push] Exception reporting CallKit call: %@ - %@", ex.name, ex.reason);
+            NSLog(@"[sylk_app] Exception reporting CallKit call: %@ - %@", ex.name, ex.reason);
             if (completion) completion();
         }
     } else {

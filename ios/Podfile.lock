@@ -1096,6 +1096,8 @@ PODS:
     - React-Core
   - react-native-background-timer (2.4.1):
     - React-Core
+  - react-native-blob-util (0.23.2):
+    - React-Core
   - react-native-camera (4.2.1):
     - React-Core
     - react-native-camera/RCT (= 4.2.1)
@@ -1110,6 +1112,8 @@ PODS:
     - React-Core
   - react-native-contacts (5.2.3):
     - React
+  - react-native-create-thumbnail (2.1.1):
+    - React-Core
   - react-native-document-picker (6.0.4):
     - React-Core
   - react-native-fast-openpgp (2.9.2):
@@ -1311,8 +1315,6 @@ PODS:
     - React-perflogger (= 0.73.11)
   - ReactNativeIncallManager (3.3.0):
     - React
-  - rn-fetch-blob (0.12.0):
-    - React-Core
   - RNAudioRecord (0.2.2):
     - React
   - RNAudioRecorderPlayer (3.6.14):
@@ -1445,9 +1447,11 @@ DEPENDENCIES:
   - React-Mapbuffer (from `../node_modules/react-native/ReactCommon`)
   - "react-native-background-downloader (from `../node_modules/@kesha-antonov/react-native-background-downloader`)"
   - react-native-background-timer (from `../node_modules/react-native-background-timer`)
+  - react-native-blob-util (from `../node_modules/react-native-blob-util`)
   - react-native-camera (from `../node_modules/react-native-camera`)
   - "react-native-cameraroll (from `../node_modules/@react-native-camera-roll/camera-roll`)"
   - react-native-contacts (from `../node_modules/react-native-contacts`)
+  - react-native-create-thumbnail (from `../node_modules/react-native-create-thumbnail`)
   - react-native-document-picker (from `../node_modules/react-native-document-picker`)
   - react-native-fast-openpgp (from `../node_modules/react-native-fast-openpgp`)
   - react-native-get-random-values (from `../node_modules/react-native-get-random-values`)
@@ -1482,7 +1486,6 @@ DEPENDENCIES:
   - React-utils (from `../node_modules/react-native/ReactCommon/react/utils`)
   - ReactCommon/turbomodule/core (from `../node_modules/react-native/ReactCommon`)
   - ReactNativeIncallManager (from `../node_modules/react-native-incall-manager`)
-  - rn-fetch-blob (from `../node_modules/rn-fetch-blob`)
   - RNAudioRecord (from `../node_modules/react-native-audio-record`)
   - RNAudioRecorderPlayer (from `../node_modules/react-native-audio-recorder-player`)
   - RNCallKeep (from `../node_modules/react-native-callkeep`)
@@ -1613,12 +1616,16 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@kesha-antonov/react-native-background-downloader"
   react-native-background-timer:
     :path: "../node_modules/react-native-background-timer"
+  react-native-blob-util:
+    :path: "../node_modules/react-native-blob-util"
   react-native-camera:
     :path: "../node_modules/react-native-camera"
   react-native-cameraroll:
     :path: "../node_modules/@react-native-camera-roll/camera-roll"
   react-native-contacts:
     :path: "../node_modules/react-native-contacts"
+  react-native-create-thumbnail:
+    :path: "../node_modules/react-native-create-thumbnail"
   react-native-document-picker:
     :path: "../node_modules/react-native-document-picker"
   react-native-fast-openpgp:
@@ -1687,8 +1694,6 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon"
   ReactNativeIncallManager:
     :path: "../node_modules/react-native-incall-manager"
-  rn-fetch-blob:
-    :path: "../node_modules/rn-fetch-blob"
   RNAudioRecord:
     :path: "../node_modules/react-native-audio-record"
   RNAudioRecorderPlayer:
@@ -1800,9 +1805,11 @@ SPEC CHECKSUMS:
   React-Mapbuffer: 57bf49a458398d329dad2bf8bc660e3e35b96989
   react-native-background-downloader: 7a76696349e775fabe8e140cd4e9eff46bbce0c5
   react-native-background-timer: 4638ae3bee00320753647900b21260b10587b6f7
+  react-native-blob-util: e28570f93e16d9ee4ffcd74c5349d080f1cdb345
   react-native-camera: 079d80421f0572d6b4e836908114d614d0adb553
   react-native-cameraroll: fc61080d4409a68c428f9b232264f7fb9fc4a07d
   react-native-contacts: 23c96a8f2a3c1c2048a50c97fd2f7dbf2dec5981
+  react-native-create-thumbnail: 733160dca9a548262e1030e7fcdae90a93d203ca
   react-native-document-picker: b34afcc048d3c6aeecc5bbe007bf7e4f7019696c
   react-native-fast-openpgp: a88817558063d0f66584497459d963051b00d7f2
   react-native-get-random-values: c89ae16e7b9bb5c06dfe77225556df584344293a
@@ -1837,7 +1844,6 @@ SPEC CHECKSUMS:
   React-utils: e8549669b504c18929b2e9aa4d87657e530a91a4
   ReactCommon: 9c38e8797dc2ac72edf63cd18cf450d918575666
   ReactNativeIncallManager: 4ec3e181e86a2eddab43542298c079e492d51238
-  rn-fetch-blob: 25612b6d6f6e980c6f17ed98ba2f58f5696a51ca
   RNAudioRecord: b253d15d8141c5ef6bc614fc9d9f06577870bfc3
   RNAudioRecorderPlayer: b5ed41ccfe72a211a870bfe09ab36c046eb27d2a
   RNCallKeep: 1930a01d8caf48f018be4f2db0c9f03405c2f977
