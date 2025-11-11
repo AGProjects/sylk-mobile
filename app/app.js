@@ -22,6 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ProximitySensor } from 'react-native-sensors';
 import { Appearance } from 'react-native';
 import ImageResizer from 'react-native-image-resizer';
+import ReactNativeBlobUtil from 'react-native-blob-util';
 
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
@@ -44,13 +45,13 @@ import notifee, { AndroidImportance } from '@notifee/react-native';
 import mime from 'react-native-mime-types';
 import { StatusBar } from 'react-native';
 import { LogBox } from 'react-native';
+import RNBlobUtil from 'react-native-blob-util';
 
 registerGlobals();
 
 import * as sylkrtc from 'react-native-sylkrtc';
 import InCallManager from 'react-native-incall-manager';
 import RNCallKeep, { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
-import RNFetchBlob from "rn-fetch-blob";
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
 import Call from './components/Call';
@@ -351,7 +352,9 @@ class Sylk extends Component {
             sharedFiles: {},
             searchMessages: false,
             dark: false,
-            fullScreen: false
+            fullScreen: false,
+            transferProgress: {},
+            decryptProgress: {}
         };
 
         this.buildId = "20250923";
@@ -2102,6 +2105,11 @@ class Sylk extends Component {
         //console.log('Route', route, 'with reason', reason);
         utils.timestampedLog('Change route', this.currentRoute, '->', route, 'with reason:', reason);
         let messages = this.state.messages;
+
+		if (route === '/ready') {
+			this.setState({contactIsSharing: false});
+		}
+
         if (this.currentRoute === route) {
             if (route === '/ready') {
                 if (this.state.selectedContact) {
@@ -3862,7 +3870,6 @@ componentWillUnmount() {
                 if (newState === 'terminated') {
                     if (this.startedByPush) {
                         this.resetStartedByPush('terminated')
-                        this.requestSyncConversations(this.state.lastSyncId);
                     }
 
                     utils.timestampedLog("Incoming call was cancelled");
@@ -3874,10 +3881,10 @@ componentWillUnmount() {
                     this.setState({incomingCall: null});
 
                 } else if (newState === 'accepted') {
-                    //utils.timestampedLog("Incoming call was accepted");
+                    utils.timestampedLog("Incoming call was accepted");
                     this.hideInternalAlertPanel(newState);
                 } else if (newState === 'established') {
-                    //utils.timestampedLog("Incoming call media started");
+                    utils.timestampedLog("Incoming call media started");
                     this.hideInternalAlertPanel(newState);
                 }
             }
@@ -4551,7 +4558,7 @@ componentWillUnmount() {
             this.setState({localMedia: localStream});
             if (nextRoute !== null) {
                 this.setState({loading: null});
-                this.changeRoute(nextRoute, 'media_ready');
+                setTimeout(() => this.changeRoute(nextRoute, 'media_ready'), 0);
                 if (nextRoute === '/conference') {
                     //this.playMessageSound();
                 }
@@ -5430,9 +5437,9 @@ componentWillUnmount() {
     }
 
     autoRejectIncomingCall(callUUID, from, to) {
-        utils.timestampedLog('Check auto reject call from', from);
+        //utils.timestampedLog('Check auto reject call from', from);
         if (this.state.blockedUris) {
-            console.log('blockedUris', this.state.blockedUris);
+            //console.log('blockedUris', this.state.blockedUris);
             if (this.state.blockedUris.indexOf(from) > -1) { 
                 utils.timestampedLog('Reject call', callUUID, 'from blocked URI', from);
                 this.callKeeper.rejectCall(callUUID);
@@ -6141,7 +6148,6 @@ componentWillUnmount() {
     }
 
     resetStartedByPush(from) {
-        console.log('resetStartedByPush', from);
         this.startedByPush = false;
         if (this.state.lastSyncId) {
             this.requestSyncConversations(this.state.lastSyncId);
@@ -6466,6 +6472,8 @@ componentWillUnmount() {
 		}
 
     async uploadFile(file_transfer) {
+        let transferProgress = this.state.transferProgress;
+
         //console.log('uploadFile', file_transfer);
         let encrypted_file;
         let outputFile;
@@ -6582,40 +6590,47 @@ componentWillUnmount() {
         }
 
         utils.timestampedLog('Uploading file', local_url, 'to', remote_url);
-        const xhr = new XMLHttpRequest();
+		  const dp = { ...this.state.transferProgress };
+		  dp[file_transfer.transfer_id] = { stage: 'upload', progress: 0, error: null };
+		  this.setState({ transferProgress: dp });
 
-        xhr.onload = () => {
-            if (xhr.status === 200) {
-                console.log('File uploaded:', local_url);
-            } else {
-                delete this.uploadRequests[remote_url];
-                const error = new Error(xhr.response);
-                console.log(error);
-                this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
-            }
+		RNBlobUtil.fetch('POST', remote_url, {
+		  'Content-Type': file_transfer.filetype,
+		}, RNBlobUtil.wrap(local_url))
+		.uploadProgress((written, total) => {
+		  const progress = Math.floor((written / total) * 100);
+		  //console.log('Upload progress', progress);
+		  const dp = { ...this.state.transferProgress };
+		  dp[file_transfer.transfer_id] = { stage: 'upload', progress: progress, error: null };
+		  this.setState({ transferProgress: dp });
+		})
+		.then((res) => {
+			console.log('File uploaded:', local_url);
+			if (file_transfer.transfer_id in transferProgress) {
+				delete transferProgress[file_transfer.transfer_id];
+				this.setState({transferProgress: transferProgress});
+			}
+
+			  const dp = { ...this.state.transferProgress };
+			  if (file_transfer.transfer_id in dp) { 
+				  delete dp[file_transfer.transfer_id];
+				  this.setState({ transferProgress: dp });
+			  }	
+
             this.updateFileTransferBubble(file_transfer);
             delete this.uploadRequests[remote_url]
-        };
 
-        xhr.open('POST', remote_url);
-        xhr.setRequestHeader('content-type', file_transfer.filetype);
-		this.updateStorageForContact(uri, 0, file_transfer.filesize);
-        //this.updateFileTransferBubble(file_transfer, 'Uploading file...', file_transfer);
-        console.log('Uploading file', file_transfer.filename, 'of', file_transfer.filesize, 'bytes');
-
-        xhr.send({ uri: 'file://'+ local_url });
-        if (xhr.upload) {
-            xhr.upload.onprogress = (event) => {
-                if (event.lengthComputable) {
-                    // evt.loaded the bytes the browser received
-                    // evt.total the total bytes set by the header
-                    var progress = Math.floor((event.loaded/event.total) * 100);
-                    //console.log('Upload ' + progress + '%!');
-                    file_transfer.progress = progress;
-                    //this.updateFileTransferBubble(file_transfer, 'Uploaded ' + progress + '%');
-                }
-            };
-        }
+		})
+		.catch((err) => {
+		    console.error('Upload error', err);
+			delete this.uploadRequests[remote_url];
+			const error = new Error(xhr.response);
+			transferProgress[file_transfer.transfer_id] = {stage: 'upload', progress: null, error: err};
+			this.setState({transferProgress: transferProgress});
+			this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+            this.updateFileTransferBubble(file_transfer);
+            delete this.uploadRequests[remote_url]
+		});
     }
 
     async reSendMessage(message, uri) {
@@ -7532,7 +7547,7 @@ componentWillUnmount() {
         //utils.timestampedLog('Message', id, 'IMDN state is', state);
 
         if (!this.canSend()) {
-            console.log('IMDN for', id, state, 'will be sent later');
+            //console.log('IMDN for', id, state, 'will be sent later');
             return false;
         }
 
@@ -7543,7 +7558,7 @@ componentWillUnmount() {
                         let received = (state === 'delivered') ? 1 : 2;
                         let query = "UPDATE messages set received = ? where msg_id = ? and account = ?";
                         this.ExecuteQuery(query, [received, id, this.state.accountId]).then((results) => {
-                            utils.timestampedLog('IMDN for', id, message.content_type, 'saved');
+                            //utils.timestampedLog('IMDN for', id, message.content_type, 'saved');
                         }).catch((error) => {
                             utils.timestampedLog('IMDN for', id, message.content_type, 'save error:', error.message);
                         });
@@ -7588,7 +7603,8 @@ componentWillUnmount() {
             const exists = await RNFS.exists(file_transfer.local_url);
             if (exists) {
                 try {
-                    const { size } = await RNFetchBlob.fs.stat(file_transfer.local_url);
+                    const { size } = await ReactNativeBlobUtil.fs.stat(file_transfer.path);
+                    
                     //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
                     if (size === 0) {
                         this.deleteMessage(file_transfer.transfer_id, uri);
@@ -7668,6 +7684,10 @@ componentWillUnmount() {
         }
 
         let id = file_transfer.transfer_id;
+        let transferProgress = this.state.transferProgress;
+	    transferProgress[id] = {stage: 'download', progress: 0, error: null};
+		this.setState({transferProgress: transferProgress});
+
         let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
         let encrypted = file_transfer.url.endsWith('.asc') ? 1 : 0;
@@ -7706,6 +7726,11 @@ componentWillUnmount() {
             file_transfer.progress = null;
             file_transfer.error = null;
             this.updateFileTransferSql(file_transfer, encrypted);
+            if (id in transferProgress) {
+				delete transferProgress[id];
+				this.setState({transferProgress: transferProgress});
+			}
+
             delete this.downloadRequests[id];
             return;
         }
@@ -7722,7 +7747,7 @@ componentWillUnmount() {
         };
 
         //console.log('Adding request id', id, file_transfer.url);
-        this.updateFileTransferBubble(file_transfer, 'Downloading file, press to cancel');
+        //this.updateFileTransferBubble(file_transfer, 'Downloading, press to cancel');
         let filesize;
         this.downloadRequests[id] = RNBackgroundDownloader.download({
             id: id,
@@ -7731,18 +7756,17 @@ componentWillUnmount() {
         }).begin((tinfo) => {
              if (tinfo.expectedBytes) {
 				 console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
-				 //this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' downloading ' + utils.beautySize(file_transfer.filesize), ', press to cancel');
              }
         }).progress((pdata) => {
             if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
 				const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
 				const progress = Math.ceil(percent);
 				file_transfer.progress = progress;
-//				this.updateFileTransferBubble(file_transfer, 'Downloading ' + file_transfer.filename + ' ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
-				this.updateFileTransferBubble(file_transfer, 'Downloading ' + progress + '% of '+ utils.beautySize(file_transfer.filesize) +', press to cancel');
+                transferProgress[id] = {stage: 'download', progress: progress, error: null};
+				this.setState({transferProgress: transferProgress});
             }
         }).done(() => {
-			RNFetchBlob.fs.stat(tmp_file_path).then(stat => {
+			ReactNativeBlobUtil.fs.stat(tmp_file_path).then(stat => {
 			    filesize = stat.size;
 				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
 				delete this.downloadRequests[id];
@@ -7753,8 +7777,10 @@ componentWillUnmount() {
 					//return;
 				}
 
+                transferProgress[id] = {stage: 'download', progress: 100, error: null};
+				this.setState({transferProgress: transferProgress});
+
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
-					//this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' download finished');
 					this.saveDownloadTask(id, file_transfer.url, file_path);
 					if (this.state.callContact) {
 						this.getMessages(this.state.callContact.uri);
@@ -7765,6 +7791,8 @@ componentWillUnmount() {
 					console.log("Source: ", tmp_file_path);
 					console.log("Destination: ", file_path);
 					file_transfer.local_url = null;
+					transferProgress[id] = {stage: 'download', progress: 0, error: err.message};
+				    this.setState({transferProgress: transferProgress});
 					this.fileTransferStateChanged(id, 'failed', file_transfer);
 				});
 
@@ -7775,6 +7803,10 @@ componentWillUnmount() {
         }).error((error) => {
             console.log('File', file_transfer.filename, 'download failed:', error);
             file_transfer.error = utils.getErrorMessage(error);
+			transferProgress[id] = {stage: 'download', progress: 0, error: file_transfer.error};
+			this.setState({transferProgress: transferProgress});
+			this.renderSystemMessage(file_transfer.filename, error, 'incoming');
+
             this.fileTransferStateChanged(id, 'failed', file_transfer);
             delete this.downloadRequests[id];
             if (error === 'not found') {
@@ -7800,6 +7832,9 @@ componentWillUnmount() {
         const tempBase64Path = inputPath + '.bin'; // temporary base64 file
         let buffer = [];
         const FLUSH_THRESHOLD = 256 * 1024; // Flush to disk every 64KB of data
+        
+        let decryptProgress = this.state.decryptProgress;
+        let transferProgress = this.state.transferProgress;
 
         // Ensure temp file starts empty
         await RNFS.writeFile(tempBase64Path, '', 'base64');
@@ -7843,11 +7878,24 @@ componentWillUnmount() {
 				utils.timestampedLog(file_transfer.error);
 				this.updateFileTransferSql(file_transfer, 3);            
 
+                if (file_transfer.transfer_id in decryptProgress) {
+					delete decryptProgress[file_transfer.transfer_id];
+				}
+
+                if (file_transfer.transfer_id in transferProgress) {
+					delete transferProgress[file_transfer.transfer_id];
+				}
+
+				this.setState({decryptProgress: decryptProgress, transferProgress: transferProgress});
+
 				//try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
 				return;
 			} else {
 			    if (position == 0) {
     			    this.decryptRequests[id] = file_transfer;		
+					decryptProgress[file_transfer.transfer_id] = {progress: 0, error: null};
+					transferProgress[file_transfer.transfer_id] = {stage: 'decrypt', progress: null, error: file_transfer.error};
+					this.setState({decryptProgress: decryptProgress, transferProgress: transferProgress});
     			}
 			}
 			
@@ -7855,7 +7903,8 @@ componentWillUnmount() {
 
  		    const perc = logProgress(position, file_transfer.filesize);
             if (perc) {
-     			//this.updateFileTransferBubble(file_transfer, 'Decrypting ' + perc + '% ' + file_transfer.filename + ', press to cancel...');
+				decryptProgress[file_transfer.transfer_id] = {progress: perc, error: null};
+				transferProgress[file_transfer.transfer_id] = {stage: 'decrypt', progress: perc, error: null};
  			}
   
             const chunk = await RNFS.read(inputPath, CHUNK_SIZE, position, 'utf8');
@@ -7887,8 +7936,6 @@ componentWillUnmount() {
                 // If buffer gets large, flush to disk
                 if (bufferSize >= FLUSH_THRESHOLD) {
                     await RNFS.appendFile(tempBase64Path, buffer.join(''), 'base64');
-                    //this.updateFileTransferBubble(file_transfer, 'Decrypting ' + file_transfer.filename + ' ', position);
-                    //console.log('Reading ', position);
                     buffer = [];
                     bufferSize = 0;
                 }
@@ -7939,7 +7986,11 @@ componentWillUnmount() {
             file_transfer.error = 'failed: ' + error_message;
             file_transfer.progress = null;
             file_transfer.failed = true;
-            
+
+			decryptProgress[file_transfer.transfer_id] = {progress: null, error: error_message};
+			transferProgress[file_transfer.transfer_id] = {stage: 'decrypt', progress: null, error: error_message};
+			this.setState({decryptProgress: decryptProgress, transferProgress: transferProgress});
+
             utils.timestampedLog(file_transfer.error);
             this.updateFileTransferSql(file_transfer, 3);            
             try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
@@ -7974,12 +8025,12 @@ componentWillUnmount() {
             return;
         } else {
             try {
-                const { size } = await RNFetchBlob.fs.stat(file_path);
+                const { size } = await ReactNativeBlobUtil.fs.stat(file_path);
                 if (size !== file_transfer.filesize) {
-                    file_transfer.error = 'Wrong file size';
-                    this.updateFileTransferSql(file_transfer, 3);
+                    //file_transfer.error = 'Wrong file size';
+                    //this.updateFileTransferSql(file_transfer, 3);
                     this.renderSystemMessage(uri, 'Wrong file size ' + size + ', on server is ' + file_transfer.filesize, 'outgoing', new Date());
-                    return;
+                    //return;
                 }
             } catch (e) {
                 consolo.log('Error stat file:', e.message);
@@ -7998,7 +8049,7 @@ componentWillUnmount() {
 		console.log(this.decryptRequests);
 		
 		if (file_transfer.hash in this.decryptRequests) {
-		    console.log('canceling');
+		    console.log('Already being decrypted...');
 			this.cancelDecryptRequests[file_transfer.hash] = file_transfer;
 		} else {
 			await this.decryptInChunks(file_transfer, file_path_decrypted, this.state.keys.private);
@@ -10178,11 +10229,12 @@ componentWillUnmount() {
 
         let renderMessages = this.state.messages;
         let existingMessages = renderMessages[this.state.selectedContact.uri];
-        let newMessages = [];
 
         if (!existingMessages) {
             return;
         }
+
+        let newMessages = [];
 
         existingMessages.forEach((msg) => {
             if (msg._id === id) {
@@ -11003,7 +11055,7 @@ componentWillUnmount() {
         }
 
         let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
-        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+        const { size } = await ReactNativeBlobUtil.fs.stat(stats_filename);
         file_transfer.filesize = fileObject.fileSize || size;
 
         if (fileObject.preview) {
@@ -11051,11 +11103,11 @@ componentWillUnmount() {
     }
 
     contactStartShare() {
-		 this.setState({contactisSharing: true});    
+		 this.setState({contactIsSharing: true});    
     }
 
     contactStopShare() {
-		 this.setState({contactisSharing: false});    
+		 this.setState({contactIsSharing: false});    
     }
     
      fetchSharedItemsAndroid(source) {
@@ -11259,7 +11311,7 @@ componentWillUnmount() {
                         }
 
                         try {
-                            const { size } = await RNFetchBlob.fs.stat(file_transfer.path);
+                            const { size } = await ReactNativeBlobUtil.fs.stat(file_transfer.path);
                             file_transfer.size = size;
                         } catch (e) {
                             console.log('Error stat file', file_transfer.path, e.message);
@@ -11815,8 +11867,11 @@ componentWillUnmount() {
                     file2GiftedChat = {this.file2GiftedChat}
 					contactStartShare = {this.contactStartShare}
 					contactStopShare = {this.contactStopShare}
+					contactIsSharing ={this.state.contactIsSharing}
 					fullScreen = {this.state.fullScreen}
 					setFullScreen = {this.setFullScreen}
+					decryptProgress = {this.state.decryptProgress}
+					transferProgress = {this.state.transferProgress}
                 />
 
                 <ImportPrivateKeyModal

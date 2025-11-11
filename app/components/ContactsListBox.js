@@ -24,6 +24,8 @@ import path from 'react-native-path';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 import { Keyboard } from 'react-native';
 import { StatusBar } from 'react-native';
+import { createThumbnail } from 'react-native-create-thumbnail';
+import * as Progress from 'react-native-progress';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -35,7 +37,6 @@ import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
 import { ActivityIndicator, Animated } from 'react-native';
 import dayjs from 'dayjs';
-
 
 import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
@@ -88,6 +89,7 @@ class ContactsListBox extends Component {
         autoBind(this);
 
         this.chatListRef = React.createRef();
+        this.flatListRef = null;
         this.default_placeholder = 'Type a message...'
 
         let renderMessages = [];
@@ -155,8 +157,8 @@ class ContactsListBox extends Component {
             keys: this.props.keys,
             playing: false,
             texting: false,
-            cameraAsset: null,
-            photoMsg: null,
+            sharingAsset: null,
+            sharingAssetMessage: null,
             placeholder: this.default_placeholder,
             audioSendFinished: false,
             messagesCategoryFilter: this.props.messagesCategoryFilter,
@@ -179,13 +181,20 @@ class ContactsListBox extends Component {
 			visibleMessageIds: [], 
 			renderedMessageIds: new Set(),
 			imageLoadingState: {},
-			rotation: 0
+			rotation: 0,
+			gettingSharedAsset: false,
+			videoLoadingState: {},
+			decryptProgress: this.props.decryptProgress,
+			transferProgress: this.props.transferProgress,
+		    showVideoModal: false,
+		    modalVideoUri: null,
+		    videoMetaCache: {}
         }
 
         this.ended = false;
-        this.outgoingPendMessages = {};
         this.prevValues = {};
         this.viewabilityConfig = { itemVisiblePercentThreshold: 20 };
+        this.imageSizeCache = {};
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
     }
@@ -307,49 +316,12 @@ class ContactsListBox extends Component {
                     if (this.state.renderMessages.length > 0 && renderMessages.length > 0) {
                         let last_message_ts = this.state.renderMessages[0].createdAt;
                         if (renderMessages[0].createdAt > last_message_ts) {
-                            console.log('scrollToBottom here 1');
                             this.setState({scrollToBottom: true});
                         }
                     }
                 }
             }
             
-            /*
-            if (nextProps.myContacts && nextProps.selectedContact && nextProps.selectedContact != this.state.selectedContact) { 
-                const messagesMetadata = nextProps.myContacts[nextProps.selectedContact.uri].messagesMetadata
-                console.log('-- Refresh metadata');
-                //console.log(Object.keys(nextProps));
-                console.log(JSON.stringify(messagesMetadata, null, 2));
-				this.setState({
-					messagesMetadata: { ...messagesMetadata }
-				}, () => {
-					// This runs AFTER messagesMetadata is updated
-					this.setState({ mediaLabels: this.mediaLabels });
-				});
-    
-            }
-            */
-
-            let delete_ids = [];
-            Object.keys(this.outgoingPendMessages).forEach((_id) => {
-                if (renderMessages.some((obj) => obj._id === _id)) {
-                    //console.log('Remove pending message id', _id);
-                    delete_ids.push(_id);
-                    // message exists
-                } else {
-                    if (this.state.renderMessages.some((obj) => obj._id === _id)) {
-                        //console.log('Pending message id', _id, 'already exists');
-                    } else {
-                        //console.log('Adding pending message id', _id);
-                        renderMessages.push(this.outgoingPendMessages[_id]);
-                    }
-                }
-            });
-
-            delete_ids.forEach((_id) => {
-                delete this.outgoingPendMessages[_id];
-            });
-
             renderMessages = renderMessages.sort(function(a, b) {
                   if (a.createdAt < b.createdAt) {
                     return 1; //nameA comes first
@@ -402,7 +374,9 @@ class ContactsListBox extends Component {
                        searchString: nextProps.searchString,
                        dark: nextProps.dark,
                        messagesMetadata: nextProps.messagesMetadata,
-                       fullScreen: nextProps.fullScreen
+                       fullScreen: nextProps.fullScreen,
+					   decryptProgress: nextProps.decryptProgress,
+					   transferProgress: nextProps.transferProgress,
                        }, () => {
 							// This runs AFTER messagesMetadata is updated
 							const mediaRotations = this.mediaRotations;
@@ -444,52 +418,71 @@ class ContactsListBox extends Component {
 		});
 	  };
   
-    async _launchCamera() {
-        let options = {maxWidth: 2000,
-                        maxHeight: 2000,
-                        mediaType: 'mixed',
-                        quality:0.8,
-                        cameraType: 'front',
-                        formatAsMp4: true
-                       }
-        const cameraAllowed = await this.props.requestCameraPermission();
-        if (cameraAllowed) {
-			this.props.contactStartShare()
-            await launchCamera(options, this.cameraCallback);
-        }
+    async aquireFromCamera() {
+        console.log('aquireFromCamera');
+		this.setState({gettingSharedAsset: true}); 
+
+		setTimeout(() => {
+			this._aquireFromCamera();
+		}, 100); // delay in ms (1000 = 1 second)
+
     }
 
-    async _launchImageLibrary() {
+    async _aquireFromCamera() {
+		const cameraAllowed = await this.props.requestCameraPermission();
+		if (cameraAllowed) {
+			let options = {maxWidth: 2000,
+							maxHeight: 2000,
+							mediaType: 'mixed',
+							quality:0.8,
+							cameraType: 'front',
+							formatAsMp4: true
+						   }
+
+			this.props.contactStartShare();
+			launchCamera(options, this.assetSharingCallback);
+		}
+	}
+
+    async launchImageLibrary() {
+	    console.log('launchImageLibrary');
+        this.setState({gettingSharedAsset: true});
+		setTimeout(() => {
+			this._launchImageLibrary();
+		}, 200); // delay in ms (1000 = 1 second)
+	}
+
+	async _launchImageLibrary() {
         let options = {maxWidth: 2000,
                         maxHeight: 2000,
                         mediaType: 'mixed',
                         formatAsMp4: true
                        }
+
 		this.props.contactStartShare()
         await launchImageLibrary(options, this.libraryCallback);
     }
 
     async libraryCallback(result) {
+		this.setState({fullSize: false, gettingSharedAsset: false});
+
         if (!result.assets || result.assets.length === 0) {
             return;
         }
 
-		this.setState({fullSize: false});
         result.assets.forEach((asset) => {
-            this.cameraCallback({assets: [asset]});
+            this.assetSharingCallback({assets: [asset]});
         });
-
-		this.props.contactStopShare()
     }
 
-    async cameraCallback(result) {
+    async assetSharingCallback(result) {
+        console.log('assetSharingCallback');
+		this.setState({scrollToBottom: true, gettingSharedAsset: false});
+
         if (!result.assets || result.assets.length === 0) {
             return;
         }
         
-        this.setState({scrollToBottom: true});
-		this.props.contactStopShare()
-
         let asset = result.assets[0];
         asset.preview = true;
         
@@ -502,13 +495,13 @@ class ContactsListBox extends Component {
             assetType = 'photo';
         }
 
-        this.outgoingPendMessages[msg.metadata.transfer_id] = msg;
-        this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
-                        cameraAsset: asset,
-                        photoMsg: msg,
+        console.log(msg);
+
+        this.setState({ sharingAsset: asset,
+                        sharingAssetMessage: msg,
 						fullSize: false,
                         //placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
-						placeholder: 'Photo note...'
+						placeholder: 'Add a note...'
                         });
     }
 
@@ -517,7 +510,7 @@ class ContactsListBox extends Component {
       <CustomChatActions {...props} 
          recordAudio={this.props.recordAudio} 
          texting={this.state.texting || this.state.replyingTo} 
-         sendingImage={this.state.photoMsg !==null} 
+         sendingImage={this.state.sharingAssetMessage !==null} 
          selectedContact={this.state.selectedContact}/>
     )
 
@@ -526,11 +519,10 @@ class ContactsListBox extends Component {
     }
 
     resetContact() {
-        this.outgoingPendMessages = {};
         this.setState({
             texting: false,
-            cameraAsset: null,
-            photoMsg: null,
+            sharingAsset: null,
+            sharingAssetMessage: null,
             placeholder: this.default_placeholder
         });
     }
@@ -602,16 +594,24 @@ class ContactsListBox extends Component {
 			]}
 		  >
 			<View style={styles.replyLine} />
-	
-			{originalMessage.image ? (
-				  <Image
-					source={{ uri: originalMessage.image }}
-					style={{
-					  width: '85%',
-					  height: 100,
-					}}
-					resizeMode="cover"
-				  />
+			{originalMessage.video && this.state.videoMetaCache?.[originalMessage._id] ? (
+			  <Image
+				source={{ uri: this.state.videoMetaCache[originalMessage._id].thumbnail }}
+				style={{
+				  width: '85%',
+				  height: 100,
+				}}
+				resizeMode="cover"
+			  />
+			) : originalMessage.image ? (
+			  <Image
+				source={{ uri: originalMessage.image }}
+				style={{
+				  width: '85%',
+				  height: 100,
+				}}
+				resizeMode="cover"
+			  />
 			) : (
 			  <Text
 				style={styles.replyPreviewText}
@@ -621,7 +621,8 @@ class ContactsListBox extends Component {
 				{originalMessage.text}
 			  </Text>
 			)}
-		  </View>
+			</View>
+
 		</TouchableOpacity>
 	  ) : null;
 	
@@ -646,7 +647,7 @@ class ContactsListBox extends Component {
 	  };
 	
 	  return (
-		<View style={{ flex: 1, alignSelf: 'stretch', borderColor: 'green', borderWidth: 0 }}>
+		<View style={{ flex: 1, alignSelf: 'stretch', borderColor: 'orange', borderWidth: 0 }}>
 		  {replyPreview}
 		  {currentMessage.image ? (
 			<Bubble
@@ -684,8 +685,8 @@ class ContactsListBox extends Component {
 			<Bubble
 			  {...props}
 			  wrapperStyle={{
-				left: { ...leftWrapper, backgroundColor: 'transparent' },
-				right: { ...rightWrapper, backgroundColor: 'transparent' },
+				left: { ...leftWrapper, backgroundColor: 'transparent', borderColor: 'white', borderWidth: 0.5 },
+				right: { ...rightWrapper, backgroundColor: 'transparent', borderColor: 'white', borderWidth: 0.5 },
 			  }}
 			  textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
 			  textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
@@ -783,7 +784,7 @@ class ContactsListBox extends Component {
 				},
 			]}>
 	
-			  {/* Vertical Green Line */}
+			  {/* Vertical orange Line */}
 			  <View style={styles.replyLine} />
 	
 			  {/* Thumbnail for image replies */}
@@ -1005,7 +1006,7 @@ class ContactsListBox extends Component {
 			console.log('Error', e);
         }
     };
-
+	
     async stopPlaying(message) {
         //console.log('Audio playback ended', message.audio);
         this.setState({playing: false, placeholder: this.default_placeholder});
@@ -1017,7 +1018,7 @@ class ContactsListBox extends Component {
 renderSend = (props) => {
   let chatActionContainer = styles.chatActionContainer;
 
-  if (this.state.cameraAsset) {
+  if (this.state.sharingAsset) {
     return (
       <Send
         {...props}
@@ -1027,6 +1028,7 @@ renderSend = (props) => {
           padding: 0,
         }}
       >
+
         <View style={styles.chatRightActionsContainer}>
           <TouchableOpacity onPress={this.sendPhoto}>
             <Icon
@@ -1059,7 +1061,7 @@ renderSend = (props) => {
       >
         <View style={styles.chatRightActionsContainer}>
           {showButtons && (
-            <TouchableOpacity onPress={this._launchCamera}>
+            <TouchableOpacity onPress={this.aquireFromCamera}>
               <Icon
                 style={chatActionContainer}
                 type="font-awesome"
@@ -1071,7 +1073,7 @@ renderSend = (props) => {
           )}
 
           {showButtons && (
-            <TouchableOpacity onPress={this._launchImageLibrary} onLongPress={this._pickDocument}>
+            <TouchableOpacity onPress={this.launchImageLibrary} onLongPress={this._pickDocument}>
               <Icon
                 style={chatActionContainer}
                 type="font-awesome"
@@ -1232,7 +1234,7 @@ renderSend = (props) => {
     onSendMessage(messages) {
 		const uri = this.state.selectedContact.uri;
 		
-		if (this.state.photoMsg) {
+		if (this.state.sharingAssetMessage) {
 			this.sendPhoto()
 			return;
 		}
@@ -1267,20 +1269,20 @@ renderSend = (props) => {
 			return;
         }
 
-        if (!this.state.photoMsg) {
+        if (!this.state.sharingAssetMessage) {
 			return;
         }
 
         const uri = this.state.selectedContact.uri;
         const text = this.state.text.trim();
-        const photoMsg = this.state.photoMsg;
+        const sharingAssetMessage = this.state.sharingAssetMessage;
 
 		this.setState({ text: '' });
 		this.textInputRef.clear?.();  // works for plain TextInput
 		this.textInputRef.blur?.();   // dismiss keyboard
 
-        this.setState({cameraAsset: null, 
-                       photoMsg: null,
+        this.setState({sharingAsset: null, 
+                       sharingAssetMessage: null,
                        text: '',
                        texting: false,
                        placeholder: this.default_placeholder});
@@ -1288,7 +1290,7 @@ renderSend = (props) => {
         console.log('sendPhoto with label', text || 'Photo');
 
 		if (text) {
-			const transfer_id = photoMsg.metadata.transfer_id;
+			const transfer_id = sharingAssetMessage.metadata.transfer_id;
 			const mId = uuid.v4();
 			const metadataContent = {transferId: transfer_id, label: text, metadataId: mId};
 			const metadataMessage = {_id: mId,
@@ -1308,7 +1310,7 @@ renderSend = (props) => {
 						   );
 		}
 
-        this.transferFile(this.state.photoMsg);
+        this.transferFile(this.state.sharingAssetMessage);
     }
 
 	saveRotation(message) {
@@ -1527,39 +1529,34 @@ renderSend = (props) => {
         this.setState({isRefreshing: false});
     }
 
-    deleteCameraAsset() {
-        console.log('deleteCameraAsset');
-        if (!this.state.photoMsg) {
+    deleteSharingAsset() {
+        console.log('deleteSharingAsset');
+		this.setState({gettingSharedAsset: false}); 
+
+        if (!this.state.sharingAsset) {
 			return;
         }
 
-        if (this.state.photoMsg.metadata.transfer_id in this.outgoingPendMessages) {
-            delete this.outgoingPendMessages[this.state.photoMsg.metadata.transfer_id]
-        }
-
-        // When cancelling or discarding an asset
-        if (this.state.cameraAsset) {
-			const fileUri = this.state.cameraAsset.uri.replace('file://', ''); // remove scheme
-			  RNFS.unlink(fileUri)
-			  .then(() => console.log('Temp file deleted'))
-			  .catch(err => console.log('Error deleting temp file', err));
-		  }
+		const fileUri = this.state.sharingAsset.uri.replace('file://', ''); // remove scheme
+		  RNFS.unlink(fileUri)
+		  .then(() => console.log('Temp file deleted'))
+		  .catch(err => console.log('Error deleting temp file', err));
 
 		this.setState(prevState => ({
-		  renderMessages: prevState.renderMessages.filter(
-			m => m._id !== prevState.photoMsg._id
-		  ),
 		  placeholder: this.default_placeholder,
-		  photoMsg: null,
-		  cameraAsset: null,
+		  sharingAssetMessage: null,
+		  sharingAsset: null,
 		  text: ''
 		}));
+		
+		this.props.contactStopShare();
 
 		this.textInputRef.clear?.();  // works for plain TextInput
 		this.textInputRef.blur?.();   // dismiss keyboard
     }
 
     async _pickDocument() {
+         console.log('_pickDocument');
         const storageAllowed = await this.props.requestStoragePermission();
 
         if (!storageAllowed) {
@@ -1593,83 +1590,196 @@ renderSend = (props) => {
         }
     };
 
-  renderMessageImage = (props: any) => {
-    const { currentMessage } = props;
-    if (!currentMessage?.image) return null;
+	renderMessageAudio = (props) => {
+	  const { currentMessage } = props;
+	  const { audioDurations } = this.state;
+	
+	  // Load duration if not already loaded
+	  if (currentMessage.audio && !audioDurations[currentMessage._id]) {
+		// this.getAudioDuration(currentMessage.audio, currentMessage._id);
+	  }
+	
+	  // Get duration string
+	  const durationLabel = audioDurations[currentMessage._id]
+		? `Recording of ${audioDurations[currentMessage._id]}s`
+		: 'Recording';
+	
+	  const isIncoming = currentMessage.direction === 'incoming';
+	  const labelPadding =  isIncoming ? {paddingLeft: 10} : {paddingLeft: 0};
 
-    const id = currentMessage._id;
-    const isVisible = this.state.visibleMessageIds.includes(id);
-    const wasRendered = this.state.renderedMessageIds.has(id);
-    const isLoading = this.state.imageLoadingState[id];
-
-    // Only render placeholder for unseen + offscreen
-    if (!isVisible && !wasRendered) {
-      return (
-        <View
-          style={{
-            width: '100%',
-            height: Dimensions.get('window').width,
-            backgroundColor: '#eee',
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-        >
-          <ActivityIndicator size="small" color="#999" />
-        </View>
-      );
-    }
-    
-    let rotation = 0;
-    if (currentMessage._id in this.state.mediaRotations) {
-        rotation = this.state.mediaRotations[currentMessage._id];
-	}
-    
-    return (
-      <TouchableOpacity
-        activeOpacity={0.8}
-        onPress={() => this.onImagePress(currentMessage)}
-        style={{
-          width: '100%',
-          height: Dimensions.get('window').width,
-          marginBottom: -5,
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
-      >
-        {isLoading && (
-          <View
-            style={{
-              position: 'absolute',
-              zIndex: 2,
-              top: 0,
-              bottom: 0,
-              left: 0,
-              right: 0,
-              justifyContent: 'center',
-              alignItems: 'center',
-            }}
-          >
-            <ActivityIndicator size="large" color="#aaa" />
-          </View>
-        )}
-
-        <FastImage
-          style={{
-            width: '100%',
-            height: '100%',
-            opacity: isLoading ? 0.5 : 1,
-            transform: [{ rotate: `${rotation}deg` }]
-          }}
-          source={{ uri: currentMessage.image, priority: FastImage.priority.normal }}
-          resizeMode={FastImage.resizeMode.cover}
-          onLoadStart={() => this.handleImageLoadStart(id)}
-          onLoadEnd={() => this.handleImageLoadEnd(id)}
-        />
-      </TouchableOpacity>
-    );
-  };
-  
-
+	  return (
+		<View
+		  style={[
+			styles.audioContainer,
+			{ flexDirection: 'row', alignItems: 'center', justifyContent: !isIncoming ? 'flex-end' : 'flex-start'},
+		  ]}
+		>
+		  {/* Icon on left for incoming, right for outgoing */}
+		  {isIncoming && (
+			<TouchableHighlight style={[styles.roundshape, {marginLeft: 10, marginTop: 10}]}>
+			  <IconButton
+				size={28}
+				onPress={() =>
+				  currentMessage.metadata.playing
+					? this.stopPlaying(currentMessage)
+					: this.startPlaying(currentMessage)
+				}
+				style={styles.playAudioButton}
+				icon={currentMessage.metadata.playing ? 'pause' : 'play'}
+			  />
+			</TouchableHighlight>
+		  )}
+	
+		  {/* Text grows naturally */}
+		  <Text
+			style={[
+			  styles.audioLabel,
+			  { marginHorizontal: 8, flexShrink: 1},
+			  labelPadding
+			  , // prevents overflow
+			]}
+		  >
+			{durationLabel}
+		  </Text>
+	
+		  {!isIncoming && (
+			<TouchableHighlight style={[styles.roundshape, {marginRight: 10, marginTop: 10}]}>
+			  <IconButton
+				size={28}
+				onPress={() =>
+				  currentMessage.metadata.playing
+					? this.stopPlaying(currentMessage)
+					: this.startPlaying(currentMessage)
+				}
+				style={[styles.playAudioButton]}
+				icon={currentMessage.metadata.playing ? 'pause' : 'play'}
+			  />
+			</TouchableHighlight>
+		  )}
+		</View>
+	  );
+	};
+	
+	renderMessageImage = (props) => {
+	  const { currentMessage } = props;
+	  if (!currentMessage?.image) return null;
+	
+	  const id = currentMessage._id;
+	  const uri = currentMessage.image;
+	
+	  const isVisible = this.state.visibleMessageIds.includes(id);
+	  const wasRendered = this.state.renderedMessageIds.has(id);
+	  const isLoading = this.state.imageLoadingState[id];
+	
+	  // Skip offscreen images
+	  if (!isVisible && !wasRendered) {
+		return (
+		  <View
+			style={{
+			  width: '100%',
+			  height: Dimensions.get('window').width,
+			  backgroundColor: '#eee',
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			}}
+		  >
+			<ActivityIndicator size="small" color="#999" />
+		  </View>
+		);
+	  }
+	
+	  let rotation = 0;
+	  if (id in this.state.mediaRotations) {
+		rotation = this.state.mediaRotations[id];
+	  }
+	
+	  const isVerticalRotation = rotation === 90 || rotation === 270;
+	  const windowWidth = Dimensions.get('window').width;
+	
+	  // 🧠 Try to get cached size
+	  let imageAspectRatio = 1;
+	  if (this.imageSizeCache[uri]) {
+		imageAspectRatio = this.imageSizeCache[uri].aspectRatio;
+	  } else {
+		// First time seeing this image
+		  Image.getSize(
+			uri,
+			(width, height) => {
+			  const aspectRatio =
+				width > 0 && height > 0 ? width / height : 1; // ✅ ensure finite ratio
+			  this.imageSizeCache[uri] = { width, height, aspectRatio };
+			  this.forceUpdate?.(); // re-render
+			},
+			(error) => {
+			  console.warn("Image.getSize error:", error);
+			  this.imageSizeCache[uri] = { width: 1, height: 1, aspectRatio: 1 }; // ✅ fallback cache
+			}
+		  );
+	  
+	  }
+	
+	  const displayAspect = isVerticalRotation ? 1 / imageAspectRatio : imageAspectRatio;
+	
+	const safeRatio =
+	  imageAspectRatio && isFinite(imageAspectRatio) ? imageAspectRatio : 1;
+		
+	  return (
+		<TouchableOpacity
+		  activeOpacity={0.8}
+		  onPress={() => this.onImagePress(currentMessage)}
+		  style={{
+			width: '100%',
+			justifyContent: 'center',
+			alignItems: 'center',
+			marginBottom: -5,
+		  }}
+		>
+		  {isLoading && (
+			<View
+			  style={{
+				position: 'absolute',
+				zIndex: 2,
+				top: 0,
+				bottom: 0,
+				left: 0,
+				right: 0,
+				justifyContent: 'center',
+				alignItems: 'center',
+			  }}
+			>
+			  <ActivityIndicator size="large" color="#aaa" />
+			</View>
+		  )}
+	
+		  <View
+			style={{
+			  width: '100%',
+			  aspectRatio: safeRatio,
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			  overflow: 'hidden',
+			  backgroundColor: '#000', // avoids white edges during rotation
+			}}
+		  >
+			<FastImage
+			  style={{
+				width: '100%',
+				height: '100%',
+				opacity: isLoading ? 0.5 : 1,
+				transform: [{ rotate: `${rotation}deg` }],
+			  }}
+			  source={{
+				uri,
+				priority: FastImage.priority.normal,
+			  }}
+			  resizeMode={FastImage.resizeMode.contain}
+			  onLoadStart={() => this.handleImageLoadStart(id)}
+			  onLoadEnd={() => this.handleImageLoadEnd(id)}
+			/>
+		  </View>
+		</TouchableOpacity>
+	  );
+	};
 
     postChatSystemMessage(text, imagePath=null) {
         var id = uuid.v4();
@@ -1708,11 +1818,13 @@ renderSend = (props) => {
     }
 
     transferCanceled(evt) {
+		this.props.contactStopShare();
        console.log("The transfer has been canceled by the user.");
        this.postChatSystemMessage('Upload has canceled')
     }
 
     async transferFile(msg) {
+		this.props.contactStopShare();
         msg.metadata.preview = false;
 	    msg.metadata.fullSize = this.state.fullSize;
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
@@ -1754,16 +1866,26 @@ renderSend = (props) => {
         if (message.metadata && message.metadata.preview) {
 			return;
         }
+        
+        console.log('onMessagePress');
     
         if (message.metadata && message.metadata.filename) {
             //console.log('File metadata', message.metadata.filename);
             let file_transfer = message.metadata;
             if (!file_transfer.local_url) {
-                if (!file_transfer.path) {
-                    // this was a local created upload, don't download as the file has not yet been uploaded
-                    this.props.downloadFunc(message.metadata, true);
-                }
+				if (!file_transfer.path) {
+					console.log('File not yet downloaded');
+					this.props.downloadFunc(message.metadata, true);
+					return;
+				} else {
+					console.log('File not yet uploaded', message.metadata);
+					this.transferFile(message);
+				}
                 return;
+            }
+            
+            if (!file_transfer.local_url) {
+				return;
             }
 
             RNFS.exists(file_transfer.local_url).then((exists) => {
@@ -1977,7 +2099,6 @@ renderSend = (props) => {
         return true;
     }
 
-
     closeDeleteMessageModal() {
         this.setState({showDeleteMessageModal: false});
     }
@@ -2013,23 +2134,17 @@ renderSend = (props) => {
         this.setState({showShareMessageModal: !this.state.showShareMessageModal});
     }
 
-    renderMessageVideo(props){
-        const { currentMessage } = props;
-
-        return (
-        <View style={styles.videoContainer}>
-            <VideoPlayer
-                video={{ uri: currentMessage.video}}
-                autoplay={false}
-                pauseOnPress={true}
-                showDuration={true}
-                controlsTimeout={2}
-                fullScreenOnLongPress={true}
-                customStyles={styles.videoPlayer}
-            />
-        </View>
-        );
-    };
+	async getVideoThumbnail(uri) {
+	  if (this.state.videoMetaCache[uri]) return this.state.videoMetaCache[uri].thumbnail;
+	  try {
+		const { path } = await createThumbnail({ url: uri, timeStamp: 1000 });
+		this.state.videoMetaCache[uri] = { thumbnail: path };
+		this.forceUpdate?.(); // re-render that message if needed
+		return path;
+	  } catch (e) {
+		console.warn('Thumbnail error', e);
+	  }
+	}
 
 	replyMessage = (message) => {
 	  this.setState({ replyingTo: message }, () => {
@@ -2038,73 +2153,189 @@ renderSend = (props) => {
 	  });
 	};
 
-	renderMessageAudio = (props) => {
+	renderMessageVideo = (props) => {
 	  const { currentMessage } = props;
-	  const { audioDurations } = this.state;
+	  if (!currentMessage?.video) return null;
 	
-	  // Load duration if not already loaded
-	  if (currentMessage.audio && !audioDurations[currentMessage._id]) {
-		// this.getAudioDuration(currentMessage.audio, currentMessage._id);
+	  const id = currentMessage._id;
+	  const uri = currentMessage.video;
+	  
+	  let videoMetaCache = this.state.videoMetaCache;
+	  
+	  const isVisible = this.state.visibleMessageIds.includes(id);
+	  const wasRendered = this.state.renderedMessageIds.has(id);
+	  const isLoading = !!this.state.videoLoadingState?.[id];
+	  const isPlaying = this.state.videoPlayingState?.[id]; // added state tracker
+
+		if (!isVisible && isPlaying) {
+		  setTimeout(() => {
+			this.setState((prev) => ({
+			  videoPlayingState: { ...prev.videoPlayingState, [id]: false },
+			}));
+		  }, 0);
+		}
+
+		if (!this.state.videoMetaCache[id]) {
+		  const existingCache = this.state.videoMetaCache; // for clarity
+		
+		  // Prevent duplicate async calls for same id
+		  this.state.videoMetaCache[id] = { loading: true }; 
+		
+		  createThumbnail({
+			url: uri,
+			timeStamp: 1000, // first second of video
+		  })
+			.then(({ path, width, height }) => {
+			  this.setState((prev) => ({
+				videoMetaCache: {
+				  ...prev.videoMetaCache,
+				  [id]: { thumbnail: path, width, height },
+				},
+			  }));
+			  //console.log(`Thumbnail ready for video ${id}:`, path);
+			})
+			.catch((err) => {
+			  console.warn('Thumbnail generation failed:', err);
+			  this.setState((prev) => {
+				const { [id]: _, ...rest } = prev.videoMetaCache;
+				return { videoMetaCache: rest };
+			  });
+			});
+		}
+	
+	  if (!isVisible && !wasRendered) {
+		return (
+		  <View
+			style={{
+			  width: '100%',
+			  height: Dimensions.get('window').width * 0.56,
+			  backgroundColor: '#000',
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			}}
+		  >
+			<ActivityIndicator size="small" color="#999" />
+		  </View>
+		);
 	  }
 	
-	  // Get duration string
-	  const durationLabel = audioDurations[currentMessage._id]
-		? `Audio recording of ${audioDurations[currentMessage._id]}s`
-		: 'Audio recording';
+	  const thumbnail = videoMetaCache[id]?.thumbnail;
 	
-	  const isIncoming = currentMessage.direction === 'incoming';
-	  const labelPadding =  isIncoming ? {paddingLeft: 10} : {paddingLeft: 0};
-
 	  return (
-		<View
-		  style={[
-			styles.audioContainer,
-			{ flexDirection: 'row', alignItems: 'center' },
-		  ]}
+		<TouchableOpacity
+		  activeOpacity={0.8}
+		  onPress={() => {
+			if (!isPlaying) {
+			  this.setState((prev) => ({
+				videoPlayingState: { ...prev.videoPlayingState, [id]: true },
+			  }));
+			}
+		  }}
+		  style={{
+			width: '100%',
+			justifyContent: 'center',
+			alignItems: 'center',
+			marginBottom: -5,
+		  }}
 		>
-		  {/* Icon on left for incoming, right for outgoing */}
-		  {isIncoming && (
-			<TouchableHighlight style={styles.roundshape}>
-			  <IconButton
-				size={28}
-				onPress={() =>
-				  currentMessage.metadata.playing
-					? this.stopPlaying(currentMessage)
-					: this.startPlaying(currentMessage)
-				}
-				style={styles.playAudioButton}
-				icon={currentMessage.metadata.playing ? 'pause' : 'play'}
-			  />
-			</TouchableHighlight>
+		  {isLoading && (
+			<View
+			  style={{
+				position: 'absolute',
+				zIndex: 2,
+				top: 0,
+				bottom: 0,
+				left: 0,
+				right: 0,
+				justifyContent: 'center',
+				alignItems: 'center',
+			  }}
+			>
+			  <ActivityIndicator size="large" color="#aaa" />
+			</View>
 		  )}
 	
-		  {/* Text grows naturally */}
-		  <Text
-			style={[
-			  styles.audioLabel,
-			  { marginHorizontal: 8, flexShrink: 1},
-			  labelPadding
-			  , // prevents overflow
-			]}
+		  <View
+			style={{
+			  width: '100%',
+			  aspectRatio: 16 / 9,
+			  backgroundColor: '#000',
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			  overflow: 'hidden',
+			}}
 		  >
-			{durationLabel}
-		  </Text>
-	
-		  {!isIncoming && (
-			<TouchableHighlight style={styles.roundshape}>
-			  <IconButton
-				size={28}
-				onPress={() =>
-				  currentMessage.metadata.playing
-					? this.stopPlaying(currentMessage)
-					: this.startPlaying(currentMessage)
+			{!isPlaying && thumbnail ? (
+			  <>
+				<Image
+				  source={{ uri: thumbnail }}
+				  style={{
+					width: '100%',
+					height: '100%',
+					resizeMode: 'cover',
+				  }}
+				/>
+				<View
+				style={{
+				position: 'absolute',
+				justifyContent: 'center',
+				alignItems: 'center',
+				backgroundColor: 'rgba(0,0,0,0.4)',
+				borderRadius: 40,
+				width: 80,
+				height: 80,
+				}}
+				>
+				<IconButton
+				icon="play"
+				size={36}
+				iconColor="#fff"
+				onPress={() => {
+				  this.setState((prev) => ({
+					videoPlayingState: { ...prev.videoPlayingState, [id]: true },
+				  }));
+				}}
+				/>
+				</View>
+			  </>
+			) : (
+			  <VideoPlayer
+				video={{ uri }}
+				autoplay={!!isPlaying} 
+				pauseOnPress
+				showDuration
+				controlsTimeout={2}
+				fullScreenOnLongPress
+				resizeMode="contain"
+				customStyles={{
+				  video: {
+					width: '100%',
+					height: '100%',
+				  },
+				  wrapper: {
+					width: '100%',
+					height: '100%',
+				  },
+				}}
+				onLoadStart={() =>
+				  this.setState((prev) => ({
+					videoLoadingState: { ...prev.videoLoadingState, [id]: true },
+				  }))
 				}
-				style={styles.playAudioButton}
-				icon={currentMessage.metadata.playing ? 'pause' : 'play'}
+				onLoad={() =>
+				  this.setState((prev) => ({
+					videoLoadingState: { ...prev.videoLoadingState, [id]: false },
+				  }))
+				}
+				onEnd={() =>
+				  this.setState((prev) => ({
+					videoPlayingState: { ...prev.videoPlayingState, [id]: false },
+				  }))
+				}
 			  />
-			</TouchableHighlight>
-		  )}
-		</View>
+			)}
+		  </View>
+		</TouchableOpacity>
 	  );
 	};
 
@@ -2121,11 +2352,29 @@ renderSend = (props) => {
 
     renderMessageText(props) {
         const { currentMessage } = props;
-        const extraStyles = currentMessage.replyId ? {minWidth: 120} : {};
+        let extraStyles = currentMessage.replyId ? {minWidth: 120} : {};
+        if (currentMessage.metadata && currentMessage.metadata.transfer_id) {
+			extraStyles.minWidth = 250; 
+        }
 
+        let isDownloading = false;
+        let isDecrypting = false;
+
+		const isIncoming = currentMessage.direction === 'incoming';
+
+	    let progressData = this.state.transferProgress[currentMessage._id];
+	    let progress = progressData ? progressData.progress / 100 : null;
+	    isDownloading = progressData && progressData.progress < 100 && !progressData.error;
+	    
+	    if (!isDownloading) {
+			progressData = this.state.decryptProgress[currentMessage._id];
+			progress = progressData ? progressData.progress / 100 : null;
+			isDecrypting = progressData && progressData.progress < 100 && !progressData.error;
+	    }
+	  
         let mediaLabel = this.state.mediaLabels[currentMessage._id] || currentMessage.text ;
         // Create a temporary props object with overridden text
-
+        
 		const labelProps = {
 		  ...props,
 		  currentMessage: {
@@ -2133,45 +2382,178 @@ renderSend = (props) => {
 			text: mediaLabel // only override the text
 		  }
 		};
-
+		
         if (currentMessage.video) {
-            return (
-                <View style={[styles.photoMenuContainer, extraStyles]}>
-                    <IconButton
-                        style={styles.photoMenu}
-                        size={20}
-                        icon="menu"
-                    />
+            const fontColor = !isIncoming ? "black": "white";
 
-                    <View style={styles.photoMenuText}>
-                    <MessageText
-                        {...props}
- 					    {...labelProps}
-                        customTextStyle={styles.messageText}
-                    />
-                    </View>
+			if (currentMessage.metadata.preview) {
+				return (
+					<View style={[{flexDirection: 'row', alignItems: 'center',
+					justifyContent: 'space-between', // distribute items evenly
+					paddingHorizontal: 8}, styles.photoMenuContainer, extraStyles]}>
+	
+						<IconButton
+							style={styles.photoMenu}
+							size={20}
+							icon="menu"
+						/>
+					  <View
+						style={[
+						  styles.photoMenuText,
+						  {
+							flex: 1,
+							paddingHorizontal: 6,
+							justifyContent: 'center',
+							borderColor: 'red',
+							borderWidth: 0
+						  },
+						]}
+					  >
+						<Text
+						  style={{
+							color: '#000',
+							fontSize: 14,
+							flexShrink: 1,
+							textAlignVertical: 'center',
+							includeFontPadding: false,
+							marginBottom: 6
+						  }}
+						  numberOfLines={1}
+						  ellipsizeMode="tail"
+						>
+						  {mediaLabel}
+						</Text>
+		
+					  </View>
+	
+					  <IconButton
+						style={styles.deleteButton}
+						type="font-awesome"
+						size={20}
+						icon="delete"
+						iconColor='red'
+						onPress={() => this.deleteSharingAsset()}
+					  />				  
+						</View>
+					); 
+				} else {
+					return (
+					<View style={[{flexDirection: 'row', alignItems: 'center',
+					justifyContent: 'space-between', // distribute items evenly
+					paddingHorizontal: 0}, styles.photoMenuContainer, extraStyles]}>
+	
+						<IconButton
+							style={styles.photoMenu}
+							size={20}
+							icon="menu"
+							iconColor={!isIncoming ? "black": "white"}
+						/>
+					  <View
+						style={[
+						  styles.photoMenuText,
+						  {
+							flex: 1,
+							justifyContent: 'center',
+							borderColor: 'red',
+							borderWidth: 0
+						  },
+						]}
+					  >
+						  {/* This middle section: label + progress bar inline */}
+						  <View
+							style={{
+							  flex: 1,
+							  flexDirection: 'row',
+							  alignItems: 'center',
+							  justifyContent: 'space-between',
+							  paddingHorizontal: 0,
+							  borderColor: 'red',
+							  borderWidth: 0
+							}}
+						  >
 
-                </View>
-            );
+							{/* Label text on the left */}
+							<Text
+							  style={{
+								color: fontColor,
+								fontSize: 14,
+								flexShrink: 1,
+								textAlignVertical: 'center',
+								includeFontPadding: false,
+								marginBottom: 6,
+							  }}
+							  numberOfLines={1}
+							  ellipsizeMode="tail"
+							>
+							  {mediaLabel}
+							</Text>
+
+							{(isDownloading || isDecrypting) && (
+
+					        <View style={{ marginTop: 8, alignItems: 'flex-start' }}>
+							  <Progress.Bar
+								progress={progress}
+								width={60}         // smaller width for inline look
+								height={6}
+								borderRadius={3}
+								borderWidth={0}
+								color={isDownloading ? "#007AFF" : "orange"}
+								unfilledColor="#e0e0e0"
+								style={{ marginRight: 12 }} 
+							  />
+
+							  <Text
+								style={{
+								  fontSize: 12,
+								  color: 'orange',
+								  marginTop: 2,
+								  marginLeft: 2,
+								}}
+							  >
+								{Math.round(progress * 100)}%
+							  </Text>
+							  </View>
+							  
+							)}
+							
+							{(!isDownloading && !isDecrypting)?
+							<IconButton
+							  icon="fullscreen"
+							  size={24}
+							  onPress={() => this.openVideoModal(currentMessage.video)}
+							  style={{ }}
+							  iconColor={fontColor}
+							/>
+							: null}
+        
+						   </View>
+						  </View>
+					</View>
+					); 
+			
+				}
         } else if (currentMessage.audio) {
             return (
-                <View style={[styles.photoMenuContainer, extraStyles]}>
+                <View style={[styles.audioMenuContainer, extraStyles]}>
                     <IconButton
-                        style={styles.photoMenu}
+                        style={styles.audio}
                         size={20}
                         icon="menu"
+                        iconColor='white'
                     />
-						  <View style={styles.photoMenuText}>
-							<MessageText
-							  {...labelProps}
-							  customTextStyle={styles.messageText} // keeps your original styling
-							/>
-						  </View>
 
+				  <View style={styles.audioMenuText}>
+					<MessageText
+					  {...labelProps}
+					  customTextStyle={styles.messageText} // keeps your original styling
+					/>
+				  </View>
 
                 </View>
             );
         } else if (currentMessage.image) {
+            const fontColor = !isIncoming ? "black": "white";
+
             if (currentMessage.metadata.preview) {
 				return (
                 <View style={[{flexDirection: 'row', alignItems: 'center',
@@ -2213,30 +2595,155 @@ renderSend = (props) => {
 					size={20}
 					icon="delete"
 				    iconColor='red'
-					onPress={() => this.deleteCameraAsset()}
+					onPress={() => this.deleteSharingAsset()}
 				  />
 
                 </View>
             ); 
             } else {
 				return (
-					<View style={[styles.photoMenuContainer, extraStyles]}>
+					<View style={[{flexDirection: 'row', alignItems: 'center',
+					justifyContent: 'space-between', // distribute items evenly
+					paddingHorizontal: 8}, styles.photoMenuContainer, extraStyles]}>
+	
 						<IconButton
 							style={styles.photoMenu}
 							size={20}
 							icon="menu"
+							iconColor={!isIncoming ? "black": "white"}
 						/>
-	
-						  <View style={styles.photoMenuText}>
-							<MessageText
-							  {...labelProps}
-							  customTextStyle={styles.messageText} // keeps your original styling
-							/>
+					  <View
+						style={[
+						  styles.photoMenuText,
+						  {
+							flex: 1,
+							paddingHorizontal: 6,
+							justifyContent: 'center',
+							borderColor: 'red',
+							borderWidth: 0
+						  },
+						]}
+					  >
+						  {/* This middle section: label + progress bar inline */}
+						  <View
+							style={{
+							  flex: 1,
+							  flexDirection: 'row',
+							  alignItems: 'center',
+							  justifyContent: 'space-between',
+							  paddingHorizontal: 6,
+							}}
+						  >
+							{/* Label text on the left */}
+							<Text
+							  style={{
+								color: fontColor,
+								fontSize: 14,
+								flexShrink: 1,
+								textAlignVertical: 'center',
+								includeFontPadding: false,
+								marginBottom: 7,
+							  }}
+							  numberOfLines={1}
+							  ellipsizeMode="tail"
+							>
+							  {mediaLabel}
+							</Text>					
+
+							{(isDownloading || isDecrypting) && (
+							  <Progress.Bar
+								progress={progress}
+								width={60}         // smaller width for inline look
+								height={6}
+								borderRadius={3}
+								borderWidth={0}
+								color={isDownloading ? "#007AFF" : "orange"}
+								unfilledColor="#e0e0e0"
+								style={{ marginRight: 12 }}  // small gap from label
+							  />
+							)}
 						  </View>
+					  </View>
 					</View>
-				); 
+					); 			
             }
         } else {
+            if (currentMessage.metadata && currentMessage.metadata.filename) {
+			return (
+			  <View
+				style={[
+				  styles.messageTextContainer,
+				  extraStyles,
+				  {
+					flexDirection: 'row',
+					alignItems: 'flex-start',
+					marginLeft: 10,
+				  },
+				]}
+			  >
+				{/* Optional file icon on the left */}
+				{currentMessage.metadata && currentMessage.metadata.filename ? (
+				  <Icon
+					type="font-awesome"
+					name="file"
+					style={styles.chatSendArrow}
+					size={40}
+					color="gray"
+				  />
+				) : null}
+			
+				{/* Main content (text + progress) */}
+				<View style={{ flex: 1, flexDirection: 'column' }}>
+				  {/* Message text */}
+				  <MessageText
+					{...props}
+					{...labelProps}
+					customTextStyle={styles.messageText}
+				  />
+
+				  {(isDownloading || isDecrypting) && (
+					<View style={{ marginTop: 6, alignItems: 'flex-start' }}>
+						<Text
+						  style={{
+							color: '#000',
+							fontSize: 14,
+							flexShrink: 1,
+							textAlignVertical: 'center',
+							includeFontPadding: false,
+							marginBottom: 7,
+						  }}
+						>
+						  {isDownloading ? "Downloading..." : "Decrypting..."}
+						</Text>	
+
+					  <Progress.Bar
+						progress={progress}
+						width={120}
+						height={6}
+						borderRadius={3}
+						borderWidth={0}
+						style={{ marginRight: 12 }}
+						color={isDownloading ? "#007AFF" : "orange"}
+						unfilledColor="#e0e0e0"
+					  />
+					  <Text
+						style={{
+						  fontSize: 12,
+						  color: 'orange',
+						  marginTop: 2,
+						  marginLeft: 2,
+						}}
+					  >
+						{Math.round(progress * 100)}%
+					  </Text>
+					</View>
+				  )}
+
+				</View>
+			  </View>
+			);
+			}
+
             return (
                 <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>
                      {currentMessage.metadata && currentMessage.metadata.filename ?
@@ -2260,60 +2767,90 @@ renderSend = (props) => {
   		}
     };
 
+	renderTime = (props) => {
+	  const { currentMessage, position } = props;
+	  	
+	  if (currentMessage.metadata?.preview) return null;
+	
+	  const isIncoming = currentMessage.direction === 'incoming';
+	  const isMedia = currentMessage.video || currentMessage.audio;
+	  const textColor = currentMessage.audio || isIncoming? 'white': 'black';
+	  const hasFileSize = !!currentMessage.metadata?.filesize;
+	
+	  // Helper to format bytes
+	  const formatFileSize = (bytes) => {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+	  };
+	
+	  // Format timestamp text 
+	  const timeString = currentMessage.createdAt ? dayjs(currentMessage.createdAt).format('h:mm A'): '';
+	  
+	  let text = hasFileSize ? `${formatFileSize(currentMessage.metadata.filesize)}  •  ${timeString}`: timeString;
+		if (currentMessage.direction === 'incoming') {
+			text = hasFileSize ? `${timeString} • ${formatFileSize(currentMessage.metadata.filesize)}` : timeString;
+		}
+	
+	  return (
+		<View style={{ alignItems: position === 'right' ? 'flex-end' : 'flex-start', marginLeft: 10, marginRight:10, marginBottom:5 }}>
+		  <Text
+			style={[
+			  props.timeTextStyle?.[position],
+			  {
+				color: textColor,
+				fontSize: 11,
+				opacity: 0.85,
+			  },
+			]}
+		  >
+			{text}
+		  </Text>
+		</View>
+	  );
+	};
 
-renderTime = (props) => {
-  const { currentMessage, position } = props;
+	
+	openVideoModal = (uri) => {
+	  this.setState({ showVideoModal: true, modalVideoUri: uri });
+	};
+	
+	closeVideoModal = () => {
+	  this.setState({ showVideoModal: false, modalVideoUri: null });
+	};
 
-  if (currentMessage.metadata?.preview) return null;
-
-  const isMedia = currentMessage.video || currentMessage.audio;
-  const textColor = isMedia ? 'white' : 'black';
-  const hasFileSize = !!currentMessage.metadata?.filesize;
-
-  // Helper to format bytes
-  const formatFileSize = (bytes) => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  };
-
-  // Format timestamp text 
-  const timeString = currentMessage.createdAt ? dayjs(currentMessage.createdAt).format('h:mm A'): '';
-  
-  let text = hasFileSize ? `${formatFileSize(currentMessage.metadata.filesize)}  •  ${timeString}`: timeString;
-	if (currentMessage.direction === 'incoming') {
-	    text = hasFileSize ? `${timeString} • ${formatFileSize(currentMessage.metadata.filesize)}` : timeString;
+	scrollToMessage(id) {
+	  console.log('scrollToMessage', id);
+	
+	  const contactUri = this.state.selectedContact?.uri;
+	  const messagesArray = this.state.messages?.[contactUri];
+	
+	  if (!Array.isArray(messagesArray)) {
+		console.warn('No messages array for contact', contactUri);
+		return;
+	  }
+	
+	  const index = messagesArray.findIndex(m => m._id === id);
+	  if (index === -1) {
+		console.warn(`Message ${id} not found`);
+		return;
+	  }
+	
+	  // Because GiftedChat’s FlatList is inverted
+	  const invertedIndex = messagesArray.length - 1 - index;
+	
+	  if (this.flatListRef?.scrollToIndex) {
+		try {
+		  this.flatListRef.scrollToIndex({ index: invertedIndex, animated: true });
+		} catch (e) {
+		  console.warn('scrollToIndex failed:', e);
+		}
+	  } else {
+		console.warn('FlatList ref not found');
+	  }
 	}
-
-  return (
-    <View style={{ alignItems: position === 'right' ? 'flex-end' : 'flex-start', marginLeft: 10, marginRight:10, marginBottom:5 }}>
-      <Text
-        style={[
-          props.timeTextStyle?.[position],
-          {
-            color: textColor,
-            fontSize: 11,
-            opacity: 0.85,
-          },
-        ]}
-      >
-        {text}
-      </Text>
-    </View>
-  );
-};
-
-
-    scrollToMessage(id) {
-        //console.log('scrollToMessage', id);
-        //https://github.com/FaridSafi/react-native-gifted-chat/issues/938
-        this.chatListRef.current?._messageContainerRef?.current?.scrollToIndex({
-            animated: true,
-            index: id
-          });
-    }
-
+	
 	get replyMessages() {
 	  if (!this.state.messagesMetadata) return {};
 	
@@ -2346,6 +2883,18 @@ renderTime = (props) => {
 	  );
 	}
 	
+	scrollToBottom() {
+  if (this.flatListRef?.scrollToOffset) {
+    try {
+      this.flatListRef.scrollToOffset({ offset: 0, animated: true });
+    } catch (e) {
+      console.warn('scrollToBottom failed:', e);
+    }
+  } else {
+    console.warn('FlatList ref not found');
+  }
+}
+
     get showChat() {
 		if (this.state.expandedImage) {
 			return false;
@@ -2378,7 +2927,6 @@ renderTime = (props) => {
 
        return false;
     }
-
 
   onViewableItemsChanged = ({ viewableItems }: { viewableItems: any[] }) => {
     const visibleIds = viewableItems.map(v => v.item._id);
@@ -2639,7 +3187,12 @@ renderTime = (props) => {
             }
         }
 
-        let showLoadEarlier = (this.state.myContacts && this.state.selectedContact && this.state.selectedContact.uri in this.state.myContacts && this.state.myContacts[this.state.selectedContact.uri].totalMessages && this.state.myContacts[this.state.selectedContact.uri].totalMessages > messages.length) ? true: false;
+        let showLoadEarlier = (this.state.myContacts && 
+                               this.state.selectedContact && 
+                               this.state.selectedContact.uri in this.state.myContacts && 
+                               this.state.myContacts[this.state.selectedContact.uri].totalMessages && 
+                               !this.state.sharingAsset && !this.state.gettingSharedAsset &&
+                               this.state.myContacts[this.state.selectedContact.uri].totalMessages > messages.length) ? true: false;
         
 
 		messages.forEach((m) => {
@@ -2712,6 +3265,8 @@ renderTime = (props) => {
         const mediaLabels = this.state.mediaLabels;
         const mediaRotations = this.state.mediaRotations;
         const shareToContacts = this.state.shareToContacts;
+        const transferProgress = this.state.transferProgress;
+        const decryptProgress = this.state.decryptProgress;
           
 		if (debug) {
 			const values = {
@@ -2719,7 +3274,9 @@ renderTime = (props) => {
 				messagesMetadata,
 //				replyMessages,
 				mediaLabels,
-				mediaRotations
+				mediaRotations,
+				transferProgress,
+				decryptProgress
 			};
 		
 			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
@@ -2737,6 +3294,8 @@ renderTime = (props) => {
 		
 		const footerHeightReply = Platform.OS === 'android' ? 60: 0;
 		const footerHeight = Platform.OS === 'android' ? 10: 0;
+
+		const renderMessages = this.state.sharingAssetMessage ? [this.state.sharingAssetMessage]: filteredMessages;
 
         //console.log('this.state.selectedContact', this.state.selectedContact);
         return (
@@ -2761,8 +3320,14 @@ renderTime = (props) => {
 
              {this.showChat && !this.state.inviteContacts?
              <View style={[chatContainer, borderClass]}>
-                <GiftedChat innerRef={this.chatListRef}
-                  messages={filteredMessages}
+                <GiftedChat 
+				  listViewProps={{
+					ref: (ref) => { this.flatListRef = ref; }, // 👈 capture the FlatList ref here
+					onViewableItemsChanged: this.onViewableItemsChanged,
+					viewabilityConfig: this.viewabilityConfig,
+				  }}
+                  innerRef={this.chatListRef}
+                  messages={this.state.gettingSharedAsset ? [] : renderMessages}
                   onSend={this.onSendMessage}
                   alwaysShowSend={true}
                   onLongPress={this.onLongMessagePress}
@@ -2791,11 +3356,20 @@ renderTime = (props) => {
                   keyboardDismissMode={"interactive"}
 				  text={this.state.text}
                   onInputTextChanged={text => this.chatInputChanged(text)}
+				  scrollToBottomComponent={() => (
+					<TouchableOpacity
+					  onPress={() => this.scrollToBottom()}
+					  style={{
+						borderRadius: 20,
+						padding: 6,
+						marginBottom: 6,
+						marginRight: 2,
+					  }}
+					>
+					  <Text style={{ color: 'white', fontSize: 20 }}>∨</Text>
+					</TouchableOpacity>
+				  )}
                   renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
-				  listViewProps={{
-					  onViewableItemsChanged: this.onViewableItemsChanged,
-					  viewabilityConfig: this.viewabilityConfig
-					}}
                 />
 
                 {addSpacer ? <KeyboardSpacer /> : null }
@@ -2828,60 +3402,88 @@ renderTime = (props) => {
               : null
               }
 
-{this.state.expandedImage && (
-  <Modal
-    visible={true}
-    transparent={true}
-    onRequestClose={() => this.onImagePress(null)}
-  >
-    <ImageViewer
-      imageUrls={[{ url: this.state.expandedImage.image }]}
-      enableSwipeDown
-      onSwipeDown={() => this.onImagePress(null)}
-      onClick={() => this.onImagePress(null)}
-      backgroundColor="black"
-      renderIndicator={() => null}
-      saveToLocalByLongPress={false}
-      renderImage={(props) => (
-        <View
-          style={{
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Image
-            {...props}
-            style={[
-              props.style,
-              { transform: [{ rotate: `${this.state.rotation}deg` }] },
-            ]}
-          />
-        </View>
-      )}
-    />
-
-    <TouchableOpacity
-      onPress={this.rotateImage}
-      style={{
-        position: "absolute",
-        bottom: 40,
-        right: 30,
-        backgroundColor: "rgba(0,0,0,0.6)",
-        padding: 12,
-        borderRadius: 50,
-      }}
-    >
-	  <IconButton
-			type="font-awesome"
-			size={40}
-			icon="rotate-left"
-			iconColor="white"
-		  />
-    </TouchableOpacity>
-  </Modal>
-)}
-
-
+			<Modal
+			  visible={this.state.showVideoModal}
+			  animationType="slide"
+			  transparent={false}
+			  onRequestClose={this.closeVideoModal}
+			>
+			  <TouchableOpacity
+				onPress={this.closeVideoModal}
+				style={{
+				  position: "absolute",
+				  top: 40,
+				  right: 20,
+				  zIndex: 2,
+				  backgroundColor: "rgba(0,0,0,0.5)",
+				  borderRadius: 20,
+				  padding: 6,
+				}}
+			  >
+				<Text style={{ color: "white", fontSize: 16 }}>✕</Text>
+			  </TouchableOpacity>
+		
+			  <Video
+				source={{ uri: this.state.modalVideoUri }}
+				style={{ flex: 1, backgroundColor: "black" }}
+				controls={true}
+				resizeMode="contain"
+			  />
+			</Modal>
+			
+			{this.state.expandedImage && (
+			  <Modal
+				visible={true}
+				transparent={true}
+				onRequestClose={() => this.onImagePress(null)}
+			  >
+				<ImageViewer
+				  imageUrls={[{ url: this.state.expandedImage.image }]}
+				  enableSwipeDown
+				  onSwipeDown={() => this.onImagePress(null)}
+				  onClick={() => this.onImagePress(null)}
+				  backgroundColor="black"
+				  renderIndicator={() => null}
+				  saveToLocalByLongPress={false}
+				  renderImage={(props) => (
+					<View
+					  style={{
+						alignItems: "center",
+						justifyContent: "center",
+					  }}
+					>
+					  <Image
+						{...props}
+						style={[
+						  props.style,
+						  { transform: [{ rotate: `${this.state.rotation}deg` }] },
+						]}
+					  />
+					</View>
+				  )}
+				/>
+			
+				<TouchableOpacity
+				  onPress={this.rotateImage}
+				  style={{
+					position: "absolute",
+					bottom: 40,
+					right: 30,
+					backgroundColor: "rgba(0,0,0,0.6)",
+					padding: 12,
+					borderRadius: 50,
+				  }}
+				>
+				  <IconButton
+						type="font-awesome"
+						size={40}
+						icon="rotate-left"
+						iconColor="white"
+					  />
+				</TouchableOpacity>
+			  </Modal>
+			)}
+			
 
             <DeleteMessageModal
                 show={this.state.showDeleteMessageModal}
@@ -2984,7 +3586,10 @@ ContactsListBox.propTypes = {
     contactStartShare: PropTypes.func,
     contactStopShare: PropTypes.func,
     setFullScreen: PropTypes.func,
-    fullScreen: PropTypes.bool
+    fullScreen: PropTypes.bool,
+    transferProgress: PropTypes.object,
+    decryptProgress: PropTypes.object,
+
 };
 
 

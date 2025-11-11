@@ -649,7 +649,7 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
                         : null}
  
-                        {!isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1 ?
+                        {!this.myself && !this.state.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
 

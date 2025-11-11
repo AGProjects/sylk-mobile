@@ -34,6 +34,7 @@ const styles = StyleSheet.create({
   chatLandscapeContainer: {
     flex: 1,
   },
+
   chatBorder: {
     borderWidth: 0,
     borderColor: 'gray',
@@ -81,11 +82,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
 
-  photoMenu: {},
+  audioMenuContainer: {
+    flexDirection: 'row',
+  },
+
+  audioMenu: {},
+  audioMenuText: {
+    paddingTop: 7,
+  },
 
   videoMenu: {
     color: 'white',
   },
+
+  photoMenu: {},
 
   photoMenuText: {
     paddingTop: 7,
@@ -129,8 +139,9 @@ const styles = StyleSheet.create({
   },
 
   audioContainer: {
-    marginTop: 10,
     width: '100%',
+    borderWidth: 0,
+    borderColor: 'orange'
   },
   audioLabel: {
     color: '#FF0000',
@@ -143,9 +154,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 24,
   },
+
   playAudioButton: {
     backgroundColor: 'rgba(69, 114, 166, 1)',
+    marginLeft: 0,
+    marginRight: 0,
   },
+
   audioLabel: {
     marginLeft: 0,
     marginTop: 10,

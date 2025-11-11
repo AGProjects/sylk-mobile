@@ -15,7 +15,7 @@ import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-nativ
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import DocumentPicker from 'react-native-document-picker';
-import RNFetchBlob from "rn-fetch-blob";
+import ReactNativeBlobUtil from 'react-native-blob-util';
 import VideoPlayer from 'react-native-video-player';
 import { initialWindowMetrics } from 'react-native-safe-area-context';
 import Immersive from 'react-native-immersive';
@@ -751,7 +751,7 @@ class ConferenceBox extends Component {
         let filepath = fileObject.uri ? fileObject.uri : fileObject;
         const basename = filepath.split('\\').pop().split('/').pop();
         let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
-        const { size } = await RNFetchBlob.fs.stat(stats_filename);
+        const { size } = await ReactNativeBlobUtil.fs.stat(stats_filename);
 
         let file_transfer = { 'path': filepath,
                               'filename': basename,

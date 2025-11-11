@@ -21,7 +21,6 @@ import { RNCamera } from 'react-native-camera';
 import AudioRecord from 'react-native-audio-record';
 
 import uuid from 'react-native-uuid';
-import RNFetchBlob from "rn-fetch-blob";
 import fileType from 'react-native-file-type';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import Sound from 'react-native-sound';
@@ -79,7 +78,10 @@ class ReadyBox extends Component {
 			recordingDuration: 0,
 			dark: this.props.dark,
 			messagesMetadata: this.props.messagesMetadata,
-			fullScreen:  this.props.fullScreen
+			fullScreen: this.props.fullScreen,
+			decryptProgress: this.props.decryptProgress,
+			transferProgress: this.props.transferProgress,
+			contactIsSharing: this.props.contactIsSharing
         };
         this.ended = false;
 
@@ -177,7 +179,10 @@ class ReadyBox extends Component {
                         sourceContact: nextProps.sourceContact,
                         dark: nextProps.dark,
                         messagesMetadata: nextProps.messagesMetadata,
-                        fullScreen: nextProps.fullScreen
+                        fullScreen: nextProps.fullScreen,
+					    decryptProgress: nextProps.decryptProgress,
+					    transferProgress: nextProps.transferProgress,
+					    contactIsSharing: nextProps.contactIsSharing
                         });
     }
 
@@ -384,11 +389,15 @@ class ReadyBox extends Component {
         if (this.state.fullScreen) {
             return false;
         }
-
+                        
         if (this.state.shareToContacts) {
 			return true;
         }
-    
+
+        if (this.state.contactIsSharing) {
+			return false;
+        }
+
         if (this.state.historyCategoryFilter === 'blocked') {
             return false;
         }
@@ -1542,6 +1551,8 @@ class ReadyBox extends Component {
 						contactStopShare = {this.props.contactStopShare}
 						setFullScreen = {this.props.setFullScreen}
 						fullScreen = {this.state.fullScreen}
+						decryptProgress = {this.state.decryptProgress}
+						transferProgress = {this.state.transferProgress}
 					/>
 					}
 
@@ -1697,8 +1708,11 @@ ReadyBox.propTypes = {
     file2GiftedChat : PropTypes.func,
     contactStartShare: PropTypes.func,
     contactStopShare: PropTypes.func,
+	contactIsSharing: PropTypes.bool,
     setFullScreen: PropTypes.func,
-    fullScreen: PropTypes.bool
+    fullScreen: PropTypes.bool,
+    transferProgress: PropTypes.object,
+    decryptProgress: PropTypes.object,
 };
 
 

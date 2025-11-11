@@ -31,7 +31,7 @@ const options = {
         includesCallsInRecents: true,
         imageName: "Image-1",
         supportsVideo: true,
-        displayCallReachabilityTimeout: 45000
+        displayCallReachabilityTimeout: 61000
     },
     android: {
         alertTitle: 'Calling account permission',
@@ -204,11 +204,7 @@ export default class CallManager extends events.EventEmitter {
     }
 
     setCurrentCallActive(callUUID) {
-        if (Platform.OS !== 'android') {
-            return;
-        }
-
-        //utils.timestampedLog('Callkeep: active call', callUUID);
+        utils.timestampedLog('Callkeep: active call', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
         this.backToForeground();
     }
@@ -360,7 +356,10 @@ export default class CallManager extends events.EventEmitter {
             return;
         } else {
             utils.timestampedLog('Callkeep: accept call', callUUID);
-        }
+			if (Platform.OS === 'ios') {
+			  this.callKeep.setReachable();
+			}        
+		}
 
         if (this._terminatedCalls.has(callUUID)) {
             //utils.timestampedLog('Callkeep: call', callUUID, 'was already terminated', 'on web socket', connection);

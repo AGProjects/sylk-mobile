@@ -348,7 +348,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let file_name = metadata.filename;
     //console.log('beautyFileNameForBubble', metadata);
 
-    let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Press to download';
+    let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Download';
     if ('progress' in metadata && metadata.progress !== null && metadata.progress !== 100) {
         prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
     }
@@ -361,26 +361,11 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     }
 
     if (isImage(decrypted_file_name, metadata.filetype)) {
-        if (metadata.local_url || lastMessage) {
-            text = 'Photo';
-        } else {
-            text = prefix + ' photo';
-        }
+        text = 'Photo';
     } else if (isAudio(decrypted_file_name)) {
-        if (metadata.local_url || lastMessage) {
-            text = 'Audio message';
-        } else {
-            text = prefix + ' audio message';
-            if (metadata.filesize > 10000000) {
-                text = text + 'of ' + beautySize(metadata.filesize);
-            }
-        }
+        text = 'Audio';
     } else if (isVideo(decrypted_file_name, metadata)) {
-        if (metadata.local_url || lastMessage) {
-            text = 'Video';
-        } else {
-            text = prefix + ' video of ' + beautySize(metadata.filesize);
-        }
+        text = 'Video';
     } else {
         if (lastMessage) {
             text = decrypted_file_name;
@@ -400,7 +385,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
                     }
                 }
             } else {
-                text = prefix + ' ' + file_name + ' of ' + beautySize(metadata.filesize);
+                text = prefix + ' ' + decrypted_file_name;
             }
         }
     }
