@@ -29,6 +29,7 @@
 #import <React/RCTRootView.h>
 
 @interface AppDelegate () <UNUserNotificationCenterDelegate>
+- (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)userInfo;
 @end
 
 @implementation AppDelegate
@@ -42,7 +43,10 @@
 #pragma mark - Application launch
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
-  self.moduleName = @"Sylk";
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    center.delegate = self;
+    
+    self.moduleName = @"Sylk";
 
     NSLog(@"[sylk_app] Application launch");
 
@@ -65,9 +69,6 @@
   [self registerNotificationCategories];
   
   // Set UNUserNotificationCenter delegate
-  UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
-  center.delegate = self;
-
   // Register for normal push notifications (required for APNs token)
   if (@available(iOS 10.0, *)) {
       UNAuthorizationOptions authOptions = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
@@ -174,7 +175,7 @@
             NSString *fullDir = [baseDir stringByAppendingPathComponent:sub];
             NSString *dbPath = [fullDir stringByAppendingPathComponent:dbName];
             if ([fm fileExistsAtPath:dbPath]) {
-                NSLog(@"[sylk_app] Found database at: %@", dbPath);
+                //NSLog(@"[sylk_app] Found database at: %@", dbPath);
                 return dbPath;
             }
         }
@@ -185,7 +186,7 @@
 }
 
 - (NSDictionary *)getContactsByTagForAccount:(NSString *)account {
-    NSLog(@"[sylk_app] getContactsByTagForAccount called with account = %@", account);
+    //NSLog(@"[sylk_app] getContactsByTagForAccount called with account = %@", account);
 
     NSMutableArray *allContacts = [NSMutableArray array];
     NSMutableArray *blockedContacts = [NSMutableArray array];
@@ -357,7 +358,32 @@
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
 {
-  completionHandler(UNNotificationPresentationOptionNone);
+    // Full APNS payload
+       NSDictionary *userInfo = notification.request.content.userInfo;
+
+       // Your custom payload (the inner "data" dict)
+       NSDictionary *data = userInfo[@"data"];
+       if (![data isKindOfClass:[NSDictionary class]]) {
+           data = @{}; // prevent crash
+       }
+
+       // Example usage:
+       NSString *event = [data[@"event"] lowercaseString];
+       NSString *fromUri = [[data[@"from_uri"] lowercaseString] copy];
+       NSString *toUri   = [[data[@"to_uri"] lowercaseString] copy];
+
+       NSLog(@"[sylk_app] willPresentNotification event=%@ from=%@ to=%@", event, fromUri, toUri);
+
+       // If you want to apply filtering:
+       BOOL allow = [self shouldDisplayMessageFromPayload:data];
+
+       if (!allow) {
+           NSLog(@"[sylk_app] Foreground notification suppressed");
+           completionHandler(UNNotificationPresentationOptionNone);
+           return;
+       }
+    
+  completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
 }
 
 #pragma mark - Continue user activity (e.g., CallKeep)
@@ -429,24 +455,49 @@ continueUserActivity:(NSUserActivity *)userActivity
 }
 
 
-- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
-                                              fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
+- (void)application:(UIApplication *)application
+didReceiveRemoteNotification:(NSDictionary *)userInfo
+fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
 {
-  NSLog(@"[sylk_app] Got a notification");
 
-  NSString *eventType = userInfo[@"event"];
-  NSLog(@"Value of eventType = %@", eventType);
+    NSString *(^coerceString)(id) = ^NSString *(id obj) {
+        if ([obj isKindOfClass:[NSString class]]) return obj;
+        if ([obj isKindOfClass:[NSNumber class]]) return [obj stringValue];
+        return @"";
+    };
 
-  if ([eventType isEqualToString:@"cancel"]) {
-      NSString *calluuid = userInfo[@"session-id"];
-      BOOL active = [RNCallKeep isCallActive:calluuid];
-      if (active) {
-          [RNCallKeep endCallWithUUID:calluuid reason:2];
-      }
-      return completionHandler(UIBackgroundFetchResultNoData);
-  }
+    NSDictionary *data = userInfo[@"data"];
+    NSString *event = coerceString(data[@"event"]);
+    NSString *fromUri = [[coerceString(data[@"from_uri"]) lowercaseString] copy];
+    NSString *toUri = [[coerceString(data[@"to_uri"]) lowercaseString] copy];
 
-  [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
+    NSLog(@"[sylk_app] Received %@ notification from %@ to %@", event, fromUri, toUri);
+
+    // --- Handle 'cancel' event (existing logic) ---
+    if ([event isEqualToString:@"cancel"]) {
+        NSString *calluuid = userInfo[@"session-id"] ?: userInfo[@"data"][@"session-id"];
+        BOOL active = [RNCallKeep isCallActive:calluuid];
+        if (active) {
+            [RNCallKeep endCallWithUUID:calluuid reason:2];
+        }
+        return completionHandler(UIBackgroundFetchResultNoData);
+    }
+
+    // --- Handle 'message' event (NEW LOGIC) ---
+    if ([event isEqualToString:@"message"]) {
+        //NSLog(@"[sylk_app] Incoming message payload: %@", userInfo);
+
+        BOOL allow = [self shouldDisplayMessageFromPayload:data];
+        
+        if (!allow) {
+            NSLog(@"[sylk_app] Message notification suppressed");
+            return completionHandler(UIBackgroundFetchResultNoData);
+        }
+    }
+
+    // --- Deliver notification to React Native ---
+    [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo
+                                 fetchCompletionHandler:completionHandler];
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
@@ -498,7 +549,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSString *toUri = [[coerceString(userInfo[@"to_uri"]) lowercaseString] copy];
     NSString *account = [[coerceString(userInfo[@"account"]) lowercaseString] copy];
 
-    NSLog(@"[sylk_app] event = %@", event);
+    /*
     NSLog(@"[sylk_app] calluuid = %@", calluuid);
     NSLog(@"[sylk_app] callId = %@", callId);
     NSLog(@"[sylk_app] mediaType = %@", mediaType);
@@ -506,15 +557,8 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSLog(@"[sylk_app] fromUri = %@", fromUri);
     NSLog(@"[sylk_app] toUri = %@", toUri);
     NSLog(@"[sylk_app] account = %@", account);
-
-    // --- cancel event ---
-    if ([event isEqualToString:@"cancel"]) {
-        if (calluuid.length > 0 && [RNCallKeep isCallActive:calluuid]) {
-            [RNCallKeep endCallWithUUID:calluuid reason:2];
-        }
-        if (completion) completion();
-        return;
-    }
+    */
+    NSLog(@"[sylk_app] Received %@ from %@ to %@", event, fromUri, toUri);
 
     // --- only handle incoming_session or incoming_conference_request ---
     if (!([event isEqualToString:@"incoming_session"] || [event isEqualToString:@"incoming_conference_request"])) {
@@ -523,45 +567,11 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         return;
     }
 
-    // --- determine lookup account ---
-    NSString *lookupAccount = ([event isEqualToString:@"incoming_session"]) ? toUri : account;
-    NSLog(@"[sylk_app] lookupAccount = %@", lookupAccount);
-
-    // --- fetch contacts safely ---
-    NSDictionary *contactsMap = @{ @"all": @[], @"blocked": @[] };
-    @try {
-        contactsMap = [self getContactsByTagForAccount:lookupAccount];
-        NSLog(@"[sylk_app] fetched contacts for account %@", lookupAccount);
-    } @catch (NSException *ex) {
-        NSLog(@"[sylk_app] Exception fetching contacts: %@ - %@", ex.name, ex.reason);
-        contactsMap = @{ @"all": @[], @"blocked": @[] };
-    }
-
-    NSArray *allUris = contactsMap[@"all"] ?: @[];
-    NSArray *blocked = contactsMap[@"blocked"] ?: @[];
-    NSSet<NSString *> *uniqueUris = [NSSet setWithArray:allUris];
-
-    //NSLog(@"[sylk_app] allUris = %@", allUris);
-    //NSLog(@"[sylk_app] blocked = %@", blocked);
-
-    BOOL accountAllowed = YES;
-    @try {
-        accountAllowed = [self isAccountActive:lookupAccount fromUri:fromUri allUrisSet:uniqueUris];
-    } @catch (NSException *ex) {
-        NSLog(@"[sylk_app] Exception checking account rules: %@ - %@", ex.name, ex.reason);
-        accountAllowed = YES; // fail-safe allow call
-    }
+    BOOL allow = [self shouldDisplayMessageFromPayload:userInfo];
     
-    if(!accountAllowed) {
+    if (!allow) {
+        NSLog(@"[sylk_app] Notification suppressed");
         if (completion) completion();
-        return;
-    }
-
-    // --- check blocked list ---
-    if ([blocked containsObject:fromUri]) {
-        NSLog(@"[sylk_app] Caller %@ is blocked", fromUri);
-        if (completion) completion();
-        return;
     }
 
     // --- pass payload to RN side ---
@@ -596,5 +606,62 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     }
 }
 
+- (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)data
+{
+    NSString *(^coerceString)(id) = ^NSString *(id obj) {
+        if ([obj isKindOfClass:[NSString class]]) return obj;
+        if ([obj isKindOfClass:[NSNumber class]]) return [obj stringValue];
+        return @"";
+    };
+
+    //if (!data) return YES;   // no data → allow
+
+    NSString *event = coerceString(data[@"event"]);
+    NSString *fromUri = [[coerceString(data[@"from_uri"]) lowercaseString] copy];
+    NSString *toUri = [[coerceString(data[@"to_uri"]) lowercaseString] copy];
+
+    /*
+    NSLog(@"[sylk_app] event = %@", event);
+    NSLog(@"[sylk_app] fromUri = %@", fromUri);
+    NSLog(@"[sylk_app] toUri = %@", toUri);
+    */
+
+    // Cancel event is handled elsewhere, but do not show it
+    if ([event isEqualToString:@"cancel"]) {
+        return NO;
+    }
+
+    // Determine lookup account
+    NSString *lookupAccount = toUri;
+
+    // Fetch contacts safely
+    NSDictionary *contactsMap = @{ @"all": @[], @"blocked": @[] };
+    @try {
+        contactsMap = [self getContactsByTagForAccount:lookupAccount];
+    } @catch (...) {
+        contactsMap = @{ @"all": @[], @"blocked": @[] };
+    }
+
+    NSArray *blocked = contactsMap[@"blocked"] ?: @[];
+
+    // Check blocked list first
+    if ([blocked containsObject:fromUri]) {
+        NSLog(@"[sylk_app] Blocked: %@", fromUri);
+        return NO;
+    }
+
+    // Check other rules
+    BOOL accountAllowed = YES;
+    @try {
+        NSSet *allURIs = [NSSet setWithArray:(contactsMap[@"all"] ?: @[])];
+        accountAllowed = [self isAccountActive:lookupAccount
+                                       fromUri:fromUri
+                                   allUrisSet:allURIs];
+    } @catch (...) {
+        accountAllowed = YES; // fail-safe allow
+    }
+
+    return accountAllowed;
+}
 
 @end
