@@ -17,6 +17,8 @@ import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.react.flipper.ReactNativeFlipper
 import com.facebook.soloader.SoLoader
 
+import com.agprojects.sylk.SylkBridgePackage
+
 class MainApplication : Application(), ReactApplication {
 
 
@@ -27,6 +29,9 @@ class MainApplication : Application(), ReactApplication {
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
               add(ScreenLockPackage())
+              add(SylkBridgePackage())
+              add(ThumbnailServicePackage())
+              add(CallForegroundServicePackage())
             }
 
         override fun getJSMainModuleName(): String = "index"

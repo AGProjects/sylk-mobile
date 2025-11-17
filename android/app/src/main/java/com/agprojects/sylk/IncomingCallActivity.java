@@ -27,7 +27,7 @@ import android.database.sqlite.SQLiteDatabase;
 
 public class IncomingCallActivity extends AppCompatActivity {
 
-    private static final String LOG_TAG = "[SYLK ACTIVITY]";
+    private static final String LOG_TAG = "[SYLK_ACTIVITY]";
     private static final long TIMEOUT_MS = 60 * 1000; // 60 seconds
 
     private String callId;

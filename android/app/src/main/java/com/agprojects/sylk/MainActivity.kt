@@ -23,13 +23,24 @@ import com.facebook.react.bridge.ReactContext
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import io.wazo.callkeep.RNCallKeepModule
 
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactMethod
+
 class MainActivity : ReactActivity() {
 
     override fun getMainComponentName(): String = "Sylk"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        Log.d("[SYLK]", "MainActivity onCreate called with intent: $intent")
+
+        // Handle call intents
         handleIncomingCallIntent(intent)
+
+        // Handle bubble/notification taps
+        handleNotificationTapIntent(intent)
+
         requestDndPermission()
 
         try {
@@ -39,6 +50,70 @@ class MainActivity : ReactActivity() {
         }
     }
 
+    /**
+     * ----------------------------
+     *  NOTIFICATION / BUBBLE TAP
+     * ----------------------------
+     */
+    private fun handleNotificationTapIntent(intent: Intent?) {
+        if (intent == null) {
+            Log.d("[SYLK]", "handleNotificationTapIntent: intent is null")
+            return
+        }
+        if (!intent.hasExtra("fromUri")) {
+            //Log.d("[SYLK]", "handleNotificationTapIntent: intent has no fromUri extra")
+            return
+        }
+
+        val fromUri = intent.getStringExtra("fromUri")
+        val id = intent.getStringExtra("id")
+        val content = intent.getStringExtra("content")
+        val contentType = intent.getStringExtra("contentType")  // ← NEW
+
+        Log.d("[SYLK]", "handleNotificationTapIntent: fromUri=$fromUri, id=$id, contentType=$contentType")
+
+        val reactInstanceManager: ReactInstanceManager =
+            (application as ReactApplication).reactNativeHost.reactInstanceManager
+
+        val reactContext = reactInstanceManager.currentReactContext
+        if (reactContext != null) {
+            Log.d("[SYLK]", "ReactContext already initialized, sending event immediately")
+            sendNotificationTapToJS(reactContext, fromUri, id, content, contentType)
+        } else {
+            Log.d("[SYLK]", "ReactContext not ready, adding listener and initializing")
+            reactInstanceManager.addReactInstanceEventListener { rc ->
+                Log.d("[SYLK]", "ReactContext initialized, sending event")
+                sendNotificationTapToJS(rc, fromUri, id, content, contentType)
+            }
+            reactInstanceManager.createReactContextInBackground()
+        }
+    }
+
+    private fun sendNotificationTapToJS(
+        reactContext: ReactContext,
+        fromUri: String?,
+        id: String?,
+        content: String?,
+        contentType: String?   // ← NEW
+    ) {
+        val map = Arguments.createMap()
+        map.putString("fromUri", fromUri)
+        map.putString("id", id)
+        map.putString("content", content)
+        map.putString("contentType", contentType)  // ← NEW
+
+        //Log.d("[SYLK]", "Emitting notificationTapped event to JS with data: $map")
+
+        reactContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit("notificationTapped", map)
+    }
+
+    /**
+     * ----------------------------
+     *   CALLKEEP HANDLING (EXISTING)
+     * ----------------------------
+     */
     private fun handleIncomingCallIntent(intent: Intent?) {
         if (intent == null) return
 
@@ -49,6 +124,8 @@ class MainActivity : ReactActivity() {
             val reactInstanceManager: ReactInstanceManager =
                 (application as ReactApplication).reactNativeHost.reactInstanceManager
 
+            Log.d("[SYLK]", "handleIncomingCallIntent: event=$event, callUUID=$callUUID")
+
             reactInstanceManager.addReactInstanceEventListener { reactContext: ReactContext ->
                 val map = Arguments.createMap()
                 map.putString("event", event)
@@ -56,14 +133,18 @@ class MainActivity : ReactActivity() {
                 reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                     .emit("IncomingCallAction", map)
 
-                Log.d("MainActivity", "[SYLK] Dict event sent to React Native: $map")
+                Log.d("[SYLK]", "[SYLK] Dict event sent to React Native: $map")
             }
 
-            // Ensure React context is created if app was cold
             reactInstanceManager.createReactContextInBackground()
         }
     }
 
+    /**
+     * ----------------------------
+     *   ANDROID PERMISSIONS
+     * ----------------------------
+     */
     private fun requestDndPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -88,9 +169,17 @@ class MainActivity : ReactActivity() {
         moveTaskToBack(true)
     }
 
+    /**
+     * Handle notification + bubble taps AND call intents
+     */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+
+        Log.d("[SYLK]", "onNewIntent fired with intent: $intent")
+
         handleIncomingCallIntent(intent)
+        handleNotificationTapIntent(intent)
+
         setIntent(intent)
     }
 
@@ -128,5 +217,5 @@ class MainActivity : ReactActivity() {
                         or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
             )
         }
-    }
+    }    
 }

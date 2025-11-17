@@ -20,7 +20,7 @@ import com.agprojects.sylk.ReactEventEmitter;
 
 public class IncomingCallActionReceiver extends BroadcastReceiver {
 
-    private static final String LOG_TAG = "[SYLK ACT RECEIVE]";
+    private static final String LOG_TAG = "[SYLK_ACT_RECEIVE]";
     
     @Override
     public void onReceive(Context context, Intent intent) {
