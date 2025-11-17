@@ -66,7 +66,7 @@ class DeleteFileTransfers extends Component {
   }
 
   UNSAFE_componentWillReceiveProps(nextProps) {
-    const sharedFiles = nextProps.uri in nextProps.sharedFiles ? nextProps.sharedFiles[nextProps.uri] : {};
+    const transferedFiles = nextProps.uri in nextProps.transferedFiles ? nextProps.transferedFiles[nextProps.uri] : {};
     if (!this.state.show && nextProps.show) {
       const filter = {
         incoming: true,
@@ -82,17 +82,17 @@ class DeleteFileTransfers extends Component {
       displayName: nextProps.displayName,
       username: nextProps.uri ? nextProps.uri.split('@')[0] : null,
       uri: nextProps.uri,
-      sharedFiles,
+      transferedFiles,
       confirm: nextProps.confirm,
       selectedContact: nextProps.selectedContact,
     });
   }
 
   defaultState() {
-    const sharedFiles = this.props.uri in this.props.sharedFiles ? this.props.sharedFiles[this.props.uri] : {};
+    const transferedFiles = this.props.uri in this.props.transferedFiles ? this.props.transferedFiles[this.props.uri] : {};
     return {
       displayName: this.props.displayName,
-      sharedFiles,
+      transferedFiles,
       show: this.props.show,
       uri: this.props.uri,
       deletePhotos: false,
@@ -129,14 +129,14 @@ class DeleteFileTransfers extends Component {
         periodType: this.state.periodType,
       };
 
-      const sharedFiles = JSON.parse(JSON.stringify(this.state.sharedFiles));
+      const transferedFiles = JSON.parse(JSON.stringify(this.state.transferedFiles));
 
-      if (!this.state.deleteAudios) delete sharedFiles.audios;
-      if (!this.state.deleteVideos) delete sharedFiles.videos;
-      if (!this.state.deletePhotos) delete sharedFiles.photos;
-      if (!this.state.deleteOthers) delete sharedFiles.others;
+      if (!this.state.deleteAudios) delete transferedFiles.audios;
+      if (!this.state.deleteVideos) delete transferedFiles.videos;
+      if (!this.state.deletePhotos) delete transferedFiles.photos;
+      if (!this.state.deleteOthers) delete transferedFiles.others;
 
-      const allIds = Array.from(new Set(Object.values(sharedFiles).flat()));
+      const allIds = Array.from(new Set(Object.values(transferedFiles).flat()));
 
       this.props.deleteFilesFunc(this.state.uri, allIds, this.state.remoteDelete, filter);
       this.props.close();
@@ -248,19 +248,19 @@ class DeleteFileTransfers extends Component {
   }
 
   render() {
-    const sharedFiles = JSON.parse(JSON.stringify(this.state.sharedFiles));
-    if (!this.state.deleteAudios) delete sharedFiles.audios;
-    if (!this.state.deleteVideos) delete sharedFiles.videos;
-    if (!this.state.deletePhotos) delete sharedFiles.photos;
-    if (!this.state.deleteOthers) delete sharedFiles.others;
+    const transferedFiles = JSON.parse(JSON.stringify(this.state.transferedFiles));
+    if (!this.state.deleteAudios) delete transferedFiles.audios;
+    if (!this.state.deleteVideos) delete transferedFiles.videos;
+    if (!this.state.deletePhotos) delete transferedFiles.photos;
+    if (!this.state.deleteOthers) delete transferedFiles.others;
 
-    const allIds = Array.from(new Set(Object.values(sharedFiles).flat()));
+    const allIds = Array.from(new Set(Object.values(transferedFiles).flat()));
     const deleteLabel = this.state.confirm ? 'Confirm' : `Delete ${allIds.length} files`;
     const remote_label = this.state.displayName && this.state.displayName !== this.state.uri ? this.state.displayName : this.state.username;
-    const audioFiles = 'audios' in this.state.sharedFiles ? this.state.sharedFiles.audios.length : 0;
-    const videoFiles = 'videos' in this.state.sharedFiles ? this.state.sharedFiles.videos.length : 0;
-    const photoFiles = 'photos' in this.state.sharedFiles ? this.state.sharedFiles.photos.length : 0;
-    const otherFiles = 'others' in this.state.sharedFiles ? this.state.sharedFiles.others.length : 0;
+    const audioFiles = 'audios' in this.state.transferedFiles ? this.state.transferedFiles.audios.length : 0;
+    const videoFiles = 'videos' in this.state.transferedFiles ? this.state.transferedFiles.videos.length : 0;
+    const photoFiles = 'photos' in this.state.transferedFiles ? this.state.transferedFiles.photos.length : 0;
+    const otherFiles = 'others' in this.state.transferedFiles ? this.state.transferedFiles.others.length : 0;
     const canDeleteRemote = this.state.uri && !this.state.uri.includes('@videoconference');
     const isDisabled = allIds.length === 0;
 
@@ -375,7 +375,7 @@ DeleteFileTransfers.propTypes = {
   uri: PropTypes.string,
   displayName: PropTypes.string,
   deleteFilesFunc: PropTypes.func,
-  sharedFiles: PropTypes.object,
+  transferedFiles: PropTypes.object,
   getFiles: PropTypes.func,
 };
 

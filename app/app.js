@@ -23,6 +23,7 @@ import { ProximitySensor } from 'react-native-sensors';
 import { Appearance } from 'react-native';
 import ImageResizer from 'react-native-image-resizer';
 import ReactNativeBlobUtil from 'react-native-blob-util';
+import debug from 'react-native-debug';
 
 import uuid from 'react-native-uuid';
 import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
@@ -41,7 +42,7 @@ import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 import {check, request, PERMISSIONS, RESULTS, openSettings} from 'react-native-permissions';
 import {decode as atob, encode as btoa} from 'base-64';
-import notifee, { AndroidImportance } from '@notifee/react-native';
+import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import mime from 'react-native-mime-types';
 import { StatusBar } from 'react-native';
 import { LogBox } from 'react-native';
@@ -85,6 +86,7 @@ import path from 'react-native-path';
 import DarkModeManager from './DarkModeManager';
 const { SharedDataModule } = NativeModules;
 
+//debug.enable('*');
   
 //import { registerForegroundListener } from '../firebase-messaging';
 
@@ -219,12 +221,12 @@ function _parseSQLDate(key, value) {
     }
 })();
 
-
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   if (type === EventType.ACTION_PRESS) {
-    console.log('User pressed an action in the background', detail.pressAction);
+	console.log('User pressed an action in the background', detail.pressAction);
   }
 });
+		
 
 class Sylk extends Component {
     constructor() {
@@ -349,12 +351,14 @@ class Sylk extends Component {
             rejectNonContacts: false,
             headsetIsPlugged: false,
             sortBy: 'timestamp',
-            sharedFiles: {},
+            transferedFiles: {},
             searchMessages: false,
+            searchContacts: true,
             dark: false,
             fullScreen: false,
             transferProgress: {},
-            decryptProgress: {}
+            incomingMessage: {},
+            totalMessageExceeded: false
         };
 
         this.buildId = "20250923";
@@ -412,6 +416,8 @@ class Sylk extends Component {
 
         this.myParticipants = {};
         this.mySyncJournal = {};
+        
+        this.outgoingNotifications = {};
 
         this._historyConferenceParticipants = new Map(); // for saving to local history
 
@@ -430,6 +436,8 @@ class Sylk extends Component {
         this.ringbackActive = false;
         this.callEventListener = null;
         this.sharedAndroidFiles = [];
+        this.localiOSPushSubscriber = null;
+        this.remoteiOSPushSubscriber = null;
 
         this.callKeeper = new CallManager(RNCallKeep,
                                                 this.showAlertPanel,
@@ -1077,7 +1085,7 @@ class Sylk extends Component {
                             utils.timestampedLog('showImportPrivateKeyModal 1');
                             this.setState({showImportPrivateKeyModal: true, keyDifferentOnServer: true})
                         } else {
-                            utils.timestampedLog('Local and server PGP keys are the same');
+                            //utils.timestampedLog('Local and server PGP keys are the same');
                             this.setState({showImportPrivateKeyModal: false});
                         }
                     } else {
@@ -1104,6 +1112,7 @@ class Sylk extends Component {
                         this.updateSylkContact(this.state.accountId, myContacts[this.state.accountId], 'my_public_key');
                     }
                 }
+
                 if (!item.last_sync_id && this.lastSyncedMessageId) {
                     this.setState({keys: keys});
                     this.saveLastSyncId(this.lastSyncedMessageId);
@@ -1114,6 +1123,7 @@ class Sylk extends Component {
                     lastSyncId = item.last_sync_id
                     //utils.timestampedLog('Loaded last sync id', lastSyncId);
                     this.setState({keys: keys, lastSyncId: lastSyncId});
+					setTimeout(() => {this.checkPendingActions()}, 0);
                 }
 
                 if (this.state.registrationState === 'registered') {
@@ -1258,6 +1268,11 @@ class Sylk extends Component {
         this.setState({searchMessages: !this.state.searchMessages});
     }
 
+    async toggleSearchContacts () {
+        console.log('toggle search contacts', !this.state.searchContacts);
+        this.setState({searchContacts: !this.state.searchContacts});
+    }
+
     async loadInitialDnd() {
 		let query = "SELECT * FROM accounts where account = ?";
 		await this.ExecuteQuery(query, [this.state.accountId]).then((results) => {
@@ -1301,9 +1316,13 @@ class Sylk extends Component {
             return;
         }
 
+
         if (!this.state.accountId) {
             return;
         }
+
+		this.loadMyKeys();
+
 
         console.log('Loading Sylk contacts...');
 		this.loadInitialDnd();
@@ -1549,9 +1568,20 @@ class Sylk extends Component {
                       }
                 });
                 
-                this.updateTotalUread(myContacts);
-
                 utils.timestampedLog('Loaded', rows.length, 'contacts for account', this.state.accountId);
+                //console.log(' --- pending incomingMessage', this.state.incomingMessage);
+                Object.keys(this.state.incomingMessage).forEach((key) => {
+                    const msg = this.state.incomingMessage[key];
+					if (key in myContacts) {
+					    //console.log('Increment unread count for', key);
+						myContacts[key].unread.push(msg._id);
+						myContacts[key].timestamp = msg.createdAt;
+						myContacts[key].lastMessageId = msg._id;
+                    }
+				});
+
+                this.updateTotalUread(myContacts, 'o1');
+                
                 this.setState({myContacts: myContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
@@ -1590,8 +1620,6 @@ class Sylk extends Component {
             setTimeout(() => {
                 //this.getMessages();
             }, 500);
-
-            this.loadMyKeys();
         });
 
     }
@@ -2100,6 +2128,12 @@ class Sylk extends Component {
             this.setState({orientation: 'portrait'});
         }
      }
+     
+     componentDidUpdate(prevProps, prevState) {
+		 if (prevState.orientation !== this.state.orientation) {
+			 this.setState({searchContacts: this.state.orientation == 'portrait'});
+		 }
+     }
 
     changeRoute(route, reason) {
         //console.log('Route', route, 'with reason', reason);
@@ -2107,7 +2141,10 @@ class Sylk extends Component {
         let messages = this.state.messages;
 
 		if (route === '/ready') {
-			this.setState({contactIsSharing: false});
+			this.setState({contactIsSharing: false, totalMessageExceeded: false});
+			if (Platform.OS === 'android') {
+				NativeModules.SylkBridge.setActiveChat(null);
+			}
 		}
 
         if (this.currentRoute === route) {
@@ -2139,7 +2176,7 @@ class Sylk extends Component {
             }
             return;
         } else {
-            if (route === '/ready' && this.state.selectedContact && Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) === -1) {
+            if (route === '/ready' && this.state.selectedContact) {
                 this.getMessages(this.state.selectedContact.uri);
             }
         }
@@ -2285,61 +2322,61 @@ class Sylk extends Component {
 
     }
 
-componentWillUnmount() {
-    utils.timestampedLog('App will unmount');
-
-    //if (this.proximityListener) this.proximityListener.unsubscribe();
-        
-    if (this.appStateSubscription) {
-        this.appStateSubscription.remove();
-        this.appStateSubscription = null;
-    }
-
-    if (this._onFinishedPlayingSubscription) {
-        this._onFinishedPlayingSubscription.remove();
-        this._onFinishedPlayingSubscription = null;
-    }
-
-    if (this._onFinishedLoadingSubscription) {
-        this._onFinishedLoadingSubscription.remove();
-        this._onFinishedLoadingSubscription = null;
-    }
-
-    if (this._onFinishedLoadingURLSubscription) {
-        this._onFinishedLoadingURLSubscription.remove();
-        this._onFinishedLoadingURLSubscription = null;
-    }
-
-    if (this._onFinishedLoadingFileSubscription) {
-        this._onFinishedLoadingFileSubscription.remove();
-        this._onFinishedLoadingFileSubscription = null;
-    }
-
-    if (this.callKeeper) {
-        this.callKeeper.destroy();
-        this.callKeeper = null;
-    }
-
-    // --- Firebase foreground listener ---
-    if (this.messageListener) this.messageListener(); // unsubscribe function
-
-    // --- iOS VoIP ---
-    if (Platform.OS === 'ios') {
-      VoipPushNotification.removeEventListener('register', this._boundOnPushkitRegistered);
-      VoipPushNotification.removeEventListener(
-        'notification',
-        this._onNotificationReceivedBackground,
-      );
-      VoipPushNotification.removeEventListener(
-        'localNotification',
-        this._onLocalNotificationReceivedBackground,
-      );
-
-      PushNotificationIOS.removeEventListener('register', this._boundOnPushRegistered);
-      PushNotificationIOS.removeEventListener('localNotification', this.onLocalNotification);
-      PushNotificationIOS.removeEventListener('notification', this.onRemoteNotification);
-      }
-
+	componentWillUnmount() {
+		utils.timestampedLog('App will unmount');
+		
+		if (Platform.OS === 'android') {
+			NativeModules.SylkBridge.setActiveChat(null);
+		}
+	
+		//if (this.proximityListener) this.proximityListener.unsubscribe();
+			
+		if (this.appStateSubscription) {
+			this.appStateSubscription.remove();
+			this.appStateSubscription = null;
+		}
+	
+		if (this._onFinishedPlayingSubscription) {
+			this._onFinishedPlayingSubscription.remove();
+			this._onFinishedPlayingSubscription = null;
+		}
+	
+		if (this._onFinishedLoadingSubscription) {
+			this._onFinishedLoadingSubscription.remove();
+			this._onFinishedLoadingSubscription = null;
+		}
+	
+		if (this._onFinishedLoadingURLSubscription) {
+			this._onFinishedLoadingURLSubscription.remove();
+			this._onFinishedLoadingURLSubscription = null;
+		}
+	
+		if (this._onFinishedLoadingFileSubscription) {
+			this._onFinishedLoadingFileSubscription.remove();
+			this._onFinishedLoadingFileSubscription = null;
+		}
+	
+		if (this.callKeeper) {
+			this.callKeeper.destroy();
+			this.callKeeper = null;
+		}
+	
+		// --- Firebase foreground listener ---
+		if (this.messageListener) this.messageListener(); // unsubscribe function
+	
+		// --- iOS VoIP ---
+		if (Platform.OS === 'ios') {
+			VoipPushNotification.removeEventListener('register', this._boundOnPushkitRegistered);
+			VoipPushNotification.removeEventListener('notification', this._onNotificationReceivedBackground,);
+			VoipPushNotification.removeEventListener('localNotification', this._onLocalNotificationReceivedBackground,);
+			if (this._onLocalNotification) {
+				PushNotificationIOS.removeEventListener('localNotification', this._onLocalNotification);
+			}
+			if (this._onRemoteNotification) {
+				PushNotificationIOS.removeEventListener('notification', this._onRemoteNotification);
+			}    
+		}
+	  
 		this.closeConnection();
 		this._loaded = false;
 	}
@@ -2389,19 +2426,57 @@ componentWillUnmount() {
     async componentDidMount() {
         utils.timestampedLog('-- App did mount');
         this._loaded = true;
-    
-		this.setState({dark: DarkModeManager.isDark()});
-        
-        this.getFiles();
-                
-          // Add a short delay to give background handler time to write
-		  setTimeout(() => {
-			this.checkFCMPendingActions();
-		  }, 100); // 0.5�1s is usually enough
-        
-		if (Platform.OS === 'android') {
-			const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
+
+		notifee.onForegroundEvent(({ type, detail }) => {
+		  if (type === EventType.PRESS) {
+			console.log('[NOTIFEE] notification pressed', detail);
 		
+			const { notification } = detail;
+			const fromUri = notification?.data?.fromUri;
+			const messageId = notification?.data?.messageId;
+		
+			if (fromUri) {
+			  console.log('[NOTIFEE] Open chat:', fromUri);
+			}
+		  }
+		});
+
+
+		  await notifee.createChannel({
+			id: 'sylk-foreground', // same as channelId you will use
+			name: 'Sylk Foreground Alerts',
+			importance: AndroidImportance.HIGH,
+			sound: 'default', // optional
+		  });
+
+		this.setState({dark: DarkModeManager.isDark()});
+
+		if (Platform.OS === 'ios') {
+			//console.log('--- Added iOS push listeners');
+	
+			// save references to handler functions for cleanup
+			this._onLocalNotification = this.onLocalNotification.bind(this);
+			this._onRemoteNotification = this.onRemoteNotification.bind(this);
+	
+			PushNotificationIOS.addEventListener('localNotification', this._onLocalNotification);
+			PushNotificationIOS.addEventListener('notification', this._onRemoteNotification);
+	
+			// initial notification if app launched from push
+			const initialNotification = await PushNotificationIOS.getInitialNotification();
+			if (initialNotification) {
+				this.onRemoteNotification(initialNotification);
+			}
+		}
+        
+        this.getTransferedFiles();
+                
+		if (Platform.OS === 'android') {
+
+			const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
+			
+			// =======================
+			// Incoming call listener
+			// =======================
 			this.callEventListener = eventEmitter.addListener('IncomingCallAction', (event) => {
 				if (!event || !event.callUUID) {
 					console.warn('Received invalid event', event);
@@ -2413,22 +2488,43 @@ componentWillUnmount() {
 					return;
 				}
 			
-				// Mark as handled
 				handledCalls.add(event.callUUID);
-			
-				//console.log('---- FCM user action received', event);
 				this.phoneWasLocked = event.phoneLocked;
 			
 				const media = { audio: true, video: event.action === 'ACTION_ACCEPT_VIDEO' };
 			
-				if (event.action === 'ACTION_ACCEPT_AUDIO' || event.action === 'ACTION_ACCEPT_VIDEO' || event.action === 'ACTION_ACCEPT') {
+				if (
+					event.action === 'ACTION_ACCEPT_AUDIO' ||
+					event.action === 'ACTION_ACCEPT_VIDEO' ||
+					event.action === 'ACTION_ACCEPT'
+				) {
 					this.callKeepAcceptCall(event.callUUID, media);
 				} else if (event.action === 'REJECT') {
 					this.callKeepRejectCall(event.callUUID);
 				}
 			
-				// Optional: remove from set after a while to prevent memory leaks
-				setTimeout(() => handledCalls.delete(event.callUUID), 5 * 60 * 1000); // 5 minutes
+				setTimeout(() => handledCalls.delete(event.callUUID), 5 * 60 * 1000);
+			});
+			
+			// =======================
+			// BUBBLE TAP listener
+			// =======================
+			// =======================
+			// BUBBLE TAP listener
+			// =======================
+			this.notificationTapListener = eventEmitter.addListener('notificationTapped', (event) => {
+			  if (!event || !event.fromUri) {
+				console.warn('notificationTapped missing data:', event);
+				return;
+			  }
+			
+			  console.log('User tapped notification bubble for', event.fromUri);
+			  /*
+			  console.log('Message ID:', event.id);
+			  console.log('Message content:', event.content);
+			  console.log('Message contentType:', event.contentType);
+			  */
+			  this.incomingMessageFromPush(event.id, event.fromUri, event.content, event.contentType);
 			});
 
 		   const screenLockEventEmitter = new NativeEventEmitter(ScreenLockModule);
@@ -2541,7 +2637,6 @@ componentWillUnmount() {
 	  }
 	}
 
-
   listenForPushNotifications = async () => {
     utils.timestampedLog('Listen for push notifications');
 
@@ -2554,6 +2649,7 @@ componentWillUnmount() {
     } catch (err) {
       console.log('Error getting initial URL:', err.message);
     }
+
     Linking.addEventListener('url', this.updateLinkingURL);
 
     // --- Request permissions ---
@@ -2571,23 +2667,24 @@ componentWillUnmount() {
 
 		// --- Foreground messages ---
 		this.messageListener = messaging(app).onMessage(async remoteMessage => {
-		  //console.log('FCM app foreground message:', remoteMessage.data);
+		  console.log('FCM in-app foreground event:', remoteMessage.data.event);
+
 
 		  if (Platform.OS === 'ios') {
-			PushNotificationIOS.presentLocalNotification({
-			  alertTitle: remoteMessage.notification?.title,
-			  alertBody: remoteMessage.notification?.body,
-			  userInfo: remoteMessage.data,
-			});
+		      PushNotificationIOS.presentLocalNotification({
+			      alertTitle: remoteMessage.notification?.title,
+			      alertBody: remoteMessage.notification?.body,
+			      userInfo: remoteMessage.data,
+			  });
 		  } else {
-			const msg = normalizeMessage(remoteMessage);
-			this.handleFirebasePush(msg);
+		      const msg = normalizeMessage(remoteMessage);
+			  this.handleFirebasePush(msg);
 		  }
 		});
 
 		// --- Background messages ---
 		messaging(app).setBackgroundMessageHandler(async remoteMessage => {
-		  console.log('FCM in-app background message:', remoteMessage.data);
+		  //console.log('FCM in-app background event:', remoteMessage.data?.event);
 		  const msg = normalizeMessage(remoteMessage);
 		  this.handleFirebasePush(msg);
 		});
@@ -2595,7 +2692,7 @@ componentWillUnmount() {
 		// Killed / app launched from notification
 		const initialNotification = await messaging(app).getInitialNotification();
 		if (initialNotification) {
-		  console.log('FCM app initial message:', initialNotification);
+		  console.log('FCM in-app initial message:', initialNotification);
 		  const msg = normalizeMessage(initialNotification);
 		  this.handleFirebasePush(msg);
 		}
@@ -2622,11 +2719,11 @@ componentWillUnmount() {
       VoipPushNotification.registerVoipToken();
 
       this._onNotificationReceivedBackground = this._onNotificationReceivedBackground.bind(this);
-      this._onLocalNotificationReceivedBackground =
-        this._onLocalNotificationReceivedBackground.bind(this);
+      this._onLocalNotificationReceivedBackground = this._onLocalNotificationReceivedBackground.bind(this);
 
       VoipPushNotification.addEventListener('notification',this._onNotificationReceivedBackground, );
       VoipPushNotification.addEventListener('localNotification',this._onLocalNotificationReceivedBackground,);
+
     }
 
     // --- DeviceEventEmitter ---
@@ -2704,6 +2801,7 @@ componentWillUnmount() {
     postAndroidMessageNotification(uri, content) {
         //https://www.npmjs.com/package/react-native-push-notification
         console.log('postAndroidMessageNotification', content);
+
         PushNotification.localNotification({
           /* Android Only Properties */
           channelId: "sylk-messages", // (required) channelId, if the channel doesn't exist, notification will not trigger.
@@ -2716,7 +2814,6 @@ componentWillUnmount() {
           subText: "New message", // (optional) default: none
           //bigPictureUrl: "https://www.example.tld/picture.jpg", // (optional) default: undefined
           bigLargeIcon: "ic_launcher", // (optional) default: undefined
-          bigLargeIconUrl: "https://www.example.tld/bigicon.jpg", // (optional) default: undefined
           color: "red", // (optional) default: system default
           vibrate: true, // (optional) default: true
           vibration: 100, // vibration length in milliseconds, ignored if vibrate=false, default: 1000
@@ -2767,28 +2864,26 @@ componentWillUnmount() {
                 this.dismissCall(callUUID);
             }
         } else if (event === 'message') {
-            this.selectChatContact(data['from_uri'], data['to_uri']);
+            console.log('FCM message', data);
+            this.selectChatContact(data['to_uri']);
         }
     }
 
-    handleFirebasePush(notification) {
-        //utils.timestampedLog("FCM in app handle notification", notification);
-        //console.log(notification);
+    async handleFirebasePush(notification) {
         let event = notification.event;
-        const callUUID = notification['session-id'];
-        const account = notification['account'];
+        console.log("FCM in-app event", event, 'in app state', this.state.appState);
+
         const from = notification['from_uri'];
         const to = notification['to_uri'];
-        const displayName = notification['from_display_name'];
-        const outgoingMedia = {audio: true, video: notification['media-type'] === 'video'};
-        const mediaType = notification['media-type'] || 'audio';
-
-        if (this.unmounted) {
-            //return;
-        }
 
         if (event === 'incoming_conference_request') {
-            utils.timestampedLog('FCM app event: incoming conference', callUUID);
+			const callUUID = notification['session-id'];
+			const outgoingMedia = {audio: true, video: notification['media-type'] === 'video'};
+			const mediaType = notification['media-type'] || 'audio';
+			const account = notification['account'];
+			const displayName = notification['from_display_name'];
+
+            utils.timestampedLog('FCM in-app event: incoming conference', callUUID);
             if (!from || !to) {
                 console.log('Missing from or to');
                 return;
@@ -2799,7 +2894,11 @@ componentWillUnmount() {
             }
             this.incomingConference(callUUID, to, from, displayName, outgoingMedia, 'push');
         } else if (event === 'incoming_session') {
-            utils.timestampedLog('FCM app event: incoming call', callUUID);
+			const callUUID = notification['session-id'];
+			const displayName = notification['from_display_name'];
+			const outgoingMedia = {audio: true, video: notification['media-type'] === 'video'};
+			const mediaType = notification['media-type'] || 'audio';
+            utils.timestampedLog('FCM in-app event: incoming call', callUUID);
             if (!from) {
                 console.log('Missing from');
                 return;
@@ -2811,20 +2910,70 @@ componentWillUnmount() {
             this.incomingCallFromPush(callUUID, from, displayName, mediaType);
         } else if (event === 'cancel') {
             this.cancelIncomingCall(callUUID);
-        } else if (event === 'message') {
-            //console.log('FCP in-app event: new message from', from);     
+        } else if (event === 'message') {        
+			// Show a local notification with Notifee
+			  console.log('FCM in-app event: message', from);
+			  //console.log('Post notifee notification');
+           /*
+				await notifee.displayNotification({
+				  title: 'New notifee Message',
+				  body: 'From ' + from,
+				  data: {
+					fromUri: from,        // <── Add your payload here
+					messageId: messageId,
+				  },
+				  android: {
+					channelId: 'sylk-foreground',
+					smallIcon: 'ic_launcher',
+					importance: AndroidImportance.HIGH,
+					priority: 5,
+					pressAction: {
+					  id: 'open_chat',     // <── Give action an ID
+					  launchActivity: 'default',
+					},
+				  },
+				});
+				
+				*/
+  
+			if (this.state.appState != 'active') {
+				console.log(Platform.OS, 'Save pending message to AsyncStorage');
+				AsyncStorage.setItem(`incomingMessage`, JSON.stringify(notification));
+			} else {
+				this.incomingMessageFromPush( notification['message_id'], from, notification['content'], notification['content_type']);
+			}
         }
     }
 
-    notifyIncomingMessageWhileInACall(from) {
-        if (!this.state.selectedContact) {
-            return;
-        }
+    notifyIncomingMessage(message) {
+        const from = message.sender.uri;
+		if (this.state.blockedUris.indexOf(from) > -1) { 
+			utils.timestampedLog('Reject message from blocked URI', from);
+			return;
+		}
 
-        if (this.state.selectedContact.uri !== from) {
-            this._notificationCenter.postSystemNotification('New message from ' + from);
-            this.vibrate();
-            return;
+        const userInfo = {'from_uri': from,
+                          'to_uri': this.state.accountId,       
+                          'event': 'message',
+                          'id': message.id
+                          };
+               
+        console.log('notifyIncomingMessage', from);
+
+        if (!this.state.selectedContact) {
+			if (Platform.OS === 'ios') {
+				this.sendLocalNotification('New message', 'From ' + from, userInfo);
+			} else {
+				this._notificationCenter.postSystemNotification('New message from ' + from);
+            }
+        } else {
+			if (this.state.selectedContact.uri !== from) {
+				if (Platform.OS === 'ios') {
+					this.sendLocalNotification('New message', 'From ' + from, userInfo);
+				} else {
+					this._notificationCenter.postSystemNotification('New message from ' + from);
+				}
+			}
         }
 
         if (this.state.currentCall && this.state.currentCall.remoteIdentity.uri === from) {
@@ -2836,94 +2985,113 @@ componentWillUnmount() {
         }
     }
 
-    sendLocalNotificationWithSound (){
-        console.log('sendLocalNotificationWithSound');
-        //PushNotificationIOS.addNotificationRequest({
-        PushNotificationIOS.presentLocalNotification({
-          id: 'notificationWithSound',
-          title: 'Sylk notification',
-          subtitle: 'Subtitle',
-          body: 'Sample local notification with custom sound',
-          sound: 'customSound.wav',
-          badge: 1,
-        });
-    };
-
-    sendLocalNotification (title, body) {
-        console.log('sendLocalNotification');
-        PushNotificationIOS.presentLocalNotification({
-          alertTitle: title,
-          alertBody: body
-        });
-    };
-
-    sendNotification (title, subtitle, body) {
-        DeviceEventEmitter.emit('remoteNotificationReceived', {
-          remote: true,
-          aps: {
-            alert: {title: title, subtitle: subtitle, body: body},
-            sound: 'default',
-            category: 'REACT_NATIVE',
-            'content-available': 1,
-            'mutable-content': 1,
-          },
-        });
-    };
-
-    sendSilentNotification () {
-        DeviceEventEmitter.emit('remoteNotificationReceived', {
-          remote: true,
-          aps: {
-            category: 'REACT_NATIVE',
-            'content-available': 1,
-          },
-        });
-    };
-
     onRemoteNotification(notification) {
-        //console.log('onRemoteNotification', notification);
+		const data = notification._data?.data;
 
-        const title = notification.getAlert().title;
-        const subtitle = notification.getAlert().subtitle;
-        const body = notification.getAlert().body;
-        const message = notification.getMessage();
-        const content_available = notification.getContentAvailable();
-        const category = notification.getCategory();
-        const badge = notification.getBadgeCount();
-        const sound = notification.getSound();
-        const isClicked = notification.getData().userInteraction === 1;
+		if (!data) {
+			console.log('No data found in notification');
+			return;
+		}
 
-        if (isClicked) {
-            console.log('User click')
-        } else {
-            console.log('User did not click')
-          // Do something else with push notification
-        }
+		const eventType = data.event;
+		console.log('iOS remote notification', eventType);
+	
+		if (eventType !== 'message') {
+			return;
+		}
 
-        console.log('Got remote notification', title, subtitle, body);
-        this.sendLocalNotification(title + ' ' + subtitle, body);
+		const content = data.content;
+		const from = data.from_uri;
+		const to = data.to_uri;
+
+		const now = Date.now();
+		this.outgoingNotifications[from] = { timestamp: now };
+	
+		console.log('Received push', eventType, 'from', from, 'to', to);
+			
+        if (this.state.appState != 'active') {
+			try {
+				console.log(Platform.OS, 'Save pending message to AsyncStorage');
+				AsyncStorage.setItem(`incomingMessage`, JSON.stringify(data));
+			} catch (e) {
+				console.log('Error handling iOS notification', e);
+			}
+		} else {
+		    if (this.state.selectedContact) {
+		        if (this.state.selectedContact.uri != from) {
+					this.sendLocalNotification('New message', 'From ' + from, data);
+				} else {
+	                console.log('Nothing to do');
+   				}
+	        } else {
+				this.sendLocalNotification('New message', 'From ' + from, data);
+	        }
+		}
     };
+
+	sendLocalNotification(title, body, userInfo) {
+		console.log('sendLocalNotification');
+	
+		const from = userInfo.from_uri;
+		if (!from) {
+			return;
+		}
+	
+		const now = Date.now();
+		const THROTTLE_MS = 30 * 1000; // 60 seconds
+		
+		const last = this.outgoingNotifications[from];
+	
+		// Check throttle
+		if (last && (now - last.timestamp < THROTTLE_MS)) {
+			console.log(
+				`[sendLocalNotification] Throttled notifications for ${from}. ` +
+				`Last was ${Math.round((now - last.timestamp)/1000)}s ago.`
+			);
+			return; // Skip
+		}
+	
+		// Update timestamp for this sender
+		this.outgoingNotifications[from] = { timestamp: now };
+	
+		// Deliver local notification
+		PushNotificationIOS.presentLocalNotification({
+			alertTitle: title,
+			alertBody: body,
+			userInfo: userInfo,
+			soundName: ''
+		});
+	}
 
     onLocalNotification(notification) {
-        let notification_data = notification.getData();
-        console.log('Got local notification', notification_data.data.event, 'from', notification_data.data.from_uri);
-        if (!this.state.selectedContact) {
-            this.updateTotalUread();
-        }
+		const notification_data = notification.getData(); 
+		const data = notification_data.data ? notification_data.data : notification_data;
+        console.log('onLocalNotification');
 
-        if (notification_data.data && notification_data.data.event && notification_data.data.event === "message") {
-            this.selectChatContact(notification_data.data.from_uri, notification_data.data.to_uri);
-        }
+  	    const eventType = data.event;
+
+		console.log('iOS local notification', eventType);
+	
+		if (eventType === 'message') {
+			const from = data.from_uri;
+	
+			if (!this.state.selectedContact) {
+				this.updateTotalUread(this.state.myContacts, 'o2');
+			}
+	
+			this.selectChatContact(from);
+		}
     }
-
-    selectChatContact(from_uri, to_uri) {
-        if (from_uri in this.state.myContacts) {
-            if (to_uri === this.state.accountId) {
-                this.selectContact(this.state.myContacts[from_uri]);
-            }
+  
+    selectChatContact(uri) {
+        if (uri in this.state.myContacts) {
+			this.selectContact(this.state.myContacts[uri]);
         } else {
-            this.initialChatContact = from_uri;
+            this.initialChatContact = uri;
         }
+		if (Platform.OS === 'android') {
+			NativeModules.SylkBridge.setActiveChat(uri);
+		}
     }
 
     cancelIncomingCall(callUUID) {
@@ -3094,8 +3262,10 @@ componentWillUnmount() {
         
         if (nextAppState === 'active') {
             this.respawnConnection(nextAppState);
+
             this.fetchSharedItemsAndroid('app_active');
             this.fetchSharedItemsiOS();
+            this.checkPendingActions();
 
             if (Platform.OS === 'ios') {
 				setTimeout(() => {
@@ -3109,6 +3279,9 @@ componentWillUnmount() {
                 //this.endShareContent();
                 this.setFullScreen(false);
 				this.purgeSharedFiles();
+				if (Platform.OS === 'android') {
+					NativeModules.SylkBridge.setActiveChat(null);
+				}
 			}
         }
     }
@@ -3198,6 +3371,7 @@ componentWillUnmount() {
     }
 
     selectContact(contact, origin='') {
+        console.log('selectContact', contact ? contact.uri : '');
         if (contact !== this.state.selectedContact) {
             this.setState({pinned: false});
         }
@@ -3870,6 +4044,7 @@ componentWillUnmount() {
                 if (newState === 'terminated') {
                     if (this.startedByPush) {
                         this.resetStartedByPush('terminated')
+                        this.requestSyncConversations(this.state.lastSyncId);
                     }
 
                     utils.timestampedLog("Incoming call was cancelled");
@@ -4350,7 +4525,7 @@ componentWillUnmount() {
             }, 10000);
         }
 
-        //console.log('Adding account for connection...', this.state.connection.state);
+        console.log('Adding account for connection...', this.state.connection.state);
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
@@ -4358,7 +4533,7 @@ componentWillUnmount() {
                 account.on('conferenceCall', this.outgoingConference);
                 account.on('registrationStateChanged', this.registrationStateChanged);
                 account.on('incomingCall', this.incomingCallFromWebSocket);
-                account.on('incomingMessage', this.incomingMessage);
+                account.on('incomingMessage', this.incomingMessageFromWebSocket);
                 account.on('syncConversations', this.syncConversations);
                 account.on('readConversation', this.readConversation);
                 account.on('removeConversation', this.removeConversation);
@@ -5306,7 +5481,7 @@ componentWillUnmount() {
 
     updateLinkingURL = (event) => {
         // this handles the use case where the app is running in the background and is activated by the listener...
-        console.log('Updated Linking url', event.url);
+        //console.log('Updated Linking url', event.url);
         this.eventFromUrl(event.url);
         DeepLinking.evaluateUrl(event.url);
     }
@@ -5336,6 +5511,7 @@ componentWillUnmount() {
                 //sylk://call/outgoing/callUUID/to/displayName - from system dialer/history
                 //sylk://call/incoming/callUUID/from/to/displayName/media - when Android is asleep
                 //sylk://call/cancel//callUUID - when Android is asleep
+                //sylk://message/incoming/from
 
                 event       = url_parts[2];
                 direction   = url_parts[3];
@@ -5362,7 +5538,6 @@ componentWillUnmount() {
                 //  * android/app/src/main/AndroidManifest.xml
                 //  * ios/sylk/sylk.entitlements
 
-
                 direction = 'outgoing';
                 event = url_parts[3];
 
@@ -5385,14 +5560,6 @@ componentWillUnmount() {
                 }
                 this.setState({targetUri: to});
             }
-
-            let data = {};
-            data['session-id'] = callUUID;
-            data['event'] = event;
-            data['to_uri'] = to;
-            data['from_uri'] = from;
-            data['from_display_name'] = displayName;
-            data['media-type'] = mediaType;
 
             if (event === 'conference') {
                 utils.timestampedLog('Conference from external URL:', url);
@@ -5428,6 +5595,9 @@ componentWillUnmount() {
             } else if (event === 'shared_content') {
                 console.log('Media Link: ', url_parts[2]);
                 this.fetchSharedItemsAndroid('Linking');
+            } else if (event === 'message') {
+				 from = url_parts[4];
+                 this.selectChatContact(from);
             } else {
                  utils.timestampedLog('Error: Invalid external URL event', event);
             }
@@ -5514,11 +5684,26 @@ componentWillUnmount() {
         return false;
     }
 
-	async checkFCMPendingActions() {
-	  //console.log('Check FCM pending actions');
+	async checkPendingActions() {
+	  console.log('Check pending actions in AsyncStorage');
+
 	  const keys = await AsyncStorage.getAllKeys();
 	
 	  for (const key of keys) {
+	    //console.log('FCM key', key);
+
+		if (key.startsWith('incomingMessage')) {
+			const pendingJson = await AsyncStorage.getItem(key);
+			if (!pendingJson) {
+			    console.log('No pending json');
+				continue;
+			}
+
+			const payload = JSON.parse(pendingJson);
+			this.incomingMessageFromPush(payload.message_id, payload.from_uri, payload.content, payload.content_type);			
+			await AsyncStorage.removeItem(key);          
+ 		}
+ 
 		if (key.startsWith('incomingCall:')) {
 		  try {
 			const pendingJson = await AsyncStorage.getItem(key);
@@ -5551,6 +5736,61 @@ componentWillUnmount() {
 		  }
 		}
 	  }
+	}
+	
+	async incomingMessageFromPush(id, from, content, contentType) {
+		console.log('Incoming message from push', id, 'from', from, contentType);
+		
+		const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+
+		const messages = this.state.messages;
+        if (from in this.state.messages) {
+			const exists = messages[from].some(m => m._id === id);
+			if (exists) {
+			    console.log('Message is already loaded', id);
+				return;
+			}
+        } else {
+			const myContacts = this.state.myContacts;
+			if (from in myContacts) {
+				if (myContacts[from].unread.indexOf(id) > -1) {
+					console.log('Message is already loaded in unread', id);
+					return;
+				}
+			}
+        }
+
+		const decryptedContent = is_encrypted
+			? await OpenPGP.decrypt(content, this.state.keys.private)
+			: content;
+			
+		const sylkMsg = {
+			id: id,
+			sender: {uri: from, 
+			         displayName: from},
+			receiver: this.state.accountId,
+			contentType: contentType,
+			content: decryptedContent,
+			timestamp: new Date()
+		};
+		
+		//console.log('sylkMsg', sylkMsg);
+	
+	    const msg = utils.sylk2GiftedChat(sylkMsg);
+		console.log('Added push message:', id, from);
+		
+		this.setState((prevState) => ({
+			incomingMessage: {
+				...prevState.incomingMessage,
+				[from]: msg
+			}
+		}));
+		
+		if (msg.metadata && msg.metadata.filename) {
+			setTimeout(() => {
+				this.autoDownloadFile(msg.metadata);
+			}, 10);
+		}
 	}
 
     autoAcceptIncomingCall(callUUID, from) {
@@ -6347,7 +6587,7 @@ componentWillUnmount() {
 			 selectedContact.messagesMetadata[mId] = metadataContent;
 			 myContacts[uri].messagesMetadata[mId] = metadataContent;
 			 
-		     console.log('outgoing metadata message', message._id, metadataContent);
+		     //console.log('outgoing metadata message', message._id, metadataContent);
 
 			 this.setState({myContacts: myContacts, selectedContact: selectedContact});
 
@@ -6472,9 +6712,7 @@ componentWillUnmount() {
 		}
 
     async uploadFile(file_transfer) {
-        let transferProgress = this.state.transferProgress;
-
-        //console.log('uploadFile', file_transfer);
+        console.log('uploadFile', file_transfer);
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
@@ -6492,7 +6730,7 @@ componentWillUnmount() {
 						file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
 						file_transfer.path = resized.path;
 						local_url = resized.path;
-						console.log('resized');
+						//console.log('resized');
 						//console.log('New transfer', file_transfer);
 					} catch (e) {
 						console.log('error resize', e);
@@ -6519,105 +6757,95 @@ componentWillUnmount() {
             return;
         }
 
-        if (remote_url in this.uploadRequests) {
-            console.log('Upload already in progres', file_transfer.url);
-            return;
-        }
-
-        this.uploadRequests[remote_url] = file_transfer;
-
         if (!local_url && file_transfer.transfer_id) {
             this.deleteMessage(file_transfer.transfer_id, uri);
             return;
-        }
-
-        let public_keys = '';
-
-        if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
-            public_keys = public_keys + '\n' + this.state.myContacts[uri].publicKey;
-            console.log('Public key available for', uri);
-            if (this.state.keys && this.state.keys.public) {
-                public_keys = public_keys + "\n" + this.state.keys.public;
-                console.log('Public key available for myself');
-            } else {
-                console.log('No public key loaded for myself');
-            }
-        } else {
-            console.log('No public key available for', uri);
-        }
-
-        public_keys = public_keys.trim();
-
-        if (utils.isFileEncryptable(file_transfer) && public_keys.length > 0) {
-            //this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
-
-            try {
-                let encrypted_file = local_url + '.asc';
-                await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
-                utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted', 'keys length', public_keys.length);
-                //this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
-                let base64_content = await RNFS.readFile(encrypted_file, 'base64');
-                let checksum = utils.getPGPCheckSum(base64_content);
-
-                const lines = base64_content.match(/.{1,60}/g) ?? [];
-                let content = "";
-
-                lines.forEach((line) => {
-                    content = content + line + "\n";
-                });
-
-                content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
-                await RNFS.writeFile(encrypted_file, content, 'utf8');
-                //this.updateFileTransferBubble(file_transfer, 'File encrypted');
-                file_transfer.filetype = file_transfer.filetype;
-                local_url = local_url + ".asc";
-                remote_url = remote_url + '.asc';
-            } catch (error) {
-                console.log('Failed to encrypt file:', error)
-                file_transfer.error = 'Cannot encrypt file';
-                this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
-                let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
-                //this.renderSystemMessage(uri, error_message, 'outgoing');
-            } finally {
-                this.updateFileTransferBubble(file_transfer);
-            }
         }
 
         try {
             const exists = await RNFS.exists(local_url);
         } catch (e) {
             console.log(local_url, 'does not exist');
+            return;
         }
 
-        utils.timestampedLog('Uploading file', local_url, 'to', remote_url);
-		  const dp = { ...this.state.transferProgress };
-		  dp[file_transfer.transfer_id] = { stage: 'upload', progress: 0, error: null };
-		  this.setState({ transferProgress: dp });
+		encrypted_file = local_url + '.asc';
+		let encryptedFileExist = false;
+
+        try {
+            encryptedFileExist = await RNFS.exists(local_url);
+        } catch (e) {
+            console.log(local_url, 'does not exist');
+        }
+
+        if (utils.isFileEncryptable(file_transfer) && !encryptedFileExist) {
+            this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
+			let public_keys = '';
+	
+			if (uri in this.state.myContacts && this.state.myContacts[uri].publicKey) {
+				public_keys = this.state.myContacts[uri].publicKey;
+				console.log('Public key available for', uri);
+				if (this.state.keys && this.state.keys.public) {
+					public_keys = public_keys + "\n" + this.state.keys.public;
+					console.log('Public key available for myself');
+				}
+
+				try {					
+					this.updateTransferProgress(file_transfer.transfer_id, 5, 'encrypt');
+					await OpenPGP.encryptFile(local_url, encrypted_file, public_keys, null, {fileName: file_transfer.filename});
+					utils.timestampedLog('Outgoing file', file_transfer.transfer_id, 'encrypted', 'keys length', public_keys.length);
+					//this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
+					let base64_content = await RNFS.readFile(encrypted_file, 'base64');
+					let checksum = utils.getPGPCheckSum(base64_content);
+	
+					const lines = base64_content.match(/.{1,60}/g) ?? [];
+					let content = "";
+	
+					lines.forEach((line) => {
+						content = content + line + "\n";
+					});
+	
+					content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
+					await RNFS.writeFile(encrypted_file, content, 'utf8');
+					//this.updateFileTransferBubble(file_transfer, 'File encrypted');
+					file_transfer.filetype = file_transfer.filetype;
+					local_url = local_url + ".asc";
+					remote_url = remote_url + '.asc';
+					this.updateTransferProgress(file_transfer.transfer_id, 100, 'encrypt');
+				} catch (error) {
+					console.log('Failed to encrypt file:', error)
+					file_transfer.error = 'Cannot encrypt file';
+					this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+					let error_message = error.message.startsWith('intResponse') ? error.message.slice(40, error.message.length - 1): error.message;
+					this.deleteTransferProgress(file_transfer.transfer_id);
+
+					return;
+					//this.renderSystemMessage(uri, error_message, 'outgoing');
+				} finally {
+
+					this.updateFileTransferBubble(file_transfer);
+				}
+
+			} else {
+				console.log('No public key available for', uri, 'encryption skipped');
+			}
+        }
+
+       utils.timestampedLog('Uploading file', local_url, 'to', remote_url);
+		this.updateTransferProgress(file_transfer.transfer_id, 0, 'upload');
 
 		RNBlobUtil.fetch('POST', remote_url, {
 		  'Content-Type': file_transfer.filetype,
 		}, RNBlobUtil.wrap(local_url))
 		.uploadProgress((written, total) => {
 		  const progress = Math.floor((written / total) * 100);
-		  //console.log('Upload progress', progress);
-		  const dp = { ...this.state.transferProgress };
-		  dp[file_transfer.transfer_id] = { stage: 'upload', progress: progress, error: null };
-		  this.setState({ transferProgress: dp });
+		  console.log('Upload progress', progress);
+		  this.updateTransferProgress(file_transfer.transfer_id, progress, 'upload');
 		})
 		.then((res) => {
 			console.log('File uploaded:', local_url);
-			if (file_transfer.transfer_id in transferProgress) {
-				delete transferProgress[file_transfer.transfer_id];
-				this.setState({transferProgress: transferProgress});
-			}
-
-			  const dp = { ...this.state.transferProgress };
-			  if (file_transfer.transfer_id in dp) { 
-				  delete dp[file_transfer.transfer_id];
-				  this.setState({ transferProgress: dp });
-			  }	
-
-            this.updateFileTransferBubble(file_transfer);
+			this.deleteTransferProgress(file_transfer.transfer_id);
+	        this.updateFileTransferBubble(file_transfer);
             delete this.uploadRequests[remote_url]
 
 		})
@@ -6625,14 +6853,17 @@ componentWillUnmount() {
 		    console.error('Upload error', err);
 			delete this.uploadRequests[remote_url];
 			const error = new Error(xhr.response);
-			transferProgress[file_transfer.transfer_id] = {stage: 'upload', progress: null, error: err};
-			this.setState({transferProgress: transferProgress});
+			this.deleteTransferProgress(file_transfer.transfer_id);
+
 			this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
             this.updateFileTransferBubble(file_transfer);
             delete this.uploadRequests[remote_url]
 		});
-    }
+ 
 
+
+	}
+	
     async reSendMessage(message, uri) {
         await this.deleteMessage(message._id, uri).then((result) => {
             message._id = uuid.v4();
@@ -6641,6 +6872,22 @@ componentWillUnmount() {
             console.log('Failed to delete old messages');
         });
     }
+
+	deleteTransferProgress(id) {
+		const dp = { ...this.state.transferProgress };
+		if (id in dp) {
+		    //console.log('deleteTransferProgress', id);
+			delete dp[id] ;
+			this.setState({ transferProgress: dp });
+		}
+	}
+
+	updateTransferProgress(id, progress, stage) {
+		//console.log('updateTransferProgress', id, progress, stage);
+		const dp = { ...this.state.transferProgress };
+		dp[id] = {stage: stage, progress: progress};
+		this.setState({ transferProgress: dp });
+	}
 
     async saveConferenceMessage(room, message) {
         let messages = this.state.messages;
@@ -6763,7 +7010,7 @@ componentWillUnmount() {
         // mark message status
         // state can be failed or accepted
 
-        //utils.timestampedLog('Outgoing message', id, 'state is', state);
+        utils.timestampedLog('Outgoing message', id, 'state is', state);
 
         if (state === 'accepted') {
             // pending 1 -> 0
@@ -6847,7 +7094,7 @@ componentWillUnmount() {
             }
         }
 
-        //utils.timestampedLog('Message state', id, 'changed to', state);
+        utils.timestampedLog('Message', id, 'state changed to', state);
         let query;
 
         const failed_states = ['failed', 'error', 'forbidden'];
@@ -6937,7 +7184,7 @@ componentWillUnmount() {
 
     async deleteMessage(id, uri, remote=true, after=false) {
         //utils.timestampedLog('Message', id, 'is deleted');
-        console.log('deleteMessage', id);
+        console.log('deleteMessage', id, 'remote', remote);
         let query;
 
         let message_ids = [id];
@@ -6958,9 +7205,8 @@ componentWillUnmount() {
                 };
 
             }).catch((error) => {
-                console.log('SQL error:', error);
+                console.log('deleteMessage SQL error:', error);
             });
-
 
             if (unix_timestamp) {
                 query = "SELECT * FROM messages where account = ? and ((to_uri = ? and direction = 'outgoing') or (from_uri = ? and direction = 'incoming')) and unix_timestamp >= ? and timestamp like ? order by unix_timestamp asc";
@@ -6968,6 +7214,7 @@ componentWillUnmount() {
                     rows = results.rows;
                     for (let i = 0; i < rows.length; i++) {
                         var item = rows.item(i);
+                        //console.log('Found message', item.msg_id)
                         message_ids.push(item.msg_id);
                     }
 
@@ -6976,10 +7223,14 @@ componentWillUnmount() {
                 });
             }
         }
+        
+        //console.log('messages to remove', message_ids);
 
         for (let j = 0; j < message_ids.length; j++) {
             var _id = message_ids[j];
             this.deleteFilesForMessage(_id, uri);
+			this.deleteRenderMessage(_id, uri);
+            // TODO delete replyIds as well
             if (remote) {
                this.addJournal(_id, 'removeMessage', {uri: uri});
                //console.log('add journal 1');
@@ -7047,6 +7298,7 @@ componentWillUnmount() {
                     if (file_transfer.receiver && file_transfer.sender) {
                         let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
                         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
+                        console.log('Removing', dir_path);
                         RNFS.unlink(dir_path).then((success) => {
                             console.log('Removed directory', dir_path);
                             // TODO: update storage usage:
@@ -7232,86 +7484,119 @@ componentWillUnmount() {
         });
     }
 
-    async updateRenderMessageState(id, state, url) {
-        let query;
-        let uri;
-        let changes = false;
+	async updateRenderMessageState(id, state, url) {
+	
+	  if (!this.state.selectedContact) {
+		  return;
+	  }
 
-        console.log('updateRenderMessageState', id, state, url);
+	  let query;
+	  let uri;
+	  let hasChanges = false;
+	
+	  //console.log('updateRenderMessageState', id, state);
+	
+	  query = "SELECT * from messages where msg_id = ? and account = ?";
+	
+	  try {
+		const results = await this.ExecuteQuery(query, [id, this.state.accountId]);
+		const rows = results.rows;
+		if (rows.length !== 1) return;
+	
+		const item = rows.item(0);
+		uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
+	
+		if (!(uri in this.state.messages)) return;
+	
+		// Create a shallow clone of the messages object (immutable update)
+		const prevMessages = this.state.messages;
+		const updatedMessagesForUri = prevMessages[uri].map((m) => {
+		  if (m._id !== id) return m; // keep same reference if unchanged
+		  
+		  // clone the message that needs to change
+		  const updated = { ...m };
+		  if (url && updated.metadata) {
+			updated.metadata = { ...updated.metadata, url };
+		  }
+		  	
+		  switch (state) {
+			case 'accepted':
+			  Object.assign(updated, { pending: false, failed: false });
+			  hasChanges = true;
+			  break;
+	
+			case 'delivered':
+			  Object.assign(updated, { sent: true, pending: false, failed: false });
+			  hasChanges = true;
+			  break;
+	
+			case 'displayed':
+			  if (
+				this.state.selectedContact &&
+				this.state.selectedContact.uri === uri &&
+				!updated.received
+			  ) {
+				this.playMessageSound('outgoing');
+			  }
+			  Object.assign(updated, {
+				received: true,
+				sent: true,
+				pending: false,
+				failed: false,
+			  });
+			  hasChanges = true;
+			  break;
+	
+			case 'failed':
+			  Object.assign(updated, {
+				received: false,
+				sent: false,
+				pending: false,
+				failed: true,
+			  });
+			  hasChanges = true;
+			  break;
+	
+			case 'pinned':
+			  updated.pinned = true;
+			  hasChanges = true;
+			  break;
+	
+			case 'unpinned':
+			  updated.pinned = false;
+			  hasChanges = true;
+			  break;
+		  }
 
-        query = "SELECT * from messages where msg_id = ? and account = ?";
-        //console.log(query);
-        await this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
-            let rows = results.rows;
-            if (rows.length === 1) {
-                var item = rows.item(0);
-                uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
-                //console.log('Message', id, 'new state is', state);
-                if (uri in this.state.messages) {
-                    let renderedMessages = this.state.messages;
+		  return updated;
+		});
+	
+		const changedCount = updatedMessagesForUri.filter((m, i) => m !== prevMessages[uri][i]).length;
+		console.log('Changed message count:', changedCount);
 
-                    renderedMessages[uri].forEach((m) => {
-                        if (m._id === id) {
-                            if (url && m.metadata) {
-                                m.metadata.url = url;
-                            }
-                            if (state === 'accepted') {
-                                m.pending = false;
-                                m.failed = false;
-                                changes = true;
-                            }
-
-                            if (state === 'delivered') {
-                                m.sent = true;
-                                m.pending = false;
-                                m.failed = false;
-                                changes = true;
-                            }
-
-                            if (state === 'displayed') {
-                                if (this.state.selectedContact && this.state.selectedContact.uri === uri && !m.received) {
-                                    this.playMessageSound('outgoing');
-                                }
-                                m.received = true;
-                                m.sent = true;
-                                m.pending = false;
-                                m.failed = false;
-                                changes = true;
-                            }
-
-                            if (state === 'failed') {
-                                m.received = false;
-                                m.sent = false;
-                                m.pending = false;
-                                m.failed = true;
-                                changes = true;
-                            }
-
-                            if (state === 'pinned') {
-                                m.pinned = true;
-                                changes = true;
-                            }
-
-                            if (state === 'unpinned') {
-                                m.pinned = false;
-                                changes = true;
-                            }
-                        }
-                    });
-
-                    if (changes) {
-                        this.setState({messages: renderedMessages});
-                        if (state === 'failed') {
-                            //this.renderSystemMessage(uri, 'Message delivery failed', 'incoming');
-                        }
-                    }
-                }
-            }
-
-        }).catch((error) => {
-            console.log('SQL query:', query);
-            console.log('SQL error:', error);
-        });
+		if (hasChanges) {
+		  this.setState((prev) => ({
+			messages: {
+			  ...prev.messages,
+			  [uri]: updatedMessagesForUri,
+			},
+		  }));
+	
+		  if (state === 'failed') {
+			// this.renderSystemMessage(uri, 'Message delivery failed', 'incoming');
+		  }
+		}
+	  } catch (error) {
+		console.log('SQL query:', query);
+		console.log('SQL error:', error);
+	  }
+	}
+	
+    get contactMessages() {
+          if (this.state.selectedContact && this.state.selectedContact.uri in this.state.messages) {
+			  return this.state.messages[this.state.selectedContact.uri];
+          }
+          return [];
     }
 
     async saveOutgoingChatUri(uri, message) {
@@ -7441,7 +7726,7 @@ componentWillUnmount() {
      }
 
      async confirmRead(uri, source) {
-        //console.log('confirmRead', uri, 'app state', this.state.appState, source);
+        //console.log('confirmRead', uri, source);
 
         if (this.state.appState === 'background') {
             return;
@@ -7480,7 +7765,18 @@ componentWillUnmount() {
                     console.log('Message could not be decrypted', item.msg_id, item.content_type);
                     this.sendDispositionNotification(item, 'error', true);
                 } else {
-                    this.sendDispositionNotification(item, 'displayed', true);
+                    if (item.content_type === 'application/sylk-file-transfer') {
+                        const msg = utils.sql2GiftedChat(item);
+                        if (msg) {
+                            if (msg.audio || msg.video) {
+                                //console.log('Send displayed when users accesses the content');
+                            } else {
+								this.sendDispositionNotification(item, 'displayed', true);
+							}
+                        }
+					} else {
+						this.sendDispositionNotification(item, 'displayed', true);
+                    }
                 }
             }
 
@@ -7526,7 +7822,7 @@ componentWillUnmount() {
             changes = true;
         }
 
-        this.updateTotalUread(myContacts);
+        this.updateTotalUread(myContacts, 'o3');
 
         if (changes) {
             this.saveSylkContact(uri, myContacts[uri], 'resetUnreadCount');
@@ -7537,14 +7833,22 @@ componentWillUnmount() {
     }
 
 	async sendDispositionNotification(message, state='displayed', save=false) {
+        let contentType = message.content_type || message.contentType;
 
-        if (message.content_type == 'application/sylk-message-metadata') {
+        if (contentType == 'application/sylk-message-metadata') {
 			return;
         }
 
-        let id = message.msg_id || message.id || message.transfer_id;
+        let id = message.msg_id || message.id || message.transfer_id || message._id;
         let uri =  message.sender ? message.sender.uri : message.from_uri;
-        //utils.timestampedLog('Message', id, 'IMDN state is', state);
+        let timestamp = message.timestamp;
+        
+        if (message.metadata && message.metadata.sender) {
+			uri = message.metadata.sender.uri;
+			timestamp = message.metadata.timestamp;
+        }
+
+        //utils.timestampedLog('sendDispositionNotification', id, state, uri);
 
         if (!this.canSend()) {
             //console.log('IMDN for', id, state, 'will be sent later');
@@ -7552,7 +7856,7 @@ componentWillUnmount() {
         }
 
         let result = await new Promise((resolve, reject) => {
-            this.state.account.sendDispositionNotification(uri, id, message.timestamp, state,(error) => {
+            this.state.account.sendDispositionNotification(uri, id, timestamp, state, (error) => {
                 if (!error) {
                     if (save) {
                         let received = (state === 'delivered') ? 1 : 2;
@@ -7560,12 +7864,12 @@ componentWillUnmount() {
                         this.ExecuteQuery(query, [received, id, this.state.accountId]).then((results) => {
                             //utils.timestampedLog('IMDN for', id, message.content_type, 'saved');
                         }).catch((error) => {
-                            utils.timestampedLog('IMDN for', id, message.content_type, 'save error:', error.message);
+                            utils.timestampedLog('IMDN for', id, uri, 'save error:', error.message);
                         });
                     }
                     resolve(true);
                 } else {
-                    utils.timestampedLog('IMDN for', id, message.content_type, state, 'sent failed,', error);
+                    utils.timestampedLog('IMDN for', id, uri, state, 'sent failed:', error);
                     resolve(false);
                 }
             });
@@ -7581,23 +7885,49 @@ componentWillUnmount() {
 
         let myContacts = this.state.myContacts;
         let uri = this.state.selectedContact.uri;
+
+        if (!(uri in myContacts)) {
+            this.setState({totalMessageExceeded: true});
+			return;
+        }
+
         let limit = this.state.messageLimit * this.state.messageZoomFactor;
 
         if (myContacts[uri].totalMessages < limit) {
-            //console.log('No more messages for', uri);
+            this.setState({totalMessageExceeded: true});
+			console.log('No more messages for', uri);
             return;
         }
 
         let messageZoomFactor = this.state.messageZoomFactor;
         messageZoomFactor = messageZoomFactor + 1;
-        this.setState({messageZoomFactor: messageZoomFactor});
+        this.setState({messageZoomFactor: messageZoomFactor, totalMessageExceeded: false});
 
         setTimeout(() => {
             this.getMessages(this.state.selectedContact.uri);
         }, 10);
     }
 
-    async checkFileTransfer(file_transfer) {
+
+    resumeTransfers() {
+        if (!this.state.selectedContact) {
+            return;
+        }
+
+        let messages = this.state.messages[this.state.selectedContact.uri]
+        messages.forEach((msg) => {
+            if (msg.metadata && msg.metadata.paused) {
+                console.log('Resume transfer', msg.metadata.transfer_id);
+                this.downloadFile(msg.metadata)
+            }
+        });
+    }
+
+    async autoDownloadFile(file_transfer) {
+		if (file_transfer.transfer_id in this.downloadRequests) {
+			return;
+		}
+    
         let uri = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         if (file_transfer.local_url) {
             const exists = await RNFS.exists(file_transfer.local_url);
@@ -7617,25 +7947,25 @@ componentWillUnmount() {
             return;
         }
 
-        //console.log('checkFileTransfer', file_transfer);
+        console.log('autoDownloadFile', file_transfer);
 
         let difference;
         let now = new Date();
         let until = new Date(file_transfer.until);
 
         if (now.getTime() > until.getTime()) {
-            console.log('File transfer expired:', file_transfer.transfer_id, file_transfer.filetype);
+            console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is expired');
             this.deleteMessage(file_transfer.transfer_id, uri, false);
             return;
         }
 
         if (file_transfer.paused) {
-            console.log('File transfer is paused', file_transfer.transfer_id, file_transfer.filetype);
+            console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is paused');
             return;
         }
 
         if (file_transfer.failed) {
-            console.log('File transfer is failed', file_transfer.transfer_id, file_transfer.filetype);
+            console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is failed:', file_transfer.error);
             return;
         }
 
@@ -7650,8 +7980,7 @@ componentWillUnmount() {
                 if (file_transfer.filesize < max_transfer_size) {
                     this.downloadFile(file_transfer);
                 } else {
-                    //this.updateFileTransferBubble(file_transfer, file_transfer.filename + ' of '+ utils.beautySize(file_transfer.filesize) + ' is too big to download');
-                    console.log('File transfer is too large');
+					console.log('--- File transfer', file_transfer.transfer_id, file_transfer.filename, 'is large:', file_transfer);
                 }
             }
         } else {
@@ -7659,23 +7988,9 @@ componentWillUnmount() {
         }
     }
 
-    resumeTransfers() {
-        if (!this.state.selectedContact) {
-            return;
-        }
-
-        let messages = this.state.messages[this.state.selectedContact.uri]
-        messages.forEach((msg) => {
-            if (msg.metadata && msg.metadata.paused) {
-                console.log('Resume transfer', msg.metadata.transfer_id);
-                this.downloadFile(msg.metadata)
-            }
-        });
-    }
-
     async downloadFile(file_transfer, force=false) {
         const res = await RNFS.getFSInfo();
-        console.log('Download file', file_transfer.url);
+        console.log('Download file', file_transfer.url, file_transfer.filesize);
         console.log('Available space', Math.ceil(res.freeSpace/1024/1024), 'MB');
 
         if (res.freeSpace < file_transfer.filesize) {
@@ -7684,9 +7999,7 @@ componentWillUnmount() {
         }
 
         let id = file_transfer.transfer_id;
-        let transferProgress = this.state.transferProgress;
-	    transferProgress[id] = {stage: 'download', progress: 0, error: null};
-		this.setState({transferProgress: transferProgress});
+        this.updateTransferProgress(file_transfer.transfer_id, 0, 'download');
 
         let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
@@ -7697,7 +8010,7 @@ componentWillUnmount() {
 
             try {
                 await RNFS.unlink(dir_path);
-                //utils.timestampedLog('File transfer directory deleted', dir_path);
+                utils.timestampedLog('File transfer directory deleted', dir_path);
             } catch (err) {
                 console.log('Error removing directory', err.message);
             };
@@ -7709,12 +8022,13 @@ componentWillUnmount() {
             if (file_transfer.url.endsWith('.asc') && !file_transfer.filename.endsWith('.asc')) {
                 file_transfer.filename = file_transfer.filename + ('.asc');
             }
+
             this.updateFileTransferSql(file_transfer, encrypted, true);
         }
 
         await RNFS.mkdir(dir_path);
 
-        console.log('Made directory', dir_path);
+       // console.log('Made directory', dir_path);
 
         let file_path = dir_path + "/" + file_transfer.filename;
         let tmp_file_path = file_path + '.tmp';
@@ -7723,13 +8037,10 @@ componentWillUnmount() {
             this.downloadRequests[id].stop();
             console.log('File transfer was in progress, stopped it now', id);
             file_transfer.paused = true;
-            file_transfer.progress = null;
             file_transfer.error = null;
+
             this.updateFileTransferSql(file_transfer, encrypted);
-            if (id in transferProgress) {
-				delete transferProgress[id];
-				this.setState({transferProgress: transferProgress});
-			}
+			this.deleteTransferProgress(file_transfer.transfer_id);
 
             delete this.downloadRequests[id];
             return;
@@ -7739,7 +8050,6 @@ componentWillUnmount() {
         //console.log('To local storage:', tmp_file_path);
 
         file_transfer.paused = false;
-        file_transfer.progress = 0;
 
         try {
             await RNFS.unlink(file_path);
@@ -7761,24 +8071,20 @@ componentWillUnmount() {
             if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
 				const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
 				const progress = Math.ceil(percent);
-				file_transfer.progress = progress;
-                transferProgress[id] = {stage: 'download', progress: progress, error: null};
-				this.setState({transferProgress: transferProgress});
+				if (file_transfer.transfer_id in this.downloadRequests) {
+					this.updateTransferProgress(file_transfer.transfer_id, progress, 'download');
+				}
             }
         }).done(() => {
 			ReactNativeBlobUtil.fs.stat(tmp_file_path).then(stat => {
 			    filesize = stat.size;
-				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
+				//console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
 				delete this.downloadRequests[id];
 
-				if (file_transfer.filesize !== filesize) {
-					console.log('File', file_transfer.filename, 'size is wrong', filesize, 'must be', file_transfer.filesize);
-					//this.deleteMessage(id, remote_party, false);
-					//return;
-				}
+				file_transfer.error = null;
+				this.updateFileTransferSql(file_transfer, encrypted);
 
-                transferProgress[id] = {stage: 'download', progress: 100, error: null};
-				this.setState({transferProgress: transferProgress});
+				this.deleteTransferProgress(file_transfer.transfer_id);
 
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
 					this.saveDownloadTask(id, file_transfer.url, file_path);
@@ -7791,8 +8097,6 @@ componentWillUnmount() {
 					console.log("Source: ", tmp_file_path);
 					console.log("Destination: ", file_path);
 					file_transfer.local_url = null;
-					transferProgress[id] = {stage: 'download', progress: 0, error: err.message};
-				    this.setState({transferProgress: transferProgress});
 					this.fileTransferStateChanged(id, 'failed', file_transfer);
 				});
 
@@ -7803,10 +8107,8 @@ componentWillUnmount() {
         }).error((error) => {
             console.log('File', file_transfer.filename, 'download failed:', error);
             file_transfer.error = utils.getErrorMessage(error);
-			transferProgress[id] = {stage: 'download', progress: 0, error: file_transfer.error};
-			this.setState({transferProgress: transferProgress});
+			this.deleteTransferProgress(file_transfer.transfer_id);
 			this.renderSystemMessage(file_transfer.filename, error, 'incoming');
-
             this.fileTransferStateChanged(id, 'failed', file_transfer);
             delete this.downloadRequests[id];
             if (error === 'not found') {
@@ -7833,9 +8135,6 @@ componentWillUnmount() {
         let buffer = [];
         const FLUSH_THRESHOLD = 256 * 1024; // Flush to disk every 64KB of data
         
-        let decryptProgress = this.state.decryptProgress;
-        let transferProgress = this.state.transferProgress;
-
         // Ensure temp file starts empty
         await RNFS.writeFile(tempBase64Path, '', 'base64');
 
@@ -7872,30 +8171,19 @@ componentWillUnmount() {
 				delete this.cancelDecryptRequests[id];
 
 				file_transfer.error = 'decryption aborted';
-				file_transfer.progress = null;
 				file_transfer.failed = true;
 				
 				utils.timestampedLog(file_transfer.error);
+
 				this.updateFileTransferSql(file_transfer, 3);            
 
-                if (file_transfer.transfer_id in decryptProgress) {
-					delete decryptProgress[file_transfer.transfer_id];
-				}
-
-                if (file_transfer.transfer_id in transferProgress) {
-					delete transferProgress[file_transfer.transfer_id];
-				}
-
-				this.setState({decryptProgress: decryptProgress, transferProgress: transferProgress});
+				this.deleteTransferProgress(file_transfer.transfer_id);
 
 				//try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
 				return;
 			} else {
 			    if (position == 0) {
-    			    this.decryptRequests[id] = file_transfer;		
-					decryptProgress[file_transfer.transfer_id] = {progress: 0, error: null};
-					transferProgress[file_transfer.transfer_id] = {stage: 'decrypt', progress: null, error: file_transfer.error};
-					this.setState({decryptProgress: decryptProgress, transferProgress: transferProgress});
+    			    this.decryptRequests[id] = file_transfer;
     			}
 			}
 			
@@ -7903,8 +8191,7 @@ componentWillUnmount() {
 
  		    const perc = logProgress(position, file_transfer.filesize);
             if (perc) {
-				decryptProgress[file_transfer.transfer_id] = {progress: perc, error: null};
-				transferProgress[file_transfer.transfer_id] = {stage: 'decrypt', progress: perc, error: null};
+				this.updateTransferProgress(file_transfer.transfer_id, perc, 'decrypt');
  			}
   
             const chunk = await RNFS.read(inputPath, CHUNK_SIZE, position, 'utf8');
@@ -7959,7 +8246,7 @@ componentWillUnmount() {
         try {
 			delete this.decryptRequests[id];
 
-            console.log('PGP Base64 extraction complete. Decrypting now...');
+            //console.log('PGP Base64 extraction complete. Decrypting now...', file_transfer.filename);
             await OpenPGP.decryptFile(tempBase64Path, outputPath, privateKey, null);
             file_transfer.local_url = outputPath;
             file_transfer.filename = file_transfer.filename.slice(0, -4);
@@ -7967,7 +8254,7 @@ componentWillUnmount() {
             try { await RNFS.unlink(tempBase64Path); } catch (e) { /* ignore */ }
             try { await RNFS.unlink(inputPath); } catch (e) { /* optional cleanup */ }
             this.updateFileTransferSql(file_transfer, 2);
-            console.log('Decryption complete:', outputPath);
+            console.log('Decryption complete:', file_transfer.filename);
 
         } catch(error) {
             let error_message = error.message;
@@ -7984,12 +8271,9 @@ componentWillUnmount() {
 
             console.log(error_message);
             file_transfer.error = 'failed: ' + error_message;
-            file_transfer.progress = null;
             file_transfer.failed = true;
 
-			decryptProgress[file_transfer.transfer_id] = {progress: null, error: error_message};
-			transferProgress[file_transfer.transfer_id] = {stage: 'decrypt', progress: null, error: error_message};
-			this.setState({decryptProgress: decryptProgress, transferProgress: transferProgress});
+			this.deleteTransferProgress(file_transfer.transfer_id);
 
             utils.timestampedLog(file_transfer.error);
             this.updateFileTransferSql(file_transfer, 3);            
@@ -8211,8 +8495,8 @@ componentWillUnmount() {
         });
     }
 
-    async getMessages(uri, filter={pinned: false, category: null}) {
-        //console.log('Get messages', filter);
+    async getMessages(uri, filter={pinned: false, category: null, text:null}) {
+        console.log('Get messages', filter);
 
         let pinned=filter && 'pinned' in filter ? filter['pinned'] : false;
         let category=filter && 'category' in filter ? filter['category'] : null;
@@ -8271,7 +8555,7 @@ componentWillUnmount() {
         await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
-            //console.log('Got', total, 'messages with', uri, 'from database', );
+            console.log('Got', total, 'messages with', uri, 'from database', );
         }).catch((error) => {
             console.log('SQL error:', error);
         });
@@ -8280,7 +8564,7 @@ componentWillUnmount() {
             myContacts[uri].totalMessages = total;
         }
 
-        query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
+        query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) or (from_uri =? and to_uri = ?)) ";
         if (pinned) {
             query = query + ' and pinned = 1';
         }
@@ -8291,7 +8575,7 @@ componentWillUnmount() {
 
         query = query + ' order by unix_timestamp desc limit ?, ?';
 
-        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit]).then((results) => {
+        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId, this.state.accountId, this.state.accountId, this.state.messageStart, limit]).then((results) => {
             //console.log('SQL get messages, rows =', results.rows.length);
 
             let rows = results.rows;
@@ -8310,201 +8594,252 @@ componentWillUnmount() {
             let contentTypes = {};
             let foundMetadata = false;
             let metadataTimstamps = {};
+			let metadataContent;
+			let mId;
 
             let last_content = null;
 
             for (let i = 0; i < rows.length; i++) {
-                var item = rows.item(i);
-                if (false) {
-                    //console.log('Remove broken message', item);
-                    this.ExecuteQuery('delete from messages where msg_id = ?', [item.msg_id]);
-                    myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-                    continue;
-                }
-                content = item.content;
-                if (!content) {
-                    content = 'Empty message...';
-                }
+                try {
+					var item = rows.item(i);
+					if (false) {
+						//console.log('Remove broken message', item);
+						this.ExecuteQuery('delete from messages where msg_id = ?', [item.msg_id]);
+						myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
+						continue;
+					}
+					
+					if (item.content_type !== "application/sylk-message-metadata" && item.from_uri == item.to_uri) {
+						continue;
+					}
+	
+					content = item.content;
+					if (!content) {
+						content = 'Empty message...';
+					}
+	
+					last_direction = item.direction;
+	
+					let timestamp;
+					last_message = null;
+					last_message_id = null;
+	
+					let unix_timestamp;
+	
+					if (item.unix_timestamp === 0) {
+						timestamp = JSON.parse(item.timestamp, _parseSQLDate);
+						unix_timestamp = Math.floor(timestamp / 1000);
+						item.unix_timestamp = unix_timestamp;
+						this.ExecuteQuery('update messages set unix_timestamp = ? where msg_id = ?', [unix_timestamp, item.msg_id]);
+					} else {
+						timestamp = new Date(item.unix_timestamp * 1000);
+					}
+	
+					const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+					enc = parseInt(item.encrypted);
+					
+					//console.log('SQL item.msg_id', uri, item.content);
+	
+					if (is_encrypted && enc !== 3) {
 
-                last_direction = item.direction;
-
-                let timestamp;
-                last_message = null;
-                last_message_id = null;
-
-                let unix_timestamp;
-
-                if (item.unix_timestamp === 0) {
-                    timestamp = JSON.parse(item.timestamp, _parseSQLDate);
-                    unix_timestamp = Math.floor(timestamp / 1000);
-                    item.unix_timestamp = unix_timestamp;
-                    this.ExecuteQuery('update messages set unix_timestamp = ? where msg_id = ?', [unix_timestamp, item.msg_id]);
-                } else {
-                    timestamp = new Date(item.unix_timestamp * 1000);
-                }
-
-                const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
-                enc = parseInt(item.encrypted);
-                
-                //console.log('SQL item.msg_id', uri, item.content_type);
-
-                if (is_encrypted && enc !== 3) {
-                    myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-                    if (item.encrypted === null) {
-                        item.encrypted = 1;
-                    }
-
-                    /*
-                     encrypted:
-                     1 = unencrypted
-                     2 = decrypted
-                     3 = failed to decrypt message
-                    */
-
-                    if (uri in decryptingMessages) {
-                    } else {
-                        decryptingMessages[orig_uri] = [];
-                    }
-                    decryptingMessages[orig_uri].push(item.msg_id);
-                    messages_to_decrypt.push(item);
-                } else {
-                    if (enc === 3) {
-                        content = 'Encrypted message';
-                    } else if (item.content_type === 'text/html') {
-                        content = utils.html2text(content);
-                    } else if (item.content_type === 'text/plain') {
-                        content = content;
-                    } else if (item.content_type === 'application/sylk-file-transfer') {
-                        content = content;
-                    } else if (item.content_type.indexOf('image/') > -1) {
-                        item.image = `data:${item.content_type};base64,${btoa(content)}`
-                    } else if (item.content_type === 'application/sylk-contact-update') {
-                        myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-                        console.log('Remove update contact message', item.id);
-                        this.ExecuteQuery('delete from messages where msg_id = ?', [item.msg_id]);
-                        continue;
-                    } else if (item.content_type === 'text/pgp-public-key-imported') {
-                        continue;
-                    } else if (['application/sylk-message-metadata', 'application/sylk-message-reply'].includes(item.content_type)) {
-                        content = content;                    
-                        try {
-							const metadataContent = JSON.parse(content);
-							const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-
-							if (metadataContent.transferId && metadataContent.transferId in metadataTimstamps && metadataTimstamps[metadataContent.transferId] > item.unix_timestamp) {
-								//console.log('we have an old timestamp');
+						myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
+						if (item.encrypted === null) {
+							item.encrypted = 1;
+						}
+	
+						/*
+						 encrypted:
+						 1 = unencrypted
+						 2 = decrypted
+						 3 = failed to decrypt message
+						*/
+	
+						if (uri in decryptingMessages) {
+						} else {
+							decryptingMessages[orig_uri] = [];
+						}
+						decryptingMessages[orig_uri].push(item.msg_id);
+						messages_to_decrypt.push(item);
+					} else {
+						if (enc === 3) {
+							content = 'Encrypted message';
+						} else if (item.content_type === 'text/html') {
+							content = utils.html2text(content);
+						} else if (item.content_type === 'text/plain') {
+							content = content;
+						} else if (item.content_type === 'application/sylk-file-transfer') {
+							content = content;
+						} else if (item.content_type.indexOf('image/') > -1) {
+							item.image = `data:${item.content_type};base64,${btoa(content)}`
+						} else if (item.content_type === 'application/sylk-contact-update') {
+							myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
+							console.log('Remove update contact message', item.id);
+							this.ExecuteQuery('delete from messages where msg_id = ?', [item.msg_id]);
+							continue;
+						} else if (item.content_type === 'text/pgp-public-key-imported') {
+							continue;
+						} else if (['application/sylk-message-metadata'].includes(item.content_type)) {
+							content = content;                    
+	
+							try {
+								metadataContent = JSON.parse(content);
+								mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+	
+							} catch (error) {
+								console.log('Cannot parse metadataMessage', content, item);
 								continue;
 							}
-
-							metadataTimstamps[mId] = item.unix_timestamp;
-							myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
-							//console.log('DB metadataContent', item.msg_id, item.unix_timestamp, metadataContent);
-							
-							foundMetadata = true;
-						} catch (error) {
-							console.log('Cannot parse metadataMessage', content, item);
+	
+								/*
+								if (metadataContent.transferId && metadataContent.transferId in metadataTimstamps && metadataTimstamps[metadataContent.transferId] > item.unix_timestamp) {
+									console.log('we have an old timestamp');
+									continue;
+								}
+								*/
+	
+							try {
+								metadataTimstamps[mId] = item.unix_timestamp;
+								metadataContent.author = item.from_uri;
+								if (mId in myContacts[orig_uri].messagesMetadata) {
+									if (metadataContent.author === this.state.accountId) {
+										// local overwrites remote
+										myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+										foundMetadata = true;
+									}
+								} else {
+									myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+									foundMetadata = true;
+								}
+		
+								if (foundMetadata && !metadataContent.replyId) {
+									//console.log('DB metadataContent', item.msg_id, item.unix_timestamp, metadataContent);
+								}
+							} catch (error) {
+								console.log('Cannot handle metadataMessage', error);
+								continue;
+							}
+								
+							continue;
+						} else {
+							console.log('Unknown message', item.msg_id, 'type', item.content_type);
+							myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
+							//this.deleteMessage(item.msg_id, item.to_uri);
+							continue;
 						}
-						continue;
-                    } else {
-                        console.log('Unknown message', item.msg_id, 'type', item.content_type);
-                        myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-                        //this.deleteMessage(item.msg_id, item.to_uri);
-                        continue;
-                    }
-
-                    last_content = content;
-
-                    msg = utils.sql2GiftedChat(item, content, filter);
-
-                    if (!msg) {
-                        myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-                        continue;
-                    }
-
-                    if (msg.audio) {
-                        contentTypes['audio'] = true;
-                    } else if (msg.image) {
-                        contentTypes['image'] = true;
-                    } else if (msg.video) {
-                        contentTypes['movie'] = true;
-                    } else {
-                        contentTypes['text'] = true;
-                    }
-
-                    if (msg.pinned) {
-                        contentTypes['pinned'] = true;
-                    }
-
-                    messages[orig_uri].push(msg);
-                    if (pinned || category) {
-                        filteredMessageIds.push(msg._id);
-                    }
-
-                    if (msg.metadata && msg.metadata.filename) {
-                        if (msg.metadata.paused) {
-                            contentTypes['paused'] = true;
-                        }
-
-                        if (msg.metadata.filesize && msg.metadata.filesize > utils.HUGE_FILE_SIZE) {
-                            contentTypes['large'] = true;
-                        }
-
-                        if (msg.metadata.failed) {
-                            contentTypes['failed'] = true;
-                        }
-
-                        this.checkFileTransfer(msg.metadata);
-                    }
-                }
-            }
-
-            this.setState({filteredMessageIds: filteredMessageIds, contentTypes: contentTypes});
-            //console.log('Got', messages[orig_uri].length, 'out of', total, 'messages for', uri);
-
-            last_messages = messages[orig_uri];
-            last_messages.reverse();
-            if (last_messages.length > 0) {
-                last_messages.forEach((last_item) => {
-                    last_message = this.buildLastMessage(last_item);
-                    last_message_id = last_item.id;
-                    return;
-                });
-            }
-
-            if (orig_uri in myContacts) {
-                if (last_message && last_message != myContacts[orig_uri].lastMessage && last_message !== 'Public key received') {
-                    myContacts[orig_uri].lastMessage = last_message;
-                    myContacts[orig_uri].lastMessageId = last_message_id;
-                    this.saveSylkContact(uri, myContacts[orig_uri], 'getMessages');
-                    this.setState({myContacts: myContacts});
-                }
-                
-            }
-
-			if (foundMetadata) {
-				this.setState({myContacts: myContacts});
-				const keyCount = Object.keys(myContacts[uri].messagesMetadata).length;
-				//console.log(Platform.OS, 'metadatas', keyCount);
-			}
-
-            this.setState({messages: messages, 
-						   messagesMetadata: myContacts[uri].messagesMetadata,
-                           decryptingMessages: decryptingMessages});
-
-            let i = 1;
-            messages_to_decrypt.forEach((item) => {
-                var updateContact = messages_to_decrypt.length === i;
-                this.decryptMessage(item, updateContact);
-                i = i + 1;
-            });
+	
+						last_content = content;
+						msg = utils.sql2GiftedChat(item, content, filter);
+						
+						if (msg.metadata?.filename) {
+							//console.log('file', msg.metadata?.filename);
+						}
+	
+						if (!msg) {
+							myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
+							continue;
+						}
+		
+						if (msg.audio) {
+							contentTypes['audio'] = true;
+						} else if (msg.image) {
+							contentTypes['image'] = true;
+						} else if (msg.video) {
+							contentTypes['movie'] = true;
+						} else {
+							contentTypes['text'] = true;
+						}
+	
+						if (msg.pinned) {
+							contentTypes['pinned'] = true;
+						}
+						
+						messages[orig_uri].push(msg);
+						
+						if (pinned || category) {
+							filteredMessageIds.push(msg._id);
+						}
+	
+						if (msg.metadata && msg.metadata.filename) {
+						    //console.log(msg.metadata.filename);
+							if (msg.metadata.paused) {
+								contentTypes['paused'] = true;
+							}
+	
+							if (msg.metadata.filesize && msg.metadata.filesize > utils.HUGE_FILE_SIZE) {
+								contentTypes['large'] = true;
+							}
+	
+							if (msg.metadata.failed) {
+								contentTypes['failed'] = true;
+							}
+	
+							this.autoDownloadFile(msg.metadata);
+						}
+						
+					}
+					} catch (e) {
+						console.log('SQL row error', e);
+					}
+				}
+	
+				Object.keys(this.state.incomingMessage).forEach((key) => {
+					const msg = this.state.incomingMessage[key];
+					if (key in messages) {
+						// Check if the message already exists
+						const exists = messages[key].some(m => m._id === msg._id);
+						if (!exists) {
+							console.log('Added synthetic message from push');
+							messages[key].push(msg);
+						}
+					}
+				});
+	
+				this.setState({filteredMessageIds: filteredMessageIds, contentTypes: contentTypes});
+				console.log('Loaded messages for', uri, messages[orig_uri].length);
+	
+				last_messages = messages[orig_uri];
+				last_messages.reverse();
+				if (last_messages.length > 0) {
+					last_messages.forEach((last_item) => {
+						last_message = this.buildLastMessage(last_item);
+						last_message_id = last_item.id;
+						return;
+					});
+				}
+	
+				if (orig_uri in myContacts) {
+					if (last_message && last_message != myContacts[orig_uri].lastMessage && last_message !== 'Public key received') {
+						myContacts[orig_uri].lastMessage = last_message;
+						myContacts[orig_uri].lastMessageId = last_message_id;
+						this.saveSylkContact(uri, myContacts[orig_uri], 'getMessages');
+						this.setState({myContacts: myContacts});
+					}
+					
+				}
+	
+				if (foundMetadata) {
+					this.setState({myContacts: myContacts});
+					const keyCount = Object.keys(myContacts[uri].messagesMetadata).length;
+					//console.log(Platform.OS, 'metadatas', keyCount);
+				}
+	
+				this.setState({messages: messages, 
+							   messagesMetadata: myContacts[uri].messagesMetadata,
+							   decryptingMessages: decryptingMessages});
+	
+				let i = 1;
+				messages_to_decrypt.forEach((item) => {
+					var updateContact = messages_to_decrypt.length === i;
+					this.decryptMessage(item, updateContact);
+					i = i + 1;
+				});
 
         }).catch((error) => {
             console.log('getMessages SQL error:', error);
         });
-
     }
 
-    async getFiles(uri, filter) {
+    async getTransferedFiles(uri, filter) {
         //console.log('-- Get files for', uri, filter={});
         
         if (this.unmounted) {
@@ -8515,7 +8850,7 @@ componentWillUnmount() {
 			return;
         }
 
-		let sharedFiles = this.state.sharedFiles;
+		let transferedFiles = this.state.transferedFiles;
 		let metadata;
 		let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
 		let found = 0;
@@ -8577,17 +8912,16 @@ componentWillUnmount() {
 				   found = found + 1;
 	
                } catch (e) {
-                   console.log('getFiles row error:', e);
+                   console.log('getTransferedFiles row error:', e);
                    continue;
                }
             }
 
-			sharedFiles[uri] = message_ids;
-			//console.log('sharedFiles', sharedFiles[uri]);
-			this.setState({sharedFiles: sharedFiles});
+			transferedFiles[uri] = message_ids;
+			this.setState({transferedFiles: transferedFiles});
 
         }).catch((error) => {
-            console.log('----getFiles SQL error:', error);
+            console.log('----getTransferedFiles SQL error:', error);
         });   
     }
     
@@ -8830,7 +9164,7 @@ componentWillUnmount() {
     }
 
     playMessageSound(direction='incoming') {
-        //console.log('---- playMessageSound');
+        console.log('---- playMessageSound', direction);
         let must_play_sound = true;
 
         if (this.state.dnd) {
@@ -8975,8 +9309,8 @@ componentWillUnmount() {
         }
     }
 
-    async readConversation(obj) {
-        let uri = obj;
+    async readConversation(uri) {
+        console.log('readConversation', uri);
         this.resetUnreadCount(uri)
     }
 
@@ -9157,7 +9491,7 @@ componentWillUnmount() {
         }, 1000);
     }
 
-    async syncConversations(messages) {
+    async syncConversations(messages) {       
         if (this.sync_pending_items.length > 0) {
             console.log('Sync already in progress');
             return;
@@ -9245,7 +9579,7 @@ componentWillUnmount() {
             direction = message.sender.uri === this.state.account.id ? 'outgoing': 'incoming';
             
             if  (message.contentType !== 'message/imdn') {
-				console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri);
+				//console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri);
             }
 
             let d = new Date(2019);
@@ -9353,8 +9687,8 @@ componentWillUnmount() {
 							 const metadataContent = JSON.parse(message.content);
 							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
 							 console.log('new metadataContent from journal', metadataContent);
-							 
 							 myContacts[uri].messagesMetadata[mId] = metadataContent;
+							 
 						 } catch (e) {
 							 console.log("error parsing metadataContent", message.content);
 						 }
@@ -9383,10 +9717,17 @@ componentWillUnmount() {
                 } else {
 					 if (message.contentType === 'application/sylk-message-metadata') {
 						 try {
-							 const metadataContent = JSON.parse(message.content);
-							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
-							 myContacts[uri].messagesMetadata[mId] = metadataContent;
-							 console.log('new metadataContent from journal', metadataContent);
+							 let metadataContent = JSON.parse(message.content);
+							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+							 if (mId in myContacts[uri].messagesMetadata) {
+							     const oldMetadataContent = myContacts[uri].messagesMetadata[mId];
+							     if (oldMetadataContent.author != this.state.accountId ) {							     
+									 metadataContent.author = uri;
+									 myContacts[uri].messagesMetadata[mId] = metadataContent;
+									 console.log('new metadataContent from journal', metadataContent);
+								 }
+							 }
+
 
 						 } catch (e) {
 							 console.log("error parsing metadataContent", message.content);
@@ -9421,6 +9762,7 @@ componentWillUnmount() {
 	
 						if (message.dispositionNotification.indexOf('display') > -1) {
 							if (unreadCounterTypes.has(message.contentType)) {
+								//console.log('Increment unread count for', uri);
 								myContacts[uri].unread.push(message.id);
 							}
 						}
@@ -9434,7 +9776,7 @@ componentWillUnmount() {
             last_id = message.id;
         });
 
-        this.updateTotalUread(myContacts);
+        this.updateTotalUread(myContacts, 'o4');
 
         /*
         if (messages.length > 0) {
@@ -9475,9 +9817,14 @@ componentWillUnmount() {
         }
     }
 
-    async incomingMessage(message) {
-        console.log('Incoming message', message.id, message.contentType, 'from', message.sender.uri);
+    async incomingMessageFromWebSocket(message) {
+        console.log('Incoming message from web socket', message.id, message.contentType, 'from', message.sender.uri);
         // Handle incoming messages
+
+		if (this.state.blockedUris.indexOf(message.sender.uri) > -1) { 
+			utils.timestampedLog('Reject message from blocked URI', from);
+			return;
+		}
 
         this.saveLastSyncId(message.id);
 
@@ -9525,8 +9872,11 @@ componentWillUnmount() {
     }
 
     handleIncomingMessage(message, decryptedBody=null) {
-        console.log(Platform.OS, 'handleIncomingMessage', message.contentType)
+        console.log(Platform.OS, 'handleIncomingMessage', message.sender.uri, message.contentType, 'app state', this.state.appState);
+        this.saveIncomingMessage(message, decryptedBody);
+
         let content = decryptedBody || message.content;
+
         if (!this.state.selectedContact || this.state.selectedContact.uri !== message.sender.uri) {
             if (this.state.appState === 'foreground') {
 				if (Platform.OS === 'android') {
@@ -9534,8 +9884,6 @@ componentWillUnmount() {
                 }
             }
         }
-
-        this.saveIncomingMessage(message, decryptedBody);
 
         if (['application/sylk-message-metadata', 'application/sylk-message-reply'].includes(message.contentType)) {
 			let myContacts = this.state.myContacts;
@@ -9598,7 +9946,7 @@ componentWillUnmount() {
             //this.playMessageSound();
         }
 
-        this.notifyIncomingMessageWhileInACall(message.sender.uri);
+        this.notifyIncomingMessage(message);
     }
 
     buildLastMessage(message, content=null) {
@@ -9617,8 +9965,14 @@ componentWillUnmount() {
     }
 
     async incomingMessageSync(message) {
-        //console.log('incomingMessageSync', message.id, message.contentType);
+        //console.log('incomingMessageSync', message, message);
         // Handle incoming messages
+
+		if (this.state.blockedUris.indexOf(message.sender.uri) > -1) { 
+			utils.timestampedLog('Reject message from blocked URI', from);
+			return;
+		}
+
         if (message.content.indexOf('?OTRv3') > -1) {
             this.remove_sync_pending_item(message.id);
             return;
@@ -9913,7 +10267,7 @@ componentWillUnmount() {
 
             if (message.contentType === 'application/sylk-file-transfer') {
                 this.updateFileTransferBubble(metadata);
-                this.checkFileTransfer(metadata);
+                this.autoDownloadFile(metadata);
             }
 
         }).catch((error) => {
@@ -9946,7 +10300,12 @@ componentWillUnmount() {
 
                 if (!reset && this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
                     if (encrypted === 2 || encrypted === 0) {
-                        this.sendDispositionNotification(file_transfer, 'displayed', true);
+                        //console.log('file_transfer', file_transfer);
+						if (utils.isAudio(file_transfer.filename) || utils.isVideo(file_transfer.filename)) {
+							//console.log('Will send displayed when users accesses the content');
+						} else {
+							this.sendDispositionNotification(item, 'displayed', true);
+						}
                     } else if (encrypted === 3) {
                         this.sendDispositionNotification(file_transfer, 'error', true);
                     }
@@ -9984,7 +10343,7 @@ componentWillUnmount() {
                 query = "update messages set content = ?, metadata = ?, pending = ?, sent = ?, received = ? where msg_id = ?"
                 this.ExecuteQuery(query, params).then((results) => {
                     //console.log('SQL updated file transfer', id, 'received =', received);
-                    this.checkFileTransfer(new_metadata);
+                    this.autoDownloadFile(new_metadata);
                     // to do, skip query done below
                     this.updateRenderMessageState(id, state, new_metadata.url);
                 }).catch((error) => {
@@ -10247,7 +10606,7 @@ componentWillUnmount() {
                 }
 
                 msg.metadata = metadata;
-                if (!metadata.local_url || metadata.local_url.endsWith('.asc')) {
+                if (!metadata.local_url || (metadata.local_url && metadata.local_url.endsWith('.asc'))) {
                     msg.image = null;
                     msg.video = null;
                     msg.audio = null;
@@ -10302,6 +10661,7 @@ componentWillUnmount() {
     }
 
     async saveIncomingMessage(message, decryptedBody=null) {
+        console.log('saveIncomingMessage', message.id, 'from', message.sender.uri)
         let myContacts = this.state.myContacts;
         let uri = message.sender.uri;
         if (uri in myContacts) {
@@ -10312,6 +10672,12 @@ componentWillUnmount() {
 
         if (myContacts[uri].tags.indexOf('blocked') > -1) {
             return;
+        }
+
+        let incomingMessage = this.state.incomingMessage;
+        if (uri in incomingMessage) {
+			delete incomingMessage[uri];
+			this.setState({incomingMessage: incomingMessage});
         }
 
         var content = decryptedBody || message.content;
@@ -10345,7 +10711,9 @@ componentWillUnmount() {
             }
 
 			if (unreadCounterTypes.has(message.contentType)) {
+				//console.log('Increment unread count for', uri);
 				myContacts[uri].unread.push(message.id);
+				//console.log('unread messages:', myContacts[uri].unread);
             }
 
             myContacts[uri].direction = 'incoming';
@@ -10364,7 +10732,7 @@ componentWillUnmount() {
                 content = 'Photo';
             } else if (message.contentType === 'application/sylk-file-transfer') {
                 try {
-                    this.checkFileTransfer(file_transfer);
+                    this.autoDownloadFile(file_transfer);
                 } catch (e) {
                     console.log("Error decoding incoming file transfer json sql: ", e);
                 }
@@ -10373,7 +10741,7 @@ componentWillUnmount() {
             if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
                 this.confirmRead(uri, 'incoming_message');
             } else {
-                this.updateTotalUread(myContacts);
+                this.updateTotalUread(myContacts, 'o5');
             }
 
             this.saveSylkContact(uri, myContacts[uri], 'saveIncomingMessage');
@@ -10397,6 +10765,12 @@ componentWillUnmount() {
         let imdn_msg;
 
         //console.log('saveIncomingMessageSync', message);
+        
+        let incomingMessage = this.state.incomingMessage;
+        if (message.sender.uri in incomingMessage) {
+			delete incomingMessage[message.sender.uri];
+			this.setState({incomingMessage: incomingMessage});
+        }
 
         if (message.dispositionNotification.indexOf('display') === -1) {
             console.log('Incoming message', message.id, 'was already read');
@@ -10405,7 +10779,7 @@ componentWillUnmount() {
             if (message.dispositionNotification.indexOf('positive-delivery') > -1) {
                 imdn_msg = {id: message.id, timestamp: message.timestamp, from_uri: message.sender.uri, content_type: message.contentType}
                 let result = await this.sendDispositionNotification(imdn_msg, 'delivered');
-                console.log('IMDN promise', result);
+                //console.log('IMDN promise', result);
                 if (result) {
                     received = 1;
                 }
@@ -10542,7 +10916,7 @@ componentWillUnmount() {
         return contact;
     }
 
-    updateTotalUread(myContacts=null) {
+    updateTotalUread(myContacts=null, origin) {
         let total_unread = 0;
         myContacts = myContacts || this.state.myContacts;
         const keys = Object.keys(this.state.myContacts);
@@ -10554,7 +10928,7 @@ componentWillUnmount() {
             total_unread = total_unread + contact.unread.length;
 		}
 
-        //console.log('Total unread messages', total_unread)
+      //console.log('Total unread messages', total_unread, 'origin', origin);
 
        if (Platform.OS === 'ios') {
            PushNotification.setApplicationIconBadgeNumber(total_unread);
@@ -11195,7 +11569,6 @@ componentWillUnmount() {
                 msg.metadata.sender.uri = this.state.accountId;
                 msg.metadata.path = msg.metadata.local_url;
                 msg.metadata.receiver.uri = null;
-                msg.metadata.progress = null;
                 msg.metadata.error = null;
                 msg.metadata.local_url = null;
                 msg.metadata.url = null;
@@ -11599,6 +11972,7 @@ componentWillUnmount() {
 
             if (item.tags.indexOf('missed') > - 1) {
                 tags.push('missed');
+                //console.log('Increment unread count for', uri);
                 myContacts[uri].unread.push(item.sessionId);
                 if (missedCalls.indexOf(item.sessionId) === -1) {
                     missedCalls.push(item.sessionId);
@@ -11632,7 +12006,7 @@ componentWillUnmount() {
             myContacts[uri].tags = tags;
             i = i + 1;
 
-            this.updateTotalUread(myContacts);
+            this.updateTotalUread(myContacts, 'o6');
 
             if (must_save) {
                 this.saveSylkContact(uri, this.state.myContacts[uri], 'saveHistory');
@@ -11772,9 +12146,10 @@ componentWillUnmount() {
                     rejectNonContacts = {this.state.rejectNonContacts}
                     dnd = {this.state.dnd}
                     buildId = {this.buildId}
-                    getFiles = {this.getFiles}
-                    sharedFiles = {this.state.sharedFiles}
+                    getTransferedFiles = {this.getTransferedFiles}
+                    transferedFiles = {this.state.transferedFiles}
                     toggleSearchMessages = {this.toggleSearchMessages}
+                    toggleSearchContacts = {this.toggleSearchContacts}
                     searchMessages = {this.state.searchMessages}
                     searchString = {this.state.searchString}
                     isLandscape = {this.state.orientation === 'landscape'}
@@ -11846,7 +12221,8 @@ componentWillUnmount() {
                     showQRCodeScanner = {this.state.showQRCodeScanner}
                     toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
                     keys = {this.state.keys}
-                    downloadFunc = {this.downloadFile}
+                    downloadFile = {this.downloadFile}
+                    uploadFile = {this.uploadFile}
                     decryptFunc = {this.decryptFile}
                     isTexting = {this.state.isTexting}
                     keyboardVisible = {this.state.keyboardVisible}
@@ -11861,6 +12237,7 @@ componentWillUnmount() {
                     sortBy = {this.state.sortBy}
                     toggleSearchMessages = {this.toggleSearchMessages}
                     searchMessages = {this.state.searchMessages}
+                    searchContacts = {this.state.searchContacts}
                     defaultConferenceDomain = {this.defaultConferenceDomain}
                     dark = {this.state.dark}
                     messagesMetadata = {messagesMetadata}
@@ -11870,8 +12247,9 @@ componentWillUnmount() {
 					contactIsSharing ={this.state.contactIsSharing}
 					fullScreen = {this.state.fullScreen}
 					setFullScreen = {this.setFullScreen}
-					decryptProgress = {this.state.decryptProgress}
 					transferProgress = {this.state.transferProgress}
+					sendDispositionNotification = {this.sendDispositionNotification}
+					totalMessageExceeded = {this.state.totalMessageExceeded}
                 />
 
                 <ImportPrivateKeyModal

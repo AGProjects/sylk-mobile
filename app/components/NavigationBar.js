@@ -68,7 +68,7 @@ class NavigationBar extends Component {
             sharingAction: this.props.sharingAction,
             dnd: this.props.dnd,
             myuuid: this.props.myuuid,
-            sharedFiles: this.props.sharedFiles,
+            transferedFiles: this.props.transferedFiles,
             rejectAnonymous: this.props.rejectAnonymous,
 			rejectNonContacts: this.props.rejectNonContacts,
 			searchMessages: this.props.searchMessages,
@@ -79,16 +79,17 @@ class NavigationBar extends Component {
         this.menuRef = React.createRef();
     }
     
+/*
     get hasFiles() {
         if (!this.state.selectedContact) {
 			return false;
         } 
         
-        if (Object.keys(this.state.sharedFiles).indexOf(this.state.selectedContact.uri) === -1) {
+        if (Object.keys(this.state.transferedFiles).indexOf(this.state.selectedContact.uri) === -1) {
 			return false;
         }
 
-        const message_ids = this.state.sharedFiles[this.state.selectedContact.uri];
+        const message_ids = this.state.transferedFiles[this.state.selectedContact.uri];
         const hasAny = Object.values(message_ids).some(arr => arr.length > 0);
 
         if (!hasAny) {
@@ -97,10 +98,21 @@ class NavigationBar extends Component {
 
         return true;
     }
+    */
+
+    get hasFiles() {
+		const contact = this.state.selectedContact?.uri;
+		const msgs = this.state.messages[contact] || [];
+	
+		return msgs.some(m => m.contentType === "application/sylk-file-transfer");
+	}
     
     get hasMessages() {
-        return this.state.selectedContact && Object.keys(this.state.messages).indexOf(this.state.selectedContact.uri) > -1 && this.state.messages[this.state.selectedContact.uri].length > 0;
-    }
+		const contact = this.state.selectedContact?.uri;
+		const msgs = this.state.messages[contact] || [];
+	
+		return msgs.some(m => m.contentType !== "application/sylk-file-transfer");
+	}
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -115,9 +127,18 @@ class NavigationBar extends Component {
         if ('selectedContact' in nextProps) {
 			this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact && nextProps.selectedContact != this.state.selectedContact) {
-				this.props.getFiles(nextProps.selectedContact.uri);
+				this.props.getTransferedFiles(nextProps.selectedContact.uri);
 			}
         }
+        
+        if ('showDeleteHistoryModal' in nextProps) {
+			this.setState({showDeleteHistoryModal: nextProps.showDeleteHistoryModal});
+        }
+
+        if ('showDeleteFileTransfers' in nextProps) {
+			this.setState({showDeleteFileTransfers: nextProps.showDeleteFileTransfers});
+        }
+
         this.setState({registrationState: nextProps.registrationState,
                        connection: nextProps.connection,
                        syncConversations: nextProps.syncConversations,
@@ -133,7 +154,6 @@ class NavigationBar extends Component {
                        userClosed: true,
                        inCall: nextProps.inCall,
                        publicKey: nextProps.publicKey,
-                       showDeleteHistoryModal: nextProps.showDeleteHistoryModal,
                        showGenerateKeysModal: nextProps.showGenerateKeysModal,
                        messages: nextProps.messages,
                        showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
@@ -144,7 +164,7 @@ class NavigationBar extends Component {
                        dnd: nextProps.dnd,
                        myuuid: nextProps.myuuid,
                        myPhoneNumber: nextProps.myPhoneNumber,
- 					   sharedFiles: nextProps.sharedFiles,
+ 					   transferedFiles: nextProps.transferedFiles,
  					   rejectAnonymous: nextProps.rejectAnonymous,
  					   rejectNonContacts: nextProps.rejectNonContacts,
  					   searchMessages: nextProps.searchMessages,
@@ -513,7 +533,7 @@ class NavigationBar extends Component {
                          borderWidth: 0,
                          borderColor: 'red'
                  };
-    
+
         return (
 			<View style={{ width: navBarWidth}}>
                          
@@ -559,6 +579,16 @@ class NavigationBar extends Component {
                 />
                 : null}
 
+                {this.state.isLandscape && !this.state.selectedContact?
+                <IconButton
+                    style={styles.whiteButton}
+                    size={18}
+                    disabled={false}
+                    onPress={this.props.toggleSearchContacts}
+                    icon={searchIcon}
+                />
+                : null}
+
                 { !this.state.selectedContact ?
                 <IconButton
                     style={bellStyle}
@@ -578,6 +608,7 @@ class NavigationBar extends Component {
                     icon={searchIcon}
                 />
                 : null}
+
 
                 {statusColor == 'greenXXX' ?
                     <Icon name={statusIcon} size={20} color={statusColor} />
@@ -763,15 +794,15 @@ class NavigationBar extends Component {
                 />
 
                 <DeleteFileTransfers
-                    selectedContact={this.state.selectedContact}
                     show={this.state.showDeleteFileTransfers}
+                    selectedContact={this.state.selectedContact}
                     close={this.closeDeleteFileTransfers}
                     selectedContact={this.state.selectedContact}
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={this.state.displayName}
                     deleteFilesFunc={this.props.deleteFiles}
-                    sharedFiles={this.state.sharedFiles}
-                    getFiles={this.props.getFiles}
+                    transferedFiles={this.state.transferedFiles}
+                    getTransferedFiles={this.props.getTransferedFiles}
                     myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
                 />
 
@@ -919,13 +950,14 @@ NavigationBar.propTypes = {
     dnd: PropTypes.bool,
     toggleDnd: PropTypes.func,
     buildId: PropTypes.string,
-    getFiles: PropTypes.func,
-    sharedFiles: PropTypes.object,
+    getTransferedFiles: PropTypes.func,
+    transferedFiles: PropTypes.object,
     rejectAnonymous: PropTypes.bool,
     toggleRejectAnonymous: PropTypes.func,
     rejectNonContacts: PropTypes.bool,
     toggleRejectNonContacts: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
+    toggleSearchContacts: PropTypes.func,
     searchMessages: PropTypes.bool,
     isLandscape: PropTypes.bool
 };

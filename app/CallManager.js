@@ -3,6 +3,7 @@ import Logger from '../Logger';
 import uuid from 'react-native-uuid';
 import { Platform, PermissionsAndroid } from 'react-native';
 import utils from './utils';
+import { NativeModules } from 'react-native';
 
 const logger = new Logger('CallManager');
 import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
@@ -206,6 +207,9 @@ export default class CallManager extends events.EventEmitter {
     setCurrentCallActive(callUUID) {
         utils.timestampedLog('Callkeep: active call', callUUID);
         this.callKeep.setCurrentCallActive(callUUID);
+        if (Platform.OS === 'android') {
+			NativeModules.CallForegroundServiceModule.startService();
+        }
         this.backToForeground();
     }
 
@@ -250,6 +254,10 @@ export default class CallManager extends events.EventEmitter {
             }
         }
         this.callKeep.endCall(callUUID);
+        if (Platform.OS === 'android') {
+			NativeModules.CallForegroundServiceModule.stopService();
+		}
+        
         this.terminateCall(callUUID);
     }
 

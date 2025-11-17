@@ -8,6 +8,7 @@ import {decode as atob, encode as btoa} from 'base-64';
 import RNFS from 'react-native-fs';
 import { Platform } from 'react-native';
 import { generateColor } from './MaterialColors';
+import CryptoJS from 'crypto-js';
 
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
@@ -331,7 +332,6 @@ function sql2GiftedChat(item, content, filter={}) {
         text: text,
         createdAt: timestamp,
         sent: sent,
-        direction: item.direction,
         received: received,
         pending: pending,
         system: item.system === 1 ? true : false,
@@ -348,11 +348,8 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let file_name = metadata.filename;
     //console.log('beautyFileNameForBubble', metadata);
 
-    let prefix = (metadata.direction && metadata.direction === 'outgoing') ? '' : 'Download';
-    if ('progress' in metadata && metadata.progress !== null && metadata.progress !== 100) {
-        prefix = metadata.direction  === 'outgoing' ? 'Uploading' : 'Downloading';
-    }
-
+    let prefix = '';
+ 
     let encrypted = metadata.filename.endsWith('.asc');
     let decrypted_file_name = encrypted ? file_name.slice(0, -4) : file_name;
 
@@ -642,7 +639,6 @@ function isVideo(filename, metadata=null) {
         }
     }
     
-
     if (filename.toLowerCase().startsWith('sylk-audio-recording')) {
         return false;
     }
@@ -899,6 +895,26 @@ function formatPGPMessage(pgpMessage, lineLength = 64) {
 	return [header, formattedBody, footer].filter(Boolean).join('\n');
 }
 
+
+async function fileChecksum(filePath) {
+  try {
+    // Read file as base64 string
+    const fileBase64 = await RNFS.readFile(filePath, 'base64');
+    
+    // Convert base64 to WordArray for CryptoJS
+    const wordArray = CryptoJS.enc.Base64.parse(fileBase64);
+    
+    // Compute hash (choose MD5, SHA1, SHA256, etc.)
+    const checksum = CryptoJS.SHA256(wordArray).toString(CryptoJS.enc.Hex);
+    
+    console.log('SHA256 Checksum:', checksum);
+    return checksum;
+  } catch (err) {
+    console.error('Error calculating checksum:', err);
+    return null;
+  }
+}
+
 exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;
@@ -929,3 +945,5 @@ exports.beautySize = beautySize;
 exports.HUGE_FILE_SIZE = HUGE_FILE_SIZE;
 exports.getPGPCheckSum = getPGPCheckSum;
 exports.isFileEncryptable = isFileEncryptable;
+exports.fileChecksum = fileChecksum;
+

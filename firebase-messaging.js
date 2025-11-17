@@ -2,7 +2,7 @@
 import messaging from '@react-native-firebase/messaging';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
+import notifee, { AndroidImportance, EventType} from '@notifee/react-native';
 
 // ----------------------
 // 1️⃣ Initialize Firebase
@@ -27,12 +27,15 @@ if (!getApps().length) {
 // ----------------------
 // Firebase background handler
 // ----------------------
+
 messaging().setBackgroundMessageHandler(async remoteMessage => {
+  return;
+
   if (!remoteMessage?.data) return;
   const event = remoteMessage.data.event;
   const data = remoteMessage.data;
 
-  console.log('[FCM BG]Push received:', remoteMessage.data);
+  //console.log('[FCM BG]Push received:', remoteMessage.data);
 
   if (event === 'incoming_session' || event === 'incoming_conference_request') {
     const { ['session-id']: callUUID } = data;
@@ -43,7 +46,30 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
     AsyncStorage.removeItem(`incomingCall:${callUUID}`);
   } else if (event === 'message') {
     AsyncStorage.setItem(`incomingMessage`, JSON.stringify(data));
+    
+    /*
+    await notifee.requestPermission();
+
+    const channelId = await notifee.createChannel({
+      id: 'sylk-messages',
+      name: 'Messages',
+      importance: AndroidImportance.HIGH,
+    });
+
+    await notifee.displayNotification({
+      title: 'New message',
+      body: 'From ' + data.from_uri,
+      android: {
+        channelId,
+        smallIcon: 'ic_launcher',
+        pressAction: {
+          id: 'default',
+        },
+      },
+    }); 
+    */  
   }
+  
 });
 
 

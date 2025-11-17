@@ -74,14 +74,15 @@ class ReadyBox extends Component {
             sourceContact: this.props.sourceContact,
 			keyboardVisible: false,
 			searchMessages: this.props.searchMessages,
+			searchContacts: this.props.searchContacts,
 			searchString: '',
 			recordingDuration: 0,
 			dark: this.props.dark,
 			messagesMetadata: this.props.messagesMetadata,
 			fullScreen: this.props.fullScreen,
-			decryptProgress: this.props.decryptProgress,
 			transferProgress: this.props.transferProgress,
-			contactIsSharing: this.props.contactIsSharing
+			contactIsSharing: this.props.contactIsSharing,
+			totalMessageExceeded: this.props.totalMessageExceeded
         };
         this.ended = false;
 
@@ -140,6 +141,10 @@ class ReadyBox extends Component {
             this.bounceNavigation();
         }
         
+        if ('totalMessageExceeded' in nextProps) {
+            this.setState({totalMessageExceeded: nextProps.totalMessageExceeded});
+        }        
+        
         if (nextProps.searchString) {
             this.setState({'searchString': nextProps.searchString});
         }
@@ -155,6 +160,7 @@ class ReadyBox extends Component {
                         myDisplayName: nextProps.myDisplayName,
                         call: nextProps.call,
                         searchMessages: nextProps.searchMessages,
+                        searchContacts: nextProps.searchContacts,
                         showConferenceModal: nextProps.showConferenceModal,
                         isTyping: nextProps.isTyping,
                         navigationItems: nextProps.navigationItems,
@@ -180,7 +186,6 @@ class ReadyBox extends Component {
                         dark: nextProps.dark,
                         messagesMetadata: nextProps.messagesMetadata,
                         fullScreen: nextProps.fullScreen,
-					    decryptProgress: nextProps.decryptProgress,
 					    transferProgress: nextProps.transferProgress,
 					    contactIsSharing: nextProps.contactIsSharing
                         });
@@ -305,6 +310,10 @@ class ReadyBox extends Component {
     }
 
     get showSearchBar() {
+        if (!this.state.searchMessages && !this.state.searchContacts) {
+			return false;
+        }
+
         if (this.state.selectedContact) {
             if (!this.state.searchMessages) {
 				return false;
@@ -425,6 +434,11 @@ class ReadyBox extends Component {
         if (!this.state.targetUri) {
             return false;
         }
+
+        if (this.state.isLandscape) {
+            return false;
+        }
+
 
         /*
         if (this.state.selectedContact) {
@@ -1114,7 +1128,9 @@ class ReadyBox extends Component {
             recording: false,
             recordingFile: null,
             recordingDuration: 0,
-            audioSendFinished: false
+            audioSendFinished: false,
+            searchString: '',
+            totalMessageExceeded: false
         });
     }
 
@@ -1141,8 +1157,7 @@ class ReadyBox extends Component {
         let URIContainerClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
-
-
+        
         let uri = this.state.targetUri.toLowerCase();
         var uri_parts = uri.split("/");
         if (uri_parts.length === 5 && uri_parts[0] === 'https:') {
@@ -1155,7 +1170,7 @@ class ReadyBox extends Component {
             }
         }
 
-        //console.log('RB', this.state.myContacts);
+        //console.log('RB', this.state.searchContacts);
 
         if (this.state.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;
@@ -1180,7 +1195,7 @@ class ReadyBox extends Component {
         const borderClass = this.state.chat ? null : styles.historyBorder;
         let backButtonTitle = 'Back to call';
 
-        const showBackToCallButton = this.state.call && this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated' ? true : false ;
+        const showBackToCallButton = !this.state.shareToContacts && this.state.call && this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated' ? true : false ;
         if (showBackToCallButton) {
             if (this.state.call.hasOwnProperty('_participants')) {
                 backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
@@ -1226,19 +1241,28 @@ class ReadyBox extends Component {
 		const marginRight = isLandscape && Platform.OS === 'android' ? bottomInset : 0;
 
 		let containerWidth = width;
+		let containerHeight = height;
+
+		let containerExtraStyles = {
+		                   width: containerWidth,
+		                   marginRight: marginRight, 
+		                   borderWidth: 0,
+		                   borderColor: 'red'}
+
 		if (Platform.OS === 'ios') {
 			if (isLandscape) {
 				containerWidth = containerWidth - bottomInset - topInset;
 			}
 		} else {
 			if (isLandscape) {
-				containerWidth = containerWidth - bottomInset;
+				containerExtraStyles.width = containerWidth - bottomInset;
+				containerExtraStyles.marginBottom = - bottomInset;
 			}
 		}
-
+		
         return (
             <Fragment>
-                <View style={[styles.container, {width: containerWidth, marginRight: marginRight}]}>
+                <View style={[styles.container, containerExtraStyles]}>
                     <View>
                     {this.state.selectedContact && this.state.searchMessages?
                     <View style={styles.navigationContainer}>
@@ -1527,7 +1551,8 @@ class ReadyBox extends Component {
 						isTyping = {this.state.isTyping}
 						call = {this.state.call}
 						keys = {this.state.keys}
-						downloadFunc = {this.props.downloadFunc}
+						downloadFile = {this.props.downloadFile}
+						uploadFile = {this.props.uploadFile}
 						decryptFunc = {this.props.decryptFunc}
 						messagesCategoryFilter = {this.state.messagesCategoryFilter}
 						isTexting = {this.state.isTexting}
@@ -1551,8 +1576,9 @@ class ReadyBox extends Component {
 						contactStopShare = {this.props.contactStopShare}
 						setFullScreen = {this.props.setFullScreen}
 						fullScreen = {this.state.fullScreen}
-						decryptProgress = {this.state.decryptProgress}
 						transferProgress = {this.state.transferProgress}
+						sendDispositionNotification = {this.props.sendDispositionNotification}
+						totalMessageExceeded = {this.state.totalMessageExceeded}
 					/>
 					}
 
@@ -1580,7 +1606,6 @@ class ReadyBox extends Component {
                         />
                     </View>
                     : null}
-
 
                     { this.state.recording  ?
                         <View style={styles.recordingContainer}>
@@ -1687,7 +1712,8 @@ ReadyBox.propTypes = {
     toggleQRCodeScannerFunc: PropTypes.func,
     myContacts: PropTypes.object,
     keys            : PropTypes.object,
-    downloadFunc    : PropTypes.func,
+    downloadFile    : PropTypes.func,
+    uploadFile: PropTypes.func,
     decryptFunc     : PropTypes.func,
     isTexting       :PropTypes.bool,
     keyboardVisible: PropTypes.bool,
@@ -1702,6 +1728,7 @@ ReadyBox.propTypes = {
     postSystemNotification: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
     searchMessages: PropTypes.bool,
+    searchContacts: PropTypes.bool,
     defaultConferenceDomain: PropTypes.string,
     dark: PropTypes.bool,
     messagesMetadata: PropTypes.object,
@@ -1712,7 +1739,8 @@ ReadyBox.propTypes = {
     setFullScreen: PropTypes.func,
     fullScreen: PropTypes.bool,
     transferProgress: PropTypes.object,
-    decryptProgress: PropTypes.object,
+    sendDispositionNotification: PropTypes.func,
+    totalMessageExceeded: PropTypes.bool
 };
 
 
