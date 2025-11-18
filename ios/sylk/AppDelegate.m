@@ -157,7 +157,6 @@
     }
 }
 
-
 - (NSString *)sylkDatabasePath {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *dbName = @"sylk.db";
@@ -185,149 +184,197 @@
     return nil;
 }
 
-- (NSDictionary *)getContactsByTagForAccount:(NSString *)account {
-    //NSLog(@"[sylk_app] getContactsByTagForAccount called with account = %@", account);
-
-    NSMutableArray *allContacts = [NSMutableArray array];
-    NSMutableArray *blockedContacts = [NSMutableArray array];
+- (NSArray<NSString *> * _Nullable)getTagsForContact:(NSString *)account uri:(NSString *)uri {
+    NSArray<NSString *> *tagsList = nil; // nil → contact not found
 
     @try {
         NSString *dbPath = [self sylkDatabasePath];
-        if (!dbPath) return @{ @"all": @[], @"blocked": @[] };
+        if (!dbPath) {
+            NSLog(@"[sylk_app] Database file not found");
+            return nil;
+        }
 
         sqlite3 *db = NULL;
         if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to open database, returning empty arrays");
-            return @{ @"all": @[], @"blocked": @[] };
+            NSLog(@"[sylk_app] Failed to open database at path %@", dbPath);
+            return nil;
         }
 
         sqlite3_stmt *stmt = NULL;
-        const char *sql = "SELECT uri, tags FROM contacts WHERE account = ?";
+        const char *sql = "SELECT tags FROM contacts WHERE account = ? AND uri = ?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, [uri UTF8String], -1, SQLITE_TRANSIENT);
 
-            while (sqlite3_step(stmt) == SQLITE_ROW) {
-                NSString *uri = nil;
-                NSString *tags = nil;
-
-                const char *cUri = (const char *)sqlite3_column_text(stmt, 0);
-                if (cUri) uri = [NSString stringWithUTF8String:cUri];
-
-                const char *cTags = (const char *)sqlite3_column_text(stmt, 1);
-                if (cTags) tags = [NSString stringWithUTF8String:cTags];
-
-                if (uri) [allContacts addObject:[uri lowercaseString]];
-                if (tags && [tags.lowercaseString containsString:@"block"] && uri) {
-                    [blockedContacts addObject:[uri lowercaseString]];
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char *cTags = (const char *)sqlite3_column_text(stmt, 0);
+                if (cTags) {
+                    NSString *tags = [NSString stringWithUTF8String:cTags];
+                    tags = [tags stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                    
+                    if (tags.length > 0) {
+                        NSArray *rawTags = [tags componentsSeparatedByString:@","];
+                        NSMutableArray *cleanTags = [NSMutableArray array];
+                        for (NSString *t in rawTags) {
+                            NSString *clean = [[t stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
+                            if (clean.length > 0) {
+                                [cleanTags addObject:clean];
+                            }
+                        }
+                        tagsList = cleanTags;
+                    } else {
+                        // Contact exists but has no tags
+                        tagsList = @[];
+                    }
+                } else {
+                    // Contact exists but tags column is NULL
+                    tagsList = @[];
                 }
             }
 
             sqlite3_finalize(stmt);
         } else {
-            NSLog(@"[sylk_app] Failed to prepare statement, returning empty arrays");
+            NSLog(@"[sylk_app] Failed to prepare statement for getTagsForContact");
         }
 
         sqlite3_close(db);
 
     } @catch (NSException *exception) {
-        NSLog(@"[sylk_app] Exception in getContactsByTagForAccount: %@ - %@, returning empty arrays", exception.name, exception.reason);
+        NSLog(@"[sylk_app] Exception in getTagsForContact: %@ - %@", exception.name, exception.reason);
     }
 
-    NSLog(@"[sylk_app] Returning contacts: all=%lu blocked=%lu",
-          (unsigned long)allContacts.count, (unsigned long)blockedContacts.count);
-
-    return @{ @"all": allContacts ?: @[], @"blocked": blockedContacts ?: @[] };
+	NSString *joined = (tagsList.count > 0)
+		? [tagsList componentsJoinedByString:@","]
+		: @"<none>";
+	
+	NSLog(@"[sylk_app] Tags for %@: %@", uri, joined);
+    return tagsList;
 }
 
-- (BOOL)isAccountActive:(NSString *)account fromUri:(NSString *)fromUri allUrisSet:(NSSet<NSString *> *)uniqueUris {
-    if (account.length == 0) {
-        NSLog(@"[sylk_app] isAccountActive called with empty account, returning YES (fail-safe)");
-        return YES;
+- (BOOL)isBlocked:(NSArray<NSString *> * _Nullable)contactTags {
+    if (!contactTags) return NO; // nil → contact does not exist → not blocked
+
+    for (NSString *tag in contactTags) {
+        if (tag && [tag caseInsensitiveCompare:@"blocked"] == NSOrderedSame) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)canBypassDnd:(NSArray<NSString *> * _Nullable)contactTags {
+    if (!contactTags) return NO; // nil → cannot bypass
+
+    for (NSString *tag in contactTags) {
+        if (tag && [tag caseInsensitiveCompare:@"bypassdnd"] == NSOrderedSame) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)isMuted:(NSArray<NSString *> * _Nullable)contactTags {
+    if (!contactTags) return NO; // nil → not muted
+
+    for (NSString *tag in contactTags) {
+        if (tag && [tag caseInsensitiveCompare:@"muted"] == NSOrderedSame) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)isAccountActive:(NSString *)account
+                fromUri:(NSString *)fromUri
+            contactTags:(NSArray<NSString *> * _Nullable)contactTags {
+
+    if (!account || account.length == 0) {
+        NSLog(@"[sylk_app] isAccountActive called with nil or empty account, returning NO");
+        return NO;
     }
 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *dbPath = [self sylkDatabasePath];
 
     if (!dbPath || ![fm fileExistsAtPath:dbPath]) {
-        NSLog(@"[sylk_app] Database file not found, returning YES (fail-safe allow call)");
-        return YES;
+        NSLog(@"[sylk_app] Database file not found at %@, returning NO", dbPath);
+        return NO;
     }
 
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
-    BOOL isActive = YES; // default allow
+    BOOL isActive = NO;
     BOOL isDnd = NO;
     BOOL rejectAnonymous = NO;
     BOOL rejectNonContacts = NO;
 
     @try {
         if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to open database, returning YES (fail-safe)");
-            return YES;
+            NSLog(@"[sylk_app] Failed to open database, returning NO");
+            return NO;
         }
 
         NSString *query = @"SELECT active, dnd, reject_anonymous, reject_non_contacts FROM accounts WHERE account = ?";
         if (sqlite3_prepare_v2(db, [query UTF8String], -1, &stmt, NULL) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to prepare statement, returning YES (fail-safe)");
-            return YES;
+            NSLog(@"[sylk_app] Failed to prepare statement, returning NO");
+            return NO;
         }
 
-        if (sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to bind account parameter, returning YES (fail-safe)");
-            return YES;
-        }
+        sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
 
         if (sqlite3_step(stmt) == SQLITE_ROW) {
-            const unsigned char *activeStr = sqlite3_column_text(stmt, 0);
-            const unsigned char *dndStr = sqlite3_column_text(stmt, 1);
-            const unsigned char *rejectAnonStr = sqlite3_column_text(stmt, 2);
-            const unsigned char *rejectNonContactsStr = sqlite3_column_text(stmt, 3);
-
-            isActive = (activeStr != NULL) ? ([@(sqlite3_column_double(stmt, 0)) doubleValue] != 0) : YES;
-            isDnd = (dndStr != NULL) ? ([@(sqlite3_column_double(stmt, 1)) doubleValue] != 0) : NO;
-            rejectAnonymous = (rejectAnonStr != NULL) ? ([@(sqlite3_column_double(stmt, 2)) doubleValue] != 0) : NO;
-            rejectNonContacts = (rejectNonContactsStr != NULL) ? ([@(sqlite3_column_double(stmt, 3)) doubleValue] != 0) : NO;
+            isActive = (sqlite3_column_text(stmt, 0) && sqlite3_column_text(stmt, 0)[0] == '1');
+            isDnd = (sqlite3_column_text(stmt, 1) && sqlite3_column_text(stmt, 1)[0] == '1');
+            rejectAnonymous = (sqlite3_column_text(stmt, 2) && sqlite3_column_text(stmt, 2)[0] == '1');
+            rejectNonContacts = (sqlite3_column_text(stmt, 3) && sqlite3_column_text(stmt, 3)[0] == '1');
 
             NSLog(@"[sylk_app] account flags: active=%@ dnd=%@ rejectAnonymous=%@ rejectNonContacts=%@",
                   isActive ? @"YES" : @"NO",
                   isDnd ? @"YES" : @"NO",
                   rejectAnonymous ? @"YES" : @"NO",
                   rejectNonContacts ? @"YES" : @"NO");
-        } else {
-            NSLog(@"[sylk_app] No account row found for %@, defaulting to allow call", account);
         }
+
     } @catch (NSException *ex) {
-        NSLog(@"[sylk_app] Exception checking account rules: %@ - %@, proceeding anyway", ex.name, ex.reason);
-        isActive = YES; // fail-safe
+        NSLog(@"[sylk_app] Exception checking account status: %@ - %@", ex.name, ex.reason);
+        return NO;
     } @finally {
         if (stmt) sqlite3_finalize(stmt);
         if (db) sqlite3_close(db);
     }
 
     // --- apply call rules ---
-    if (rejectNonContacts && ![uniqueUris containsObject:fromUri]) {
-        NSLog(@"[sylk_app] Caller %@ not in contacts", fromUri);
+
+    // Only allow calls from known contacts
+    if (rejectNonContacts && !contactTags) {
+        NSLog(@"[sylk_app] Caller %@ not in contacts, rejecting call", fromUri);
+        [self showRejectedCallNotification:fromUri reason:@"not in contacts list"];
         return NO;
     }
 
+    // Anonymous caller check
     if (([fromUri containsString:@"anonymous"] || [fromUri containsString:@"@guest."]) && rejectAnonymous) {
-        NSLog(@"[sylk_app] Anonymous caller %@", fromUri);
+        NSLog(@"[sylk_app] Anonymous caller %@ rejected", fromUri);
+        [self showRejectedCallNotification:fromUri reason:@"anonymous caller"];
         return NO;
     }
 
+    // Do Not Disturb
     if (isDnd) {
-        NSLog(@"[sylk_app] DND active");
+        NSLog(@"[sylk_app] DND active, rejecting call from %@", fromUri);
+        [self showRejectedCallNotification:fromUri reason:@"Do not disturb now"];
         return NO;
     }
 
     if (!isActive) {
-        NSLog(@"[sylk_app] Account inactive");
+        NSLog(@"[sylk_app] Account %@ is not active, rejecting call", account);
         return NO;
     }
 
-    return YES; // always allow, but logs show what would have been rejected
+    return YES;
 }
+
 
 // helper - show simple local notification for rejected calls (optional)
 - (void)showRejectedCallNotification:(NSString *)fromUri reason:(NSString *)reason {
@@ -614,54 +661,113 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         return @"";
     };
 
-    //if (!data) return YES;   // no data → allow
+    // ---- 1. Read and validate event ----
+    NSString *event = [[coerceString(data[@"event"]) stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
 
-    NSString *event = coerceString(data[@"event"]);
-    NSString *fromUri = [[coerceString(data[@"from_uri"]) lowercaseString] copy];
-    NSString *toUri = [[coerceString(data[@"to_uri"]) lowercaseString] copy];
-
-    /*
-    NSLog(@"[sylk_app] event = %@", event);
-    NSLog(@"[sylk_app] fromUri = %@", fromUri);
-    NSLog(@"[sylk_app] toUri = %@", toUri);
-    */
-
-    // Cancel event is handled elsewhere, but do not show it
-    if ([event isEqualToString:@"cancel"]) {
+    if (event.length == 0) {
+        //NSLog(@"[sylk_app] Missing event");
         return NO;
     }
 
-    // Determine lookup account
-    NSString *lookupAccount = toUri;
+    // Only care about these events
+	BOOL isIncomingSession = [event isEqualToString:@"incoming_session"];
+	BOOL isIncomingConf    = [event isEqualToString:@"incoming_conference_request"];
+	BOOL isCancel          = [event isEqualToString:@"cancel"];
+	BOOL isMessage         = [event isEqualToString:@"message"];
 
-    // Fetch contacts safely
-    NSDictionary *contactsMap = @{ @"all": @[], @"blocked": @[] };
-    @try {
-        contactsMap = [self getContactsByTagForAccount:lookupAccount];
-    } @catch (...) {
-        contactsMap = @{ @"all": @[], @"blocked": @[] };
-    }
+	if (!isIncomingSession && !isIncomingConf && !isCancel && !isMessage) {
+		return NO;   // other events → deny
+	}
 
-    NSArray *blocked = contactsMap[@"blocked"] ?: @[];
+	// ---- Determine lookupAccount ----
+	NSString *lookupAccount = nil;
 
-    // Check blocked list first
-    if ([blocked containsObject:fromUri]) {
-        NSLog(@"[sylk_app] Blocked: %@", fromUri);
+
+    NSString *toUri = coerceString(data[@"to_uri"]);
+    toUri = [[toUri stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
+
+    if (toUri.length == 0) {
+        NSLog(@"[sylk_app] Missing toUri");
         return NO;
     }
 
-    // Check other rules
-    BOOL accountAllowed = YES;
-    @try {
-        NSSet *allURIs = [NSSet setWithArray:(contactsMap[@"all"] ?: @[])];
-        accountAllowed = [self isAccountActive:lookupAccount
-                                       fromUri:fromUri
-                                   allUrisSet:allURIs];
-    } @catch (...) {
-        accountAllowed = YES; // fail-safe allow
+    NSString *fromUri = coerceString(data[@"from_uri"]);
+    fromUri = [[fromUri stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
+
+    if (fromUri.length == 0) {
+        NSLog(@"[sylk_app] Missing fromUri");
+        return NO;
     }
 
-    return accountAllowed;
+	if (isMessage) {
+		lookupAccount = toUri;
+		// message_id
+		NSString *messageId = coerceString(data[@"message_id"]);
+		messageId = [messageId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+		if (messageId.length == 0) {
+			NSLog(@"[sylk_app] Message error: missing messageId");
+			return NO;
+		}
+		NSLog(@"[sylk_app] %@ %@ from %@ to %@", event, messageId, fromUri, lookupAccount);
+	}
+
+    if (isIncomingConf || isIncomingSession || isCancel) {
+		NSString *callId = coerceString(data[@"session-id"]);
+		callId = [callId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+		if (callId.length == 0) {
+			NSLog(@"[sylk_app] Missing call id");
+			return NO;
+		}
+
+		if (isCancel) {
+			return YES;
+		}
+
+		if (isIncomingConf) {
+			lookupAccount = [[coerceString(data[@"account"])
+							  stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]
+							 lowercaseString];
+		
+			if (lookupAccount.length == 0) {
+				NSLog(@"[sylk_app] Missing account for conference request");
+				return NO;
+			}
+		}
+
+		if (isIncomingSession) {
+			lookupAccount = toUri;
+		}
+
+		NSLog(@"[sylk_app] %@ %@ from %@ to %@", event, callId, fromUri, lookupAccount);
+	}
+
+	NSArray<NSString *> *tags = nil;
+	@try {
+		tags = [self getTagsForContact:lookupAccount uri:fromUri];
+	} @catch (...) {
+		tags = nil;
+	}
+
+	if (![self isAccountActive:lookupAccount fromUri:fromUri contactTags:tags]) {
+		NSLog(@"[sylk_app] Request rejected by account rules");
+		return NO;
+	}
+
+	// Blocked?
+	if ([self isBlocked:tags]) {
+		NSLog(@"[sylk_app] Message from %@ is blocked", fromUri);
+		return NO;
+	}
+
+	// Muted?
+	if ([self isMuted:tags]) {
+		NSLog(@"[sylk_app] Skipping notification: user %@ is muted", fromUri);
+		return NO;
+	}
+
+    return YES;
 }
+
 
 @end
