@@ -80,24 +80,41 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	private void createMessageChannel() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 			String channelId = "messages_channel";
+			String channelName = "Sylk Messages";
+
 			NotificationManager manager = getSystemService(NotificationManager.class);
-	
-			NotificationChannel channel = manager.getNotificationChannel(channelId);
-			if (channel == null) {
-				channel = new NotificationChannel(
-					channelId,
-					"Sylk Messages",
-					NotificationManager.IMPORTANCE_HIGH
-				);
-	
-				channel.setDescription("Bubble messages");
-	
-				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-					channel.setAllowBubbles(true);
+			NotificationChannel existing_channel = manager.getNotificationChannel(channelId);
+			boolean mustCreate = false;
+
+			if (existing_channel != null) {
+				boolean canBypass = existing_channel.canBypassDnd();
+				if (!canBypass) {
+					manager.deleteNotificationChannel(channelId);
+					mustCreate = true;
 				}
-	
-				manager.createNotificationChannel(channel);
+			} else {
+				mustCreate = true;
 			}
+
+            if (!mustCreate) {
+				return;	
+            }
+
+			NotificationChannel channel = new NotificationChannel(
+				channelId,
+				channelName,
+				NotificationManager.IMPORTANCE_HIGH
+			);
+
+			channel.setBypassDnd(true);
+			channel.setDescription("Bubble messages");
+
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+				channel.setAllowBubbles(true);
+			}
+
+			manager.createNotificationChannel(channel);
+			Log.d(LOG_TAG, "Messaging channel was created");
 		}
 	}
 	
@@ -122,21 +139,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		manager.notify((int) System.currentTimeMillis(), builder.build()); // unique ID
 	}
 
-	private Map<String, List<String>> getContactsByTag(String account) {
-		Map<String, List<String>> result = new HashMap<>();
-		List<String> favorites = new ArrayList<>();
-		List<String> blocked = new ArrayList<>();
-		List<String> muted = new ArrayList<>();       // NEW
-		List<String> autoanswer = new ArrayList<>();
-		List<String> allUris = new ArrayList<>();
+	private List<String> getTagsForContact(String account, String uri) {
+		List<String> tagsList = null; // null means "contact not found"
 	
-		try {		
+		try {
 			File dbFile = getApplicationContext().getDatabasePath("sylk.db");
 			if (!dbFile.exists()) {
 				Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
-				result.put("blocked", blocked);
-				result.put("muted", muted);              // NEW
-				return result;
+				return null;
 			}
 	
 			SQLiteDatabase db = SQLiteDatabase.openDatabase(
@@ -145,22 +155,28 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					SQLiteDatabase.OPEN_READONLY
 			);
 	
-			Cursor cursor = db.rawQuery("SELECT uri, tags FROM contacts where account = ?", new String[]{account});
+			Cursor cursor = db.rawQuery(
+					"SELECT tags FROM contacts WHERE account = ? AND uri = ?",
+					new String[]{ account, uri }
+			);
 	
 			if (cursor != null) {
-				while (cursor.moveToNext()) {
-					String uri = cursor.getString(cursor.getColumnIndexOrThrow("uri"));
+				if (cursor.moveToFirst()) {
 					String tags = cursor.getString(cursor.getColumnIndexOrThrow("tags"));
 	
-					allUris.add(uri);
-					if (tags != null) {
-						String lowerTags = tags.toLowerCase();
-						if (lowerTags.contains("block")) {
-							blocked.add(uri);
+					if (tags != null && !tags.trim().isEmpty()) {
+						// Split and trim tags
+						String[] raw = tags.split(",");
+						tagsList = new ArrayList<>();
+						for (String t : raw) {
+							String clean = t.trim().toLowerCase();
+							if (!clean.isEmpty()) {
+								tagsList.add(clean);
+							}
 						}
-						if (lowerTags.contains("mute")) {      // NEW
-							muted.add(uri);                     // NEW
-						}
+					} else {
+						// Contact exists but has no tags
+						tagsList = new ArrayList<>();
 					}
 				}
 				cursor.close();
@@ -169,16 +185,17 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			db.close();
 	
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "Failed to read contacts from database", e);
+			Log.e(LOG_TAG, "Failed to get tags for contact", e);
 		}
-	
-		result.put("blocked", blocked);
-		result.put("muted", muted);                  // NEW
-		result.put("all", allUris);
-		return result;
+
+		Log.d(LOG_TAG, "Tags for " + uri + ": " + tagsList);
+
+		return tagsList;  
+		// null → no contact found
+		// empty list → contact exists but no tags
 	}
 	
-	private boolean isAccountActive(String account, String fromUri, Set<String> uniqueUris) {
+	private boolean isAccountActive(String account, String fromUri, List<String> contactTags) {
 		if (account == null) return false;
 	
 		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
@@ -197,19 +214,16 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		try {
 			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
 	
-			// Parameterized query to prevent SQL injection
-			cursor = db.rawQuery("SELECT * FROM accounts WHERE account = ?", new String[]{account});
+			cursor = db.rawQuery(
+					"SELECT active, dnd, reject_anonymous, reject_non_contacts FROM accounts WHERE account = ?",
+					new String[]{account}
+			);
 	
 			if (cursor != null && cursor.moveToFirst()) {
-				String activeValue = cursor.getString(cursor.getColumnIndexOrThrow("active"));
-				String dndValue = cursor.getString(cursor.getColumnIndexOrThrow("dnd"));
-				String rejectAnonymousValue = cursor.getString(cursor.getColumnIndexOrThrow("reject_anonymous"));
-				String rejectNonContactsValue = cursor.getString(cursor.getColumnIndexOrThrow("reject_non_contacts"));
-				
-				isActive = "1".equals(activeValue);
-				isDnd = "1".equals(dndValue);
-				rejectAnonymous = "1".equals(rejectAnonymousValue);
-				rejectNonContacts = "1".equals(rejectNonContactsValue);
+				isActive = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("active")));
+				isDnd = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("dnd")));
+				rejectAnonymous = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("reject_anonymous")));
+				rejectNonContacts = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("reject_non_contacts")));
 			}
 	
 		} catch (Exception e) {
@@ -218,43 +232,102 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			if (cursor != null) cursor.close();
 			if (db != null) db.close();
 		}
-
-        if (rejectNonContacts && !uniqueUris.contains(fromUri)) {
+	
+		if (rejectNonContacts && contactTags == null) {
 			Log.e(LOG_TAG, "Only my contacts can call me");
 			showRejectedCallNotification(fromUri, "not in contacts list");
 			return false;
 		}
-
+	
+		// Anonymous caller check
 		if (fromUri.contains("anonymous") && rejectAnonymous) {
 			Log.e(LOG_TAG, "Anonymous caller rejected");
 			showRejectedCallNotification(fromUri, "anonymous caller");
 			return false;
-        }
-
+		}
+	
 		if (fromUri.contains("@guest.") && rejectAnonymous) {
 			Log.e(LOG_TAG, "Anonymous caller rejected");
 			showRejectedCallNotification(fromUri, "anonymous caller");
 			return false;
-        }
-        
+		}
+	
+		// Do Not Disturb
 		if (isDnd) {
 			Log.e(LOG_TAG, "Do not disturb me now");
 			showRejectedCallNotification(fromUri, "Do not disturb now");
 			return false;
-        }
-
+		}
+	
 		if (!isActive) {
 			Log.e(LOG_TAG, "Account is not active");
 			return false;
-        }
+		}
 	
 		return true;
 	}
 
-	private boolean isBlocked(String fromUri) {
-		if (fromUri == null) return false;
-		List<String> blocked = contactsByTag.get("blocked");
-		return blocked != null && blocked.contains(fromUri);
+	private boolean isBlocked(List<String> contactTags) {
+		// No tags → contact does not exist → not blocked
+		if (contactTags == null) {
+			return false;
+		}
+	
+		// Check if "block" tag is present
+		for (String tag : contactTags) {
+			if (tag != null && tag.equalsIgnoreCase("blocked")) {
+				return true;
+			}
+		}
+	
+		return false;
+	}
+
+	private boolean canBypassDnd(List<String> contactTags) {
+		if (contactTags == null) {
+			return false;  // No tags → cannot bypass
+		}
+	
+		for (String tag : contactTags) {
+			if (tag != null && tag.equalsIgnoreCase("bypassdnd")) {
+				return true;
+			}
+		}
+	
+		return false;
+	}
+
+	private boolean isMuted(List<String> contactTags) {
+		// No tags → not muted
+		if (contactTags == null) {
+			return false;
+		}
+	
+		for (String tag : contactTags) {
+			if (tag != null && tag.equalsIgnoreCase("muted")) {
+				return true;
+			}
+		}
+	
+		return false;
+	}
+
+	private boolean isDndEnabled(Context context) {
+		NotificationManager manager =
+				(NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+	
+		if (manager == null) return false;
+	
+		// If user did NOT grant policy access → you cannot detect DND accurately
+		if (!manager.isNotificationPolicyAccessGranted()) {
+			// Treat it as OFF (safe fallback)
+			return false;
+		}
+	
+		int filter = manager.getCurrentInterruptionFilter();
+	
+		return filter == NotificationManager.INTERRUPTION_FILTER_NONE ||     // Total silence
+			   filter == NotificationManager.INTERRUPTION_FILTER_PRIORITY;   // Priority only (DND ON)
 	}
 
     @Override
@@ -284,81 +357,92 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			return;
         }
 
-        if (event.equals("incoming_session") || event.equals("incoming_conference_request")) {
+        String lookupAccount = null;
+        String callId = null;
+        String fromUri = null;
+        String toUri = null;
 
-			String callId = data.get("session-id");
-			incomingCalls.add(callId);
-
+        if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("cancel")) {
+			callId = data.get("session-id");
 			if (callId == null || callId.trim().isEmpty()) {
-				Log.w(LOG_TAG, "Missing call id");
+				Log.w(LOG_TAG, "Missing callId");
+				return;
+			}
+			callId = callId.trim();
+		}
+
+        if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("message")) {
+	        fromUri = data.get("from_uri");
+			if (fromUri == null || fromUri.trim().isEmpty()) {
+				Log.w(LOG_TAG, "Missing fromUri");
+				if (callId != null ) {
+					IncomingCallService.handledCalls.add(callId);
+				}
 				return;
 			}
 
-			callId = callId.trim();
+			fromUri = fromUri.trim().toLowerCase();
 	
-			String toUri = data.get("to_uri");
+			toUri = data.get("to_uri");
 			if (toUri == null || toUri.trim().isEmpty()) {
 				IncomingCallService.handledCalls.add(callId);
 				Log.w(LOG_TAG, "Missing toUri");
 				return;
 			}
-			
+
 			toUri = toUri.trim().toLowerCase();
 
-			String fromUri = data.get("from_uri");
-			if (fromUri == null || fromUri.trim().isEmpty()) {
-				Log.w(LOG_TAG, "Missing fromUri");
-				IncomingCallService.handledCalls.add(callId);
-				return;
-			}
-
-            fromUri = fromUri.trim().toLowerCase();
-
-			Log.d(LOG_TAG, event + " " + callId + " from " + fromUri + " to " + toUri);
-
-			Set<String> uniqueUris = new HashSet<>();
-            
 			if (event.equals("incoming_session")) {
-				contactsByTag = getContactsByTag(toUri);
-				Map<String, List<String>> contactsByTag = getContactsByTag(toUri); // or toUri if you prefer
-				// Get the "all" list from the map
-				List<String> allUris = contactsByTag.get("all");
-				if (allUris != null) {
-					uniqueUris.addAll(allUris); // ✅ add all to the set
-				}
-
-				if (!isAccountActive(toUri, fromUri, uniqueUris)) {
-					IncomingCallService.handledCalls.add(callId);
-					return;
-				}
+				lookupAccount = toUri;
 			}
-        
-            if (event.equals("incoming_conference_request")) {
+		}
+
+        if (event.equals("incoming_session") || event.equals("incoming_conference_request")) {
+			incomingCalls.add(callId);
+
+			if (event.equals("incoming_conference_request")) {
 				String account = data.get("account");
 				if (account == null || account.trim().isEmpty()) {
 					Log.w(LOG_TAG, "Missing account");
 					return;
 				}
+				lookupAccount = account.trim().toLowerCase();
+			}
 
-				account = account.trim().toLowerCase();
+			Log.d(LOG_TAG, event + " " + callId + " from " + fromUri + " to " + lookupAccount);
 
-				Map<String, List<String>> contactsByTag = getContactsByTag(account);
-				List<String> allUris = contactsByTag.get("all");
-				if (allUris != null) {
-					uniqueUris.addAll(allUris); // ✅ add all to the set
-				}
+            List<String> tags = getTagsForContact(lookupAccount, fromUri);
 
-				if (!isAccountActive(account, fromUri, uniqueUris)) {
-					IncomingCallService.handledCalls.add(callId);
-					return;
-				}
-            }
-	
-			if (isBlocked(fromUri)) {
+			if (isBlocked(tags)) {
+				IncomingCallService.handledCalls.add(callId);
+				Log.w(LOG_TAG, "Caller " + fromUri + " is blocked");
+				return;
+			}
+
+			if (isMuted(tags)) {
+				IncomingCallService.handledCalls.add(callId);
+				Log.d("[SYLK]", "Skipping notification: user " + fromUri + " is muted");
+				return;
+			}
+
+			if (!isAccountActive(lookupAccount, fromUri, tags)) {
 				IncomingCallService.handledCalls.add(callId);
 				return;
 			}
+	
+			// DND + bypass logic
+			boolean dnd = isDndEnabled(this);
+
+			if (dnd && !canBypassDnd(tags)) {
+				IncomingCallService.handledCalls.add(callId);
+				Log.d("[SYLK]", "DND active, dropping message from " + fromUri);
+				return; // notification dropped
+			}
 			
+			if (dnd && canBypassDnd(tags)) {
+				Log.d("[SYLK]", "DND bypass for " + fromUri);
+			}
+
             Intent serviceIntent = new Intent(this, IncomingCallService.class);
             // Pass all FCM data to service
             for (Map.Entry<String, String> entry : data.entrySet()) {
@@ -375,11 +459,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             }
 
         } else if (event.equals("cancel")) {
-			String callId = data.get("session-id");
-			if (callId == null || callId.trim().isEmpty()) {
-				Log.w(LOG_TAG, "Missing call id");
-				return;
-			}
 
 			if (!incomingCalls.contains(callId)) {
 				Log.d(LOG_TAG, "missing corresponding incoming call " + callId);
@@ -412,49 +491,35 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				return;
 			}
 
-			String fromUri = data.get("from_uri");
-			if (fromUri == null || fromUri.trim().isEmpty()) {
-				Log.w(LOG_TAG, "Message error: missing from");
-				return;
-			}
-
-            fromUri = fromUri.trim().toLowerCase();
-
 			Log.w(LOG_TAG, event + " " + messageId + " from " + fromUri);
 
-			String toUri = data.get("to_uri");
-			if (toUri == null || toUri.trim().isEmpty()) {
-				Log.w(LOG_TAG, "Message error: missing to");
-				return;
-			}
+            List<String> tags = getTagsForContact(toUri, fromUri);
 
-            toUri = toUri.trim().toLowerCase();
-
-			Set<String> uniqueUris = new HashSet<>();
-
-			contactsByTag = getContactsByTag(toUri);
-			Map<String, List<String>> contactsByTag = getContactsByTag(toUri); // or toUri if you prefer
-			// Get the "all" list from the map
-			List<String> allUris = contactsByTag.get("all");
-			if (allUris != null) {
-				uniqueUris.addAll(allUris);
-			}
-
-			if (!isAccountActive(toUri, fromUri, uniqueUris)) {
-				Log.w(LOG_TAG, "Message from " + fromUri + " is not allowed");
-				return;
-			}
-
-			if (isBlocked(fromUri)) {
+			if (isBlocked(tags)) {
 				Log.w(LOG_TAG, "Message from " + fromUri + " is blocked");
 				return;
 			}
 
-			// NEW: check if muted
-			List<String> muted = contactsByTag.get("muted");
-			if (muted != null && muted.contains(fromUri)) {
+			if (isMuted(tags)) {
 				Log.d("[SYLK]", "Skipping notification: user " + fromUri + " is muted");
 				return;
+			}
+
+			if (!isAccountActive(toUri, fromUri, tags)) {
+				Log.w(LOG_TAG, "Message from " + fromUri + " is not allowed");
+				return;
+			}
+
+			// DND + bypass logic
+			boolean dnd = isDndEnabled(this);
+
+			if (dnd && !canBypassDnd(tags)) {
+				Log.d("[SYLK]", "DND active, dropping message from " + fromUri);
+				return; // notification dropped
+			}
+			
+			if (dnd && canBypassDnd(tags)) {
+				Log.d("[SYLK]", "DND bypass for " + fromUri);
 			}
 
 			// inside onMessageReceived or wherever you handle the message
@@ -573,10 +638,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// ----- SEND -----
 			int nid = (int) System.currentTimeMillis();
 			NotificationManagerCompat.from(this).notify(nid, builder.build());
-			
 
-			
-    
         } else {
             Log.d(LOG_TAG, "Unhandled event: " + event);
         }
