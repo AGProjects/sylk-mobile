@@ -438,12 +438,10 @@ class ContactsListBox extends Component {
   
     async aquireFromCamera() {
         console.log('aquireFromCamera');
-		this.setState({gettingSharedAsset: true}); 
-
+		this._aquireFromCamera();
 		setTimeout(() => {
-			this._aquireFromCamera();
-		}, 100); // delay in ms (1000 = 1 second)
-
+			this.setState({gettingSharedAsset: true}); 
+		}, 500); // delay in ms (1000 = 1 second)
     }
 
     async _aquireFromCamera() {
@@ -464,10 +462,10 @@ class ContactsListBox extends Component {
 
     async launchImageLibrary() {
 	    console.log('launchImageLibrary');
-        this.setState({gettingSharedAsset: true});
+		this._launchImageLibrary();
 		setTimeout(() => {
-			this._launchImageLibrary();
-		}, 200); // delay in ms (1000 = 1 second)
+			this.setState({gettingSharedAsset: true});
+		}, 500); // delay in ms (1000 = 1 second)
 	}
 
 	async _launchImageLibrary() {
@@ -1413,8 +1411,8 @@ renderSend = (props) => {
 
 		const fileUri = this.state.sharingAsset.uri.replace('file://', ''); // remove scheme
 		  RNFS.unlink(fileUri)
-		  .then(() => console.log('Temp file deleted'))
-		  .catch(err => console.log('Error deleting temp file', err));
+		  .then(() => console.log('Temporary file deleted'))
+		  .catch(err => console.log('Error deleting temporary file', err));
 
 		this.setState(prevState => ({
 		  placeholder: this.default_placeholder,
@@ -2058,7 +2056,7 @@ renderSend = (props) => {
 		  });
 	   }
 
-	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages) {
+	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages) {	   
 		  let filteredMessages = this.state.renderMessages;
 	
 			// Add reply metadata
@@ -2518,11 +2516,11 @@ renderMessageVideo = (props) => {
                 
 				<View
 				  style={{
-					borderWidth: this.state.fullSize ? 0 : 2,
-					borderColor: '#007AFF',
+					borderWidth: this.state.fullSize ? 0.5 : 2,
+					borderColor: 'black',
 					borderRadius: 2,
 					padding: 0,
-					transform: [{ scale: 0.6 }]
+					transform: [{ scale: 0.5 }]
 				  }}
 				>
 					<Checkbox
@@ -2851,7 +2849,6 @@ loadNext = (count = 10) => {
 
   console.log(`[loadNext] added ${batch.length} messages; new min index ${newMin}`);
 };
-
 
 
 renderFloatingControls = () => (
@@ -3316,8 +3313,10 @@ scrollToMessage(id) {
         const shareToContacts = this.state.shareToContacts;
         const transferProgress = this.state.transferProgress;
         const renderMessages = this.state.renderMessages;
-        const searchMessages = this.state.searchMessages
-        const searchString = this.state.searchString
+        const searchMessages = this.state.searchMessages;
+        const searchString = this.state.searchString;
+        const gettingSharedAsset = this.state.gettingSharedAsset;
+        
         const showChat = this.showChat;
         
           
@@ -3325,8 +3324,7 @@ scrollToMessage(id) {
 			const values = {
 			shareToContacts,
 //				messagesMetadata,
-				renderMessages,
-				messages,
+				gettingSharedAsset,
 //				mediaRotations,
 //				renderMessages,
 				searchString,
@@ -3350,7 +3348,6 @@ scrollToMessage(id) {
 		const footerHeightReply = Platform.OS === 'android' ? 60: 0;
 		const footerHeight = Platform.OS === 'android' ? 10: 0;
 
-        this.state.sharingAssetMessage
         let messages = this.state.gettingSharedAsset ? [] : this.state.filteredMessages;
         if (this.state.sharingAssetMessage) {
 			messages = [this.state.sharingAssetMessage];
@@ -3376,6 +3373,25 @@ scrollToMessage(id) {
                 loadEarlier
              />
              }
+
+				{this.state.gettingSharedAsset && (
+				  <View
+					style={{
+					  position: 'absolute',   // overlay on top
+					  top: 0,
+					  left: 0,
+					  right: 0,
+					  bottom: 0,
+					  justifyContent: 'center',
+					  alignItems: 'center',
+					  backgroundColor: 'rgba(0,0,0,0.6)', // optional semi-transparent dim
+					  zIndex: 999,           // make sure it appears above everything
+					}}
+				  >
+					<Text style={{ color: 'white', fontSize: 20, marginBottom: 30 }}>Processing sharing content...</Text>
+					<ActivityIndicator size="large" color="#999" />
+				  </View>
+				)}
 
              {this.showChat && !this.state.inviteContacts?
              <View style={[chatContainer, borderClass]}>
@@ -3407,7 +3423,7 @@ scrollToMessage(id) {
                   maxInputLength={16000}
                   tickStyle={{ color: 'green' }}
                   infiniteScroll
-                  loadEarlier={!this.state.totalMessageExceeded}
+                  loadEarlier={!this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset }
                   isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
                   isTyping={this.state.isTyping}
@@ -3461,7 +3477,7 @@ scrollToMessage(id) {
                   inverted={true}
                   timeTextStyle={{ left: { color: 'red' }, right: { color: 'black' } }}
                   infiniteScroll
-                  loadEarlier={!this.state.totalMessageExceeded}
+                  loadEarlier={!this.state.totalMessageExceeded && this.state.selectedContact}
                   onLoadEarlier={this.loadEarlierMessages}
                 />
               </View>

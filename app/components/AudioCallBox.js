@@ -81,6 +81,7 @@ class AudioCallBox extends Component {
     }
 
     componentWillUnmount() {
+        console.log('AudioCallBox will unmount');
         if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
@@ -113,7 +114,7 @@ class AudioCallBox extends Component {
                 nextProps.call.on('stateChanged', this.callStateChanged);
             }
 
-            if (nextProps.call.state === 'established') {
+            if (nextProps.call && nextProps.call.state === 'established') {
                 this.attachStream(nextProps.call);
                 this.setState({reconnectingCall: false});
             }

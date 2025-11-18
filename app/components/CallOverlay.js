@@ -84,14 +84,19 @@ class CallOverlay extends React.Component {
         }
 
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
-            nextProps.call.on('stateChanged', this.callStateChanged);
+           console.log('Next call:', nextProps.call?.id);
 
             if (this.state.call !== null) {
+			   console.log('Previous call', this.state.call?.id);
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
+            
+            if (nextProps.call  !== null) {
+				nextProps.call.on('stateChanged', this.callStateChanged);
+            }
 
-            this.setState({call: nextProps.call, direction:
-                           nextProps.call.direction});
+            this.setState({call: nextProps.call, 
+                           direction: nextProps.call ? nextProps.call.direction : null});
         }
 
         if ('showUsage' in nextProps) {

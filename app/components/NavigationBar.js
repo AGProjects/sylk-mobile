@@ -416,7 +416,7 @@ class NavigationBar extends Component {
         let statusIcon = null;
         let statusColor = 'green';
         let tags = [];
-
+        
         statusIcon = 'check-circle';
         let bellStyle = styles.whiteButton;
 

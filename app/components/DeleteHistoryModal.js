@@ -308,7 +308,6 @@ class DeleteHistoryModal extends Component {
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                        <Surface style={styles.container}>
                             <View style={styles.titleContainer}>
                                 <Dialog.Title style={styles.title}>Delete contact</Dialog.Title>
                             </View>
@@ -331,7 +330,6 @@ class DeleteHistoryModal extends Component {
                                     {deleteLabel}
                                 </Button>
                             </View>
-                        </Surface>
                     </DialogType>
                 </Portal>
             );

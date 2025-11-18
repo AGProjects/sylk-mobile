@@ -6,6 +6,7 @@ import PropTypes from 'prop-types';
 import utils from '../utils';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
+import {Keyboard} from 'react-native';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
@@ -33,6 +34,9 @@ const EditContactModal = ({
   const [organization, setOrganization] = useState(propOrg || '');
   const [email, setEmail] = useState(propEmail || '');
   const [confirm, setConfirm] = useState(false);
+  const [tags, setTags] = useState([]);
+  const [tagsText, setTagsText] = useState('');
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   // Reset all form fields whenever modal opens or props change
   useEffect(() => {
@@ -42,19 +46,74 @@ const EditContactModal = ({
       setOrganization(propOrg || '');
       setEmail(propEmail || '');
       setConfirm(false);
+      let initialTags = selectedContact?.tags || [];
+      initialTags = [...new Set(initialTags.map(t => t.trim().toLowerCase()))];
+      setTags(initialTags);
+      setTagsText(initialTags.join(', '));
     }
   }, [show, propUri, propDisplayName, propOrg, propEmail]);
+
+	useEffect(() => {
+	  setTagsText(tags.join(', '));
+	}, [tags]);
+
+	useEffect(() => {
+	  const showSub = Keyboard.addListener('keyboardDidShow', () => {
+		setKeyboardVisible(true);
+	  });
+	
+	  const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+		setKeyboardVisible(false);
+	  });
+	
+	  return () => {
+		showSub.remove();
+		hideSub.remove();
+	  };
+	}, []);
+
+	const handleTagsTextChange = (text) => {
+	  setTagsText(text);
+	
+	  const parsed = text
+		.split(',')
+		.map(t => t.trim().toLowerCase())
+		.filter(t => t.length > 0);
+	
+	  setTags(parsed);
+	};
 
   const handleSave = () => {
     const contact = {
       uri: uri.trim().toLowerCase(),
       displayName: displayName.trim(),
       organization: organization.trim(),
-      email: email.toLowerCase()
+      email: email.toLowerCase(),
+      tags
     };
     saveContact(contact);
     close();
   };
+
+	const toggleTag = (tagName) => {
+	  setTags(prev => {
+		const isSelected = prev.includes(tagName);
+	
+		if (isSelected) {
+		  // Turning OFF → simply remove it
+		  return prev.filter(t => t !== tagName);
+		}
+	
+		// Turning ON:
+		const newTags = [...prev, tagName];
+	
+		// Remove conflicting tags
+		const toRemove = editableTags[tagName]?.removeTags || [];
+	
+		return newTags.filter(t => !toRemove.includes(t));
+	  });
+	};
+
 
   const handleClose = () => {
     setConfirm(false);
@@ -88,6 +147,30 @@ const EditContactModal = ({
 	  title = 'Public key';
   }
   
+  const isTagVisible = (tagKey) => {
+  const rule = editableTags[tagKey];
+
+  if (!rule) return true;
+
+  const hiddenBecause = rule.invisibleIfTags || [];
+
+  // If selected tags include any forbidden tag → hide this option
+  return !hiddenBecause.some(t => tags.includes(t));
+};
+
+const editableTags = {
+  bypassdnd: {          // <── lowercase key
+    description: 'Bypass Do Not Disturb',
+    invisibleIfTags: ['muted', 'blocked'],
+    removeTags: ['muted']
+  },
+  muted: {
+    description: 'Mute notifications',
+    invisibleIfTags: ['blocked', 'bypassdnd'],
+    removeTags: ['bypassdnd']
+  }
+};
+
   const as = 50;
 
   return (
@@ -133,7 +216,6 @@ const EditContactModal = ({
 					)}
 				  </View>
 				) : null}
-
 
 
             {/* Modal content start */}
@@ -221,6 +303,43 @@ const EditContactModal = ({
                       />
                     </ScrollView>
 
+                    {!myself && !keyboardVisible && (
+						<View style={{ marginTop: 0 }}>
+						  {Object.entries(editableTags).map(([tagKey, info]) => {
+							if (!isTagVisible(tagKey)) return null;  // ← hide if needed
+						
+							const isSelected = tags.includes(tagKey);
+						
+							return (
+							  <View key={tagKey} style={styles.checkBoxRow}>
+								{Platform.OS === 'ios' ? (
+								  <Switch
+									value={isSelected}
+									onValueChange={() => toggleTag(tagKey)}
+								  />
+								) : (
+								  <Checkbox
+									status={isSelected ? 'checked' : 'unchecked'}
+									onPress={() => toggleTag(tagKey)}
+								  />
+								)}
+								<Text> {info.description}</Text>
+							  </View>
+							);
+						  })}
+
+					<View style={{ marginTop: 5, flexDirection: 'row', flexWrap: 'wrap' }}>
+					  <Text style={{ fontSize: 12, fontWeight: '600', marginRight: 4 }}>
+						Tags:
+					  </Text>
+					  <Text style={{ fontSize: 12, color: '#555' }}>
+						{tags.length > 0 ? tags.join(', ') : 'none'}
+					  </Text>
+					</View>
+
+						</View>
+                    )}
+
                     {myself && (
                       <View style={styles.checkBoxRow}>
                         {Platform.OS === 'ios' ? (
@@ -253,6 +372,14 @@ const EditContactModal = ({
                       >
                         Save
                       </Button>
+                      <Button
+                        mode="contained"
+                        style={styles.button}
+                        onPress={close}
+                        icon="cancel"
+                      >
+                        Close
+                      </Button>
                     </View>
 
                     {myself ? (
@@ -263,17 +390,17 @@ const EditContactModal = ({
                         Deletion account on server...
                       </Text>
                     ) : (
-                      selectedContact?.prettyStorage && (
-                        <Text>Storage usage: {selectedContact.prettyStorage}</Text>
+                      selectedContact?.prettyStorage && !keyboardVisible && (
+                        <Text style={styles.small}>Storage usage: {selectedContact.prettyStorage}</Text>
                       )
                     )}
 
-                    {!myself ?
+                    {!myself && !keyboardVisible && (
                     <View style={{ flexDirection: 'row', marginTop: 8 }}>
                       <Icon style={styles.lock} name="lock" />
                       <Text style={styles.small}>Messages are encrypted end-to-end</Text>
                     </View>
-                    : null}
+                    )}
 
                     {false && myself && (
                       <View style={{ flexDirection: 'row', marginTop: 4 }}>

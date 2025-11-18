@@ -552,29 +552,14 @@ class ReadyBox extends Component {
 
 
     handleChat(event) {
+        console.log('handleChat');
         event.preventDefault();
-        let targetUri;
-
-        if (!this.state.chat && !this.state.selectedContact) {
-           targetUri = this.getTargetUri(this.state.targetUri);
-           this.setState({targetUri: targetUri});
-        }
-
+ 
         let uri = this.state.targetUri.trim().toLowerCase();
+	    this.setState({targetUri: ''});
 
-        if (!this.state.chat && !this.selectedContact && uri) {
-            if (uri.indexOf('@') === -1) {
-                uri = uri + '@' + this.props.defaultDomain;
-            }
-
-            let contact = this.props.newContactFunc(uri, null, {src: 'new chat'});
-            console.log('Create synthetic contact', contact);
-            this.props.selectContact(contact);
-            this.setState({targetUri: uri, chat: true});
-            Keyboard.dismiss();
-        }
-
-        this.setState({chat: !this.state.chat});
+		this.props.createChatContact(uri);
+		Keyboard.dismiss();
     }
 
     handleAudioCall(event) {
@@ -1251,7 +1236,8 @@ class ReadyBox extends Component {
 
 		if (Platform.OS === 'ios') {
 			if (isLandscape) {
-				containerWidth = containerWidth - bottomInset - topInset;
+				containerExtraStyles.width = containerWidth - bottomInset - topInset;
+				containerExtraStyles.marginBottom = -10;
 			}
 		} else {
 			if (isLandscape) {
@@ -1579,6 +1565,7 @@ class ReadyBox extends Component {
 						transferProgress = {this.state.transferProgress}
 						sendDispositionNotification = {this.props.sendDispositionNotification}
 						totalMessageExceeded = {this.state.totalMessageExceeded}
+						requestDndPermission = {this.props.requestDndPermission}
 					/>
 					}
 
@@ -1724,6 +1711,7 @@ ReadyBox.propTypes = {
     sourceContact: PropTypes.object,
     requestCameraPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,
+    requestDndPermission: PropTypes.func,
     requestMicPermission: PropTypes.func,
     postSystemNotification: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
@@ -1740,7 +1728,8 @@ ReadyBox.propTypes = {
     fullScreen: PropTypes.bool,
     transferProgress: PropTypes.object,
     sendDispositionNotification: PropTypes.func,
-    totalMessageExceeded: PropTypes.bool
+    totalMessageExceeded: PropTypes.bool,
+    createChatContact: PropTypes.func,
 };
 
 

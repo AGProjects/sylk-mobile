@@ -289,12 +289,23 @@ class VideoBox extends Component {
 	  let bandwidthUpload = 0;
 	  let bandwidthDownload = 0;
 	
-	  if (videoOutbound) bandwidthUpload = calcBitrate('videoUpload', videoOutbound.bytesSent, videoOutbound.timestamp);
+	  // --- Video bandwidth ---
+	  if (videoOutbound) bandwidthUpload += calcBitrate('videoUpload', videoOutbound.bytesSent, videoOutbound.timestamp);
 	  if (videoInbound) {
 		if (videoInbound.bytesReceived > 0) {
-		  bandwidthDownload = calcBitrate('videoDownload', videoInbound.bytesReceived, videoInbound.timestamp);
+		  bandwidthDownload += calcBitrate('videoDownload', videoInbound.bytesReceived, videoInbound.timestamp);
 		} else if (videoInbound.packetRate > 0) {
-		  bandwidthDownload = videoInbound.packetRate * 1200 * 8;
+		  bandwidthDownload += videoInbound.packetRate * 1200 * 8;
+		}
+	  }
+	
+	  // --- Audio bandwidth ---
+	  if (audioOutbound) bandwidthUpload += calcBitrate('audioUpload', audioOutbound.bytesSent, audioOutbound.timestamp);
+	  if (audioInbound) {
+		if (audioInbound.bytesReceived > 0) {
+		  bandwidthDownload += calcBitrate('audioDownload', audioInbound.bytesReceived, audioInbound.timestamp);
+		} else if (audioInbound.packetRate > 0) {
+		  bandwidthDownload += audioInbound.packetRate * 1200 * 8;
 		}
 	  }
 	
@@ -319,15 +330,14 @@ class VideoBox extends Component {
 	  const smoothDownload = this.bandwidthHistory.reduce((a, b) => a + b.down, 0) / this.bandwidthHistory.length || 0;
 	
 	  const appendBits = bits => {
-		if (bits > 1_000_000) return (bits / 1_000_000).toFixed(1) + ' Mbps';
-		if (bits > 1_000) return (bits / 1_000).toFixed(0) + ' kbps';
-		return bits.toFixed(0) + ' bits/s';
+		if (bits > 1_000_000) return (bits / 1_000_000).toFixed(1) + 'Mbps';
+		if (bits > 1_000) return (bits / 1_000).toFixed(0) + 'kbps';
+		return bits.toFixed(0) + 'bits/s';
 	  };
 	
-	  //const info = `⇣${appendBits(smoothDownload)} ⇡${appendBits(smoothUpload)} | RTT: ${rtt.toFixed(0)} ms | Audio Loss: ${audioLoss.toFixed(1)}% | Video Loss: ${videoLoss.toFixed(1)}%`;
-	  let info = `⇣${appendBits(smoothDownload)} ${rtt.toFixed(0)} ms`;
+	  let info = `⇣${appendBits(smoothDownload)} ${rtt.toFixed(0)}ms`;
 	  if (videoLoss > 10) {
-		  info = info + ` loss ${videoLoss.toFixed(0)}%`;
+		  info = info + ` ${videoLoss.toFixed(0)}%loss`;
 	  }
 	
 	  this.setState(state => ({
@@ -335,6 +345,8 @@ class VideoBox extends Component {
 		info,
 	  }));
 	}
+	
+
 
 
     hangupCall(event) {

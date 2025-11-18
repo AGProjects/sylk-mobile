@@ -74,7 +74,7 @@ class DeleteFileTransfers extends Component {
         period: this.getPeriodFilterDate(),
         periodType: 'after',
       };
-      this.props.getFiles(nextProps.uri, filter);
+      this.props.getTransferedFiles(nextProps.uri, filter);
     }
 
     this.setState({
@@ -159,7 +159,7 @@ class DeleteFileTransfers extends Component {
       period: this.getPeriodFilterDate(),
       periodType: this.state.periodType,
     };
-    this.props.getFiles(this.props.uri, filter);
+    this.props.getTransferedFiles(this.props.uri, filter);
     this.setState({ incoming: !this.state.incoming });
   }
 
@@ -170,7 +170,7 @@ class DeleteFileTransfers extends Component {
       period: this.getPeriodFilterDate(),
       periodType: this.state.periodType,
     };
-    this.props.getFiles(this.props.uri, filter);
+    this.props.getTransferedFiles(this.props.uri, filter);
     this.setState({ outgoing: !this.state.outgoing });
   }
 
@@ -237,7 +237,7 @@ class DeleteFileTransfers extends Component {
 
                 this.setState({ periodFilterKey: option.key, periodType, menuVisible: false });
                 const filter = { incoming: this.state.incoming, outgoing: this.state.outgoing, period: this.getPeriodFilterDate(option.key), periodType };
-                this.props.getFiles(this.props.uri, filter);
+                this.props.getTransferedFiles(this.props.uri, filter);
               }}
               title={option.label}
             />
@@ -376,7 +376,7 @@ DeleteFileTransfers.propTypes = {
   displayName: PropTypes.string,
   deleteFilesFunc: PropTypes.func,
   transferedFiles: PropTypes.object,
-  getFiles: PropTypes.func,
+  getTransferedFiles: PropTypes.func,
 };
 
 export default DeleteFileTransfers;
