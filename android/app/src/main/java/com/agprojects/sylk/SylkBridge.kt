@@ -26,4 +26,15 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
         val chatId = prefs.getString("currentChat", null)
         promise.resolve(chatId)
     }
+
+    @ReactMethod
+    fun setActiveCall(target: String?) {
+        prefs.edit().putString("currentCall", target).apply()
+    }
+
+    @ReactMethod
+    fun getActiveCall(promise: Promise) {
+        val callId = prefs.getString("currentCall", null)
+        promise.resolve(callId)
+    }
 }

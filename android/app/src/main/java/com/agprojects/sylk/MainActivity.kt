@@ -41,7 +41,7 @@ class MainActivity : ReactActivity() {
         // Handle bubble/notification taps
         handleNotificationTapIntent(intent)
 
-        requestDndPermission()
+        //requestDndPermission()
 
         try {
             Os.setenv("EXTERNAL_STORAGE", getExternalFilesDir(null)?.absolutePath, true)

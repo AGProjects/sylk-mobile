@@ -371,6 +371,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			callId = callId.trim();
 		}
 
+		SharedPreferences prefs = getApplicationContext().getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);			
+
         if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("message")) {
 	        fromUri = data.get("from_uri");
 			if (fromUri == null || fromUri.trim().isEmpty()) {
@@ -383,6 +385,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			fromUri = fromUri.trim().toLowerCase();
 	
+	        if (event.equals("incoming_session")) {
+				String activeCall = prefs.getString("currentCall", null);
+				if (activeCall != null && activeCall.equals(fromUri)) {
+					Log.d("[SYLK]", "Skipping notification: already in call with " + activeCall);
+					return;
+				}
+			}
+
 			toUri = data.get("to_uri");
 			if (toUri == null || toUri.trim().isEmpty()) {
 				IncomingCallService.handledCalls.add(callId);
@@ -523,7 +533,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			// inside onMessageReceived or wherever you handle the message
-			SharedPreferences prefs = getApplicationContext().getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);			
 			String activeChat = prefs.getString("currentChat", null);
 			
 			if (activeChat != null && activeChat.equals(fromUri)) {
