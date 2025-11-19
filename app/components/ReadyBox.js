@@ -106,6 +106,10 @@ class ReadyBox extends Component {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
         }
 
+        if (this.state.selectedContact !== nextProps.selectedContact ) {
+            this.setState({gettingSharedAsset: false});
+        }
+
         if (nextProps.hasOwnProperty('keyboardVisible')) {
             this.setState({keyboardVisible: nextProps.keyboardVisible});
         }
@@ -1566,6 +1570,7 @@ class ReadyBox extends Component {
 						sendDispositionNotification = {this.props.sendDispositionNotification}
 						totalMessageExceeded = {this.state.totalMessageExceeded}
 						requestDndPermission = {this.props.requestDndPermission}
+						gettingSharedAsset = {this.state.gettingSharedAsset}
 					/>
 					}
 

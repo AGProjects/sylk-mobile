@@ -158,7 +158,7 @@ class ContactsListBox extends Component {
 			renderedMessageIds: new Set(),
 			imageLoadingState: {},
 			rotation: 0,
-			gettingSharedAsset: false,
+			gettingSharedAsset: this.props.gettingSharedAsset,
 			videoLoadingState: {},
 			transferProgress: this.props.transferProgress,
 		    showVideoModal: false,
@@ -221,66 +221,12 @@ class ContactsListBox extends Component {
             return;
         }
         
-        //console.log('Update contacts', nextProps.selectedContact);
-
-        if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
-            this.setState({myInvitedParties: nextProps.myInvitedParties});
-        }
-
-        if (nextProps.contacts !== this.state.contacts) {
-            this.setState({contacts: nextProps.contacts});
-        }
-
-        if (nextProps.sortBy !== this.state.sortBy) {
-            this.setState({sortBy: nextProps.sortBy});
-        }
-
-        if (nextProps.favoriteUris !== this.state.favoriteUris) {
-            this.setState({favoriteUris: nextProps.favoriteUris});
-        }
-
-        if (nextProps.blockedUris !== this.state.blockedUris) {
-            this.setState({blockedUris: nextProps.blockedUris});
-        }
-
-        if (nextProps.account !== null && nextProps.account !== this.props.account) {
-            this.setState({accountId: nextProps.account.id});
-        }
-
-        if (nextProps.refreshHistory !== this.state.refreshHistory) {
-            this.setState({refreshHistory: nextProps.refreshHistory});
-            this.getServerHistory();
-        }
-
-        if (nextProps.messageZoomFactor !== this.state.messageZoomFactor) {
-            this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
-        }
-
-        if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
-            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
-        }
-
-        if (nextProps.pinned !== this.state.pinned && nextProps.selectedContact) {
-            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: nextProps.pinned});
-        }
-
-        if (nextProps.hasOwnProperty('keyboardVisible')) {
-            this.setState({keyboardVisible: nextProps.keyboardVisible});
-        }
-
-        //if (nextProps.myContacts !== this.state.myContacts) {
-            this.setState({myContacts: nextProps.myContacts});
-        //};
-
-        if (nextProps.selectedContact !== this.state.selectedContact) {
+		if (nextProps.selectedContact !== this.state.selectedContact) {
             //console.log('Selected contact changed to', nextProps.selectedContact);
             this.resetContact()
             this.setState({selectedContact: nextProps.selectedContact});
             if (nextProps.selectedContact) {
                this.setState({scrollToBottom: true});
-               if (Object.keys(this.state.messages).indexOf(nextProps.selectedContact.uri) === -1 && nextProps.selectedContact) {
-                   this.props.getMessages(nextProps.selectedContact.uri);
-               }
             } else {
                 this.setState({renderMessages: []});
             }
@@ -336,7 +282,7 @@ class ContactsListBox extends Component {
 
 			// === INITIAL LOAD ===
 			if (oldMessages.length === 0 && newMessages.length > 0) {
-			  console.log("Rendering initial messages");
+			  //console.log("Rendering initial messages");
 			  this.exitFocusMode();
 	
 			  this.setState({
@@ -357,12 +303,12 @@ class ContactsListBox extends Component {
 				idsEqual && !changedIds.includes(m._id) ? oldMessages[i] : m
 			  );
 
-			  console.log('must update renderMessages');
+			  //console.log('must update renderMessages');
 			  this.setState({
 				renderMessages: merged
 			  });
 		
-			  this.props.confirmRead(uri, "new_messages");
+			  //this.props.confirmRead(uri, "new_messages");
 			}
 		  }
 		} else if (!nextProps.selectedContact) {
@@ -372,7 +318,61 @@ class ContactsListBox extends Component {
 				filteredMessages: []
 			  });
 		}
-		
+
+
+        //console.log('Update contacts', nextProps.selectedContact);
+
+        if (nextProps.myInvitedParties !== this.state.myInvitedParties) {
+            this.setState({myInvitedParties: nextProps.myInvitedParties});
+        }
+
+        if (nextProps.contacts !== this.state.contacts) {
+            this.setState({contacts: nextProps.contacts});
+        }
+
+        if (nextProps.sortBy !== this.state.sortBy) {
+            this.setState({sortBy: nextProps.sortBy});
+        }
+
+        if (nextProps.favoriteUris !== this.state.favoriteUris) {
+            this.setState({favoriteUris: nextProps.favoriteUris});
+        }
+
+        if (nextProps.blockedUris !== this.state.blockedUris) {
+            this.setState({blockedUris: nextProps.blockedUris});
+        }
+
+        if (nextProps.account !== null && nextProps.account !== this.props.account) {
+            this.setState({accountId: nextProps.account.id});
+        }
+
+        if (nextProps.refreshHistory !== this.state.refreshHistory) {
+            this.setState({refreshHistory: nextProps.refreshHistory});
+            this.getServerHistory();
+        }
+
+        if (nextProps.messageZoomFactor !== this.state.messageZoomFactor) {
+            this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
+        }
+
+        if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
+            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
+        }
+
+        if (nextProps.pinned !== this.state.pinned && nextProps.selectedContact) {
+            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: nextProps.pinned});
+        }
+
+        if (nextProps.hasOwnProperty('keyboardVisible')) {
+            this.setState({keyboardVisible: nextProps.keyboardVisible});
+        }
+        
+        if ('gettingSharedAsset' in nextProps) {
+            this.setState({gettingSharedAsset: nextProps.gettingSharedAsset});
+        }
+        
+		this.setState({myContacts: nextProps.myContacts});
+ 
         this.setState({isLandscape: nextProps.isLandscape,
                        isTablet: nextProps.isTablet,
                        chat: nextProps.chat,
@@ -442,6 +442,9 @@ class ContactsListBox extends Component {
 		setTimeout(() => {
 			this.setState({gettingSharedAsset: true}); 
 		}, 500); // delay in ms (1000 = 1 second)
+		setTimeout(() => {
+			this.setState({gettingSharedAsset: false}); 
+		}, 40000); // delay in ms (1000 = 1 second)
     }
 
     async _aquireFromCamera() {
@@ -450,7 +453,7 @@ class ContactsListBox extends Component {
 			let options = {maxWidth: 2000,
 							maxHeight: 2000,
 							mediaType: 'mixed',
-							quality:0.8,
+							quality: 0.8,
 							cameraType: 'front',
 							formatAsMp4: true
 						   }
@@ -465,7 +468,10 @@ class ContactsListBox extends Component {
 		this._launchImageLibrary();
 		setTimeout(() => {
 			this.setState({gettingSharedAsset: true});
-		}, 500); // delay in ms (1000 = 1 second)
+		}, 500);
+		setTimeout(() => {
+			this.setState({gettingSharedAsset: false}); 
+		}, 40000);
 	}
 
 	async _launchImageLibrary() {
@@ -551,11 +557,14 @@ class ContactsListBox extends Component {
 
 
 	renderBubble(props) {
+		const updatedProps = { ...props };  // NEW reference forces re-render
+	
 	  return (
 		<ChatBubble
-		  props={props}
+		  props={updatedProps}    // keep the expected nested structure
 		  messages={this.state.renderMessages}
 		  bubbleWidths={this.state.bubbleWidths}
+		  mediaLabels={this.state.mediaLabels}
 		  videoMetaCache={this.state.videoMetaCache}
 		  visibleMessageIds={this.state.visibleMessageIds}
 		  videoPlayingState={this.state.videoPlayingState}
@@ -1082,11 +1091,16 @@ renderSend = (props) => {
 								   text: JSON.stringify(metadataContent),
 								   };
 
-			messagesMetadata[transferId] = metadataContent;
-			//console.log('editMessage metadataContent', metadataContent);
-			this.setState({
-				messagesMetadata: { ...messagesMetadata }
+/*
+			this.setState(prev => {
+				const messagesMetadata = {
+					...prev.messagesMetadata,
+					[transferId]: metadataContent
+				};
+				return { messagesMetadata };
 			});
+			*/
+
 			this.props.sendMessage(this.state.selectedContact.uri, metadataMessage, 'application/sylk-message-metadata');
         } else {
         
@@ -1744,7 +1758,7 @@ renderSend = (props) => {
 			return;
         }
         
-        console.log('onMessagePress');
+        //console.log('onMessagePress');
     
         if (message.metadata && message.metadata.filename) {
             //console.log('File metadata', message.metadata.filename);
@@ -1969,10 +1983,6 @@ renderSend = (props) => {
     };
 
     isMessageEditable(message) {
-        if (message.direction === 'incoming') {
-            return false;
-        }
-
         if (message.failed) {
             return false;
         }
@@ -2027,22 +2037,76 @@ renderSend = (props) => {
         this.setState({showShareMessageModal: !this.state.showShareMessageModal});
     }
 
-	componentDidUpdate(prevProps, prevState) {
+	get replyMessages() {
+	  if (!this.state.messagesMetadata) return {};
+	
+	  return Object.fromEntries(
+		Object.entries(this.state.messagesMetadata)
+		  .filter(([, value]) => value.replyId)      // keep only those with replyId
+		  .map(([key, value]) => [key, value.replyId]) // return key -> replyId
+	  );
+	}
 
+	get mediaLabels() {
+	  const data = this.state.messagesMetadata;
+	  if (!data) return {};
+	
+	  return Object.fromEntries(
+		Object.entries(data)
+		  .map(([key, value]) => [key, value.label])
+		  .filter(([, label]) => label !== undefined && label !== null)
+	  );
+	}
+
+	get mediaRotations() {
+	  const data = this.state.messagesMetadata;
+	  if (!data) return {};
+	
+	  return Object.fromEntries(
+		Object.entries(data)
+		  .map(([key, value]) => [key, value.rotation])
+		  .filter(([, rotation]) => rotation !== undefined && rotation !== null)
+	  );
+	}
+	
+	componentDidUpdate(prevProps, prevState) {
       if (prevState.scrollToBottom !== this.state.scrollToBottom) {
 	        console.log('Scroll to bottom changed', this.state.scrollToBottom);
       }
       
       //console.log('this.state.scrollToBottom', this.state.scrollToBottom);
 
-	  // Auto-pause any videos that went offscreen
-	   if (prevState.messagesMetadata !== this.state.messagesMetadata) {
-	        //console.log('Must update metadata');
-			const mediaRotations = this.mediaRotations;
+		if (prevState.messagesMetadata !== this.state.messagesMetadata) {
 			const mediaLabels = this.mediaLabels;
-			this.setState({ mediaLabels: mediaLabels, mediaRotations: mediaRotations });
-	   }
-	   
+			const mediaRotations = this.mediaRotations;
+
+			//console.log('---- must update messagesMetadata');
+
+			const updatedMessages = this.state.renderMessages.map(msg => {
+				const id = msg.transferId || msg._id;
+		
+				const newLabel = mediaLabels[id];
+				const newRotation = mediaRotations[id];
+		
+				// Only update message if there is new label or rotation
+				if (newLabel || newRotation !== undefined) {
+					return {
+						...msg,
+						text: newLabel || msg.text,
+						rotation: newRotation !== undefined ? newRotation : msg.rotation
+					};
+				}
+		
+				return msg;
+			});
+		
+			this.setState({
+				mediaLabels,
+				mediaRotations,
+				renderMessages: updatedMessages,
+			});
+		}
+
 	   if (prevState.sharingAssetMessage != this.state.sharingAssetMessage) {
 		  // Handle sharing asset mode
 		  if (this.state.sharingAssetMessage) {
@@ -2059,6 +2123,18 @@ renderSend = (props) => {
 	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages) {	   
 		  let filteredMessages = this.state.renderMessages;
 	
+			const mediaLabels = this.mediaLabels;
+			const mediaRotations = this.mediaRotations;
+		
+			filteredMessages = filteredMessages.map(msg => {
+				const id = msg.transferId || msg._id;
+				return {
+					...msg,
+					text: mediaLabels[id] || msg.text,
+					rotation: mediaRotations[id] ?? msg.rotation
+				};
+			});
+		    
 			// Add reply metadata
 		    filteredMessages = filteredMessages.map(m => ({
 			...m,
@@ -2072,7 +2148,7 @@ renderSend = (props) => {
 			const textMatches = filteredMessages.filter(
 			  msg => msg.text && msg.text.toLowerCase().includes(searchLower)
 			);
-	
+			
 			const matchingMediaIds = Object.keys(this.state.mediaLabels || {}).filter(id =>
 			  (this.state.mediaLabels[id] || "").toLowerCase().includes(searchLower)
 			);
@@ -2093,37 +2169,12 @@ renderSend = (props) => {
 				this.setState({scrollToBottom: true});
 			}
 		}
-		
 		  //console.log('must update filteredMessages');
 		  this.setState({
-			filteredMessages
+			filteredMessages,
 		  });
 	  
       }
-
-	  if (prevState.transferProgress !== this.state.transferProgress) {
-		const oldTP = prevState.transferProgress;
-		const newTP = this.state.transferProgress;
-	
-		//console.log("🔄 transferProgress updated");
-	
-		Object.keys(newTP).forEach(id => {
-		  const oldVal = oldTP[id];
-		  const newVal = newTP[id];
-	
-		  if (!oldVal) {
-			//console.log("🆕 New transfer entry:", id, newVal);
-		  } else if (oldVal.progress !== newVal.progress) {
-			//console.log("⬆️ Progress changed:", id, oldVal.progress, "→", newVal.progress);
-		  }
-		});
-	
-		Object.keys(oldTP).forEach(id => {
-		  if (!newTP[id]) {
-			//console.log("❌ Transfer removed:", id);
-		  }
-		});
-	  }
 	}
 
 	replyMessage = (message) => {
@@ -2132,7 +2183,6 @@ renderSend = (props) => {
 		setTimeout(() => this.textInputRef?.focus() , 100);
 	  });
 	};
-
 
 renderMessageVideo = (props) => {
   const { currentMessage } = props;
@@ -2308,11 +2358,9 @@ renderMessageVideo = (props) => {
 	    if (stage) {
 	        stage = stage.charAt(0).toUpperCase() + stage.substr(1).toLowerCase() + 'ing...';
 	    }
-	    
 	    	  
         let mediaLabel = this.state.mediaLabels[currentMessage._id] || currentMessage.text ;
         // Create a temporary props object with overridden text
-        
 		const labelProps = {
 		  ...props,
 		  currentMessage: {
@@ -2808,8 +2856,6 @@ renderMessageVideo = (props) => {
 
 onScroll = (e) => {
   this.currentOffset = e.nativeEvent.contentOffset.y;
-  // Debug current scroll offset continuously
-  // console.log("onScroll → offset:", this.currentOffset);
 };
 
 loadPrevious = (count = 10) => {
@@ -2975,38 +3021,6 @@ scrollToMessage(id) {
   }
 }
 
-	get replyMessages() {
-	  if (!this.state.messagesMetadata) return {};
-	
-	  return Object.fromEntries(
-		Object.entries(this.state.messagesMetadata)
-		  .filter(([, value]) => value.replyId)      // keep only those with replyId
-		  .map(([key, value]) => [key, value.replyId]) // return key -> replyId
-	  );
-	}
-
-	get mediaLabels() {
-	  const data = this.state.messagesMetadata;
-	  if (!data) return {};
-	
-	  return Object.fromEntries(
-		Object.entries(data)
-		  .map(([key, value]) => [key, value.label])
-		  .filter(([, label]) => label !== undefined && label !== null)
-	  );
-	}
-
-	get mediaRotations() {
-	  const data = this.state.messagesMetadata;
-	  if (!data) return {};
-	
-	  return Object.fromEntries(
-		Object.entries(data)
-		  .map(([key, value]) => [key, value.rotation])
-		  .filter(([, rotation]) => rotation !== undefined && rotation !== null)
-	  );
-	}
-	
 	scrollToBottom() {
 	  console.log('scrollToBottom called');
 	  this.exitFocusMode();	  
@@ -3316,19 +3330,17 @@ scrollToMessage(id) {
         const searchMessages = this.state.searchMessages;
         const searchString = this.state.searchString;
         const gettingSharedAsset = this.state.gettingSharedAsset;
-        
         const showChat = this.showChat;
-        
-          
+
 		if (debug) {
 			const values = {
 			shareToContacts,
-//				messagesMetadata,
-				gettingSharedAsset,
+				messagesMetadata,
+				mediaLabels,
 //				mediaRotations,
 //				renderMessages,
-				searchString,
-				showChat
+//				searchString,
+//				showChat
 			};
 		
 			//console.log(transferProgress);
@@ -3385,10 +3397,9 @@ scrollToMessage(id) {
 					  justifyContent: 'center',
 					  alignItems: 'center',
 					  backgroundColor: 'rgba(0,0,0,0.6)', // optional semi-transparent dim
-					  zIndex: 999,           // make sure it appears above everything
 					}}
 				  >
-					<Text style={{ color: 'white', fontSize: 20, marginBottom: 30 }}>Processing sharing content...</Text>
+					<Text style={{ color: 'white', fontSize: 20, marginBottom: 30 }}>Processing content...</Text>
 					<ActivityIndicator size="large" color="#999" />
 				  </View>
 				)}
@@ -3423,7 +3434,7 @@ scrollToMessage(id) {
                   maxInputLength={16000}
                   tickStyle={{ color: 'green' }}
                   infiniteScroll
-                  loadEarlier={!this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset }
+                  loadEarlier={!this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0}
                   isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
                   isTyping={this.state.isTyping}
@@ -3676,7 +3687,8 @@ ContactsListBox.propTypes = {
     setFullScreen: PropTypes.func,
     fullScreen: PropTypes.bool,
     transferProgress: PropTypes.object,
-    totalMessageExceeded: PropTypes.bool
+    totalMessageExceeded: PropTypes.bool,
+    gettingSharedAsset: PropTypes.bool
 };
 
 

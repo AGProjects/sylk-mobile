@@ -66,6 +66,7 @@ class EnrollmentModal extends Component {
 
         if (validEmail) data.email = this.state.email;
 
+		console.log('Enrollment requested for', this.state.username);
         superagent.post(config.enrollmentUrl)
             .send(superagent.serialize['application/x-www-form-urlencoded'](data))
             .end((error, res) => {
@@ -77,6 +78,7 @@ class EnrollmentModal extends Component {
                 catch (e) { return this.setState({ error: 'Could not decode response data', errorVisible: true }); }
 
                 if (response.success) {
+                    console.log('Enrollment succeeded');
                     this.props.handleEnrollment({
                         id: response.sip_address,
                         password: this.state.password,
@@ -85,8 +87,10 @@ class EnrollmentModal extends Component {
                     });
                     this.setState(this.initialState);
                 } else if (response.error === 'user_exists') {
+                    console.log('Enrollment failed, user exists');
                     this.setState({ error: 'Username is taken. Choose another one!', errorVisible: true });
                 } else {
+                    console.log('Enrollment failed', response.error_message);
                     this.setState({ error: response.error_message, errorVisible: true });
                 }
             });

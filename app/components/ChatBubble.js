@@ -8,6 +8,7 @@ const ChatBubble = memo(
     props,
     messages = [],
     bubbleWidths = {},
+    mediaLabels = {},
     videoMetaCache = {},
     visibleMessageIds = [], 
     transferProgress = {},

@@ -22,7 +22,8 @@ class LocalMedia extends Component {
             participants: this.props.participants,
             reconnectingCall: this.props.reconnectingCall,
             terminatedReason: this.props.terminatedReason,
-            orientation: this.props.orientation
+            orientation: this.props.orientation,
+            mirror: true,
         };
     }
 
@@ -42,7 +43,18 @@ class LocalMedia extends Component {
                       participants: nextProps.participants,
                       reconnectingCall: nextProps.reconnectingCall,
                       orientation: nextProps.orientation,
+                      mirror: nextProps.mirror,
                       terminatedReason: nextProps.terminatedReason});
+    }
+
+    toggleCamera(event) {
+        event.preventDefault();
+        const localMedia = this.state.localMedia;
+        if (localMedia.getVideoTracks().length > 0) {
+            const track = localMedia.getVideoTracks()[0];
+            track._switchCamera();
+            this.setState({mirror: !this.state.mirror});
+        }
     }
 
     saveConference(event) {
@@ -121,9 +133,19 @@ class LocalMedia extends Component {
 						</View>
                     </View>
                 :
-
                 <View style={buttonContainerClass}>
-                          <TouchableHighlight style={styles.roundshape}>
+                        <TouchableHighlight style={styles.roundshape}>
+						<IconButton
+							size={buttonSize}
+							style={styles.savebutton}
+							title="Toggle camera"
+							onPress={this.toggleCamera}
+							icon='camera-switch'
+							key="toggleVideo"
+						/>
+                        </TouchableHighlight>
+
+                        <TouchableHighlight style={styles.roundshape}>
                         <IconButton
                             size={buttonSize}
                             style={styles.hangupbutton}
@@ -140,7 +162,7 @@ class LocalMedia extends Component {
                              id="localVideo"
                              ref={this.localVideo}
                              streamURL={streamUrl}
-                             mirror={true}
+                             mirror={this.state.mirror}
                              />
                 </View>
             </Fragment>

@@ -35,7 +35,9 @@ class EditMessageModal extends Component {
         this.props.close();
     }
 
+
     render() {
+	    //console.log('mediaLabels', this.props.mediaLabels);
         const { show, close } = this.props;
         if (!show) return null;
 

@@ -735,11 +735,7 @@ class Sylk extends Component {
         if (Platform.OS !== 'android') {
             return;
         }
-
-        await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
-
-        this.requestDisplayOverOtherAppsPermission();
-
+       await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
     }
 
 	async  displayJoinNotification() {
@@ -1654,9 +1650,10 @@ class Sylk extends Component {
     }
 
 	componentDidUpdate(prevProps, prevState) {
-	     if (this.state.selectedContact && this.state.selectedContact != prevState.selectedContact) {
-			 this.getMessages(this.state.selectedContact.uri);
+	     if (this.state.selectedContact && !prevState.selectedContact) {
+			 this.getMessages(this.state.selectedContact.uri, {origin: 'componentDidUpdate'});
 	     }
+
 		 if (prevState.orientation !== this.state.orientation) {
 			 this.setState({searchContacts: this.state.orientation == 'portrait'});
 		 }
@@ -2210,7 +2207,7 @@ class Sylk extends Component {
             return;
         } else {
             if (route === '/ready' && this.state.selectedContact) {
-                this.getMessages(this.state.selectedContact.uri);
+                this.getMessages(this.state.selectedContact.uri, {origin: '/ready'});
             }
         }
 
@@ -3420,7 +3417,7 @@ class Sylk extends Component {
 	}
 
     selectContact(contact, origin='') {
-        console.log('selectContact', contact);
+        //console.log('selectContact', contact);
         if (contact !== this.state.selectedContact) {
             this.setState({pinned: false});
         }
@@ -3619,7 +3616,9 @@ class Sylk extends Component {
 
             this.replayJournal();
 
-            this.requestPermissions();
+			setTimeout(() => {
+				this.requestPermissions();
+			}, 60000);
 
             //if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
             // TODO if the call does not arrive, we never get back to ready
@@ -4246,6 +4245,10 @@ class Sylk extends Component {
                     this.timeoutIncomingTimer = null;
                 }
 
+				if (direction === 'outgoing' && Platform.OS === 'android') {
+					NativeModules.SylkBridge.setActiveCall(null);
+				}
+
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
                     newincomingCall = null;
                 }
@@ -4370,8 +4373,6 @@ class Sylk extends Component {
                     }
                 }
                 
-                
-
                 if (this.currentRoute !== '/call') {
                     this._notificationCenter.postSystemNotification(reason);
                 } else {
@@ -4386,6 +4387,9 @@ class Sylk extends Component {
                 if (play_busy_tone && oldState !== 'established' && direction === 'outgoing') {
                     //this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
                 }
+                
+                this.requestDisplayOverOtherAppsPermission();
+                        
 
                 break;
             default:
@@ -4484,7 +4488,8 @@ class Sylk extends Component {
         this.signup[account.id] = account.email;
         storage.set('signup', this.signup);
         storage.set('last_signup', account.id);
-
+		this.signIn = true;
+		this.changeRoute('/ready', 'enrollment');
         this.setState({displayName: account.displayName, enrollment: true, email: account.email});
         this.handleRegistration(account.id, account.password);
     }
@@ -4503,9 +4508,10 @@ class Sylk extends Component {
     }
 
     handleRegistration(accountId, password) {
-        //console.log('---- handleRegistration', accountId, 'verified =', this.state.accountVerified);
+        console.log('---- handleRegistration', accountId, 'verified =', this.state.accountVerified);
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
+            console.log('already registered');
             return;
         }
 
@@ -4514,12 +4520,9 @@ class Sylk extends Component {
             password  : password,
         });
 
-        if (!this.startedByPush) {
-            //this.updateLoading('Connecting...', 'handleRegistration');
-        }
-
         if (this.state.connection === null) {
-            const wsUrl = config.wsServer + '/ws';           
+            const wsUrl = config.wsServer + '/ws';        
+            console.log('Connecting to', wsUrl);   
             let connection = sylkrtc.createConnection({server: wsUrl});
             utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
             connection.on('stateChanged', this.connectionStateChanged);
@@ -4547,7 +4550,7 @@ class Sylk extends Component {
             displayName = this.state.displayName;
         }
 
-        //utils.timestampedLog('Process registration for', accountId, '(', displayName, ')');
+        utils.timestampedLog('Process registration for', accountId, '(', displayName, ')');
 
         if (!this.state.connection) {
             console.log('No connection');
@@ -5047,7 +5050,7 @@ class Sylk extends Component {
 		}
 
         this.getLocalMedia({audio: options.audio, video: options.video}, '/conference');
-        this.getMessages(targetUri);
+        this.getMessages(targetUri, {origin: 'startConference'});
     }
 
     timeoutCall(callUUID, uri) {
@@ -5380,6 +5383,10 @@ class Sylk extends Component {
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
         this.updateLoading(null, 'outgoing_call');
+		if (Platform.OS === 'android' && call.remoteIdentity.uri == this.state.accountId) {
+		    console.log('save to native'); 
+			NativeModules.SylkBridge.setActiveCall(call.remoteIdentity.uri);
+		}
     }
 
     outgoingConference(call) {
@@ -6233,22 +6240,17 @@ class Sylk extends Component {
 					this.replicateContact(contact);
                 }
             }
+
             let myContacts = this.state.myContacts;
 
             if (uri !== this.state.accountId) {
                 myContacts[uri] = contact;
                 let favorite = myContacts[uri].tags.indexOf('favorite') > -1 ? true: false;
                 let blocked = myContacts[uri].tags.indexOf('blocked') > -1 ? true: false;
-
                 this.updateFavorite(uri, favorite);
                 this.updateBlocked(uri, blocked);
-                this.setState({myContacts: myContacts});
             } else {
                 this.setState({email: contact.email, displayName: contact.name})
-                if (myContacts[uri].tags.indexOf('chat') > -1 || myContacts[uri].tags.indexOf('history') > -1) {
-                    myContacts[uri] = contact;
-                    this.setState({myContacts: myContacts});
-                }
             }
 
         }).catch((error) => {
@@ -6678,13 +6680,36 @@ class Sylk extends Component {
 		if (contentType === 'application/sylk-message-metadata') {
 		     const metadataContent = message.metadata;
 		     const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
+			 console.log('outgoing metadata message', message._id, metadataContent);
 
-			 selectedContact.messagesMetadata[mId] = metadataContent;
-			 myContacts[uri].messagesMetadata[mId] = metadataContent;
-			 
-		     //console.log('outgoing metadata message', message._id, metadataContent);
-
-			 this.setState({myContacts: myContacts, selectedContact: selectedContact});
+			 this.setState(prev => {
+				const uri = prev.selectedContact.uri;
+		
+				// Clone old structures
+				const newMessagesMetadata = {
+					...prev.myContacts[uri].messagesMetadata,
+					[mId]: metadataContent
+				};
+		
+				const newSelectedContact = {
+					...prev.selectedContact,
+					messagesMetadata: newMessagesMetadata
+				};
+		
+				const newMyContacts = {
+					...prev.myContacts,
+					[uri]: {
+						...prev.myContacts[uri],
+						messagesMetadata: newMessagesMetadata
+					}
+				};
+		
+				return {
+					myContacts: newMyContacts,
+					selectedContact: newSelectedContact,
+					messagesMetadata: newMessagesMetadata
+				};
+			 });
 
 			 this.saveOutgoingMessage(uri, message, 0, contentType);
 			 this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
@@ -8007,7 +8032,7 @@ class Sylk extends Component {
         this.setState({messageZoomFactor: messageZoomFactor, totalMessageExceeded: false});
 
         setTimeout(() => {
-            this.getMessages(this.state.selectedContact.uri);
+            this.getMessages(this.state.selectedContact.uri, {origin: 'loadEarlier'});
         }, 10);
     }
 
@@ -8050,7 +8075,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('autoDownloadFile', file_transfer);
+        //console.log('autoDownloadFile', file_transfer);
 
         let difference;
         let now = new Date();
@@ -8083,7 +8108,7 @@ class Sylk extends Component {
                 if (file_transfer.filesize < max_transfer_size) {
                     this.downloadFile(file_transfer);
                 } else {
-					console.log('--- File transfer', file_transfer.transfer_id, file_transfer.filename, 'is large:', file_transfer);
+					//console.log('--- File transfer', file_transfer.transfer_id, file_transfer.filename, 'is large:', file_transfer);
                 }
             }
         } else {
@@ -8192,7 +8217,7 @@ class Sylk extends Component {
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
 					this.saveDownloadTask(id, file_transfer.url, file_path);
 					if (this.state.callContact) {
-						this.getMessages(this.state.callContact.uri);
+						this.getMessages(this.state.callContact.uri, {origin: 'downloadfile'});
 					}
 				})
 				.catch((err) => {
@@ -8599,7 +8624,7 @@ class Sylk extends Component {
     }
 
     async getMessages(uri, filter={pinned: false, category: null, text:null}) {
-        console.log('Get messages');
+        console.log('Get messages', filter);
 
         let pinned=filter && 'pinned' in filter ? filter['pinned'] : false;
         let category=filter && 'category' in filter ? filter['category'] : null;
@@ -8698,6 +8723,7 @@ class Sylk extends Component {
             let foundMetadata = false;
             let metadataTimstamps = {};
 			let metadataContent;
+			let oldMetadataContent;
 			let mId;
 
             let last_content = null;
@@ -8801,22 +8827,56 @@ class Sylk extends Component {
 								*/
 	
 							try {
-								metadataTimstamps[mId] = item.unix_timestamp;
-								metadataContent.author = item.from_uri;
-								if (mId in myContacts[orig_uri].messagesMetadata) {
-									if (metadataContent.author === this.state.accountId) {
-										// local overwrites remote
-										myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
-										foundMetadata = true;
+								//metadataContent.author = item.from_uri;
+								if (mId == '1761b60a-d429-40e6-a8a6-a35f010436fa' && metadataContent.transferId) {
+									//console.log('DB metadataContent', metadataContent);
+								}
+
+								if (mId in metadataTimstamps) {
+									oldMetadataContent = myContacts[orig_uri].messagesMetadata[mId];
+									if (item.from_uri == this.state.accountId) {
+										if (oldMetadataContent.author != this.state.accountId) {
+											// is my own label
+											metadataTimstamps[mId] = item.unix_timestamp;
+											metadataContent.author = item.from_uri;
+											myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+											foundMetadata = true;
+										} else {
+										    if (item.timestamp > metadataTimstamps[mId]) {
+												this.deleteMessage(item.msg_id, item.from_uri);
+												metadataTimstamps[mId] = item.unix_timestamp;
+												metadataContent.author = item.from_uri;
+												myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+												foundMetadata = true;
+										    }
+										}
+									} else {
+										if (oldMetadataContent.author == metadataContent.author) {
+										    if (item.timestamp > metadataTimstamps[mId]) {
+												metadataTimstamps[mId] = item.unix_timestamp;
+												metadataContent.author = item.from_uri;
+												myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
+												foundMetadata = true;
+											} else {
+												this.deleteMessage(item.msg_id, item.from_uri);
+											}
+										}
 									}
 								} else {
+									metadataTimstamps[mId] = item.unix_timestamp;
+									metadataContent.author = item.from_uri;
 									myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
 									foundMetadata = true;
 								}
-		
-								if (foundMetadata && !metadataContent.replyId) {
-									//console.log('DB metadataContent', item.msg_id, item.unix_timestamp, metadataContent);
+								
+								if (foundMetadata) {
+									//console.log('foundMetadata', metadataContent);
 								}
+
+								if (foundMetadata && !metadataContent.replyId) {
+									//console.log('DB metadataContent', item.msg_id, item.timestamp, metadataContent);
+								}
+
 							} catch (error) {
 								console.log('Cannot handle metadataMessage', error);
 								continue;
@@ -9590,7 +9650,7 @@ class Sylk extends Component {
             this.refreshNavigationItems();
             this.updateServerHistory('syncConversations')
             if (this.state.selectedContact) {
-                this.getMessages(this.state.selectedContact.uri);
+                this.getMessages(this.state.selectedContact.uri, 'journal');
             }
         }, 1000);
     }
@@ -9782,7 +9842,6 @@ class Sylk extends Component {
                 stats.state = stats.state + 1;
 
             } else {
-
                 this.add_sync_pending_item(message.id);
 
                 if (message.sender.uri === this.state.account.id) {
@@ -9825,13 +9884,11 @@ class Sylk extends Component {
 							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
 							 if (mId in myContacts[uri].messagesMetadata) {
 							     const oldMetadataContent = myContacts[uri].messagesMetadata[mId];
-							     if (oldMetadataContent.author != this.state.accountId ) {							     
-									 metadataContent.author = uri;
+							     if (oldMetadataContent.author == uri ) {						     
 									 myContacts[uri].messagesMetadata[mId] = metadataContent;
 									 console.log('new metadataContent from journal', metadataContent);
 								 }
 							 }
-
 
 						 } catch (e) {
 							 console.log("error parsing metadataContent", message.content);
@@ -9890,11 +9947,11 @@ class Sylk extends Component {
         }
         */
 
-        this.setState({messages: renderMessages,
+        this.setState({messages: {...renderMessages},
                        updateContactUris: updateContactUris,
                        deletedContacts: deletedContacts,
                        purgeMessages: purgeMessages,
-                       myContacts: myContacts
+                       myContacts: {...myContacts}
                        });
 
         this.remove_sync_pending_item('sync_in_progress');
@@ -9996,25 +10053,55 @@ class Sylk extends Component {
 			try {
 				const metadataContent = JSON.parse(message.content);
 				const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-
 				console.log('incoming metadata message:', metadataContent);
-
-				if (!myContacts[message.sender.uri].hasOwnProperty('messagesMetadata')) {
-					myContacts[message.sender.uri].messagesMetadata = {}
+				let oldMetadataContent;
+				
+				const uri = message.sender.uri;
+				if (uri in this.state.myContacts && mId in this.state.myContacts[uri].messagesMetadata) {
+					oldMetadataContent = this.state.myContacts[uri].messagesMetadata[mId];
+					//console.log('oldMetadataContent', oldMetadataContent)
 				}
-					
-				myContacts[message.sender.uri].messagesMetadata[mId] = metadataContent;
-				if (selectedContact) {
-					if (!selectedContact.hasOwnProperty('messagesMetadata')) {
-						selectedContact.messagesMetadata = {}
-					}
-					selectedContact.messagesMetadata[mId] = metadataContent;
+				
+				let must_update = true;
+				
+				if (oldMetadataContent && oldMetadataContent.author != uri) {
+					must_update = false;
 				}
-				this.setState({myContacts: myContacts, 
-				               selectedContact: selectedContact});
+				
+				if (must_update) {
+					 this.setState(prev => {
+						const uri = prev.selectedContact.uri;
+				
+						// Clone old structures
+						const newMessagesMetadata = {
+							...prev.myContacts[uri].messagesMetadata,
+							[mId]: metadataContent
+						};
+				
+						const newSelectedContact = {
+							...prev.selectedContact,
+							messagesMetadata: newMessagesMetadata
+						};
+				
+						const newMyContacts = {
+							...prev.myContacts,
+							[uri]: {
+								...prev.myContacts[uri],
+								messagesMetadata: newMessagesMetadata
+							}
+						};
+				
+						return {
+							myContacts: newMyContacts,
+							selectedContact: newSelectedContact,
+							messagesMetadata: newMessagesMetadata
+						};
+					 });
+				 }
+			 
 
 			} catch (error) {
-				console.log('Cannot parse metadata payload')
+				console.log('Cannot parse metadata payload', error)
 			}
 			return;
 		}
