@@ -1,10 +1,7 @@
 Sylk Mobile
 ===========
 
-Short description
------------------
-
-Real time communications client based on open standards
+Fully featured SIP client based on open standards
 
 
 Description
@@ -13,27 +10,19 @@ Description
 Sylk Mobile is part of Sylk Suite, a set of real-time communications
 applications using IETF SIP protocol and WebRTC specifications.
 
-Sylk Mobile can place and receive calls to and from SIP addresses and WebRTC
-browsers.  File transfers are interoperable with SIP end-points supporting
-MSRP media. Messages are encrypted end-to-end using OpenPGP.
+Sylk Mobile can place and receive audio and video calls to and from SIP
+addresses and Web browsers. File transfers are interoperable with SIP
+end-points supporting MSRP media.  Messages are encrypted end-to-end using
+OpenPGP.
 
 
 Features
 --------
 
-* 1-to-1 audio and video calls
-* Encrypted end-to-end messaging
-* End-to-end asynchronous file transfers
-* Synchronization of multiple devices
-* Multiparty conferencing for all media
-* Call history entries management
-* Native address-book lookup
-* Native OS telephony integration
-* Support for multiple devices in parallel
-* Support for multiple cameras
-* Support for landscape and portrait modes
-* Support for tablets and phones
-* Interoperable with SIP clients
-* Interoperable with MSRP end-points
-* Interoperable with OMA RCS.07 infrastructure
+* Audio and video calls
+* End-to-end encrypted messaging
+* Advanced file transfers
+* Support for multiple devices 
+* Multiparty conferencing
+* Portrait and landscape mode
 * Receive calls from the web
