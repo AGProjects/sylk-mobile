@@ -33,6 +33,7 @@ class MainApplication : Application(), ReactApplication {
               add(ThumbnailServicePackage())
               add(CallForegroundServicePackage())
               add(AndroidSettingsPackage())
+              add(AudioRoutePackage())
             }
 
         override fun getJSMainModuleName(): String = "index"
