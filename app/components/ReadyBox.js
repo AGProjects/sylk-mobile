@@ -82,7 +82,10 @@ class ReadyBox extends Component {
 			fullScreen: this.props.fullScreen,
 			transferProgress: this.props.transferProgress,
 			contactIsSharing: this.props.contactIsSharing,
-			totalMessageExceeded: this.props.totalMessageExceeded
+			totalMessageExceeded: this.props.totalMessageExceeded,
+			sortOrder: 'desc',
+			orderBy: 'timestamp',
+			showOrderBar: false
         };
         this.ended = false;
 
@@ -225,6 +228,25 @@ class ReadyBox extends Component {
         this.setState({keyboardVisible: false, keyboardHeight: 0});
     }
     
+	componentDidUpdate(prevProps, prevState) {
+      if (prevState.orderBy !== this.state.orderBy) {
+            if (this.state.orderBy == 'size') {
+                this.setState({'sortOrder': 'desc'});
+            }
+
+            if (this.state.orderBy == 'timestamp') {
+                this.setState({'sortOrder': 'desc'});
+            }
+      }
+
+      if (prevState.sortOrder !== this.state.sortOrder) {
+	        //console.log('sortOrder changed', this.state.sortOrder);
+      }
+    }
+      
+      //console.log('this.state.scrollToBottom', this.state.scrollToBottom);
+
+
     filterHistory(filter) {
        if (this.ended) {
             return;
@@ -254,15 +276,15 @@ class ReadyBox extends Component {
        if (!filter) {
            if (!this.state.historyPeriodFilter) {
                /*
-               let sortBy;
-               if (this.state.sortBy == 'timestamp') {
+               let orderBy;
+               if (this.state.orderBy == 'timestamp') {
 				   this.props.postSystemNotification('Sort by used storage');
-				   sortBy = 'storage';
+				   orderBy = 'storage';
                } else {
 				   this.props.postSystemNotification('Sort by last message');
-				   sortBy = 'timestamp';
+				   orderBy = 'timestamp';
                }
-			   this.setState({'sortBy': sortBy});
+			   this.setState({'orderBy': orderBy});
 			   */
            }
            this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
@@ -416,6 +438,10 @@ class ReadyBox extends Component {
         }
 
         if (this.state.keyboardVisible && this.state.selectedContact) {
+            return false;
+        }        
+
+        if (this.state.orderBy === 'size' && this.state.selectedContact) {
             return false;
         }        
 
@@ -891,36 +917,17 @@ class ReadyBox extends Component {
 
         if (this.state.selectedContact) {
             let content_items = [];
+             
+            if (this.state.orderBy !== 'size') {
+				content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
+			}
+			content_items.push({key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
+			content_items.push({key: 'image', title: 'Image', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
+			content_items.push({key: 'video', title: 'Video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
+			content_items.push({key: 'other', title: 'Other', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
+
             if ('pinned' in this.state.contentTypes) {
                 content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned});
-            }
-
-            if ('text' in this.state.contentTypes) {
-                content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
-            }
-
-            if ('audio' in this.state.contentTypes) {
-                content_items.push({key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
-            }
-
-            if ('image' in this.state.contentTypes) {
-                content_items.push({key: 'image', title: 'Images', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
-            }
-
-            if ('movie' in this.state.contentTypes) {
-                content_items.push({key: 'movie', title: 'Movies', enabled: true, selected: this.state.messagesCategoryFilter === 'movie'});
-            }
-
-            if ('failed' in this.state.contentTypes) {
-                content_items.push({key: 'failed', title: 'Failed', enabled: true, selected: this.state.messagesCategoryFilter === 'failed'});
-            }
-
-            if ('paused' in this.state.contentTypes) {
-                content_items.push({key: 'paused', title: 'Paused', enabled: true, selected: this.state.messagesCategoryFilter === 'paused'});
-            }
-
-            if ('large' in this.state.contentTypes) {
-                content_items.push({key: 'large', title: 'Large', enabled: true, selected: this.state.messagesCategoryFilter === 'large'});
             }
 
             return content_items;
@@ -937,6 +944,47 @@ class ReadyBox extends Component {
               {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
               {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
+              ];
+    }
+
+    renderOrderItem(object) {
+        if (!object.item.enabled) {
+            return (null);
+        }
+
+        let title = object.item.title;
+        let key = object.item.key;
+        let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
+
+        if (key === "orderByTime") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
+        }
+
+        if (key === "orderBySize") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
+        }
+
+        if (key === "orderAscending") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
+        }
+
+        if (key === "orderDescending") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
+        }
+
+
+        return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
+    }
+
+
+    get sortOrderItems() {
+        return [
+              {key: null, title: 'Order:', enabled: true, selected: false},
+              {key: 'orderByTime', title: 'Time', enabled: true, selected: this.state.orderBy === 'timestamp'},
+              {key: 'orderBySize', title: 'Size', enabled: true, selected: this.state.orderBy === 'size'},
+              {key: 'divider1', title: '', enabled: true, selected: false},
+              {key: 'orderAscending', title: '↑ Asc', enabled: true, selected: this.state.sortOrder === 'asc'},
+              {key: 'orderDescending', title: '↓ Desc', enabled: true, selected: this.state.sortOrder === 'desc'},
               ];
     }
     
@@ -1275,6 +1323,27 @@ class ReadyBox extends Component {
                     </View>
                     : null}
 
+                    {(this.state.selectedContact && this.state.searchMessages) ?
+                    <View style={styles.navigationContainer}>
+                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                            horizontal={true}
+                            ref={(ref) => { this.navigationRef = ref; }}
+                              onScrollToIndexFailed={info => {
+                                const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                wait.then(() => {
+                                  if (!this.state.selectedContact) {
+                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  }
+                                });
+                              }}
+                            data={this.sortOrderItems}
+                            extraData={this.state}
+                            keyExtractor={(item, index) => item.key}
+                            renderItem={this.renderOrderItem}
+                        />
+                    </View>
+                    : null}
+
                         {this.showSearchBar?
                         <View style={URIContainerClass}>
                             <URIInput
@@ -1555,7 +1624,8 @@ class ReadyBox extends Component {
 						sourceContact = {this.state.sourceContact}
 						file2GiftedChat = {this.props.file2GiftedChat}
 						postSystemNotification = {this.props.postSystemNotification}
-						sortBy = {this.state.sortBy}
+						orderBy = {this.state.orderBy}
+						sortOrder = {this.state.sortOrder}
 						toggleSearchMessages = {this.props.toggleSearchMessages}
 						searchMessages = {this.state.searchMessages}
 						searchString = {this.state.searchString}
@@ -1571,6 +1641,7 @@ class ReadyBox extends Component {
 						totalMessageExceeded = {this.state.totalMessageExceeded}
 						requestDndPermission = {this.props.requestDndPermission}
 						gettingSharedAsset = {this.state.gettingSharedAsset}
+						selectAudioDevice = {this.props.selectAudioDevice}
 					/>
 					}
 
@@ -1735,6 +1806,7 @@ ReadyBox.propTypes = {
     sendDispositionNotification: PropTypes.func,
     totalMessageExceeded: PropTypes.bool,
     createChatContact: PropTypes.func,
+	selectAudioDevice: PropTypes.func
 };
 
 

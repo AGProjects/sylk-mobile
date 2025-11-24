@@ -98,7 +98,10 @@ class Call extends Component {
                       selectedContact: this.props.selectedContact,
                       callContact: this.props.callContact,
                       selectedContacts: this.props.selectedContacts,
-                      callEndReason: null
+                      callEndReason: null,
+                      userStartedCall: false,
+                      availableAudioDevices: this.props.availableAudioDevices,
+                      selectedAudioDevice: this.props.selectedAudioDevice
                       }
     }
 
@@ -183,7 +186,9 @@ class Call extends Component {
             this.setState({terminatedReason: nextProps.terminatedReason});
         }
 
-        this.setState({registrationState: nextProps.registrationState});
+        if ('userStartedCall' in nextProps) {
+			this.setState({userStartedCall: nextProps.userStartedCall});
+        }
 
         if (nextProps.localMedia && !this.state.localMedia) {
             let audioOnly = nextProps.localMedia.getVideoTracks().length === 0 ? true : false;
@@ -193,7 +198,9 @@ class Call extends Component {
 
         this.setState({messages: nextProps.messages,
                          selectedContacts: nextProps.selectedContacts,
-                         speakerPhoneEnabled: nextProps.speakerPhoneEnabled
+                         speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
+                         availableAudioDevices: nextProps.availableAudioDevices,
+                         selectedAudioDevice: nextProps.selectedAudioDevice
                          });
     }
 
@@ -373,10 +380,16 @@ class Call extends Component {
     }
 
     canConnect() {
+        
         if (!this.state.connection) {
             utils.timestampedLog('Call: no connection yet');
             return false;
         }
+
+		if (!this.state.userStartedCall) {
+			//console.log('Wait for user confirmation to start call');
+			//return
+		}
 
         if (this.state.connection.state !== 'ready') {
             utils.timestampedLog('Call: connection is not ready');
@@ -428,14 +441,29 @@ class Call extends Component {
             }
 
             if (!this.canConnect()) {
-                utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
+                //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 if (this.state.call && this.state.call.id === callUUID && this.state.call.state !== 'terminated') {
                     return;
                 }
 
                 if (this.waitCounter > 0 && this.waitCounter % 10 === 0) {
-                    utils.timestampedLog('Wait', this.waitCounter);
+                    //utils.timestampedLog('Wait', this.waitCounter);
                 }
+
+                /*
+                if (this.waitCounter == 3) {
+					this.props.startRingback();
+                }
+
+                if (this.waitCounter == 10) {
+					this.props.stopRingback();
+                }
+
+                if (this.waitCounter == 23) {
+					this.props.startRingback();
+                }
+                */
+
                 await this._sleep(1000);
             } else {
                 this.waitCounter = 0;
@@ -451,6 +479,10 @@ class Call extends Component {
 
     _sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    confirmStartCall() {
+        this.setState({userStartedCall: true});
     }
 
     start() {
@@ -536,6 +568,12 @@ class Call extends Component {
                         inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                         finishInvite = {this.props.finishInvite}
                         terminatedReason = {this.state.terminatedReason}
+                        confirmStartCall = {this.confirmStartCall}
+                        userStartedCall = {this.state.userStartedCall}
+                        availableAudioDevices = {this.state.availableAudioDevices}
+                        selectedAudioDevice = {this.state.selectedAudioDevice}
+                        selectAudioDevice = {this.props.selectAudioDevice}
+						useInCallManger = {this.props.useInCallManger}
                         />
                 );
             } else {
@@ -582,6 +620,10 @@ class Call extends Component {
                             finishInvite = {this.props.finishInvite}
                             terminatedReason = {this.state.terminatedReason}
                             videoMuted = {this.props.videoMuted}
+							availableAudioDevices = {this.state.availableAudioDevices}
+							selectedAudioDevice = {this.state.selectedAudioDevice}
+							selectAudioDevice = {this.props.selectAudioDevice}
+							useInCallManger = {this.props.useInCallManger}
                             />
                     );
                 } else {
@@ -606,6 +648,10 @@ class Call extends Component {
                                 showLogs = {this.props.showLogs}
                                 goBackFunc = {this.props.goBackFunc}
                                 terminatedReason = {this.state.terminatedReason}
+								availableAudioDevices = {this.state.availableAudioDevices}
+								selectedAudioDevice = {this.state.selectedAudioDevice}
+								selectAudioDevice = {this.props.selectAudioDevice}
+								useInCallManger = {this.props.useInCallManger}
                                 />
                         );
                     }
@@ -638,6 +684,10 @@ class Call extends Component {
                     inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                     finishInvite = {this.props.finishInvite}
                     terminatedReason = {this.state.terminatedReason}
+					availableAudioDevices = {this.state.availableAudioDevices}
+					selectedAudioDevice = {this.state.selectedAudioDevice}
+					selectAudioDevice = {this.props.selectAudioDevice}
+					useInCallManger = {this.props.useInCallManger}
                     />
             );
         }
@@ -687,7 +737,13 @@ Call.propTypes = {
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
     postSystemNotification  : PropTypes.func,
-	videoMuted              : PropTypes.bool
+	videoMuted              : PropTypes.bool,
+    availableAudioDevices   : PropTypes.array,
+    selectedAudioDevice     : PropTypes.string,
+    selectAudioDevice       : PropTypes.func,
+    startRingback           : PropTypes.func,
+    stopRingback            : PropTypes.func,
+    useInCallManger         : PropTypes.bool
 };
 
 

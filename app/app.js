@@ -46,6 +46,7 @@ import mime from 'react-native-mime-types';
 import { StatusBar } from 'react-native';
 import { LogBox } from 'react-native';
 import RNBlobUtil from 'react-native-blob-util';
+import NetInfo from "@react-native-community/netinfo";
 
 registerGlobals();
 
@@ -83,10 +84,13 @@ import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
 import DarkModeManager from './DarkModeManager';
-const { ScreenLockModule, SharedDataModule, AndroidSettings } = NativeModules;
+const { ScreenLockModule } = NativeModules;
+const { SharedDataModule } = NativeModules;
+const { AndroidSettings } = NativeModules;
+const { AudioRouteModule } = NativeModules;
 
 
-//debug.enable('*');
+//debug.enable('sylkrtc*');
   
 //import { registerForegroundListener } from '../firebase-messaging';
 
@@ -129,6 +133,20 @@ import styles from './assets/styles/blink/root.scss';
 const backgroundImage = require('./assets/images/dark_linen.png');
 
 const logger = new Logger("App");
+
+function logDevices(label, devices) {
+  if (!devices || devices.length === 0) {
+    console.log(`-- ${label}: (none)`);
+    return;
+  }
+
+  console.log(`-- ${label}:`);
+  devices.forEach(d => {
+    if (d) {
+      console.log(`  id: ${d.id}, name: ${d.name}, type: ${d.type}`);
+    }
+  });
+}
 
 function checkIosPermissions() {
     return new Promise(resolve => PushNotificationIOS.checkPermissions(resolve));
@@ -358,7 +376,12 @@ class Sylk extends Component {
             fullScreen: false,
             transferProgress: {},
             incomingMessage: {},
-            totalMessageExceeded: false
+            totalMessageExceeded: false,
+            availableAudioDevices: [],
+            selectedAudioDevice: null,
+            userSelectedDevice: null,
+            waitForCommunicationsDevicesChanged: false,
+            connectivity: null
         };
 
         this.buildId = "20250923";
@@ -379,6 +402,7 @@ class Sylk extends Component {
         this.syncRequested = false;
         this.mustSendPublicKey = false;
         this.conferenceEndedTimer = null;
+        this.unsubscribeNetInfo = null;
 
         this.syncTimer = null;
         this.lastSyncedMessageId = null;
@@ -679,6 +703,58 @@ class Sylk extends Component {
 		  
 	  }
   
+	  startWatchingNetwork() {
+		// Avoid duplicate listeners
+		if (this.unsubscribeNetInfo) return;
+	
+		this.unsubscribeNetInfo = NetInfo.addEventListener((state) => {
+		  const isWifi = state.type === "wifi";
+		  const isMobile = state.type === "cellular";
+	
+		  console.log("Network changed:", state.type, "connected:", state.isConnected);
+	
+		  if (isWifi) {
+	         this.setState({connectivity: 'wifi'});
+
+			console.log("Connected via Wi-Fi");
+			this.onWifi();
+		  } else if (isMobile) {
+			console.log("Connected via Mobile Data");
+			this.setState({connectivity: 'mobile'});
+			this.onMobile();
+		  }
+		});
+	  }
+	  
+	 stopWatchingNetwork() {
+		if (this.unsubscribeNetInfo) {
+		  this.unsubscribeNetInfo();
+		  this.unsubscribeNetInfo = null;
+		}
+	  }
+	
+	  async getCurrentNetwork() {
+		const state = await NetInfo.fetch();
+		return {
+		  isConnected: state.isConnected,
+		  isWifi: state.type === "wifi",
+		  isMobile: state.type === "cellular",
+		  type: state.type,
+		  details: state.details,
+		};
+	  }
+	
+	  onWifi() {
+		// Your custom logic when switching to Wi-Fi
+		console.log("→ Switched to Wi-Fi");
+	  }
+	
+	  onMobile() {
+		// Your custom logic when switching to mobile data
+		console.log("→ Switched to Mobile Data");
+	  }
+
+  
 	async getSharedFiles() {
 	  try {
 		const appGroupPath = await SharedDataModule.appGroupContainerPath();
@@ -730,8 +806,8 @@ class Sylk extends Component {
         }
     }
 
-    async requestPermissions() {
-        //console.log('requestPermissions');
+    async requestNotificationsPermission() {
+        //console.log('requestNotificationsPermission');
         if (Platform.OS !== 'android') {
             return;
         }
@@ -1038,6 +1114,17 @@ class Sylk extends Component {
             console.log('SQL keys update error:', error);
         });
     }
+
+	async getConnectionType() {
+	  const state = await NetInfo.fetch();
+	
+	  if (!state.isConnected) return "none";
+	
+	  if (state.type === "wifi") return "wifi";
+	  if (state.type === "cellular") return "cellular";
+	
+	  return "unknown";
+	}
 
     async saveLastSyncId(id, force=false) {
         if (!force) {
@@ -1657,6 +1744,35 @@ class Sylk extends Component {
 		 if (prevState.orientation !== this.state.orientation) {
 			 this.setState({searchContacts: this.state.orientation == 'portrait'});
 		 }
+		 
+		 if (prevState.userSelectedDevice !== this.state.userSelectedDevice && this.state.userSelectedDevice) {
+			 console.log('userSelectedDevice changed', prevState.userSelectedDevice, '->', this.state.userSelectedDevice);
+			 this.setState({userSelectedDevice: null, waitForCommunicationsDevicesChanged: true});
+			 if ( !this.useInCallManger) {
+				 setTimeout(() => {this.setState({waitForCommunicationsDevicesChanged: false});
+												AudioRouteModule.getEvent();
+												}, 2000);
+				 AudioRouteModule.setActiveDevice(this.state.userSelectedDevice);
+			 }
+		 }	 
+
+		 if (prevState.selectedDevice !== this.state.selectedDevice ) {
+		     //console.log('selectedDevice changed', prevState.selectedDevice ,  '->' , this.state.selectedDevice);
+			 this.setState({selectedAudioDevice: this.state.selectedDevice? this.state.selectedDevice.type: null});
+		 }	 
+
+		 if (prevState.audioOutputs !== this.state.audioOutputs) {
+			const outputNames = this.state.audioOutputs.map(d => d.type);  // extract names only
+			this.setState({ availableAudioDevices: outputNames });
+		 }
+	}
+
+    get useInCallManger() {
+		if (Platform.OS == 'android' && Platform.Version < 31) {
+		    return true;
+		}
+
+		return false;
 	}
 
     addTestContacts() {
@@ -2282,7 +2398,7 @@ class Sylk extends Component {
             if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
                 if (reason !== 'user_hangup_call') {
                     this.stopRingback();
-                    InCallManager.stop();
+                    this.audioManagerStop();
                 }
 
                 this.closeLocalMedia();
@@ -2325,6 +2441,7 @@ class Sylk extends Component {
             }
 
             if (reason === 'user_hangup_call') {
+				this.audioManagerStop();
                 setTimeout(() => {
 					if (this.phoneWasLocked) {
 						console.log('Send to background because phone was locked');
@@ -2335,6 +2452,7 @@ class Sylk extends Component {
 			}
 
             if (reason === 'no_more_calls') {
+				this.audioManagerStop();
                 this.updateServerHistory(reason);
                 this.updateLoading(null, 'incoming_call');
 
@@ -2456,29 +2574,7 @@ class Sylk extends Component {
     async componentDidMount() {
         utils.timestampedLog('-- App did mount');
         this._loaded = true;
-
-		notifee.onForegroundEvent(({ type, detail }) => {
-		  if (type === EventType.PRESS) {
-			console.log('[NOTIFEE] notification pressed', detail);
-		
-			const { notification } = detail;
-			const fromUri = notification?.data?.fromUri;
-			const messageId = notification?.data?.messageId;
-		
-			if (fromUri) {
-			  console.log('[NOTIFEE] Open chat:', fromUri);
-			}
-		  }
-		});
-
-
-		  await notifee.createChannel({
-			id: 'sylk-foreground', // same as channelId you will use
-			name: 'Sylk Foreground Alerts',
-			importance: AndroidImportance.HIGH,
-			sound: 'default', // optional
-		  });
-
+                
 		this.setState({dark: DarkModeManager.isDark()});
 
 		if (Platform.OS === 'ios') {
@@ -2501,6 +2597,7 @@ class Sylk extends Component {
         this.getTransferedFiles();
                 
 		if (Platform.OS === 'android') {
+			//AudioRouteModule.setPollingInterval(10000);
 
 			const eventEmitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
 			
@@ -2619,8 +2716,142 @@ class Sylk extends Component {
 		);
 		*/
 		
-        this.checkVersion();       
+        this.checkVersion();    
+        this.getAudioState();
+        this.startWatchingNetwork();
+   
+	}
+	
+	audioManagerStart() {
+		if (this.useInCallManger) {
+		    InCallManager.start({media: 'audio'});
+			return;
+	    }
+
+		logDevices("Inputs", this.state.audioInputs);
+		logDevices("Outputs", this.state.audioOutputs);
+		logDevices("Selected device", [this.state.selectedDevice]); // wrap single object in array
+          
+        console.log('this.state.selectedDevice', this.state.selectedDevice);
+		AudioRouteModule.start(this.state.selectedDevice);	
     }
+
+	audioManagerStop() {
+		if (this.useInCallManger) {
+		    InCallManager.stop();
+		    return;
+	    }
+
+		AudioRouteModule.stop();
+    }
+
+	async selectAudioDevice(deviceType) {
+		console.log('User selectAudioDevice', deviceType);
+
+		if (deviceType == this.state.selectedAudioDevice) {
+		    return;
+		}
+
+		if (this.state.waitForCommunicationsDevicesChanged) {
+			console.log('waitForCommunicationsDevicesChanged...');
+			return;
+		}
+		
+		const selectedDevice = this.state.audioOutputs.find(device => device.type === deviceType);
+
+		this.setState({ userSelectedDevice: selectedDevice, 
+		                selectedAudioDevice: null });
+		                
+		return;
+
+//		InCallManager.chooseAudioRoute(device);
+		if (deviceType == 'SPEAKER_PHONE') {
+           this.speakerphoneOn();
+        } else {
+           this.speakerphoneOff();
+        }
+
+		// Set Android audio routing
+		//AudioRouteModule.setAudioRoute(this.state.selectedAudioDevice);
+	}
+	
+	async getAudioState() {
+	    if (this.useInCallManger) {
+			return;
+	    }
+	
+		function devicesEqual(a, b) {
+		  // Treat null/undefined as empty arrays
+		  a = a || [];
+		  b = b || [];
+		
+		  if (a.length !== b.length) return false;
+		
+		  for (let i = 0; i < a.length; i++) {
+			const aItem = a[i] || {};
+			const bItem = b[i] || {};
+		
+			if ((aItem.id || '') !== (bItem.id || '') ||
+				(aItem.type || '') !== (bItem.type || '') ||
+				(aItem.name || '') !== (bItem.name || '')) {
+			  return false;
+			}
+		  }
+		
+		  return true;
+		}
+
+		function selectedDeviceEqual(a, b) {
+		  if (!a && !b) return true;       // both null/undefined
+		  if (!a || !b) return false;      // one is null
+		  return a.id === b.id && a.type === b.type && a.name === b.name;
+		}
+
+		try {
+			// Subscribe to native events
+			const audioEmitter = new NativeEventEmitter(AudioRouteModule);
+			this.audioRouteListener = audioEmitter.addListener('CommunicationsDevicesChanged',
+					({ selected, inputs, outputs, mode }) => {
+					const audioInputs = (inputs || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+					const audioOutputs = (outputs || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+					const selectedDevice = selected || {};
+
+					this.setState({
+						waitForCommunicationsDevicesChanged: false,
+					});
+
+					// Usage:
+					if (!devicesEqual(audioInputs, this.state.audioInputs)) {
+					  logDevices("Inputs changed", audioInputs);
+						this.setState({
+							audioInputs: audioInputs,
+						});
+					}
+	
+					if (!devicesEqual(audioOutputs, this.state.audioOutputs)) {
+						logDevices("Outputs changed", audioInputs);
+						this.setState({
+							audioOutputs: audioOutputs,
+						});
+					}
+
+					if (!selectedDeviceEqual(selectedDevice, this.state.selectedDevice)) {
+						logDevices("Selected device changed", [selectedDevice]); // wrap single object in array
+						// Update state
+						this.setState({
+							selectedDevice: selectedDevice
+						});
+						// console.log('Audio mode:', mode );
+					}
+				}
+			);
+	
+			AudioRouteModule.getEvent();
+
+		} catch (e) {
+			console.log('Audio device status error', e);
+		}
+	}
 
 	async checkInstaller() {
 	  const installer = await DeviceInfo.getInstallerPackageName(); 
@@ -3617,8 +3848,8 @@ class Sylk extends Component {
             this.replayJournal();
 
 			setTimeout(() => {
-				this.requestPermissions();
-			}, 60000);
+				this.requestNotificationsPermission();
+			}, 40000);
 
             //if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
             // TODO if the call does not arrive, we never get back to ready
@@ -3850,12 +4081,14 @@ class Sylk extends Component {
             return;
         }
 
+		this.audioManagerStart();
+
         this.setState({incomingCallUUID: callId,
                        incomingContact: contact,
                        incomingMedia: media
                        });
     }
-
+    
     playIncomingRingtone(callUUID, force=false) {
         if (!this.callKeeper.selfManaged) {
             console.log('playIncomingRingtone skip because we are not self managed....');
@@ -3955,7 +4188,7 @@ class Sylk extends Component {
     }
 
     stopRingback() {
-        //utils.timestampedLog('Stop ringback');
+        utils.timestampedLog('Stop ringback');
         this.ringbackActive = false;
         InCallManager.stopRingback();
     }
@@ -4110,7 +4343,7 @@ class Sylk extends Component {
             }
 
         } else if (this.state.currentCall) {
-            utils.timestampedLog('Call state changed: We have one current call');
+            utils.timestampedLog('Call state changed', newState);
             newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
             if (newState !== 'terminated') {
@@ -4130,7 +4363,7 @@ class Sylk extends Component {
 
         switch (newState) {
             case 'progress':
-                InCallManager.start({media: mediaType});
+
                 //this.callKeeper.setCurrentCallActive(callUUID);
                 //this.backToForeground();
 
@@ -4167,11 +4400,14 @@ class Sylk extends Component {
                 //this.callKeeper.setCurrentCallActive(callUUID);
                 //this.backToForeground();
                 this.stopRingback();
+                this.audioManagerStart();
                 break;
             case 'established':
                 callsState = this.state.callsState;
                 callsState[callUUID] = {startTime: new Date()};
                 this.setState({callsState: callsState});
+				//InCallManager.start({media: 'audio'});
+                this.audioManagerStart();
 
                 this.callKeeper.setCurrentCallActive(callUUID);
 
@@ -5034,6 +5270,10 @@ class Sylk extends Component {
     }
 
     startCall(targetUri, options) {
+		this.timeoutIncomingTimer = setTimeout(() => {
+		this.audioManagerStart();
+        }, 100);
+
         this.getLocalMedia(Object.assign({audio: true, video: options.video}, options), '/call');
     }
 
@@ -5203,6 +5443,8 @@ class Sylk extends Component {
             reason === 'local_media_timeout' ||
             reason === 'outgoing_connection_failed'
             ) {
+
+            
             this.setState({inviteContacts: false});
             this.changeRoute('/ready', reason);
             if (reason === 'user_hangup_conference_confirmed') {
@@ -5215,7 +5457,9 @@ class Sylk extends Component {
             if (reason === 'local_media_timeout') {
                 this._notificationCenter.postSystemNotification('Cannot get local media');
             }
+            this.audioManagerStop();
         } else if (reason === 'user_hangup_conference') {
+            this.audioManagerStop();
             if (!this.conferenceEndedTimer ) {
                 utils.timestampedLog('Save conference maybe?');
                 this.conferenceEndedTimer = setTimeout(() => {
@@ -5223,6 +5467,7 @@ class Sylk extends Component {
                 }, 15000);
             }
         } else if (reason === 'user_cancelled_conference') {
+            this.audioManagerStop();
             if (!this.conferenceEndedTimer ) {
                 utils.timestampedLog('Save conference maybe?');
                 this.conferenceEndedTimer = setTimeout(() => {
@@ -5230,6 +5475,7 @@ class Sylk extends Component {
                 }, 15000);
             }
         } else if (reason === 'cancelled_call') {
+            this.audioManagerStop();
             utils.timestampedLog('Will go to ready in 6 seconds (cancel)');
             this.setState({terminatedReason: 'Call cancelled'});
 
@@ -5331,29 +5577,24 @@ class Sylk extends Component {
     }
 
     toggleSpeakerPhone() {
-        if (this.state.speakerPhoneEnabled === true) {
+        console.log('toggleSpeakerPhone');
+    
+        if (this.state.speakerPhoneEnabled) {
             this.speakerphoneOff();
         } else {
             this.speakerphoneOn();
         }
     }
 
-    toggleCallMeMaybeModal() {
-        this.setState({showCallMeMaybeModal: !this.state.showCallMeMaybeModal});
-    }
-
-    toggleQRCodeScanner() {
-        //utils.timestampedLog('Toggle QR code scanner');
-        this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
-    }
-
-    async speakerphoneOn() {
+    speakerphoneOn() {
+        utils.timestampedLog('Speakerphone On');
         if (this.state.headsetIsPlugged) {
             utils.timestampedLog('Speakerphone disabled if headset is on');
             return;
         }
 
-        utils.timestampedLog('Speakerphone On');
+        InCallManager.chooseAudioRoute('SPEAKER_PHONE');
+
         this.setState({speakerPhoneEnabled: true});
         InCallManager.setForceSpeakerphoneOn(true);
         let call = this.state.currentCall || this.state.incomingCall;
@@ -5364,12 +5605,24 @@ class Sylk extends Component {
 
     speakerphoneOff() {
         utils.timestampedLog('Speakerphone Off');
+        InCallManager.chooseAudioRoute('EARPIECE');
+
         this.setState({speakerPhoneEnabled: false});
         InCallManager.setForceSpeakerphoneOn(false);
+
         let call = this.state.currentCall || this.state.incomingCall;
         if (call) {
             RNCallKeep.toggleAudioRouteSpeaker(call.id, false);
         }
+    }
+
+    toggleCallMeMaybeModal() {
+        this.setState({showCallMeMaybeModal: !this.state.showCallMeMaybeModal});
+    }
+
+    toggleQRCodeScanner() {
+        //utils.timestampedLog('Toggle QR code scanner');
+        this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
     }
 
     startGuestConference(targetUri) {
@@ -6833,6 +7086,7 @@ class Sylk extends Component {
 
     async uploadFile(file_transfer) {
         console.log('uploadFile', file_transfer.transfer_id);
+
         let encrypted_file;
         let outputFile;
         let local_url = file_transfer.local_url;
@@ -6872,7 +7126,7 @@ class Sylk extends Component {
 				console.log('do not resize');
             }
         }
-
+        
         let uri = file_transfer.receiver.uri;
 
         if (!file_transfer.filetype) {
@@ -6901,6 +7155,7 @@ class Sylk extends Component {
             return;
         }
 
+
 		encrypted_file = local_url + '.asc';
 		let encryptedFileExist = false;
 
@@ -6911,6 +7166,7 @@ class Sylk extends Component {
         }
 
         if (utils.isFileEncryptable(file_transfer) && !encryptedFileExist) {
+
             this.updateFileTransferBubble(file_transfer, 'Encrypting file...');
 			let public_keys = '';
 	
@@ -6954,15 +7210,14 @@ class Sylk extends Component {
 					return;
 					//this.renderSystemMessage(uri, error_message, 'outgoing');
 				} finally {
-
-					this.updateFileTransferBubble(file_transfer);
+					//this.updateFileTransferBubble(file_transfer);
 				}
 
 			} else {
 				console.log('No public key available for', uri, 'encryption skipped');
 			}
         }
-
+        
        utils.timestampedLog('Uploading file', local_url, 'to', remote_url);
 	   this.updateTransferProgress(file_transfer.transfer_id, 0, 'upload');
 
@@ -8052,7 +8307,13 @@ class Sylk extends Component {
     }
 
     async autoDownloadFile(file_transfer) {
-		if (file_transfer.transfer_id in this.downloadRequests) {
+    
+        if (this.state.connectivity == 'mobile' && file_transfer.filesize > 10 * 1000 * 1000) {
+        	console.log('--- Large file transfer skipped on mobile');
+ 			return;
+        }
+        
+ 		if (file_transfer.transfer_id in this.downloadRequests) {
 			return;
 		}
     
@@ -8118,7 +8379,7 @@ class Sylk extends Component {
 
     async downloadFile(file_transfer, force=false) {
         const res = await RNFS.getFSInfo();
-        console.log('Download file', file_transfer.url, file_transfer.filesize);
+        console.log('Download file', file_transfer.url, file_transfer.filesize, force);
         console.log('Available space', Math.ceil(res.freeSpace/1024/1024), 'MB');
 
         if (res.freeSpace < file_transfer.filesize) {
@@ -8139,11 +8400,16 @@ class Sylk extends Component {
             try {
                 await RNFS.unlink(dir_path);
                 utils.timestampedLog('File transfer directory deleted', dir_path);
+                console.log('Deleted', dir_path);
             } catch (err) {
                 console.log('Error removing directory', err.message);
             };
 
             file_transfer.local_url = null;
+            file_transfer.image = null;
+            file_transfer.audio = null;
+            file_transfer.video = null;
+            file_transfer.received = false;
             file_transfer.failed = false;
             file_transfer.error = null;
 
@@ -8206,13 +8472,15 @@ class Sylk extends Component {
         }).done(() => {
 			ReactNativeBlobUtil.fs.stat(tmp_file_path).then(stat => {
 			    filesize = stat.size;
-				//console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
+				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
 				delete this.downloadRequests[id];
 
 				file_transfer.error = null;
 				this.updateFileTransferSql(file_transfer, encrypted);
 
 				this.deleteTransferProgress(file_transfer.transfer_id);
+
+				//this.updateFileTransferBubble(file_transfer);
 
 				RNFS.moveFile(tmp_file_path, file_path).then((success) => {
 					this.saveDownloadTask(id, file_transfer.url, file_path);
@@ -8893,6 +9161,12 @@ class Sylk extends Component {
 						last_content = content;
 						msg = utils.sql2GiftedChat(item, content, filter);
 						
+						// Prevent crash when msg is null
+						if (!msg) {
+							myContacts[orig_uri].totalMessages -= 1;
+							continue;
+						}
+
 						if (msg.metadata?.filename) {
 							//console.log('file', msg.metadata?.filename);
 						}
@@ -8907,7 +9181,7 @@ class Sylk extends Component {
 						} else if (msg.image) {
 							contentTypes['image'] = true;
 						} else if (msg.video) {
-							contentTypes['movie'] = true;
+							contentTypes['video'] = true;
 						} else {
 							contentTypes['text'] = true;
 						}
@@ -8927,11 +9201,7 @@ class Sylk extends Component {
 							if (msg.metadata.paused) {
 								contentTypes['paused'] = true;
 							}
-	
-							if (msg.metadata.filesize && msg.metadata.filesize > utils.HUGE_FILE_SIZE) {
-								contentTypes['large'] = true;
-							}
-	
+		
 							if (msg.metadata.failed) {
 								contentTypes['failed'] = true;
 							}
@@ -8941,7 +9211,7 @@ class Sylk extends Component {
 						
 					}
 					} catch (e) {
-						console.log('SQL row error', e);
+						console.log('SQL row error', e, item);
 					}
 				}
 	
@@ -10474,7 +10744,7 @@ class Sylk extends Component {
     }
 
     async updateFileTransferSql(file_transfer, encrypted=0, reset=false) {
-        //console.log('updateFileTransferSql reset;', reset)
+        //console.log('updateFileTransferSql reset:', reset)
         let query = "SELECT * from messages where msg_id = ? and account = ?";
         await this.ExecuteQuery(query, [file_transfer.transfer_id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -10487,7 +10757,7 @@ class Sylk extends Component {
 					}
                 }
                 var item = rows.item(0);
-                let received = reset ? '1' : item.received;
+                let received = reset ? file_transfer.received : item.received;
 
                 if (!reset && this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
                     if (encrypted === 2 || encrypted === 0) {
@@ -10505,10 +10775,7 @@ class Sylk extends Component {
                 let params = [JSON.stringify(file_transfer), encrypted, file_transfer.transfer_id, this.state.accountId];
                 query = "update messages set metadata = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
-                    //console.log('SQL updated file transfer', file_transfer.transfer_id, 'received =', received, 'encrypted =', encrypted);
-                    if (!reset) {
-						this.updateFileTransferBubble(file_transfer);
-                    }
+					this.updateFileTransferBubble(file_transfer);
                 }).catch((error) => {
                     console.log('updateFileTransferSql SQL error:', error);
                 });
@@ -10768,60 +11035,86 @@ class Sylk extends Component {
         }
     }
 
-    updateFileTransferBubble(metadata, text=null) {
-        if (!this.state.selectedContact) {
-            return;
-        }
+	updateFileTransferBubble(metadata, text = null) {
+		if (!this.state.selectedContact) {
+			return;
+		}
+	
+		console.log('updateFileTransferBubble', metadata.filename);
+	
+		const id = metadata.transfer_id;
+	
+		let renderMessages = this.state.messages;
+		let existingMessages = renderMessages[this.state.selectedContact.uri];
+	
+		if (!existingMessages) {
+			return;
+		}
+	
+		let newMessages = existingMessages.map((msg) => {
+			if (msg._id !== id) {
+				// unchanged message → keep original reference
+				return msg;
+			}
+	
+			// *** CREATE NEW MESSAGE OBJECT ***
+			let newMsg = { ...msg };
+	
+			// update text
+			newMsg.text = text || utils.beautyFileNameForBubble(metadata);
+	
+			if (metadata.error) {
+				newMsg.text += ' - ' + utils.getErrorMessage(metadata.error);
+				newMsg.failed = true;
+			} else {
+				newMsg.failed = false;
+			}
+	
+			// copy metadata immutably
+			newMsg.metadata = { ...metadata };
+	
+			// reset media fields
+			newMsg.image = null;
+			newMsg.video = null;
+			newMsg.audio = null;
+	
+			// handle media previews
+			const isAsc = metadata.local_url?.endsWith('.asc');
+	
+			if (metadata.local_url && !isAsc) {
+	
+				const localPath = Platform.OS === "android"
+					? 'file://' + metadata.local_url
+					: metadata.local_url;
+	
+				if (utils.isImage(metadata.filename, metadata.filetype)) {
+					if (metadata.b64) {
+						newMsg.image = `data:${metadata.filetype};base64,${metadata.b64}`;
+					} else {
+						newMsg.image = localPath;
+					}
+				} else if (utils.isAudio(metadata.filename)) {
+					newMsg.audio = localPath;
+				} else if (utils.isVideo(metadata.filename, metadata.filetype)) {
+					newMsg.video = localPath;
+				}
+			}
+	
+			//console.log('updated fileTransferBubble', newMsg._id, newMsg.metadata.local_url, newMsg.image);
+	
+			return newMsg;
+		});
+	
+		// update message list immutably
+		renderMessages = {
+			...renderMessages,
+			[this.state.selectedContact.uri]: newMessages,
+		};
+	
+		this.setState({ messages: renderMessages });
+	}
+	
 
-        //console.log('updateFileTransferBubble', metadata);
-
-        let id = metadata.transfer_id;
-
-        let renderMessages = this.state.messages;
-        let existingMessages = renderMessages[this.state.selectedContact.uri];
-
-        if (!existingMessages) {
-            return;
-        }
-
-        let newMessages = [];
-
-        existingMessages.forEach((msg) => {
-            if (msg._id === id) {
-                msg.text = text || utils.beautyFileNameForBubble(metadata);
-                if (metadata.error) {
-                    msg.text = msg.text + ' - ' + utils.getErrorMessage(metadata.error);
-                    msg.failed = true;
-                } else {
-                    msg.failed = false;
-                }
-
-                msg.metadata = metadata;
-                if (!metadata.local_url || (metadata.local_url && metadata.local_url.endsWith('.asc'))) {
-                    msg.image = null;
-                    msg.video = null;
-                    msg.audio = null;
-                } else {
-                    if (utils.isImage(metadata.filename, metadata.filetype)) {
-                        if (metadata.b64) {
-                            msg.image = `data:${metadata.filetype};base64,${metadata.b64}`;
-                        } else {
-                            msg.image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                        }
-                    } else if (utils.isAudio(metadata.filename)) {
-                        msg.audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                    } else if (utils.isVideo(metadata.filename, metadata)) {
-                        msg.video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                    }
-                }
-                //console.log('updateFileTransferBubble', msg);
-            }
-            newMessages.push(msg);
-        });
-
-        renderMessages[this.state.selectedContact.uri] = newMessages;
-        this.setState({messages: renderMessages});
-    }
 
     async renderSystemMessage(uri, content, direction, timestamp) {
         let myContacts = this.state.myContacts;
@@ -12434,6 +12727,7 @@ class Sylk extends Component {
 					sendDispositionNotification = {this.sendDispositionNotification}
 					totalMessageExceeded = {this.state.totalMessageExceeded}
 					createChatContact = {this.createChatContact}
+					selectAudioDevice = {this.selectAudioDevice}
                 />
 
                 <ImportPrivateKeyModal
@@ -12466,15 +12760,12 @@ class Sylk extends Component {
                     localMedia = {this.state.localMedia}
                     hangupCall = {this.hangupCall}
                     setDevice = {this.setDevice}
-                    selectedDevices = {this.state.devices}
+                    selectedavailableAudioDevices = {this.state.devices}
                 />
             </Fragment>
         );
     }
 
-    saveSlider(position) {
-        this.setState({conferenceSliderPosition: position});
-    }
 
     call() {
         let call = this.state.currentCall || this.state.incomingCall;
@@ -12537,6 +12828,12 @@ class Sylk extends Component {
                 postSystemNotification = {this.postSystemNotification}
                 terminatedReason = {this.state.terminatedReason}
                 videoMuted = {videoMuted}
+				startRingback = {this.startRingback}
+				stopRingback = {this.stopRingback}
+				useInCallManger = {this.useInCallManger}
+				availableAudioDevices = {this.state.availableAudioDevices}
+				selectedAudioDevice = {this.state.selectedAudioDevice}
+				selectAudioDevice = {this.selectAudioDevice}
             />
         )
     }
@@ -12637,8 +12934,11 @@ class Sylk extends Component {
                 getMessages = {this.getMessages}
                 finishInvite={this.finishInviteToConference}
                 sendConferenceMessage={this.sendConferenceMessage}
-                conferenceSliderPosition={this.state.conferenceSliderPosition}
-                saveSliderFunc={this.saveSlider}
+				useInCallManger = {this.useInCallManger}
+				availableAudioDevices = {this.state.availableAudioDevices}
+				selectedAudioDevice = {this.state.selectedAudioDevice}
+				selectAudioDevice = {this.selectAudioDevice}
+
             />
         )
     }

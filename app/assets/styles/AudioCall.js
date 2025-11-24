@@ -70,6 +70,13 @@ const styles = StyleSheet.create({
     borderWidth: 0,
   },
 
+  confirmContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    flex: 1,
+    borderWidth: 0,
+  },
+
   roundshape: {
     height: 48,
     width: 48,
@@ -79,6 +86,13 @@ const styles = StyleSheet.create({
 
   whiteButton: {
     backgroundColor: 'white',
+  },
+
+  confirm: {
+    fontSize: 20,
+    textAlign: 'center',
+    color: 'white',
+    marginVertical: 20
   },
 
   greenButton: {
@@ -126,6 +140,35 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: 'white',
   },
+
+  audioDeviceContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',   // center horizontally
+    alignItems: 'center',       // center vertically
+    width: '100%',              // ensures proper centering
+    marginTop: 10,
+    marginBottom: 10,
+    },
+    
+  audioDeviceButtonContainer: {
+    margin: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    borderRadius: 10, // slightly larger than 24 so border is not clipped
+    padding: 2,       // space so the border wraps around cleanly
+  },
+
+  audioDeviceSelected: {
+    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    borderColor: 'green',
+  },
+
+  audioDeviceWhiteButton: {
+    backgroundColor: '#fff',
+  },
+
 });
 
 export default styles;

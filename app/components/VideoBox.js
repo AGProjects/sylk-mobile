@@ -5,7 +5,7 @@ import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors } from 'react-native-paper';
-import { View, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform  } from 'react-native';
+import { View, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import {StatusBar} from 'react-native';
 import Immersive from 'react-native-immersive';
@@ -70,7 +70,9 @@ class VideoBox extends Component {
             myVideoCorner: 'topLeft',
             fullScreen: false,
             enableMyVideo: true,
-            swapVideo: false
+            swapVideo: false,
+			availableAudioDevices : this.props.availableAudioDevices,
+			selectedAudioDevice: this.props.selectedAudioDevice
         };
 
 		this.prevStats = {}; // initialize here
@@ -146,7 +148,9 @@ class VideoBox extends Component {
                        selectedContact: nextProps.selectedContact,
                        selectedContacts: nextProps.selectedContacts,
                        localMedia: nextProps.localMedia,
-                       terminatedReason: nextProps.terminatedReason
+                       terminatedReason: nextProps.terminatedReason,
+					   availableAudioDevices: nextProps.availableAudioDevices,
+					   selectedAudioDevice: nextProps.selectedAudioDevice
                        });
 
     }
@@ -407,6 +411,70 @@ class VideoBox extends Component {
 		return this.state.remoteStream ? this.state.remoteStream.toURL() : null
     }
 
+	renderAudioDeviceButtons() {
+	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
+	  if (!this.state.callOverlayVisible) {
+		 return null;
+	  }
+	
+	  let buttonsContainerClass;
+
+        if (this.props.isTablet) {
+            buttonsContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
+        } else {
+            buttonsContainerClass = this.props.orientation === 'landscape' ? styles.landscapebuttonsContainer : styles.portraitbuttonsContainer;
+        }
+	  
+	  if (!call || call.state !== 'established') {
+		 return null;
+	  }
+	 
+	  if (this.props.useInCallManger) {
+		 return null;
+	  }
+
+      if (!availableAudioDevices) return null;
+	  
+	  const availableAudioDevicesIconsMap = {
+		BUILTIN_EARPIECE: 'phone',
+		WIRED_HEADSET: 'headphones',
+		BLUETOOTH_SCO: 'bluetooth-audio',
+		BUILTIN_SPEAKER: 'volume-high',
+	  };
+	
+	  return (
+	  <View style={buttonsContainerClass}>
+		<View style={styles.audioDeviceContainer}>
+		  {availableAudioDevices.map((device) => {
+			const icon = availableAudioDevicesIconsMap[device];
+			if (!icon) return null;
+	
+			const isSelected = device === selectedAudioDevice;
+	
+		return (
+		  <View
+			key={device}
+			style={[
+			  styles.audioDeviceButtonContainer,
+			  isSelected && styles.audioDeviceSelected
+			]}
+		  >
+			<TouchableHighlight>
+			  <IconButton
+				size={34}
+				style={styles.audioDeviceWhiteButton}
+				icon={icon}
+				onPress={() => this.props.selectAudioDevice(device)}
+			  />
+			</TouchableHighlight>
+			  </View>
+			);
+		  })}
+		</View>
+		</View>
+	  );
+	}
+
     render() {
 
         if (this.state.call === null) {
@@ -503,18 +571,25 @@ class VideoBox extends Component {
                     icon='camera-switch'
                     key="toggleVideo"
                 />
+
+				{ this.props.useInCallManger ?
                 <IconButton
                     size={buttonSize}
                     style={[buttonClass]}
                     icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                     onPress={this.props.toggleSpeakerPhone}
                 />
+                : null
+                }
+
                 <IconButton
                     size={buttonSize}
                     style={[buttonClass, styles.hangupButton]}
                     onPress={this.hangupCall}
                     icon="phone-hangup"
                 />
+                
+                
             </View>);
             buttons = (<View style={buttonsContainer}>{content}</View>);
         }
@@ -743,6 +818,8 @@ class VideoBox extends Component {
 
                 {buttons}
 
+				{this.renderAudioDeviceButtons()}
+
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}
                     call={this.state.call}
@@ -795,7 +872,11 @@ VideoBox.propTypes = {
     inviteToConferenceFunc  : PropTypes.func,
     finishInvite            : PropTypes.func,
     terminatedReason        : PropTypes.string,
-    videoMuted              : PropTypes.bool
+    videoMuted              : PropTypes.bool,
+	useInCallManger         : PropTypes.bool,
+    availableAudioDevices   : PropTypes.array,
+    selectedAudioDevice     : PropTypes.string,
+    selectAudioDevice       : PropTypes.func,
 };
 
 export default VideoBox;

@@ -108,6 +108,36 @@ const styles = StyleSheet.create({
   hangupButton: {
     backgroundColor: 'rgba(169, 68, 66, 0.5)', // #a94442 + 0.5
   },
+
+  audioDeviceContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',   // center horizontally
+    alignItems: 'center',       // center vertically
+    width: '100%',              // ensures proper centering
+    marginTop: 10,
+    marginBottom: 10,
+    },
+    
+  audioDeviceButtonContainer: {
+    margin: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    marginBottom: 60,
+    borderColor: 'transparent',
+    borderRadius: 10, // slightly larger than 24 so border is not clipped
+    padding: 2,       // space so the border wraps around cleanly
+  },
+
+  audioDeviceSelected: {
+    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    borderColor: 'green',
+  },
+
+  audioDeviceWhiteButton: {
+    backgroundColor: '#fff',
+  },
+  
 });
 
 export default styles;

@@ -48,7 +48,10 @@ class AudioCallBox extends Component {
             selectedContact             : this.props.selectedContact,
             terminatedReason            : this.props.terminatedReason,
             speakerPhoneEnabled         : this.props.speakerPhoneEnabled,
-            audioGraphData              : []
+            audioGraphData              : [],
+            userStartedCall             : this.props.userStartedCall,
+			availableAudioDevices       : this.props.availableAudioDevices,
+			selectedAudioDevice         : this.props.selectedAudioDevice
         };
 
         this.remoteAudio = React.createRef();
@@ -106,7 +109,7 @@ class AudioCallBox extends Component {
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
             // Remove previous listener safely
             if (this.state.call != null && this.state.call.removeListener) {
-                this.state.call.on('stateChanged', this.callStateChanged);
+                this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
 
             // Attach new listener if available
@@ -125,6 +128,10 @@ class AudioCallBox extends Component {
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
+        
+        if ('userStartedCall' in nextProps) {
+			this.setState({userStartedCall: nextProps.userStartedCall});
+		}
 
         this.setState({
             audioMuted: nextProps.muted,
@@ -143,6 +150,8 @@ class AudioCallBox extends Component {
             terminatedReason: nextProps.terminatedReason,
             speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
             localMedia: nextProps.localMedia,
+		    availableAudioDevices: nextProps.availableAudioDevices,
+			selectedAudioDevice: nextProps.selectedAudioDevice
         });
     }
 
@@ -232,6 +241,57 @@ class AudioCallBox extends Component {
         }
     }
 
+	renderAudioDeviceButtons() {
+	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
+	  
+	  if (!call || call.state !== 'established') {
+		 return null;
+	  }
+	 
+	  if (this.props.useInCallManger) {
+		 return null;
+	  }
+
+      if (!availableAudioDevices) return null;
+	  
+	  const availableAudioDevicesIconsMap = {
+		BUILTIN_EARPIECE: 'phone',
+		WIRED_HEADSET: 'headphones',
+		BLUETOOTH_SCO: 'bluetooth-audio',
+		BUILTIN_SPEAKER: 'volume-high',
+	  };
+	
+	  return (
+		<View style={styles.audioDeviceContainer}>
+		  {availableAudioDevices.map((device) => {
+			const icon = availableAudioDevicesIconsMap[device];
+			if (!icon) return null;
+	
+			const isSelected = device === selectedAudioDevice;
+	
+		return (
+		  <View
+			key={device}
+			style={[
+			  styles.audioDeviceButtonContainer,
+			  isSelected && styles.audioDeviceSelected
+			]}
+		  >
+			<TouchableHighlight>
+			  <IconButton
+				size={34}
+				style={styles.audioDeviceWhiteButton}
+				icon={icon}
+				onPress={() => this.props.selectAudioDevice(device)}
+			  />
+			</TouchableHighlight>
+			  </View>
+			);
+		  })}
+		</View>
+	  );
+	}
+
     render() {
 
         let buttonContainerClass;
@@ -304,6 +364,35 @@ class AudioCallBox extends Component {
 					<Text style={styles.uri}>{this.state.remoteUri}</Text>
 				</TouchableWithoutFeedback>
 
+				 {false && (
+				  <View style={styles.confirmContainer}>
+						<Text style={styles.confirm}>Please confirm...</Text>
+                        <View style={buttonContainerClass}>
+						<View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={greenButtonClass}
+                                icon="phone"
+                                onPress={this.props.confirmStartCall}
+                            />
+                        </TouchableHighlight>
+                      </View>
+						<View style={styles.buttonContainer}>
+                          <TouchableHighlight style={styles.roundshape}>
+                            <IconButton
+                                size={buttonSize}
+                                style={hangupButtonClass}
+                                icon="phone-hangup"
+                                onPress={this.cancelCall}
+                            />
+                        </TouchableHighlight>
+                      </View>
+                      </View>
+
+                      </View>
+                      )}
+
                 <TrafficStats
                     isTablet={this.props.isTablet}
                     orientation={this.props.orientation}
@@ -318,6 +407,7 @@ class AudioCallBox extends Component {
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
+
                         <View style={buttonContainerClass}>
                             {!disablePlus ?
                                 <View style={styles.buttonContainer}>
@@ -353,6 +443,8 @@ class AudioCallBox extends Component {
                                         onPress={this.muteAudio} />
                                 </TouchableHighlight>
                             </View>
+
+							{ this.props.useInCallManger ?
                             <View style={styles.buttonContainer}>
                                 <TouchableHighlight style={styles.roundshape}>
                                     <IconButton
@@ -362,6 +454,7 @@ class AudioCallBox extends Component {
                                         onPress={this.props.toggleSpeakerPhone} />
                                 </TouchableHighlight>
                             </View>
+                            : null}
 
                             {isPhoneNumber ?
                                 <View style={styles.buttonContainer}>
@@ -386,28 +479,8 @@ class AudioCallBox extends Component {
                             </View>
                         </View></>
                     :
-                    <View style={buttonContainerClass}>
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={whiteButtonClass}
-                                icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
-                                onPress={this.muteAudio}
-                            />
-                        </TouchableHighlight>
-                      </View>
 
-                      <View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={whiteButtonClass}
-                                icon={this.state.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
-                                onPress={this.props.toggleSpeakerPhone}
-                            />
-                        </TouchableHighlight>
-                      </View>
+                    <View style={buttonContainerClass}>
                       <View style={styles.buttonContainer}>
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
@@ -420,6 +493,8 @@ class AudioCallBox extends Component {
                       </View>
                     </View>
                 }
+
+				{this.renderAudioDeviceButtons()}
 
                 <DTMFModal
                     show={this.state.showDtmfModal}
@@ -476,7 +551,13 @@ AudioCallBox.propTypes = {
     selectedContacts: PropTypes.array,
     inviteToConferenceFunc: PropTypes.func,
     finishInvite: PropTypes.func,
-    terminatedReason: PropTypes.string
+    terminatedReason: PropTypes.string,
+	confirmStartCall: PropTypes.func,
+	userStartedCall: PropTypes.bool,
+    availableAudioDevices : PropTypes.array,
+    selectedAudioDevice : PropTypes.string,
+    selectAudioDevice: PropTypes.func,
+    useInCallManger: PropTypes.bool
 };
 
 export default AudioCallBox;

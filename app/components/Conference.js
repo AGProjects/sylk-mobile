@@ -45,7 +45,9 @@ class Conference extends React.Component {
               isFavorite: this.props.favoriteUris.indexOf(this.props.targetUri) > -1,
               selectedContacts: this.props.selectedContacts,
               room: room,
-              messages: this.props.messages
+              messages: this.props.messages,
+			  availableAudioDevices : this.props.availableAudioDevices,
+			  selectedAudioDevice: this.props.selectedAudioDevice
         }
               
         if (this.props.connection) {
@@ -138,7 +140,9 @@ class Conference extends React.Component {
         this.setState({myInvitedParties: nextProps.myInvitedParties,
                        isFavorite: nextProps.favoriteUris.indexOf(this.state.room) > -1,
                        selectedContacts: nextProps.selectedContacts,
-                       messages: nextProps.messages
+                       messages: nextProps.messages,
+					   availableAudioDevices: nextProps.availableAudioDevices,
+					   selectedAudioDevice: nextProps.selectedAudioDevice
                        });
     }
 
@@ -343,6 +347,8 @@ class Conference extends React.Component {
     render() {
         let box = null;
         let messages = [];
+        
+        console.log('selectedAudioDevice xx', this.state.selectedAudioDevice);
 
         if (this.state.localMedia !== null) {
             let media = 'audio'
@@ -391,8 +397,10 @@ class Conference extends React.Component {
                         getMessages={this.props.getMessages}
                         fileSharingUrl = {this.props.fileSharingUrl}
                         sendConferenceMessage = {this.props.sendConferenceMessage}
-                        conferenceSliderPosition = {this.props.conferenceSliderPosition}
-                        saveSliderFunc = {this.props.saveSliderFunc}
+						availableAudioDevices = {this.state.availableAudioDevices}
+						selectedAudioDevice = {this.state.selectedAudioDevice}
+						selectAudioDevice = {this.props.selectAudioDevice}
+						useInCallManger = {this.props.useInCallManger}
                    />
                 );
             } else {
@@ -412,6 +420,10 @@ class Conference extends React.Component {
                         reconnectingCall={this.state.reconnectingCall}
                         goBackFunc={this.props.goBackFunc}
                         media={media}
+						availableAudioDevices = {this.state.availableAudioDevices}
+						selectedAudioDevice = {this.state.selectedAudioDevice}
+						selectAudioDevice = {this.props.selectAudioDevice}
+						useInCallManger = {this.props.useInCallManger}
                     />
 
                 );
@@ -468,8 +480,10 @@ Conference.propTypes = {
     getMessages             : PropTypes.func,
     fileSharingUrl          : PropTypes.string,
     sendConferenceMessage   : PropTypes.func,
-    conferenceSliderPosition : PropTypes.number,
-    saveSliderFunc: PropTypes.func
+    useInCallManger         : PropTypes.bool,
+    availableAudioDevices   : PropTypes.array,
+    selectedAudioDevice     : PropTypes.string,
+    selectAudioDevice       : PropTypes.func,
 };
 
 

@@ -6,7 +6,7 @@ import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
-import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer} from 'react-native-gifted-chat'
+import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer, Day} from 'react-native-gifted-chat'
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
 import MessageInfoModal from './MessageInfoModal';
 import EditMessageModal from './EditMessageModal';
@@ -103,7 +103,8 @@ class ContactsListBox extends Component {
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
             isRefreshing: false,
-            sortBy: this.props.sortBy,
+            orderBy: this.props.orderBy,
+            sortOrder: this.props.sortOrder,
             isLandscape: this.props.isLandscape,
             contacts: this.props.contacts,
             myInvitedParties: this.props.myInvitedParties,
@@ -330,8 +331,12 @@ class ContactsListBox extends Component {
             this.setState({contacts: nextProps.contacts});
         }
 
-        if (nextProps.sortBy !== this.state.sortBy) {
-            this.setState({sortBy: nextProps.sortBy});
+        if (nextProps.orderBy !== this.state.orderBy) {
+            this.setState({orderBy: nextProps.orderBy});
+        }
+
+        if (nextProps.sortOrder !== this.state.sortOrder) {
+            this.setState({sortOrder: nextProps.sortOrder});
         }
 
         if (nextProps.favoriteUris !== this.state.favoriteUris) {
@@ -355,8 +360,10 @@ class ContactsListBox extends Component {
             this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
         }
 
-        if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
-            this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
+        if ('messagesCategoryFilter' in nextProps) {
+			if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
+				this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
+			}
         }
 
         if (nextProps.pinned !== this.state.pinned && nextProps.selectedContact) {
@@ -438,13 +445,11 @@ class ContactsListBox extends Component {
   
     async aquireFromCamera() {
         console.log('aquireFromCamera');
+		this.setState({gettingSharedAsset: true}); 
 		this._aquireFromCamera();
 		setTimeout(() => {
-			this.setState({gettingSharedAsset: true}); 
-		}, 500); // delay in ms (1000 = 1 second)
-		setTimeout(() => {
 			this.setState({gettingSharedAsset: false}); 
-		}, 40000); // delay in ms (1000 = 1 second)
+		}, 45000); // delay in ms (1000 = 1 second)
     }
 
     async _aquireFromCamera() {
@@ -459,19 +464,37 @@ class ContactsListBox extends Component {
 						   }
 
 			this.props.contactStartShare();
-			launchCamera(options, this.assetSharingCallback);
+		
+			launchCamera(options, (result) => {
+				// Detect cancel
+				if (result.didCancel) {
+					console.log("User cancelled camera");
+					this.setState({gettingSharedAsset: false}); 
+					return;
+				}
+	
+				// Detect errors
+				if (result.errorCode) {
+					console.log("Camera error:", result.errorMessage);
+					this.setState({gettingSharedAsset: false}); 
+					return;
+				}
+	
+				// Proceed normally
+				if (result.assets && result.assets.length > 0) {
+					this.assetSharingCallback(result);
+				}
+			});
 		}
 	}
 
     async launchImageLibrary() {
 	    console.log('launchImageLibrary');
 		this._launchImageLibrary();
-		setTimeout(() => {
-			this.setState({gettingSharedAsset: true});
-		}, 500);
+		this.setState({gettingSharedAsset: true});
 		setTimeout(() => {
 			this.setState({gettingSharedAsset: false}); 
-		}, 40000);
+		}, 45000);
 	}
 
 	async _launchImageLibrary() {
@@ -488,14 +511,25 @@ class ContactsListBox extends Component {
     async libraryCallback(result) {
 		this.setState({fullSize: false, gettingSharedAsset: false});
 
-        if (!result.assets || result.assets.length === 0) {
-            return;
-        }
+
+		if (result.errorCode) {
+			console.log("Picker error:", result.errorMessage);
+			this.props.contactShareError?.(result.errorCode);
+			this.setState({gettingSharedAsset: false}); 
+			return;
+		}
+	
+		if (!result.assets || result.assets.length === 0) {
+			console.log("No assets returned");
+			this.setState({gettingSharedAsset: false});
+			return;
+		}
 
         result.assets.forEach((asset) => {
             this.assetSharingCallback({assets: [asset]});
         });
     }
+
 
     async assetSharingCallback(result) {
         console.log('assetSharingCallback');
@@ -576,8 +610,9 @@ class ContactsListBox extends Component {
 		  fullSize={this.state.fullSize}
 		  styles={styles}
 		  playing={this.state.playing}
-		  renderMessageImage={this.renderMessageImage}
+		  orderBy={this.state.orderBy}
 		  renderMessageVideo={this.renderMessageVideo}
+		  renderMessageImage={this.renderMessageImage}
 		  renderMessageAudio={this.renderMessageAudio}
 		  renderMessageText={this.renderMessageText}
 		/>
@@ -847,6 +882,7 @@ class ContactsListBox extends Component {
         }
 
 		this.getAudioDuration(message.audio, message._id);
+		const id = message._id;
 
 		const path = message.audio.startsWith('file://') ? message.audio : 'file://' + message.audio;
 
@@ -1479,6 +1515,10 @@ renderSend = (props) => {
 	renderMessageAudio = (props) => {
 	  const { currentMessage } = props;
 	  const { audioDurations } = this.state;
+	  
+	  if (this.state.orderBy === 'size') {
+		  return null;
+	  }
 	
 	  // Load duration if not already loaded
 	  if (currentMessage.audio && !audioDurations[currentMessage._id]) {
@@ -1547,23 +1587,23 @@ renderSend = (props) => {
 		</View>
 	  );
 	};
-	
-	
-	
-	renderMessageImage = (props) => {
-	  const { currentMessage } = props;
+		
+	renderMessageImage = ({ currentMessage, orderBy }) => {
+	  if (this.state.orderBy === 'size') {
+		  return null;
+	  }
+
 	  if (!currentMessage?.image) return null;
 	
 	  const id = currentMessage._id;
 	  const uri = currentMessage.image;
-
 	
 	  const isVisible = this.state.visibleMessageIds.includes(id);
 	  const wasRendered = this.state.renderedMessageIds.has(id);
 	  const isLoading = this.state.imageLoadingState[id];
 
 	  // Skip offscreen images
-	  if (!isVisible && !wasRendered) {
+	  if (false && !isVisible && !wasRendered) {
 		return (
 		  <View
 			style={{
@@ -1586,28 +1626,28 @@ renderSend = (props) => {
 	
 	  const isVerticalRotation = rotation === 90 || rotation === 270;
 	  const windowWidth = Dimensions.get('window').width;
-	  	
+
 	  // 🧠 Try to get cached size
 	  let imageAspectRatio = 1;
-	  if (this.imageSizeCache[uri]) {
-		imageAspectRatio = this.imageSizeCache[uri].aspectRatio;
-	  } else {
-		// First time seeing this image
-		  Image.getSize(
-			uri,
-			(width, height) => {
-			  const aspectRatio =
-				width > 0 && height > 0 ? width / height : 1; // ✅ ensure finite ratio
-			  this.imageSizeCache[uri] = { width, height, aspectRatio };
-			  this.forceUpdate?.(); // re-render
-			},
-			(error) => {
-			  //console.warn("Image.getSize error:", error);
-			  this.imageSizeCache[uri] = { width: 1, height: 1, aspectRatio: 1 }; // ✅ fallback cache
-			}
-		  );
-	  
-	  }
+      
+		  if (this.imageSizeCache[uri]) {
+			imageAspectRatio = this.imageSizeCache[uri].aspectRatio;
+		  } else {
+			// First time seeing this image
+			  Image.getSize(
+				uri,
+				(width, height) => {
+				  const aspectRatio =
+					width > 0 && height > 0 ? width / height : 1; // ✅ ensure finite ratio
+				  this.imageSizeCache[uri] = { width, height, aspectRatio };
+				  this.forceUpdate?.(); // re-render
+				},
+				(error) => {
+				  //console.warn("Image.getSize error:", error);
+				  this.imageSizeCache[uri] = { width: 1, height: 1, aspectRatio: 1 }; // ✅ fallback cache
+				}
+			  );
+		  }
 	
 	  const displayAspect = isVerticalRotation ? 1 / imageAspectRatio : imageAspectRatio;
 	
@@ -1840,6 +1880,10 @@ renderSend = (props) => {
             }
         });
     }
+    
+    get hideItem() {
+		return this.state.orderBy === 'size';
+    }
 
     onLongMessagePress(context, currentMessage) {
     
@@ -1852,7 +1896,7 @@ renderSend = (props) => {
         if (currentMessage && currentMessage.text) {
 
             let options = []
-            if (currentMessage.direction == 'incoming') {
+            if (currentMessage.direction == 'incoming' && !this.hideItem) {
 				options.push('Reply');
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
@@ -1860,6 +1904,11 @@ renderSend = (props) => {
 			if (this.isMessageEditable(currentMessage)) {
 				options.push('Edit');
 				icons.push(<Icon name="file-document-edit" size={20} />);
+			}
+			
+			if (currentMessage.image) {
+                    options.push('Preview')
+                    icons.push(<Icon name="image" size={20} />);
 			}
 
             if (currentMessage.metadata && !currentMessage.metadata.error) {
@@ -1880,7 +1929,7 @@ renderSend = (props) => {
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
-                    if (showResend) {
+                    if (showResend && !this.hideItem) {
                         options.push('Resend')
                         icons.push(<Icon name="send" size={20} />);
                     }
@@ -1897,33 +1946,33 @@ renderSend = (props) => {
                 }
             }
 
-            if (!currentMessage.metadata.error) {
+            if (!currentMessage.metadata.error && !this.hideItem) {
                 options.push('Forward');
                 icons.push(<Icon name="arrow-right" size={20} />);
             }
 
-            if (!currentMessage.metadata.error) {
+            if (!currentMessage.metadata.error && !this.hideItem) {
                 options.push('Share');
                 icons.push(<Icon name="share" size={20} />);
             }
             
-            if  (currentMessage && currentMessage.metadata) {
+            if  (currentMessage && currentMessage.metadata && !this.hideItem) {
 				//console.log('mesage metadata:', currentMessage.metadata);
 				if (currentMessage.metadata.filename) {
 
-					    if (!currentMessage.metadata.local_url) {					
-							options.push('Download');
-							icons.push(<Icon name="cloud-download" size={20} />);
-						} else {
-						options.push('Download again');
+					if (!currentMessage.metadata.local_url) {					
+						options.push('Download');
 						icons.push(<Icon name="cloud-download" size={20} />);
-						/*
-						if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
-							options.push('Decrypt');
-							icons.push(<Icon name="table-key" size={20} />);
-						}*/
+					} else {
+					options.push('Download again');
+					icons.push(<Icon name="cloud-download" size={20} />);
+					/*
+					if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
+						options.push('Decrypt');
+						icons.push(<Icon name="table-key" size={20} />);
+					}*/
 
-						}
+					}
 				} else {
 					options.push('Email');
 					icons.push(<Icon name="email" size={20} />);
@@ -1950,6 +1999,8 @@ renderSend = (props) => {
                     this.setState({message: currentMessage, showMessageModal: true});
                 } else if (action === 'Edit') {
                     this.setState({message: currentMessage, showEditMessageModal: true});
+                } else if (action === 'Preview') {
+                    this.onImagePress(currentMessage);
                 } else if (action.startsWith('Share')) {
                     this.handleShare(currentMessage);
                 } else if (action.startsWith('Email')) {
@@ -1984,6 +2035,10 @@ renderSend = (props) => {
 
     isMessageEditable(message) {
         if (message.failed) {
+            return false;
+        }
+        
+        if (this.hideItem) {
             return false;
         }
 
@@ -2074,6 +2129,14 @@ renderSend = (props) => {
 	        console.log('Scroll to bottom changed', this.state.scrollToBottom);
       }
       
+	  if (prevState.orderBy !== this.state.orderBy) {
+	        console.log('orderBy changed', this.state.orderBy);
+      }
+
+      if (prevState.sortOrder !== this.state.sortOrder) {
+	        console.log('sortOrder changed', this.state.sortOrder);
+    }
+
       //console.log('this.state.scrollToBottom', this.state.scrollToBottom);
 
 		if (prevState.messagesMetadata !== this.state.messagesMetadata) {
@@ -2120,12 +2183,19 @@ renderSend = (props) => {
 		  });
 	   }
 
-	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages) {	   
+	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy) {	   
 		  let filteredMessages = this.state.renderMessages;
 	
 			const mediaLabels = this.mediaLabels;
 			const mediaRotations = this.mediaRotations;
 		
+		    if (this.state.orderBy === 'size') { 
+		        console.log('skip non files');
+				filteredMessages = filteredMessages.filter(
+				  message => message.metadata || message.metadata.filename
+				);
+			}
+
 			filteredMessages = filteredMessages.map(msg => {
 				const id = msg.transferId || msg._id;
 				return {
@@ -2184,9 +2254,12 @@ renderSend = (props) => {
 	  });
 	};
 
-renderMessageVideo = (props) => {
-  const { currentMessage } = props;
+	renderMessageVideo = ({ currentMessage, orderBy }) => {
   if (!currentMessage?.video) return null;
+
+	  if (this.state.orderBy === 'size') {
+		  return null;
+	  }
 
   const id = currentMessage._id;
   const uri = currentMessage.video;
@@ -2654,12 +2727,24 @@ renderMessageVideo = (props) => {
 								style={{ marginRight: 12 }}  // small gap from label
 							  />
 							)}
+
+							{!isTransfering && (
+							<IconButton
+							  icon="image"
+							  size={24}
+							  onPress={() => this.onImagePress(currentMessage)}
+							  style={{ }}
+							  iconColor={fontColor}
+							/>
+							)}
+
 						  </View>
 					  </View>
 					</View>
 					); 			
             }
         } else {
+
             if (currentMessage.metadata && currentMessage.metadata.filename) {
 				//console.log(currentMessage.metadata, 'failed:', currentMessage.failed);
 				return (
@@ -2794,11 +2879,21 @@ renderMessageVideo = (props) => {
   		}
     };
 
+	renderDay = (props) => {
+	  const { currentMessage } = props;
+	
+	  // Don't render the day if the message is hidden
+	  if (this.state.orderBy === 'size') return null;
+	
+	  // Otherwise, render the default day
+	  return <Day {...props} />;
+	};
+
 	renderTime = (props) => {
 	  const { currentMessage, position } = props;
 	  	
 	  if (currentMessage.metadata?.preview) return null;
-	
+	  	
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const isMedia = currentMessage.video || currentMessage.audio;
 	  const textColor = currentMessage.audio || isIncoming? 'white': 'black';
@@ -2989,6 +3084,7 @@ goToMessage = (targetId) => {
 
 scrollToMessage(id) {
   console.log('scrollToMessage', id);
+  return;
 
   const messagesArray = this.state.focusedMessages || this.state.filteredMessages;
   
@@ -3256,16 +3352,26 @@ scrollToMessage(id) {
 
         items = filteredItems;
 
-        if (this.state.sortBy == 'storage') {
-            items.sort((a, b) => (a.storage < b.storage) ? 1 : -1)
+        if (this.state.orderBy == 'size') {
+            if (this.state.sortOrder == 'desc') {
+                items.sort((a, b) => (a.storage < b.storage) ? 1 : -1)
+            } else {
+                items.sort((a, b) => (a.storage > b.storage) ? 1 : -1)
+            }
         } else {
+            const sortOrder = this.state.sortOrder;
+        
 			items.sort(function(a, b) {
 			  var aHasTimestamp = !!a.timestamp;
 			  var bHasTimestamp = !!b.timestamp;
 			
 			  // Case 1: both have timestamps -> newest first
 			  if (aHasTimestamp && bHasTimestamp) {
-				return new Date(b.timestamp) - new Date(a.timestamp);
+				if (sortOrder == 'desc') {
+					return new Date(b.timestamp) - new Date(a.timestamp);
+				} else {
+					return new Date(a.timestamp) - new Date(b.timestamp);
+				}
 			  }
 			
 			  // Case 2: only one has timestamp -> that one comes first
@@ -3279,7 +3385,7 @@ scrollToMessage(id) {
 			});
         }
         
-        //console.log(this.state.sortBy);
+        //console.log(this.state.orderBy);
 
         if (items.length === 1) {
             items[0].showActions = true;
@@ -3331,12 +3437,13 @@ scrollToMessage(id) {
         const searchString = this.state.searchString;
         const gettingSharedAsset = this.state.gettingSharedAsset;
         const showChat = this.showChat;
+        const orderBy = this.state.orderBy;
 
 		if (debug) {
 			const values = {
 			shareToContacts,
 				messagesMetadata,
-				mediaLabels,
+				orderBy,
 //				mediaRotations,
 //				renderMessages,
 //				searchString,
@@ -3364,6 +3471,25 @@ scrollToMessage(id) {
         if (this.state.sharingAssetMessage) {
 			messages = [this.state.sharingAssetMessage];
         }
+        
+        if (this.state.orderBy === 'size') {
+			messages = messages.filter(
+			  msg => msg.metadata && msg.metadata.filename // or whatever condition you have
+			);
+
+			  messages = messages
+				// Keep only messages that have metadata and filename
+				.filter(msg => msg.metadata && msg.metadata.filename)
+				// Sort by filesize according to sortOrder
+				.sort((a, b) => {
+				  const sizeA = a.metadata.filesize || 0;
+				  const sizeB = b.metadata.filesize || 0;
+			
+				  return this.state.sortOrder === 'desc'
+					? sizeB - sizeA // largest first
+					: sizeA - sizeB; // smallest first
+				});
+		}
 
         //console.log('this.state.selectedContact', this.state.selectedContact);
         return (
@@ -3421,11 +3547,16 @@ scrollToMessage(id) {
                   renderInputToolbar={chatInputClass}
                   renderBubble={this.renderBubbleWithMessages}
                   renderMessageText={this.renderMessageText}
-                  renderMessageImage={this.renderMessageImage}
+				  renderMessageImage={(props) =>
+					this.renderMessageImage({ ...props, orderBy: this.state.orderBy })
+				  }
+				  renderMessageVideo={(props) =>
+					this.renderMessageVideo({ ...props, orderBy: this.state.orderBy })
+				  }
                   renderMessageAudio={this.renderMessageAudio}
-                  renderMessageVideo={this.renderMessageVideo}
-                  shouldUpdateMessage={this.shouldUpdateMessage}
+                  //shouldUpdateMessage={this.shouldUpdateMessage}
                   renderTime={this.renderTime}
+                  renderDay={this.renderDay}
                   placeholder={this.state.placeholder}
                   lockStyle={styles.lock}
                   renderSend={this.renderSend}
@@ -3433,6 +3564,7 @@ scrollToMessage(id) {
                   inverted={true}
                   maxInputLength={16000}
                   tickStyle={{ color: 'green' }}
+                  renderTicks={this.state.orderBy === 'size' ? null : undefined}
                   infiniteScroll
                   loadEarlier={!this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0}
                   isLoadingEarlier={this.state.isLoadingEarlier}
@@ -3675,7 +3807,8 @@ ContactsListBox.propTypes = {
     requestStoragePermissions: PropTypes.func,
     file2GiftedChat: PropTypes.func,
     postSystemNotification: PropTypes.func,
-    sortBy: PropTypes.string,
+    orderBy: PropTypes.string,
+    sortOrder: PropTypes.string,
     toggleSearchMessages: PropTypes.func,
     searchMessages: PropTypes.bool,
     searchString: PropTypes.string,
@@ -3688,7 +3821,8 @@ ContactsListBox.propTypes = {
     fullScreen: PropTypes.bool,
     transferProgress: PropTypes.object,
     totalMessageExceeded: PropTypes.bool,
-    gettingSharedAsset: PropTypes.bool
+    gettingSharedAsset: PropTypes.bool,
+    selectAudioDevice: PropTypes.func
 };
 
 

@@ -225,7 +225,7 @@ class CallOverlay extends React.Component {
                 } else if (this.state.callState) {
                     callDetail = toTitleCase(this.state.callState);
                 } else if (!this.state.call) {
-					callDetail = 'Waiting for server call...';
+					callDetail = 'Making call...';
                 } else if (!this.state.localMedia) {
                     if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;

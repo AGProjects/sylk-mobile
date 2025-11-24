@@ -33,6 +33,17 @@ const styles = StyleSheet.create({
 	zIndex: 1000
   },
 
+  audioButtonsContainer: {
+	position: 'absolute',
+	bottom: -80, // distance from bottom
+	left: 0,
+	right: 0,
+	flexDirection: 'row',
+	justifyContent: 'center',
+	alignItems: 'center',
+	zIndex: 1000
+  },
+
   conferenceContainer: {
     flex: 1,
     flexDirection: 'column',
@@ -244,6 +255,31 @@ const styles = StyleSheet.create({
     height: '50%',
   },
       
+  audioDeviceContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',   // center horizontally
+    alignItems: 'center',       // center vertically
+    width: '100%',              // ensures proper centering
+    },
+    
+  audioDeviceButtonContainer: {
+    margin: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    borderRadius: 10, // slightly larger than 24 so border is not clipped
+    padding: 2,       // space so the border wraps around cleanly
+  },
+
+  audioDeviceSelected: {
+    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    borderColor: 'green',
+  },
+
+  audioDeviceWhiteButton: {
+    backgroundColor: '#fff',
+  },
 
 
 });

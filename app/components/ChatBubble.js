@@ -21,7 +21,8 @@ const ChatBubble = memo(
     renderMessageVideo,
     renderMessageAudio,
     focusedMessageId,
-    renderMessageText
+    renderMessageText,
+    sortOrder
   }) => {
     const { currentMessage } = props;
     if (!currentMessage) return null;
@@ -46,7 +47,7 @@ const ChatBubble = memo(
 
     // === Find original message if this is a reply ===
     let originalMessage = null;
-    if (currentMessage.replyId && Array.isArray(messages)) {
+    if (sortOrder != 'size' && currentMessage.replyId && Array.isArray(messages)) {
       originalMessage = messages.find(m => m._id === currentMessage.replyId);
     }
 
@@ -233,7 +234,22 @@ const ChatBubble = memo(
 	(prev, next) => {
 	  const prevMsg = prev.props.currentMessage;
 	  const nextMsg = next.props.currentMessage;
+	  
+	const prevLocalUrl = prevMsg.metadata?.local_url;
+	const nextLocalUrl = nextMsg.metadata?.local_url;
 	
+	const localUrlChanged =
+	  prevLocalUrl !== nextLocalUrl &&
+	  !(prevLocalUrl === undefined && nextLocalUrl === undefined);
+	
+	if (localUrlChanged) {
+	  console.log("local_url changed", nextMsg._id, {
+		from: prevLocalUrl,
+		to: nextLocalUrl
+	  });
+	  return false;
+	}
+
 	  if (!prevMsg || !nextMsg) return false;
 	
 	  const sameId = prevMsg._id === nextMsg._id;
@@ -255,50 +271,79 @@ const ChatBubble = memo(
 		  return false;
 		}
 	
-	  // Delivery / state flags
-	  const statusChanged =
-		prevMsg.pending !== nextMsg.pending ||
-		prevMsg.sent !== nextMsg.sent ||
-		prevMsg.received !== nextMsg.received ||
-		prevMsg.displayed !== nextMsg.displayed ||
-		prevMsg.failed !== nextMsg.failed ||
-		prevMsg.pinned !== nextMsg.pinned;
-	
-	  if (statusChanged) {
-		  console.log("statusChanged", nextMsg._id);
+		// Delivery / state flags
+		const fields = [
+		  "pending",
+		  "sent",
+		  "received",
+		  "displayed",
+		  "failed",
+		  "pinned",
+		];
+		
+		const changed = fields.filter(f => prevMsg[f] !== nextMsg[f]);
+		
+		if (changed.length > 0) {
+		  console.log(
+			"statusChanged", 
+			nextMsg._id, 
+			"changed fields:", 
+			changed.reduce((acc, f) => {
+			  acc[f] = { from: prevMsg[f], to: nextMsg[f] };
+			  return acc;
+			}, {})
+		  );
 		  return false;
-	  }
+		}
 	
-	  // Content changes
-	  const contentChanged =
-		prevMsg.text !== nextMsg.text ||
-		prevMsg.image !== nextMsg.image ||
-		prevMsg.video !== nextMsg.video ||
-		prevMsg.audio !== nextMsg.audio;
-	
-	  if (contentChanged) {
-		  //console.log("contentChanged", nextMsg._id);
+		// Content changes
+		const contentFields = ["text", "image", "video", "audio"];
+		
+		const contentDiff = contentFields.filter(f => prevMsg[f] !== nextMsg[f]);
+		
+		if (contentDiff.length > 0) {
+		  console.log(
+			"contentChanged",
+			nextMsg._id,
+			"changed fields:",
+			contentDiff.reduce((acc, f) => {
+			  acc[f] = { from: prevMsg[f], to: nextMsg[f] };
+			  return acc;
+			}, {})
+		  );
 		  return false;
-	  }
+		}
 	
-	  // Progress changes
-	  const prevTransfer = prev.transferProgress?.[prevMsg._id]?.progress;
-	  const nextTransfer = next.transferProgress?.[nextMsg._id]?.progress;
+	// Progress changes
+	const prevTransfer = prev.transferProgress?.[prevMsg._id]?.progress;
+	const nextTransfer = next.transferProgress?.[nextMsg._id]?.progress;
 	
-	  const transferChanged =
-	     prevTransfer !== nextTransfer &&
-	     !(prevTransfer === undefined && nextTransfer === undefined);
+	const hadPrev = prevTransfer !== undefined;
+	const hasNext = nextTransfer !== undefined;
 	
-   	  if (transferChanged) {
-	    //console.log("Transfer changed", nextMsg._id, "→", nextTransfer);
-	    return false;
-	  }
-
-	  if ((prevTransfer || nextTransfer) && prevTransfer !== nextTransfer) {
-		console.log("Transfer changed", nextMsg._id, nextTransfer);
-		return false;
-	  }
-	  
+	let transferChanged = false;
+	let changeInfo = {};
+	
+	if (hadPrev && !hasNext) {
+	  // Disappeared
+	  transferChanged = true;
+	  changeInfo = { type: "disappeared", from: prevTransfer, to: undefined };
+	} else if (!hadPrev && hasNext) {
+	  // Appeared
+	  transferChanged = true;
+	  console.log('nextMsg.metadata.local_url', nextMsg.metadata.local_url);
+	  changeInfo = { type: "appeared", from: undefined, to: nextTransfer };
+	} else if (prevTransfer !== nextTransfer) {
+	  // Changed
+	  transferChanged = true;
+	  changeInfo = { type: "changed", from: prevTransfer, to: nextTransfer };
+	}
+	
+	if (transferChanged) {
+	  //console.log("transferChanged", nextMsg._id, changeInfo);
+	  return false;
+	}
+	
 	  // Full-size selection (affects photo checkbox)
 		if (prev.fullSize !== next.fullSize) {
 		  return false;

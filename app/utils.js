@@ -147,9 +147,9 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
             if (metadata.local_url && metadata.error != 'decryption failed') {
                 if (isImage(decrypted_file_name, metadata.filetype)) {
                     image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                } else if (isAudio(decrypted_file_name)) {
+                } else if (isAudio(decrypted_file_name, metadata.filetype)) {
                     audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                } else if (isVideo(decrypted_file_name, metadata)) {
+                } else if (isVideo(decrypted_file_name, metadata.filetype)) {
                     video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
                 }
             }
@@ -186,162 +186,197 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
         return msg;
 }
 
-function sql2GiftedChat(item, content, filter={}) {
+let sql2GiftedChatErrorId = 0;
+
+// -------------------------
+// SAFE LOGGER (never throws)
+// -------------------------
+function nullWithLog(extra = {}) {
+    sql2GiftedChatErrorId += 1;
+
+    const msgId    = ("msgId" in extra)    ? extra.msgId    : "";
+    const filename = ("filename" in extra) ? extra.filename : "";
+    const category = ("category" in extra) ? extra.category : "";
+    const reason   = ("reason" in extra)   ? extra.reason   : "";
+
+    console.log(
+        `sql2GiftedChat NULL #${sql2GiftedChatErrorId}: ${msgId} ${filename} is not ${category || reason}`
+    );
+
+    return null;
+}
+
+
+// -------------------------
+// MAIN FUNCTION
+// -------------------------
+function sql2GiftedChat(item, content, filter = {}) {
     let msg;
-    let image;
-    let video;
-    let audio;
+    let image, video, audio;
     let metadata = {};
-    let category;
-
-    if ('category' in filter && filter['category']) {
-        category = filter['category'];
-    }
-
-    //console.log('--- sql2GiftedChat', item, filter);
+    let category = filter.category || null;
 
     let timestamp = new Date(item.unix_timestamp * 1000);
     let text = content || item.content;
 
-    if (text.indexOf('-----BEGIN PGP MESSAGE-----') > -1) {
-        text = '';
+    if (text && text.indexOf("-----BEGIN PGP MESSAGE-----") > -1) {
+        text = "";
     }
 
-    let failed = (item.received === 0 || item.encrypted === 3) ? true: false;
-    let received = item.received === 1 ? true : false;
-    let sent = item.sent === 1 ? true : false;
-    let pending = item.pending === 1 ? true : false;
+    let failed = (item.received === 0 || item.encrypted === 3);
+    let received = item.received === 1;
+    let sent = item.sent === 1;
+    let pending = item.pending === 1;
 
     let from_uri = item.sender ? item.sender : item.from_uri;
 
-    if (item.content_type === 'application/sylk-file-transfer') {
+    // -------------------------
+    // Parse file-transfer JSON
+    //---------------------------
+    if (item.content_type === "application/sylk-file-transfer") {
+        if (category == 'text') {
+			return null;
+        }
+    
         let sql_metadata = item.metadata || text;
         try {
-            let metadata_obj = JSON.parse(sql_metadata);
-            Object.assign(metadata, metadata_obj);
+            Object.assign(metadata, JSON.parse(sql_metadata));
         } catch (e) {
-            console.log("Error decoding file transfer json from sql: ", e, item.content);
-            return;
+            console.log("Error decoding file transfer JSON:", e);
+            return nullWithLog({
+                msgId: item.msg_id,
+                reason: "invalid-json"
+            });
         }
     }
 
     let must_check_category = true;
 
-    if (category && category !== 'text' && !metadata.filename) {
-        return null;
+    // -------------------------
+    // If filtering for media, but no filename → drop
+    // -------------------------
+    if (category && category !== "text" && !metadata.filename) {
+        return nullWithLog({
+            msgId: item.msg_id,
+            filename: "",
+            category
+        });
     }
 
-    if (metadata && metadata.filename) {
-        if (category === 'paused') {
-            if (!metadata.paused) {
-                return null;
-            }
-            must_check_category = false;
-        }
-
-        if (category === 'failed') {
-            if (!metadata.failed) {
-                return null;
-            }
-            must_check_category = false;
-        }
-
-        if (category === 'text') {
-            return null;
-        }
-
-        if (category === 'large') {
-            if (metadata.filesize && metadata.filesize < HUGE_FILE_SIZE) {
-                return null;
-            }
-            must_check_category = false;
-        }
-
-        let file_name = metadata.filename;
+    // -------------------------
+    // If we have a file transfer
+    // -------------------------
+    if (metadata.filename) {
+        let filename = metadata.filename;  // <--- ALWAYS LOWERCASE
         text = beautyFileNameForBubble(metadata);
 
         if (metadata.local_url && !metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
             metadata.local_url = null;
         }
 
-        if (metadata.local_url) {
-            if (!metadata.error) {
-                if (isImage(file_name, metadata.filetype)) {
-                    if (metadata.b64) {
-                        image = `data:${metadata.filetype};base64,${metadata.b64}`;
-                    } else {
-                        image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                    }
-                    if (must_check_category && category && category !== 'image') {
-                        return null;
-                    }
-                } else if (isAudio(file_name)) {
-                    audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                    if (must_check_category && category && category !== 'audio') {
-                        return null;
-                    }
-                } else if (isVideo(file_name, metadata)) {
-                    video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                    if (must_check_category && category && category !== 'video') {
-                        return null;
-                    }
-                } else {
-                    if (must_check_category && category) {
-                        return null;
-                    }
-                }
+        let isImg = isImage(filename, metadata.filetype);
+        let isAud = isAudio(filename, metadata.filetype);
+        let isVid = isVideo(filename, metadata.filetype);
+
+        // -------------------------
+        // Category check
+        // -------------------------
+        if (must_check_category && category) {
+            if (category === "image" && !isImg) {
+                return nullWithLog({
+                    msgId: item.msg_id,
+                    filename,
+                    category
+                });
             }
-        } else {
-            if (isImage(file_name, metadata.filetype) && must_check_category && category && category !== 'image') {
-                return null;
-            } else if (isAudio(file_name && must_check_category && category && category !== 'audio')) {
-                return null;
-            } else if (isVideo(file_name, metadata) && must_check_category && category && category !== 'video') {
-                return null;
-            } else {
-                if (must_check_category && category) {
-                    return null;
-                }
+            if (category === "audio" && !isAud) {
+                return nullWithLog({
+                    msgId: item.msg_id,
+                    filename,
+                    category
+                });
+            }
+            if (category === "video" && !isVid) {
+                return nullWithLog({
+                    msgId: item.msg_id,
+                    filename,
+                    category
+                });
+            }
+            if (category === "other") {
+                return nullWithLog({
+                    msgId: item.msg_id,
+                    filename,
+                    category
+                });
+            }
+        }
+
+        // -------------------------
+        // Selected media type
+        // -------------------------
+        if (metadata.local_url && !metadata.error) {
+            let local = Platform.OS === "android" ? "file://" + metadata.local_url : metadata.local_url;
+
+            if (isImg) {
+                image = metadata.b64
+                    ? `data:${metadata.filetype};base64,${metadata.b64}`
+                    : local;
+            } else if (isAud) {
+                audio = local;
+            } else if (isVid) {
+                video = local;
             }
         }
 
         if (metadata.error) {
             failed = true;
-            text = text + ' - ' + metadata.error;
+            text = text + " - " + metadata.error;
         }
+
     } else {
+        // -------------------------
+        // Non-file-transfer behavior
+        // -------------------------
         if (item.image) {
             image = item.image;
-            text = 'Photo';
+            text = "Photo";
         }
 
         if (item.encrypted === 3) {
-            text = text + ' - decryption failed';
+            text = text + " - decryption failed";
         }
     }
 
+    // -------------------------
+    // Construct final message
+    // -------------------------
     msg = {
         _id: item.msg_id,
         key: item.msg_id,
         direction: item.direction,
-        audio: audio,
-        image: image,
-        video: video,
-        metadata: metadata,
+        audio,
+        image,
+        video,
+        metadata,
         contentType: item.content_type,
-        text: text,
+        text,
         createdAt: timestamp,
-        sent: sent,
-        received: received,
-        pending: pending,
-        system: item.system === 1 ? true : false,
-        failed: failed,
-        pinned: (item.pinned === 1) ? true: false,
-        user: item.direction == 'incoming' ? {_id: from_uri, name: from_uri} : {}
-        }
+        sent,
+        received,
+        pending,
+        system: item.system === 1,
+        failed,
+        pinned: item.pinned === 1,
+        user: item.direction === "incoming"
+            ? { _id: from_uri, name: from_uri }
+            : {}
+    };
 
     return msg;
 }
+
+
 
 function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
@@ -359,9 +394,9 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
 
     if (isImage(decrypted_file_name, metadata.filetype)) {
         text = 'Photo';
-    } else if (isAudio(decrypted_file_name)) {
+    } else if (isAudio(decrypted_file_name, metadata.filetype)) {
         text = 'Audio';
-    } else if (isVideo(decrypted_file_name, metadata)) {
+    } else if (isVideo(decrypted_file_name, metadata.filetype)) {
         text = 'Video';
     } else {
         if (lastMessage) {
@@ -561,6 +596,8 @@ function isEmailAddress(uri) {
 }
 
 function isImage(filename, filetype=null) {
+     //console.log('isImage', filename, filetype);
+
     if (!filename || typeof filename !== 'string') {
         return false;
     }
@@ -590,7 +627,8 @@ function isImage(filename, filetype=null) {
     return false;
 }
 
-function isAudio(filename) {
+function isAudio(filename, filetype=null) {
+    //console.log('isAudio', filename, filetype);
     if (!filename || typeof filename !== 'string') {
         return false;
     }
@@ -599,7 +637,9 @@ function isAudio(filename) {
 		filename = filename.slice(0, -4); // remove last 4 characters
 	}
 
-    filename = filename.endsWith('.asc') ? filename.slice(0, -4) : filename;
+    if (filetype && filetype.startsWith('audio/')) {
+        return true
+    }
 
     if (filename.toLowerCase().endsWith('.mp3')) {
         return true;
@@ -620,7 +660,8 @@ function isAudio(filename) {
     return false;
 }
 
-function isVideo(filename, metadata=null) {
+function isVideo(filename, filetype=null) {
+    //console.log('isVideo', filename, filetype);
     if (!filename || typeof filename !== 'string') {
         return false;
     }
@@ -629,20 +670,10 @@ function isVideo(filename, metadata=null) {
 		filename = filename.slice(0, -4); // remove last 4 characters
 	}
 
-    if (metadata) {
-        if (metadata.filetype && metadata.filetype.startsWith('video/')) {
-            return true;
-        }
-
-        if (metadata.duration) {
-            return true;
-        }
+    if (filetype && filetype.startsWith('video/')) {
+        return true
     }
     
-    if (filename.toLowerCase().startsWith('sylk-audio-recording')) {
-        return false;
-    }
-
     if (filename.toLowerCase().endsWith('.mpeg')) {
         return true;
     } else if (filename.toLowerCase().endsWith('.mp4')) {
@@ -656,7 +687,7 @@ function isVideo(filename, metadata=null) {
     } else if (filename.toLowerCase().endsWith('.mov')) {
         return true;
     }
-
+    
     return false;
 }
 
@@ -741,14 +772,18 @@ function radix64(t) {
 }
 
 function isFileEncryptable(file_transfer) {
-    if (file_transfer.filesize > ENCRYPTABLE_FILE_SIZE) {
-        return false;
+    try {
+		if (file_transfer.filesize > ENCRYPTABLE_FILE_SIZE) {
+			return false;
+		}
+	
+		if (isVideo(file_transfer.filename, file_transfer.filetype)) {
+			return false;
+		}
+    } catch (e) {
+		console.log('isFileEncryptable e', e)
     }
-
-    if (isVideo(file_transfer.filename, file_transfer)) {
-        return false;
-    }
-
+    
     return true;
 }
 
@@ -915,6 +950,27 @@ async function fileChecksum(filePath) {
   }
 }
 
+function deepEqual(a, b) {
+  if (a === b) return true;
+
+  if (typeof a !== "object" || typeof b !== "object" || a == null || b == null) {
+    return false;
+  }
+
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+
+  if (keysA.length !== keysB.length) return false;
+
+  for (let key of keysA) {
+    if (!keysB.includes(key) || !deepEqual(a[key], b[key])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;
@@ -946,4 +1002,5 @@ exports.HUGE_FILE_SIZE = HUGE_FILE_SIZE;
 exports.getPGPCheckSum = getPGPCheckSum;
 exports.isFileEncryptable = isFileEncryptable;
 exports.fileChecksum = fileChecksum;
+exports.deepEqual = deepEqual;
 

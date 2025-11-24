@@ -220,7 +220,10 @@ class ConferenceBox extends Component {
             topHeight       : Dimensions.get('window').height - bottomHeight,
             bottomHeight    : bottomHeight,
             deviceHeight    : Dimensions.get('window').height,
-            statistics: []
+            statistics: [],
+			availableAudioDevices : this.props.availableAudioDevices,
+			selectedAudioDevice: this.props.selectedAudioDevice
+
         };
 
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
@@ -468,10 +471,12 @@ class ConferenceBox extends Component {
                        offset: nextProps.offset,
                        activeDownloads: nextProps.activeDownloads,
                        accountId: !this.state.accountId && nextProps.call ? this.props.call.account.id : this.state.accountId,
-                       selectedContacts: nextProps.selectedContacts});
+                       selectedContacts: nextProps.selectedContacts,
+					   availableAudioDevices: nextProps.availableAudioDevices,
+					   selectedAudioDevice: nextProps.selectedAudioDevice
+                       });
 
     }
-
 
     saveConferenceMessage(uri, message) {
         this.props.saveConferenceMessage(uri, message);
@@ -1887,6 +1892,66 @@ class ConferenceBox extends Component {
 		return { container, item };
 	}
 
+	renderAudioDeviceButtons() {
+	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
+		console.log('renderAudioDeviceButtons');
+	  
+	  if (!this.state.callOverlayVisible) {
+		 return null;
+	  }
+	
+	  if (!call || call.state !== 'established') {
+		 return null;
+	  }
+	 
+	  if (this.props.useInCallManger) {
+		 return null;
+	  }
+
+      if (!availableAudioDevices) {
+		  return null;
+      }
+	  
+	  const availableAudioDevicesIconsMap = {
+		BUILTIN_EARPIECE: 'phone',
+		WIRED_HEADSET: 'headphones',
+		BLUETOOTH_SCO: 'bluetooth-audio',
+		BUILTIN_SPEAKER: 'volume-high',
+	  };
+	
+	  return (
+		<View style={styles.buttonsContainer}>
+		<View style={styles.audioDeviceContainer}>
+		  {availableAudioDevices.map((device) => {
+			const icon = availableAudioDevicesIconsMap[device];
+			if (!icon) return null;
+	
+			const isSelected = device === selectedAudioDevice;
+	
+		return (
+		  <View
+			key={device}
+			style={[
+			  styles.audioDeviceButtonContainer,
+			  isSelected && styles.audioDeviceSelected
+			]}
+		  >
+			<TouchableHighlight>
+			  <IconButton
+				size={25}
+				style={styles.audioDeviceWhiteButton}
+				icon={icon}
+				onPress={() => this.props.selectAudioDevice(device)}
+			  />
+			</TouchableHighlight>
+			  </View>
+			);
+		  })}
+		</View>
+		</View>
+	  );
+	}
+
     render() {
         if (this.props.call === null) {
             return (<View></View>);
@@ -2088,7 +2153,7 @@ class ConferenceBox extends Component {
             );
         }
 
-        if (!this.state.reconnectingCall) {
+        if (!this.state.reconnectingCall && this.props.useInCallManger) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key='recon'>
                 <TouchableHighlight style={styles.roundshape}>
@@ -3126,6 +3191,7 @@ class ConferenceBox extends Component {
 				{!this.fullScreen && !this.props.isLandscape && !this.state.showDrawer ?
 				<View style={buttonsContainer}>
 					{buttons.bottom}
+					{this.renderAudioDeviceButtons()}
 				</View>
 				: null}
 
@@ -3322,7 +3388,11 @@ ConferenceBox.propTypes = {
     messages            : PropTypes.object,
     getMessages         : PropTypes.func,
     fileSharingUrl      : PropTypes.string,
-    sendConferenceMessage: PropTypes.func
+    sendConferenceMessage   : PropTypes.func,
+    useInCallManger         : PropTypes.bool,
+    availableAudioDevices   : PropTypes.array,
+    selectedAudioDevice     : PropTypes.string,
+    selectAudioDevice       : PropTypes.func,
 };
 
 export default ConferenceBox;
