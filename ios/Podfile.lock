@@ -186,7 +186,7 @@ PODS:
   - hermes-engine (0.73.11):
     - hermes-engine/Pre-built (= 0.73.11)
   - hermes-engine/Pre-built (0.73.11)
-  - JitsiWebRTC (106.0.0)
+  - JitsiWebRTC (124.0.2)
   - libevent (2.1.12)
   - libwebp (1.5.0):
     - libwebp/demux (= 1.5.0)
@@ -1126,6 +1126,8 @@ PODS:
     - React-Core
   - react-native-image-resizer (1.4.5):
     - React-Core
+  - react-native-netinfo (11.4.1):
+    - React-Core
   - react-native-randombytes (3.6.1):
     - React-Core
   - react-native-receive-sharing-intent (2.0.0):
@@ -1143,8 +1145,8 @@ PODS:
     - react-native-video/Video (= 5.2.1)
   - react-native-video/Video (5.2.1):
     - React-Core
-  - react-native-webrtc (1.106.1):
-    - JitsiWebRTC (~> 106.0.0)
+  - react-native-webrtc (124.0.7):
+    - JitsiWebRTC (~> 124.0.0)
     - React-Core
   - React-nativeconfig (0.73.11)
   - React-NativeModulesApple (0.73.11):
@@ -1313,8 +1315,8 @@ PODS:
     - React-jsi (= 0.73.11)
     - React-logger (= 0.73.11)
     - React-perflogger (= 0.73.11)
-  - ReactNativeIncallManager (3.3.0):
-    - React
+  - ReactNativeIncallManager (4.2.1):
+    - React-Core
   - RNAudioRecord (0.2.2):
     - React
   - RNAudioRecorderPlayer (3.6.14):
@@ -1457,6 +1459,7 @@ DEPENDENCIES:
   - react-native-get-random-values (from `../node_modules/react-native-get-random-values`)
   - react-native-image-picker (from `../node_modules/react-native-image-picker`)
   - react-native-image-resizer (from `../node_modules/react-native-image-resizer`)
+  - "react-native-netinfo (from `../node_modules/@react-native-community/netinfo`)"
   - react-native-randombytes (from `../node_modules/react-native-randombytes`)
   - react-native-receive-sharing-intent (from `../node_modules/react-native-receive-sharing-intent`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
@@ -1636,6 +1639,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-image-picker"
   react-native-image-resizer:
     :path: "../node_modules/react-native-image-resizer"
+  react-native-netinfo:
+    :path: "../node_modules/@react-native-community/netinfo"
   react-native-randombytes:
     :path: "../node_modules/react-native-randombytes"
   react-native-receive-sharing-intent:
@@ -1769,7 +1774,7 @@ SPEC CHECKSUMS:
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
   hermes-engine: d992945b77c506e5164e6a9a77510c9d57472c59
-  JitsiWebRTC: f441eb0e2d67f0588bf24e21c5162e97342714fb
+  JitsiWebRTC: b47805ab5668be38e7ee60e2258f49badfe8e1d0
   libevent: 4049cae6c81cdb3654a443be001fb9bdceff7913
   libwebp: 02b23773aedb6ff1fd38cec7a77b81414c6842a8
   MMKV: 3eacda84cd1c4fc95cf848d3ecb69d85ed56006c
@@ -1815,6 +1820,7 @@ SPEC CHECKSUMS:
   react-native-get-random-values: c89ae16e7b9bb5c06dfe77225556df584344293a
   react-native-image-picker: c083dc5ccaaf45994b18bde99b24b7e02ca29cf4
   react-native-image-resizer: 17b2d73c030975b6543395c7e7368bc8774c5efa
+  react-native-netinfo: cec9c4e86083cb5b6aba0e0711f563e2fbbff187
   react-native-randombytes: 3c8f3e89d12487fd03a2f966c288d495415fc116
   react-native-receive-sharing-intent: cbd6daac89f5e84c231fe0d8e5453490cc431193
   react-native-safe-area-context: 758e894ca5a9bd1868d2a9cfbca7326a2b6bf9dc
@@ -1822,7 +1828,7 @@ SPEC CHECKSUMS:
   react-native-sqlite-storage: cd23d30c96b642f435f7b15bde803bdbc0289ea2
   react-native-version-number: 3d74b5224ca4e1032b1593937d86d3f3c94bf95c
   react-native-video: 2aad0d963bf3952bd9ebb2f53fab799338e8e202
-  react-native-webrtc: ea360b86e6667ce9f317748d332423c6943483fd
+  react-native-webrtc: e8f0ce746353adc2744a2b933645e1aeb41eaa74
   React-nativeconfig: 8fd29a35a3e4e8c37682d976667663d834ba6165
   React-NativeModulesApple: 83d7077877f8eda8e1b6055b3f8f16f7db8463b5
   React-perflogger: 3887a05940ccd34a83457fd153fdeda509b31737
@@ -1843,7 +1849,7 @@ SPEC CHECKSUMS:
   React-runtimescheduler: 398069b748d97567cc7585cc9a97284ad19d72fa
   React-utils: e8549669b504c18929b2e9aa4d87657e530a91a4
   ReactCommon: 9c38e8797dc2ac72edf63cd18cf450d918575666
-  ReactNativeIncallManager: 4ec3e181e86a2eddab43542298c079e492d51238
+  ReactNativeIncallManager: dccd3e7499caa3bb73d3acfedf4fb0360f1a87d5
   RNAudioRecord: b253d15d8141c5ef6bc614fc9d9f06577870bfc3
   RNAudioRecorderPlayer: b5ed41ccfe72a211a870bfe09ab36c046eb27d2a
   RNCallKeep: 1930a01d8caf48f018be4f2db0c9f03405c2f977
