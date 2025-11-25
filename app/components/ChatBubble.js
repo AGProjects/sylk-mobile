@@ -12,6 +12,7 @@ const ChatBubble = memo(
     videoMetaCache = {},
     visibleMessageIds = [], 
     transferProgress = {},
+    imageLoadingState = {},
     audioPlayingState = {},
     handleBubbleLayout,
     fullSize,
@@ -250,6 +251,29 @@ const ChatBubble = memo(
 	  return false;
 	}
 
+	// Image loading state changed?
+	const prevImageLoading = prev.imageLoadingState?.[prevMsg._id];
+	const nextImageLoading = next.imageLoadingState?.[nextMsg._id];
+	
+	if (prevImageLoading !== nextImageLoading) {
+	  console.log("imageLoadingState changed", nextMsg._id, {
+		from: prevImageLoading,
+		to: nextImageLoading,
+	  });
+	  return false; // re-render bubble
+	}
+
+	const prevThumb = prev.videoMetaCache?.[prevMsg._id]?.thumbnail;
+	const nextThumb = next.videoMetaCache?.[nextMsg._id]?.thumbnail;
+	
+	if (prevThumb !== nextThumb) {
+	  console.log("Thumbnail updated", nextMsg._id, {
+		from: prevThumb,
+		to: nextThumb,
+	  });
+	  return false;
+	}
+
 	  if (!prevMsg || !nextMsg) return false;
 	
 	  const sameId = prevMsg._id === nextMsg._id;
@@ -261,7 +285,6 @@ const ChatBubble = memo(
 	  if (!sameId || wasVisible !== isVisible) {
 		return false;
 	  }
-
 		// Audio play state changes
 		const prevAudio = prev.audioPlayingState?.[prevMsg._id];
 		const nextAudio = next.audioPlayingState?.[nextMsg._id];
@@ -331,7 +354,6 @@ const ChatBubble = memo(
 	} else if (!hadPrev && hasNext) {
 	  // Appeared
 	  transferChanged = true;
-	  console.log('nextMsg.metadata.local_url', nextMsg.metadata.local_url);
 	  changeInfo = { type: "appeared", from: undefined, to: nextTransfer };
 	} else if (prevTransfer !== nextTransfer) {
 	  // Changed

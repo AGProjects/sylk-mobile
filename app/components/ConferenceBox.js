@@ -102,6 +102,15 @@ function useLogChanges(label, value) {
   }, [value]);
 }
 
+
+  const availableAudioDevicesIconsMap = {
+	BUILTIN_EARPIECE: 'phone',
+	WIRED_HEADSET: 'headphones',
+	BLUETOOTH_SCO: 'bluetooth-audio',
+	BUILTIN_SPEAKER: 'volume-high',
+  };
+
+
 class ConferenceBox extends Component {
     constructor(props) {
         super(props);
@@ -223,7 +232,6 @@ class ConferenceBox extends Component {
             statistics: [],
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice
-
         };
 
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
@@ -1663,6 +1671,27 @@ class ConferenceBox extends Component {
         }
      }
 
+	toggleAudioDevice() {
+		console.log('toggleAudioDevice');
+	
+		const devices = this.props.availableAudioDevices;
+		const current = this.props.selectedAudioDevice;
+	
+		if (!devices || devices.length === 0) return;
+	
+		// Find current index
+		const currentIndex = devices.indexOf(current);
+	
+		// Compute next index (wrap around)
+		const nextIndex = (currentIndex + 1) % devices.length;
+	
+		// Select next device
+		const nextDevice = devices[nextIndex];
+	
+		console.log('Switching audio device to:', nextDevice);
+		this.props.selectAudioDevice(nextDevice);
+	}
+
     toggleChat(event) {
         //event.preventDefault();
         if (!this.state.videoEnabled) {
@@ -1894,7 +1923,6 @@ class ConferenceBox extends Component {
 
 	renderAudioDeviceButtons() {
 	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
-		console.log('renderAudioDeviceButtons');
 	  
 	  if (!this.state.callOverlayVisible) {
 		 return null;
@@ -1912,15 +1940,7 @@ class ConferenceBox extends Component {
 		  return null;
       }
 	  
-	  const availableAudioDevicesIconsMap = {
-		BUILTIN_EARPIECE: 'phone',
-		WIRED_HEADSET: 'headphones',
-		BLUETOOTH_SCO: 'bluetooth-audio',
-		BUILTIN_SPEAKER: 'volume-high',
-	  };
-	
 	  return (
-		<View style={styles.buttonsContainer}>
 		<View style={styles.audioDeviceContainer}>
 		  {availableAudioDevices.map((device) => {
 			const icon = availableAudioDevicesIconsMap[device];
@@ -1947,7 +1967,6 @@ class ConferenceBox extends Component {
 			  </View>
 			);
 		  })}
-		</View>
 		</View>
 	  );
 	}
@@ -2066,6 +2085,22 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
+
+            floatingButtons.push(
+              <View style={styles.buttonContainer} key="audioDevice">
+                <TouchableHighlight style={styles.roundshape}>
+                <IconButton
+                    size={25}
+                    style={buttonClass}
+                    title="Device"
+                    onPress={this.toggleAudioDevice}
+                    icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice]} // toggle icon
+                    key="toggleAudioDevice"
+                />
+                </TouchableHighlight>
+              </View>
+            );
+
        }
 
      if (!this.state.videoEnabled ) {
@@ -2543,14 +2578,19 @@ class ConferenceBox extends Component {
 						toggleDrawer={this.toggleDrawer}
 						enableMyVideo={this.state.enableMyVideo}
 						toggleMyVideo={this.toggleMyVideo}
+						availableAudioDevices = {this.state.availableAudioDevices}
+						selectedAudioDevice = {this.state.selectedAudioDevice}
+						selectAudioDevice = {this.props.selectAudioDevice}
 					/>
 				</View>
+
 
 				<View style={styles.buttonsContainer}>
 					{sessionButtons}
 				</View>
 
 				<View style={conferenceContainer}>
+					{this.props.isLandscape ? null : this.renderAudioDeviceButtons()}
 
 					<View style={mediaContainer}>
                     { true && (
@@ -3183,6 +3223,9 @@ class ConferenceBox extends Component {
 						toggleDrawer={this.toggleDrawer}
 						enableMyVideo={this.state.enableMyVideo}
 						toggleMyVideo={this.toggleMyVideo}
+						availableAudioDevices = {this.state.availableAudioDevices}
+						selectedAudioDevice = {this.state.selectedAudioDevice}
+						selectAudioDevice = {this.props.selectAudioDevice}
 					/>
 				</View>
 
@@ -3191,7 +3234,9 @@ class ConferenceBox extends Component {
 				{!this.fullScreen && !this.props.isLandscape && !this.state.showDrawer ?
 				<View style={buttonsContainer}>
 					{buttons.bottom}
+					<View style={styles.buttonsContainer}>
 					{this.renderAudioDeviceButtons()}
+					</View>
 				</View>
 				: null}
 

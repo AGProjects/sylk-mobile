@@ -37,12 +37,15 @@ class ConferenceHeader extends React.Component {
             info: this.props.info,
             remoteUri: this.props.remoteUri,
             menuVisible: false,
+            audioMenuVisible: false,
             chatView: this.props.chatView,
             audioView: this.props.audioView,
             isLandscape: this.props.isLandscape,
             visible:  this.props.visible,
             audioOnly: this.props.audioOnly,
-            enableMyVideo: this.props.enableMyVideo
+            enableMyVideo: this.props.enableMyVideo,
+			availableAudioDevices : this.props.availableAudioDevices,
+			selectedAudioDevice: this.props.selectedAudioDevice
         }
 
         this.duration = null;
@@ -124,7 +127,9 @@ class ConferenceHeader extends React.Component {
                        visible: nextProps.visible,
                        audioOnly: nextProps.audioOnly,
                        enableMyVideo: nextProps.enableMyVideo,
-                       participants: nextProps.participants});
+                       participants: nextProps.participants,
+					   availableAudioDevices: nextProps.availableAudioDevices,
+					   selectedAudioDevice: nextProps.selectedAudioDevice});
     }
 
     callStateChanged(oldState, newState, data) {
@@ -190,7 +195,6 @@ class ConferenceHeader extends React.Component {
     }
 
     render() {
-
         //console.log('render conf header lanscape =', this.state.isLandscape);
         
         if (!this.state.visible) {
@@ -303,6 +307,7 @@ class ConferenceHeader extends React.Component {
 
 				{this.props.buttons.additional}
 
+
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
@@ -330,6 +335,44 @@ class ConferenceHeader extends React.Component {
 
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
+    {/* ───────────── AUDIO DEVICE SUBMENU ───────────── */}
+    <Divider />
+
+    <Menu
+        visible={this.state.audioMenuVisible}
+        onDismiss={() => this.setState({audioMenuVisible: false})}
+        anchor={
+            <Menu.Item
+                title="Audio device"
+                icon="volume-high"
+                onPress={() => this.setState({audioMenuVisible: true})}
+            />
+        }
+    >
+        {this.props.availableAudioDevices.map(device => {
+            const isSelected = device === this.props.selectedAudioDevice;
+
+            return (
+                <Menu.Item
+                    key={device}
+                    title={
+                        isSelected
+                            ? `✓ ${device}`        // show selected
+                            : device
+                    }
+                    onPress={() => {
+                        this.props.selectAudioDevice(device);
+						this.setState({
+							audioMenuVisible: false,
+							menuVisible: false
+						});
+                    }}
+                />
+            );
+        })}
+    </Menu>
+
+    
                 </Menu>
 
 			  </View>
@@ -370,7 +413,11 @@ ConferenceHeader.propTypes = {
     callState: PropTypes.object,
     toggleDrawer: PropTypes.func,
     enableMyVideo: PropTypes.bool,    
-    toggleMyVideo: PropTypes.func
+    toggleMyVideo: PropTypes.func,
+    availableAudioDevices   : PropTypes.array,
+    selectedAudioDevice     : PropTypes.string,
+    selectAudioDevice       : PropTypes.func,
+
 };
 
 export default ConferenceHeader;

@@ -87,6 +87,15 @@ const getAudioDuration = (filePath) => {
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
 
+  // Helper to format bytes
+  const formatFileSize = (bytes) => {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  };
+
+
 class ContactsListBox extends Component {
     constructor(props) {
         super(props);
@@ -591,15 +600,16 @@ class ContactsListBox extends Component {
 
 
 	renderBubble(props) {
-		const updatedProps = { ...props };  // NEW reference forces re-render
+		const updatedProps = { ...props };
 	
 	  return (
 		<ChatBubble
-		  props={updatedProps}    // keep the expected nested structure
+		  props={updatedProps}
 		  messages={this.state.renderMessages}
 		  bubbleWidths={this.state.bubbleWidths}
 		  mediaLabels={this.state.mediaLabels}
 		  videoMetaCache={this.state.videoMetaCache}
+		  imageLoadingState={this.state.imageLoadingState}
 		  visibleMessageIds={this.state.visibleMessageIds}
 		  videoPlayingState={this.state.videoPlayingState}
 		  audioPlayingState={this.state.audioPlayingState}
@@ -2255,66 +2265,65 @@ renderSend = (props) => {
 	};
 
 	renderMessageVideo = ({ currentMessage, orderBy }) => {
-  if (!currentMessage?.video) return null;
 
-	  if (this.state.orderBy === 'size') {
-		  return null;
-	  }
-
-  const id = currentMessage._id;
-  const uri = currentMessage.video;
-  const videoMetaCache = this.state.videoMetaCache || {};
-  const thumbnail = videoMetaCache[id]?.thumbnail;
-  const isLoading = !!this.state.videoLoadingState?.[id];
-
-
-	if (!this.state.videoMetaCache[id]) {
-	  const existingCache = this.state.videoMetaCache; // for clarity
+	  if (!currentMessage?.video) return null;
+		  if (this.state.orderBy === 'size') {
+			  return null;
+		  }
 	
-	  // Prevent duplicate async calls for same id
-	  this.state.videoMetaCache[id] = { loading: true }; 
-
-		 if (Platform.OS === 'android') {
-		  createThumbnailSafe({ url: uri, timeMs: 1000 })
-			.then(path => {
-			  this.setState(prev => ({
-				videoMetaCache: {
-				  ...prev.videoMetaCache,
-				  [id]: { thumbnail: path, width: 512, height: 512 }, // you can adjust width/height if needed
-				},
-			  }));
-			  //console.log(`Thumbnail ready for video ${id}:`, path);
-			})
-			.catch(err => {
-			  console.log('Thumbnail generation failed:', err);
-			  this.setState(prev => {
-				const { [id]: _, ...rest } = prev.videoMetaCache;
-				return { videoMetaCache: rest };
-			  });
-			});
-		} else {
-		  createThumbnail({
-				url: uri,
-				timeStamp: 1000, // first second of video
-		  })
-				.then(({ path, width, height }) => {
-				  this.setState((prev) => ({
-						videoMetaCache: {
-						  ...prev.videoMetaCache,
-						  [id]: { thumbnail: path, width, height },
-						},
+	  const id = currentMessage._id;
+	  const uri = currentMessage.video;
+	  const videoMetaCache = this.state.videoMetaCache || {};
+	  const thumbnail = videoMetaCache[id]?.thumbnail;
+	  const isLoading = !!this.state.videoLoadingState?.[id];
+	
+		if (!this.state.videoMetaCache[id]) {
+		console.log('making thumbail');
+		  const existingCache = this.state.videoMetaCache; // for clarity
+		
+		  // Prevent duplicate async calls for same id
+		  this.state.videoMetaCache[id] = { loading: true }; 
+	
+			 if (Platform.OS === 'android') {
+			  createThumbnailSafe({ url: uri, timeMs: 1000 })
+				.then(path => {
+				  this.setState(prev => ({
+					videoMetaCache: {
+					  ...prev.videoMetaCache,
+					  [id]: { thumbnail: path, width: 512, height: 512 }, // you can adjust width/height if needed
+					},
 				  }));
-				  //console.log(`Thumbnail ready for video ${id}:`, path);
+				  console.log(`Thumbnail ready for video ${id}:`, path);
 				})
-				.catch((err) => {
+				.catch(err => {
 				  console.log('Thumbnail generation failed:', err);
-				  this.setState((prev) => {
-						const { [id]: _, ...rest } = prev.videoMetaCache;
-						return { videoMetaCache: rest };
+				  this.setState(prev => {
+					const { [id]: _, ...rest } = prev.videoMetaCache;
+					return { videoMetaCache: rest };
 				  });
 				});
-		}
-
+			} else {
+			  createThumbnail({
+					url: uri,
+					timeStamp: 1000, // first second of video
+			  })
+					.then(({ path, width, height }) => {
+					  this.setState((prev) => ({
+							videoMetaCache: {
+							  ...prev.videoMetaCache,
+							  [id]: { thumbnail: path, width, height },
+							},
+					  }));
+					  console.log(`Thumbnail ready for video ${id}:`, path);
+					})
+					.catch((err) => {
+					  console.log('Thumbnail generation failed:', err);
+					  this.setState((prev) => {
+							const { [id]: _, ...rest } = prev.videoMetaCache;
+							return { videoMetaCache: rest };
+					  });
+					});
+			}
 	}
                
   return (
@@ -2434,6 +2443,10 @@ renderSend = (props) => {
 	    	  
         let mediaLabel = this.state.mediaLabels[currentMessage._id] || currentMessage.text ;
         // Create a temporary props object with overridden text
+        if (currentMessage.metadata?.filesize) {
+			mediaLabel = mediaLabel + " of " + formatFileSize(currentMessage.metadata?.filesize);
+        }
+        
 		const labelProps = {
 		  ...props,
 		  currentMessage: {
@@ -2450,12 +2463,6 @@ renderSend = (props) => {
 					<View style={[{flexDirection: 'row', alignItems: 'center',
 					justifyContent: 'space-between', // distribute items evenly
 					paddingHorizontal: 8}, styles.photoMenuContainer, extraStyles]}>
-	
-						<IconButton
-							style={styles.photoMenu}
-							size={20}
-							icon="menu"
-						/>
 					  <View
 						style={[
 						  styles.photoMenuText,
@@ -2651,7 +2658,7 @@ renderSend = (props) => {
 					/>
 				 </View> 
 				 }
-				  <Text style={styles.checkboxLabel}>Full size</Text>
+				  <Text style={styles.checkboxLabel}>Full size of {formatFileSize(currentMessage.metadata?.filesize)}</Text>
 				  </View>
       
 				  <IconButton
@@ -2744,7 +2751,6 @@ renderSend = (props) => {
 					); 			
             }
         } else {
-
             if (currentMessage.metadata && currentMessage.metadata.filename) {
 				//console.log(currentMessage.metadata, 'failed:', currentMessage.failed);
 				return (
@@ -2898,14 +2904,6 @@ renderSend = (props) => {
 	  const isMedia = currentMessage.video || currentMessage.audio;
 	  const textColor = currentMessage.audio || isIncoming? 'white': 'black';
 	  const hasFileSize = !!currentMessage.metadata?.filesize;
-	
-	  // Helper to format bytes
-	  const formatFileSize = (bytes) => {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
-		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-	  };
 	
 	  // Format timestamp text 
 	  const timeString = currentMessage.createdAt ? dayjs(currentMessage.createdAt).format('h:mm A'): '';

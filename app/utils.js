@@ -389,7 +389,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     let decrypted_file_name = encrypted ? file_name.slice(0, -4) : file_name;
 
     if (metadata.preview) {
-        return metadata.duration? 'Movie preview' : 'Photo preview';
+        return metadata.duration? 'Movie' : 'Photo';
     }
 
     if (isImage(decrypted_file_name, metadata.filetype)) {

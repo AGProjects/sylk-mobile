@@ -86,6 +86,7 @@ class Conference extends React.Component {
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
         }
+		this.props.stopRingback();
         this.setState({callState: newState});
     }
 
@@ -234,6 +235,7 @@ class Conference extends React.Component {
             console.log('Conference: call already in progress');
         }
 
+
         const options = {
             id: this.state.callUUID,
             pcConfig: {iceServers: config.iceServers},
@@ -253,11 +255,16 @@ class Conference extends React.Component {
             utils.timestampedLog('Initial participants', this.props.participantsToInvite);
         }
 
-        let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
-        if (confCall) {
-            confCall.on('stateChanged', this.callStateChanged);
-            this.setState({currentCall: confCall});
-        }
+		this.props.startRingback();
+		setTimeout(() => {
+			let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
+			if (confCall) {
+				confCall.on('stateChanged', this.callStateChanged);
+				this.setState({currentCall: confCall});
+			} else {
+				this.props.stopRingback();
+			}
+        }, 2000);
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -348,8 +355,6 @@ class Conference extends React.Component {
         let box = null;
         let messages = [];
         
-        console.log('selectedAudioDevice xx', this.state.selectedAudioDevice);
-
         if (this.state.localMedia !== null) {
             let media = 'audio'
             if (this.props.proposedMedia && this.props.proposedMedia.video === true) {
@@ -484,6 +489,9 @@ Conference.propTypes = {
     availableAudioDevices   : PropTypes.array,
     selectedAudioDevice     : PropTypes.string,
     selectAudioDevice       : PropTypes.func,
+    startRingback           : PropTypes.func,
+    stopRingback            : PropTypes.func,
+
 };
 
 

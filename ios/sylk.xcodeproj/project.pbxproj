@@ -21,8 +21,8 @@
 		1F31872026495CFF0096C518 /* message_received.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871A26495CFF0096C518 /* message_received.wav */; };
 		1F31872126495CFF0096C518 /* message_sent.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871B26495CFF0096C518 /* message_sent.wav */; };
 		1F31872226495CFF0096C518 /* participant_left.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871C26495CFF0096C518 /* participant_left.wav */; };
+		1F4C5AC62ED6108100860BA5 /* AudioRouteModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F4C5AC52ED6108100860BA5 /* AudioRouteModule.m */; };
 		1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */; };
-		1F85846D2ED4B19F00C4F65E /* AudioRouteModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F85846C2ED4B19F00C4F65E /* AudioRouteModule.m */; };
 		1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */; };
 		1FC06CBE2A793D9300F8D5A3 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */; };
 		1FC06CC12A793D9300F8D5A3 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */; };
@@ -117,11 +117,11 @@
 		1F31871A26495CFF0096C518 /* message_received.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = message_received.wav; path = ../app/assets/sounds/message_received.wav; sourceTree = "<group>"; };
 		1F31871B26495CFF0096C518 /* message_sent.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = message_sent.wav; path = ../app/assets/sounds/message_sent.wav; sourceTree = "<group>"; };
 		1F31871C26495CFF0096C518 /* participant_left.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_left.wav; path = ../app/assets/sounds/participant_left.wav; sourceTree = "<group>"; };
+		1F4C5AC42ED6108100860BA5 /* AudioRouteModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = AudioRouteModule.h; path = sylk/AudioRouteModule.h; sourceTree = "<group>"; };
+		1F4C5AC52ED6108100860BA5 /* AudioRouteModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = AudioRouteModule.m; path = sylk/AudioRouteModule.m; sourceTree = "<group>"; };
 		1F5DAB96285FA8CE001F479D /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ios; sourceTree = "<group>"; };
 		1F5DAB97285FA8DE001F479D /* Indy.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Indy.framework; path = Pods/Indy/IndySdk/Indy.framework; sourceTree = "<group>"; };
 		1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SharedDataModule.m; sourceTree = "<group>"; };
-		1F85846B2ED4B19F00C4F65E /* AudioRouteModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = AudioRouteModule.h; path = sylk/AudioRouteModule.h; sourceTree = "<group>"; };
-		1F85846C2ED4B19F00C4F65E /* AudioRouteModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = AudioRouteModule.m; path = sylk/AudioRouteModule.m; sourceTree = "<group>"; };
 		1F9B147A2EA80A04001BA597 /* APNSTokenModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = APNSTokenModule.h; path = sylk/APNSTokenModule.h; sourceTree = "<group>"; };
 		1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = APNSTokenModule.m; path = sylk/APNSTokenModule.m; sourceTree = "<group>"; };
 		1FC06CAA2A793D2200F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -237,9 +237,9 @@
 				1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
 				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
-				1F85846B2ED4B19F00C4F65E /* AudioRouteModule.h */,
-				1F85846C2ED4B19F00C4F65E /* AudioRouteModule.m */,
 				642006F924364F8D00F214A5 /* GoogleService-Info.plist */,
+				1F4C5AC42ED6108100860BA5 /* AudioRouteModule.h */,
+				1F4C5AC52ED6108100860BA5 /* AudioRouteModule.m */,
 				13B07FAF1A68108700A75B9A /* AppDelegate.h */,
 				13B07FB01A68108700A75B9A /* AppDelegate.m */,
 				1F9B147A2EA80A04001BA597 /* APNSTokenModule.h */,
@@ -921,7 +921,7 @@
 				13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */,
 				1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */,
 				13B07FC11A68108700A75B9A /* main.m in Sources */,
-				1F85846D2ED4B19F00C4F65E /* AudioRouteModule.m in Sources */,
+				1F4C5AC62ED6108100860BA5 /* AudioRouteModule.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1049,7 +1049,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 214;
+				CURRENT_PROJECT_VERSION = 215;
 				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
@@ -1061,7 +1061,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 14;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 3.9.0;
+				MARKETING_VERSION = 3.9.1;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1085,7 +1085,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 214;
+				CURRENT_PROJECT_VERSION = 215;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1096,7 +1096,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 14;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 3.9.0;
+				MARKETING_VERSION = 3.9.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",

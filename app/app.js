@@ -462,6 +462,7 @@ class Sylk extends Component {
         this.sharedAndroidFiles = [];
         this.localiOSPushSubscriber = null;
         this.remoteiOSPushSubscriber = null;
+        this.cancelledUploads = {};
 
         this.callKeeper = new CallManager(RNCallKeep,
                                                 this.showAlertPanel,
@@ -4577,7 +4578,7 @@ class Sylk extends Component {
                     utils.timestampedLog('Play busy tone');
                     InCallManager.stop({busytone: '_BUNDLE_'});
                 } else {
-                    InCallManager.stop();
+                    this.audioManagerStop();
                 }
 
                 this.stopRingback();
@@ -7092,11 +7093,19 @@ class Sylk extends Component {
         let local_url = file_transfer.local_url;
         let remote_url = file_transfer.url.replace(/^wss:\/\//, 'https://');
 
+        if (file_transfer.transfer_id in this.cancelledUploads) {
+		   console.log("File transfer already cancelled", file_transfer.transfer_id);
+		   return;
+        }
+
 		if (file_transfer.transfer_id in this.uploadRequests) {
             const cancel_url = this.fileTransferUrl + '/cancel/' + file_transfer.transfer_id;
             // simple GET request
+            
 			fetch(cancel_url)
-				  .then(res => {console.log("File transfer cancelled", file_transfer.transfer_id);
+				  .then(res => {
+				               console.log("File transfer cancelled", file_transfer.transfer_id);
+				               this.cancelledUploads[file_transfer.transfer_id] = true;
 				}
 			  )
 			  .catch(error => console.error('File transfer cancel error:', error, file_transfer.transfer_id));
@@ -7154,7 +7163,6 @@ class Sylk extends Component {
             console.log(local_url, 'does not exist');
             return;
         }
-
 
 		encrypted_file = local_url + '.asc';
 		let encryptedFileExist = false;
@@ -7216,9 +7224,9 @@ class Sylk extends Component {
 			} else {
 				console.log('No public key available for', uri, 'encryption skipped');
 			}
-        }
-        
-       utils.timestampedLog('Uploading file', local_url, 'to', remote_url);
+       }
+
+       utils.timestampedLog('--- Uploading file', local_url, 'to', remote_url);
 	   this.updateTransferProgress(file_transfer.transfer_id, 0, 'upload');
 
 		RNBlobUtil.fetch('POST', remote_url, {
@@ -7226,6 +7234,14 @@ class Sylk extends Component {
 		}, RNBlobUtil.wrap(local_url))
 		.uploadProgress((written, total) => {
 		  const progress = Math.floor((written / total) * 100);
+		  if (file_transfer.transfer_id in this.cancelledUploads) {
+		      console.log('Upload was cancelled');
+			  this.deleteMessage(file_transfer.transfer_id, uri, false);
+			  this.deleteTransferProgress(file_transfer.transfer_id);
+              delete this.uploadRequests[file_transfer.transfer_id]
+		      //delete this.cancelledUploads[file_transfer.transfer_id];
+			  return;
+		  }
 		  console.log('Upload progress', progress);
 		  this.updateTransferProgress(file_transfer.transfer_id, progress, 'upload');
 		})
@@ -7236,15 +7252,20 @@ class Sylk extends Component {
             delete this.uploadRequests[file_transfer.transfer_id]
 		})
 		.catch((err) => {
-		    console.error('Upload error', err);
-			this.deleteTransferProgress(file_transfer.transfer_id);
-			this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
-            this.updateFileTransferBubble(file_transfer);
             delete this.uploadRequests[file_transfer.transfer_id]
+			this.deleteTransferProgress(file_transfer.transfer_id);
+		    if (file_transfer.transfer_id in this.cancelledUploads) {
+				console.log('Upload was cancelled');
+				this.deleteMessage(file_transfer.transfer_id, uri, false);
+			    delete this.cancelledUploads[file_transfer.transfer_id];
+			    return;
+		    } else {
+				console.log('Upload error', err);
+				this.outgoingMessageStateChanged(file_transfer.transfer_id, 'failed');
+				this.updateFileTransferBubble(file_transfer);
+			    return;
+            }
 		});
- 
-
-
 	}
 	
     async reSendMessage(message, uri) {
@@ -7567,7 +7588,7 @@ class Sylk extends Component {
 
     async deleteMessage(id, uri, remote=true, after=false) {
         //utils.timestampedLog('Message', id, 'is deleted');
-        console.log('deleteMessage', id, 'remote', remote);
+        //console.log('deleteMessage', id, 'remote', remote);
         let query;
 
         let message_ids = [id];
@@ -8948,7 +8969,9 @@ class Sylk extends Component {
             query = query + " and metadata != ''";
         }
 
-        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId]).then((results) => {
+        let params = [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId];
+
+        await this.ExecuteQuery(query, params).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
             console.log('Got', total, 'messages with', uri, 'from database', );
@@ -8960,7 +8983,8 @@ class Sylk extends Component {
             myContacts[uri].totalMessages = total;
         }
 
-        query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) or (from_uri =? and to_uri = ?)) ";
+        query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?))";
+//        query = "SELECT * FROM messages where account = ? and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?) or (from_uri =? and to_uri = ?)) ";
         if (pinned) {
             query = query + ' and pinned = 1';
         }
@@ -8970,9 +8994,10 @@ class Sylk extends Component {
         }
 
         query = query + ' order by unix_timestamp desc limit ?, ?';
+        params = [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId, this.state.messageStart, limit];    
 
-        await this.ExecuteQuery(query, [this.state.accountId, this.state.accountId, uri, uri, this.state.accountId, this.state.accountId, this.state.accountId, this.state.messageStart, limit]).then((results) => {
-            //console.log('SQL get messages, rows =', results.rows.length);
+        await this.ExecuteQuery(query, params).then((results) => {
+            console.log('SQL get messages, rows =', results.rows.length);
 
             let rows = results.rows;
             messages[orig_uri] = [];
@@ -8999,16 +9024,6 @@ class Sylk extends Component {
             for (let i = 0; i < rows.length; i++) {
                 try {
 					var item = rows.item(i);
-					if (false) {
-						//console.log('Remove broken message', item);
-						this.ExecuteQuery('delete from messages where msg_id = ?', [item.msg_id]);
-						myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
-						continue;
-					}
-					
-					if (item.content_type !== "application/sylk-message-metadata" && item.from_uri == item.to_uri) {
-						continue;
-					}
 	
 					content = item.content;
 					if (!content) {
@@ -9086,19 +9101,7 @@ class Sylk extends Component {
 								console.log('Cannot parse metadataMessage', content, item);
 								continue;
 							}
-	
-								/*
-								if (metadataContent.transferId && metadataContent.transferId in metadataTimstamps && metadataTimstamps[metadataContent.transferId] > item.unix_timestamp) {
-									console.log('we have an old timestamp');
-									continue;
-								}
-								*/
-	
 							try {
-								//metadataContent.author = item.from_uri;
-								if (mId == '1761b60a-d429-40e6-a8a6-a35f010436fa' && metadataContent.transferId) {
-									//console.log('DB metadataContent', metadataContent);
-								}
 
 								if (mId in metadataTimstamps) {
 									oldMetadataContent = myContacts[orig_uri].messagesMetadata[mId];
@@ -12938,7 +12941,8 @@ class Sylk extends Component {
 				availableAudioDevices = {this.state.availableAudioDevices}
 				selectedAudioDevice = {this.state.selectedAudioDevice}
 				selectAudioDevice = {this.selectAudioDevice}
-
+				startRingback = {this.startRingback}
+				stopRingback = {this.stopRingback}
             />
         )
     }

@@ -16,8 +16,13 @@ class LocalMedia extends Component {
 
         this.localVideo = React.createRef();
 
+		const localMedia = this.props.localMedia;
+        const mediaType = localMedia.getVideoTracks().length > 0 ? 'video' : 'audio';
+
+
         this.state = {
-            localMedia: this.props.localMedia,
+            localMedia: localMedia,
+            mediaType: mediaType,
             historyEntry: this.props.historyEntry,
             participants: this.props.participants,
             reconnectingCall: this.props.reconnectingCall,
@@ -31,6 +36,7 @@ class LocalMedia extends Component {
         this.props.mediaPlaying();
     }
 
+            
     //getDerivedStateFromProps(nextProps, state)
     UNSAFE_componentWillReceiveProps(nextProps) {
 /*
@@ -38,7 +44,6 @@ class LocalMedia extends Component {
             this.props.mediaPlaying();
         }
 */
-
         this.setState({historyEntry: nextProps.historyEntry,
                       participants: nextProps.participants,
                       reconnectingCall: nextProps.reconnectingCall,
@@ -76,7 +81,6 @@ class LocalMedia extends Component {
     }
 
     render() {
-
         let {height, width} = Dimensions.get('window');
         let videoStyle = {height, width};
 
@@ -133,7 +137,9 @@ class LocalMedia extends Component {
 						</View>
                     </View>
                 :
+
                 <View style={buttonContainerClass}>
+			    { this.state.mediaType == 'video' ?
                         <TouchableHighlight style={styles.roundshape}>
 						<IconButton
 							size={buttonSize}
@@ -144,6 +150,8 @@ class LocalMedia extends Component {
 							key="toggleVideo"
 						/>
                         </TouchableHighlight>
+                        : null}
+                        
 
                         <TouchableHighlight style={styles.roundshape}>
                         <IconButton
