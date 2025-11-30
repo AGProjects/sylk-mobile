@@ -2,38 +2,44 @@ import React, { memo } from 'react';
 import { View, TouchableOpacity, Text, Image } from 'react-native';
 import { Bubble } from 'react-native-gifted-chat';
 
-// Memoized ChatBubble — replaces renderBubble()
 const ChatBubble = memo(
   ({
-    props,
+    // GiftedChat bubble fields (flattened)
+    currentMessage,
+    previousMessage,
+    nextMessage,
+    position,
+
+    // App-level inputs
     messages = [],
     bubbleWidths = {},
     mediaLabels = {},
+	replyMessages = {},
+	consumedMessages = {},
     videoMetaCache = {},
-    visibleMessageIds = [], 
+    visibleMessageIds = [],
     transferProgress = {},
     imageLoadingState = {},
-    audioPlayingState = {},
     handleBubbleLayout,
     fullSize,
     scrollToMessage,
-    styles,
+    styles = {},
     renderMessageImage,
     renderMessageVideo,
     renderMessageAudio,
-    focusedMessageId,
     renderMessageText,
-    sortOrder
+    focusedMessageId,
+    sortOrder,
+    // catch-all for any other GiftedChat bubble props
+    ...restProps
   }) => {
-    const { currentMessage } = props;
+    // Guard
     if (!currentMessage) return null;
 
-	const isFocused = focusedMessageId === currentMessage._id;
-	const focusedBorder = isFocused
-	  ? { borderWidth: 3, borderColor: 'orange' }
-	  : {};
-  
-    // === Bubble styling setup ===
+    const isFocused = focusedMessageId === currentMessage._id;
+    const focusedBorder = isFocused ? { borderWidth: 3, borderColor: 'orange' } : {};
+
+    // === Styling / colors ===
     const bubbleRadius = 16;
     let leftColor = 'green';
     let rightColor = '#fff';
@@ -46,47 +52,42 @@ const ChatBubble = memo(
       leftColor = '#2ecc71';
     }
 
-    // === Find original message if this is a reply ===
+    // === Reply preview lookup ===
     let originalMessage = null;
-    if (sortOrder != 'size' && currentMessage.replyId && Array.isArray(messages)) {
-      originalMessage = messages.find(m => m._id === currentMessage.replyId);
-    }
+	if (sortOrder !== 'size' && replyMessages && Array.isArray(messages)) {
+	  const replyTarget = replyMessages[currentMessage._id];
+	  if (replyTarget) {
+		originalMessage = messages.find(m => m._id === replyTarget);
+	  }
+	}
 
-    const MIN_BUBBLE_WIDTH = 120;
-    const MAX_BUBBLE_WIDTH = '80%';
+//    const MIN_BUBBLE_WIDTH = currentMessage.contentType === "application/sylk-file-transfer" ? 220: 120;
+    const MIN_BUBBLE_WIDTH = 220;
+    
     const measuredWidth = bubbleWidths[currentMessage._id] || 0;
     const bubbleWidth = Math.max(measuredWidth, MIN_BUBBLE_WIDTH);
-
-    const previewWrapperStyle = {
-      borderTopLeftRadius: bubbleRadius,
-      borderTopRightRadius: bubbleRadius,
-    };
-
+    
+    const previewWrapperStyle = { borderTopLeftRadius: bubbleRadius, borderTopRightRadius: bubbleRadius };
     const replyPreviewContainer =
       currentMessage.direction === 'incoming'
         ? styles.replyPreviewContainerIncoming
         : styles.replyPreviewContainerOutgoing;
-
     const hasPreview = !!originalMessage;
 
-    // === Reply Preview ===
     const replyPreview = originalMessage ? (
       <TouchableOpacity
         activeOpacity={0.7}
         onPress={() => {
-          if (scrollToMessage && originalMessage._id) {
-            scrollToMessage(originalMessage._id);
-          }
+          if (scrollToMessage && originalMessage._id) scrollToMessage(originalMessage._id);
         }}
       >
         <View
           style={[
             replyPreviewContainer,
             {
-              alignSelf:
-                currentMessage.direction === 'incoming' ? 'flex-start' : 'flex-end',
+              alignSelf: currentMessage.direction === 'incoming' ? 'flex-start' : 'flex-end',
               minWidth: MIN_BUBBLE_WIDTH,
-              maxWidth: MAX_BUBBLE_WIDTH,
+              maxWidth: '80%',
               width: bubbleWidth,
               ...previewWrapperStyle,
             },
@@ -100,17 +101,9 @@ const ChatBubble = memo(
               resizeMode="cover"
             />
           ) : originalMessage.image ? (
-            <Image
-              source={{ uri: originalMessage.image }}
-              style={{ width: '85%', height: 100 }}
-              resizeMode="cover"
-            />
+            <Image source={{ uri: originalMessage.image }} style={{ width: '85%', height: 100 }} resizeMode="cover" />
           ) : (
-            <Text
-              style={styles.replyPreviewText}
-              numberOfLines={3}
-              ellipsizeMode="tail"
-            >
+            <Text style={styles.replyPreviewText} numberOfLines={3} ellipsizeMode="tail">
               {originalMessage.text}
             </Text>
           )}
@@ -118,17 +111,7 @@ const ChatBubble = memo(
       </TouchableOpacity>
     ) : null;
 
-    // === Skip ASC files ===
-    if (
-      currentMessage.direction === 'incoming' &&
-      currentMessage.metadata &&
-      currentMessage.metadata.filename &&
-      currentMessage.metadata.filename.endsWith('.asc')
-    ) {
-      //return null;
-    }
-
-    // === Wrapper colors ===
+    // === Wrapper styles ===
     const leftWrapper = {
       backgroundColor: leftColor,
       borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
@@ -139,86 +122,109 @@ const ChatBubble = memo(
       backgroundColor: rightColor,
       borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
       borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
-	  ...focusedBorder,
+      ...focusedBorder,
     };
 
-    // === Shared customView ===
-    const customView = (
+    // custom view used for layout (won't block interactions)
+    const customView = () => (
       <View
-        onLayout={e => handleBubbleLayout(currentMessage._id, e)}
-        style={{ position: 'absolute', width: '100%', height: '100%' }}
+        pointerEvents="none"
+        onLayout={e => handleBubbleLayout && handleBubbleLayout(currentMessage._id, e)}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
     );
 
-    // === Render the main bubble ===
+	const gcProps = {
+	  currentMessage,
+	  previousMessage,
+	  nextMessage,
+	  position,
+	  imageLoadingState,
+	  transferProgress,
+	  scrollToMessage,
+	};
+
+      // Common bubble props to pass
+    const bubbleProps = {
+      ...restProps,
+      currentMessage,
+      previousMessage,
+      nextMessage,
+      position,
+      renderMessageImage,
+      renderMessageVideo,
+      renderMessageAudio,
+      renderMessageText,
+      renderCustomView: customView,
+    };
+
+    // Choose bubble variant (image / video / audio / text)
     let content = null;
 
     if (currentMessage.image) {
       content = (
         <Bubble
-          {...props}
-		renderMessageImage={renderMessageImage}
-		renderMessageVideo={renderMessageVideo}
-		renderMessageAudio={renderMessageAudio}
-		renderMessageText={renderMessageText}
-          wrapperStyle={{
-            left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
-            right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
-          }}
-          textProps={{ style: { color: props.position === 'left' ? '#000' : '#000' } }}
+          {...bubbleProps}
+          wrapperStyle={{ left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 }, right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 } }}
+          textProps={{ style: { color: position === 'left' ? '#000' : '#000' } }}
           textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
-          renderCustomView={() => customView}
         />
       );
     } else if (currentMessage.video) {
       content = (
         <Bubble
-          {...props}
-		renderMessageImage={renderMessageImage}
-		renderMessageVideo={renderMessageVideo}
-		renderMessageAudio={renderMessageAudio}
-		renderMessageText={renderMessageText}
-          wrapperStyle={{
-            left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
-            right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 },
-          }}
-          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
+          {...bubbleProps}
+          wrapperStyle={{ left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 }, right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 } }}
+          textProps={{ style: { color: position === 'left' ? '#fff' : '#fff' } }}
           textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
-          renderCustomView={() => customView}
         />
       );
     } else if (currentMessage.audio) {
       content = (
         <Bubble
-          {...props}
-		renderMessageImage={renderMessageImage}
-		renderMessageVideo={renderMessageVideo}
-		renderMessageAudio={renderMessageAudio}
-		renderMessageText={renderMessageText}
+          {...bubbleProps}
           wrapperStyle={{
             left: { ...leftWrapper, backgroundColor: 'transparent', borderColor: 'white', borderWidth: 0.5 },
             right: { ...rightWrapper, backgroundColor: 'transparent', borderColor: 'white', borderWidth: 0.5 },
           }}
-          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#fff' } }}
+          textProps={{ style: { color: position === 'left' ? '#fff' : '#fff' } }}
           textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
-          renderCustomView={() => customView}
+        />
+      );
+    } else if (originalMessage) {
+      content = (
+        <Bubble
+          {...bubbleProps}
+			wrapperStyle={{
+			  left: {
+				...leftWrapper,
+				minWidth: bubbleWidth,
+				maxWidth: bubbleWidth,
+				alignSelf: 'flex-start', // match reply preview alignment
+			  },
+			  right: {
+				...rightWrapper,
+				minWidth: bubbleWidth,
+				maxWidth: bubbleWidth,
+				alignSelf: 'flex-end', // match reply preview alignment
+			  },
+			  }}
+      
+          textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
+          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
         />
       );
     } else {
       content = (
         <Bubble
-          {...props}
-		renderMessageImage={renderMessageImage}
-		renderMessageVideo={renderMessageVideo}
-		renderMessageAudio={renderMessageAudio}
-		renderMessageText={renderMessageText}
-          wrapperStyle={{
+          {...bubbleProps}
+                    wrapperStyle={{
             left: { ...leftWrapper },
             right: { ...rightWrapper },
           }}
-          textProps={{ style: { color: props.position === 'left' ? '#fff' : '#000' } }}
+
+          textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
           textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
-          renderCustomView={() => customView}
         />
       );
     }
@@ -231,148 +237,121 @@ const ChatBubble = memo(
     );
   },
 
-	  // === Memoization: only re-render if currentMessage changes ===
-	(prev, next) => {
-	  const prevMsg = prev.props.currentMessage;
-	  const nextMsg = next.props.currentMessage;
-	  
-	const prevLocalUrl = prevMsg.metadata?.local_url;
-	const nextLocalUrl = nextMsg.metadata?.local_url;
+  /**
+   * memo comparator:
+   * return true  -> SKIP re-render
+   * return false -> re-render
+   */
+(prev, next) => {
+  const p = prev.currentMessage;
+  const n = next.currentMessage;
+
+  if (!p || !n) {
+    console.log(`[Bubble ${p?._id || '??'}] RERENDER → missing message`);
+    return false;
+  }
+
+  const id = p._id;
+
+	// ==== Reply messages ====
+	const currentId = p._id;
+
+	const prevLabel = prev.mediaLabels?.[currentId];
+	const nextLabel = next.mediaLabels?.[currentId];
 	
-	const localUrlChanged =
-	  prevLocalUrl !== nextLocalUrl &&
-	  !(prevLocalUrl === undefined && nextLocalUrl === undefined);
-	
-	if (localUrlChanged) {
-	  console.log("local_url changed", nextMsg._id, {
-		from: prevLocalUrl,
-		to: nextLocalUrl
-	  });
+	if (prevLabel !== nextLabel) {
+	  console.log(`[Bubble ${currentId}] RERENDER → mediaLabels changed ${prevLabel} -> ${nextLabel}`);
 	  return false;
 	}
-
-	// Image loading state changed?
-	const prevImageLoading = prev.imageLoadingState?.[prevMsg._id];
-	const nextImageLoading = next.imageLoadingState?.[nextMsg._id];
 	
-	if (prevImageLoading !== nextImageLoading) {
-	  console.log("imageLoadingState changed", nextMsg._id, {
-		from: prevImageLoading,
-		to: nextImageLoading,
-	  });
-	  return false; // re-render bubble
+	// ==== Media rotation ====
+	const prevRotation = prev.mediaRotations?.[currentId];
+	const nextRotation = next.mediaRotations?.[currentId];
+	
+	if (prevRotation !== nextRotation) {
+	  console.log(`[Bubble ${currentId}] RERENDER → mediaRotation changed ${prevRotation} -> ${nextRotation}`);
+	  return false; // re-render
 	}
 
-	const prevThumb = prev.videoMetaCache?.[prevMsg._id]?.thumbnail;
-	const nextThumb = next.videoMetaCache?.[nextMsg._id]?.thumbnail;
+	// Only re-render if the current message has a reply in the updated replyMessages
+	const prevReply = prev.replyMessages?.[currentId];
+	const nextReply = next.replyMessages?.[currentId];
 	
-	if (prevThumb !== nextThumb) {
-	  console.log("Thumbnail updated", nextMsg._id, {
-		from: prevThumb,
-		to: nextThumb,
-	  });
-	  return false;
+	if (prevReply !== nextReply) {
+	  console.log(`[Bubble ${currentId}] RERENDER → replyMessages changed from ${prevReply} to ${nextReply}`);
+	  return false; // re-render
 	}
 
-	  if (!prevMsg || !nextMsg) return false;
+  if (prev.fullSize != next.fullSize) {
+    console.log(`[Bubble ${id}] RERENDER → fullSize changed`);
+    return false;
+  }
+
+  // ==== Transfer progress ====
+  const prevProgress = prev.transferProgress?.[id]?.progress;
+  const nextProgress = next.transferProgress?.[id]?.progress;
+  if (prevProgress !== nextProgress) {
+    //console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
+    return false;
+  }
 	
-	  const sameId = prevMsg._id === nextMsg._id;
-	
-	  // Visibility and play state changes
-	  const wasVisible = (prev.visibleMessageIds || []).includes(prevMsg._id);
-	  const isVisible = (next.visibleMessageIds || []).includes(nextMsg._id);
-	
-	  if (!sameId || wasVisible !== isVisible) {
+  // ==== Image loading state ====
+  const prevImgState = prev.imageLoadingState?.[id];
+  const nextImgState = next.imageLoadingState?.[id];
+  if (prevImgState !== nextImgState) {
+    console.log(`[Bubble ${id}] RERENDER → image state changed`);
+    return false;
+  }
+
+// ==== Consumed ====
+const prevConsumed = prev.consumedMessages?.[currentId];
+const nextConsumed = next.consumedMessages?.[currentId];
+
+// Skip re-render if prev is 100 and next is null/undefined
+if (!(prevConsumed === 100 && (nextConsumed === undefined || nextConsumed === null))) {
+  if (prevConsumed !== nextConsumed) {
+    console.log(
+      `[Bubble ${currentId}] RERENDER → consumedMessages changed ${prevConsumed} -> ${nextConsumed}`
+    );
+    return false; // re-render
+  }
+}
+
+// ==== Thumbnail / video meta ====
+const prevThumb = prev.videoMetaCache?.[id]?.thumbnail;
+const nextThumb = next.videoMetaCache?.[id]?.thumbnail;
+
+// Treat undefined and null as the same
+if ((prevThumb ?? null) !== (nextThumb ?? null)) {
+  console.log(`[Bubble ${id}] RERENDER → video thumbnail changed ${prevThumb} -> ${nextThumb}`);
+  return false;
+}
+
+  // ==== Content changed ====
+	const contentFields = ['text', 'image', 'video', 'audio'];
+	for (let f of contentFields) {
+	  const oldVal = p[f] ?? null;  // convert undefined to null
+	  const newVal = n[f] ?? null;  // convert undefined to null
+	  if (oldVal !== newVal) {
+		console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], n[f]);
 		return false;
 	  }
-		// Audio play state changes
-		const prevAudio = prev.audioPlayingState?.[prevMsg._id];
-		const nextAudio = next.audioPlayingState?.[nextMsg._id];
-		
-		if (prevAudio !== nextAudio) {
-		  console.log("Audio playing changed", nextMsg._id);
-		  return false;
-		}
-	
-		// Delivery / state flags
-		const fields = [
-		  "pending",
-		  "sent",
-		  "received",
-		  "displayed",
-		  "failed",
-		  "pinned",
-		];
-		
-		const changed = fields.filter(f => prevMsg[f] !== nextMsg[f]);
-		
-		if (changed.length > 0) {
-		  console.log(
-			"statusChanged", 
-			nextMsg._id, 
-			"changed fields:", 
-			changed.reduce((acc, f) => {
-			  acc[f] = { from: prevMsg[f], to: nextMsg[f] };
-			  return acc;
-			}, {})
-		  );
-		  return false;
-		}
-	
-		// Content changes
-		const contentFields = ["text", "image", "video", "audio"];
-		
-		const contentDiff = contentFields.filter(f => prevMsg[f] !== nextMsg[f]);
-		
-		if (contentDiff.length > 0) {
-		  console.log(
-			"contentChanged",
-			nextMsg._id,
-			"changed fields:",
-			contentDiff.reduce((acc, f) => {
-			  acc[f] = { from: prevMsg[f], to: nextMsg[f] };
-			  return acc;
-			}, {})
-		  );
-		  return false;
-		}
-	
-	// Progress changes
-	const prevTransfer = prev.transferProgress?.[prevMsg._id]?.progress;
-	const nextTransfer = next.transferProgress?.[nextMsg._id]?.progress;
-	
-	const hadPrev = prevTransfer !== undefined;
-	const hasNext = nextTransfer !== undefined;
-	
-	let transferChanged = false;
-	let changeInfo = {};
-	
-	if (hadPrev && !hasNext) {
-	  // Disappeared
-	  transferChanged = true;
-	  changeInfo = { type: "disappeared", from: prevTransfer, to: undefined };
-	} else if (!hadPrev && hasNext) {
-	  // Appeared
-	  transferChanged = true;
-	  changeInfo = { type: "appeared", from: undefined, to: nextTransfer };
-	} else if (prevTransfer !== nextTransfer) {
-	  // Changed
-	  transferChanged = true;
-	  changeInfo = { type: "changed", from: prevTransfer, to: nextTransfer };
 	}
-	
-	if (transferChanged) {
-	  //console.log("transferChanged", nextMsg._id, changeInfo);
-	  return false;
-	}
-	
-	  // Full-size selection (affects photo checkbox)
-		if (prev.fullSize !== next.fullSize) {
-		  return false;
-		}
-	
-	  return true; // Skip only if nothing at all changed
-	}
+
+  // ==== Status flags ====
+  const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'consumed'];
+  for (let f of flags) {
+    if (p[f] !== n[f]) {
+      //console.log(`[Bubble ${id}] RERENDER → status '${f}' changed`);
+      return false;
+    }
+  }
+  
+  // NOTHING changed → skip render
+  // console.log(`[Bubble ${id}] SKIP`);  // enable to see skips too
+  return true;
+}
+
 );
 
 export default ChatBubble;

@@ -18,7 +18,8 @@ import PushNotification , {Importance} from "react-native-push-notification";
 import VoipPushNotification from 'react-native-voip-push-notification';
 import { getApp } from '@react-native-firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ProximitySensor } from 'react-native-sensors';
+import Proximity from 'react-native-proximity';
+
 import { Appearance } from 'react-native';
 import ImageResizer from 'react-native-image-resizer';
 import ReactNativeBlobUtil from 'react-native-blob-util';
@@ -191,7 +192,6 @@ const deviceId = getUniqueId();
 
 const version = '1.0.0';
 const MAX_LOG_LINES = 500;
-
 
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
@@ -381,7 +381,8 @@ class Sylk extends Component {
             selectedAudioDevice: null,
             userSelectedDevice: null,
             waitForCommunicationsDevicesChanged: false,
-            connectivity: null
+            connectivity: null,
+            proximityNear: false
         };
 
         this.buildId = "20250923";
@@ -578,7 +579,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 9,
+        this.sqlTableVersions = {'messages': 13,
                                  'contacts': 7,
                                  'keys': 3,
                                  'accounts': 5
@@ -592,7 +593,11 @@ class Sylk extends Component {
                                                 6: [{query: 'alter table messages add column sender TEXT' , params: []}],
                                                 7: [{query: 'alter table messages add column image TEXT' , params: []}, {query: 'alter table messages add column local_url TEXT' , params: []}],
                                                 8: [{query: 'alter table messages add column metadata TEXT' , params: []}],
-                                                9: [{query: 'alter table messages add column state TEXT' , params: []}]
+                                                9: [{query: 'alter table messages add column state TEXT' , params: []}],
+                                                10: [{query: 'alter table messages add column related_msg_id TEXT' , params: []}, {query: 'alter table messages add column related_action TEXT' , params: []}],
+                                                11: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
+                                                12: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
+                                                13: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
                                                 },
                                    'contacts': {2: [{query: 'alter table contacts add column participants TEXT', params: []}],
                                                 3: [{query: 'alter table contacts add column direction TEXT', params: []},
@@ -625,10 +630,7 @@ class Sylk extends Component {
         if (Platform.OS === 'android') {
 			this.checkInstaller();
 
-			this.boundProximityDetect = this._proximityDetect.bind(this);
 			this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
-	
-			DeviceEventEmitter.addListener('Proximity', this.boundProximityDetect);
 			DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
         }
         		
@@ -712,15 +714,15 @@ class Sylk extends Component {
 		  const isWifi = state.type === "wifi";
 		  const isMobile = state.type === "cellular";
 	
-		  console.log("Network changed:", state.type, "connected:", state.isConnected);
+		  //console.log("Network changed:", state.type, "connected:", state.isConnected);
 	
 		  if (isWifi) {
 	         this.setState({connectivity: 'wifi'});
 
-			console.log("Connected via Wi-Fi");
+			//console.log("Connected via Wi-Fi");
 			this.onWifi();
 		  } else if (isMobile) {
-			console.log("Connected via Mobile Data");
+			//console.log("Connected via Mobile Data");
 			this.setState({connectivity: 'mobile'});
 			this.onMobile();
 		  }
@@ -747,12 +749,12 @@ class Sylk extends Component {
 	
 	  onWifi() {
 		// Your custom logic when switching to Wi-Fi
-		console.log("→ Switched to Wi-Fi");
+		//console.log("→ Switched to Wi-Fi");
 	  }
 	
 	  onMobile() {
 		// Your custom logic when switching to mobile data
-		console.log("→ Switched to Mobile Data");
+		//console.log("→ Switched to Mobile Data");
 	  }
 
   
@@ -778,25 +780,6 @@ class Sylk extends Component {
 		this.setState({dark: isDark});
 		// You can update your class state or trigger a re-render in your app
 	  }
-
-    _proximityDetect(data) {
-        if (!this.state.proximityEnabled) {
-            return;
-        }
-
-        if (this.state.headsetIsPlugged) {
-            utils.timestampedLog('Proximity disabled when headset is plugged');
-            return;
-        }
-
-        //utils.timestampedLog('Proximity changed, isNear is', data.isNear);
-
-        if (data.isNear) {
-           this.speakerphoneOff();
-        } else {
-           this.speakerphoneOn();
-        }
-    }
 
     _wiredHeadsetDetect(data) {
         console.log('-- Wired headset:', data);
@@ -1757,6 +1740,22 @@ class Sylk extends Component {
 			 }
 		 }	 
 
+		if (this.state.proximityEnabled && prevState.proximityNear !== this.state.proximityNear) {
+			if (this.state.proximityNear) {
+				if (this.useInCallManger) {
+					this.speakerphoneOff();
+				} else {
+					this.selectAudioDevice('BUILTIN_EARPIECE');
+				}
+			} else {
+				if (this.useInCallManger) {
+				   this.speakerphoneOn();
+				} else {
+					this.selectAudioDevice('BUILTIN_SPEAKER');
+				}
+			}
+        }
+
 		 if (prevState.selectedDevice !== this.state.selectedDevice ) {
 		     //console.log('selectedDevice changed', prevState.selectedDevice ,  '->' , this.state.selectedDevice);
 			 this.setState({selectedAudioDevice: this.state.selectedDevice? this.state.selectedDevice.type: null});
@@ -1942,6 +1941,8 @@ class Sylk extends Component {
                                     'pending' INTEGER, \
                                     'system' INTEGER, \
                                     'url' TEXT, \
+                                    'related_msg_id', TEXT, \
+                                    'related_action', TEXT, \
                                     'local_url' TEXT, \
                                     'image' TEXT, \
                                     'encrypted' INTEGER default 0, \
@@ -2073,7 +2074,7 @@ class Sylk extends Component {
                 } else {
                     //console.log('Table', key, 'has version', value);
                     if (this.sqlTableVersions[key] > currentVersions[key]) {
-                        console.log('Table', key, 'must have version', value, 'and it has', currentVersions[key]);
+                        console.log('SQL Table', key, 'must have version', value, 'and it has', currentVersions[key]);
                         update_queries = this.updateTableQueries[key];
                         version_numbers = Object.keys(update_queries);
                         version_numbers.sort(function(a, b){return a-b});
@@ -2084,7 +2085,7 @@ class Sylk extends Component {
                             update_sub_queries = update_queries[version];
                             update_sub_queries.forEach((query_objects) => {
 
-                                console.log('Run query for table', key, 'version', version, ':', query_objects.query);
+                                console.log('Run SQL query for table', key, 'version', version, ':', query_objects.query);
                                 this.ExecuteQuery(query_objects.query, query_objects.params);
                             });
 
@@ -2095,7 +2096,7 @@ class Sylk extends Component {
                         this.ExecuteQuery(query);
 
                     } else {
-                        //console.log('No upgrade required for table', key);
+                        console.log('No upgrade required for SQL table', key, this.sqlTableVersions[key]);
                     }
                 }
             }
@@ -2477,9 +2478,7 @@ class Sylk extends Component {
 		if (Platform.OS === 'android') {
 			NativeModules.SylkBridge.setActiveChat(null);
 		}
-	
-		//if (this.proximityListener) this.proximityListener.unsubscribe();
-			
+				
 		if (this.appStateSubscription) {
 			this.appStateSubscription.remove();
 			this.appStateSubscription = null;
@@ -2528,8 +2527,31 @@ class Sylk extends Component {
 	  
 		this.closeConnection();
 		this._loaded = false;
+
+		if (this.proximityListener) {
+		    this.proximityListener.remove();
+		}
 	}
 
+	handleProximity = ({ proximity }) => {
+        if (!this.state.proximityEnabled) {
+            return;
+        }
+
+        if (this.state.headsetIsPlugged) {
+            utils.timestampedLog('Proximity disabled when headset is plugged');
+            return;
+        }
+
+		if (this.state.selectedAudioDevice == 'BLUETOOTH_SCO') {
+            utils.timestampedLog('Proximity disabled when BT is plugged');
+            return;
+		}
+        
+        utils.timestampedLog('proximityNear changed:', proximity);
+		this.setState({ proximityNear: proximity});
+	};
+  
     get unmounted() {
         return !this._loaded;
     }
@@ -2704,23 +2726,11 @@ class Sylk extends Component {
         });
 
  		await this.listenForPushNotifications();
-
-        /*
-		this.proximityListener = new ProximitySensor({ interval: 100 }).subscribe(
-		  ({ proximity }) => {
-		    console.log('proximity detect:', proximity); 
-			this.boundProximityDetect(proximity);
-		  },
-		  (error) => {
-			console.warn("Proximity sensor error:", error);
-		  }
-		);
-		*/
-		
         this.checkVersion();    
         this.getAudioState();
         this.startWatchingNetwork();
-   
+        this.proximityListener = Proximity.addListener(this.handleProximity);
+
 	}
 	
 	audioManagerStart() {
@@ -2823,21 +2833,21 @@ class Sylk extends Component {
 
 					// Usage:
 					if (!devicesEqual(audioInputs, this.state.audioInputs)) {
-					  logDevices("Inputs changed", audioInputs);
+					  //logDevices("Inputs changed", audioInputs);
 						this.setState({
 							audioInputs: audioInputs,
 						});
 					}
 	
 					if (!devicesEqual(audioOutputs, this.state.audioOutputs)) {
-						logDevices("Outputs changed", audioInputs);
+						//logDevices("Outputs changed", audioInputs);
 						this.setState({
 							audioOutputs: audioOutputs,
 						});
 					}
 
 					if (!selectedDeviceEqual(selectedDevice, this.state.selectedDevice)) {
-						logDevices("Selected device changed", [selectedDevice]); // wrap single object in array
+						//logDevices("Selected device changed", [selectedDevice]); // wrap single object in array
 						// Update state
 						this.setState({
 							selectedDevice: selectedDevice
@@ -2929,7 +2939,7 @@ class Sylk extends Component {
 
 		// --- Foreground messages ---
 		this.messageListener = messaging(app).onMessage(async remoteMessage => {
-		  console.log('FCM in-app foreground event:', remoteMessage.data.event);
+		  //console.log('FCM in-app foreground event:', remoteMessage.data.event);
 
 
 		  if (Platform.OS === 'ios') {
@@ -3133,7 +3143,7 @@ class Sylk extends Component {
 
     async handleFirebasePush(notification) {
         let event = notification.event;
-        console.log("FCM in-app event", event, 'in app state', this.state.appState);
+        //console.log("FCM in-app event", event, 'in app state', this.state.appState);
 
         const from = notification['from_uri'];
         const to = notification['to_uri'];
@@ -3145,7 +3155,7 @@ class Sylk extends Component {
 			const account = notification['account'];
 			const displayName = notification['from_display_name'];
 
-            utils.timestampedLog('FCM in-app event: incoming conference', callUUID);
+            //utils.timestampedLog('FCM in-app event: incoming conference', callUUID);
             if (!from || !to) {
                 console.log('Missing from or to');
                 return;
@@ -3174,7 +3184,7 @@ class Sylk extends Component {
             this.cancelIncomingCall(callUUID);
         } else if (event === 'message') {        
 			// Show a local notification with Notifee
-			  console.log('FCM in-app event: message', from);
+			  //console.log('FCM in-app event: message', from);
 			  //console.log('Post notifee notification');
            /*
 				await notifee.displayNotification({
@@ -3395,27 +3405,6 @@ class Sylk extends Component {
                     this.changeRoute('/ready', 'incoming_call_cancelled');
                 }
             }
-        }
-    }
-
-    _proximityDetect(data) {
-        //console.log('_proximityDetect', data);
-
-        if (!this.state.proximityEnabled) {
-            return;
-        }
-
-        if (this.state.headsetIsPlugged) {
-            utils.timestampedLog('Proximity disabled when headset is plugged');
-            return;
-        }
-
-        utils.timestampedLog('Proximity changed, isNear is', data.isNear);
-
-        if (data.isNear) {
-           this.speakerphoneOff();
-        } else {
-           this.speakerphoneOn();
         }
     }
 
@@ -4218,6 +4207,26 @@ class Sylk extends Component {
         return false;
     }
 
+	setProximityChosenDevice() {
+		if (this.state.proximityEnabled) {
+			if (this.state.proximityNear) {
+				console.log('proximity set BUILTIN_EARPIECE')
+				if (this.useInCallManger) {
+					this.speakerphoneOff();
+				} else {
+					this.selectAudioDevice('BUILTIN_EARPIECE');
+				}
+			} else {
+				console.log('proximity set BUILTIN_SPEAKER')
+				if (this.useInCallManger) {
+				   this.speakerphoneOn();
+				} else {
+					this.selectAudioDevice('BUILTIN_SPEAKER');
+				}
+			}
+		}
+	}
+
     callStateChanged(oldState, newState, data) {
         if (this.unmounted) {
             return;
@@ -4310,6 +4319,7 @@ class Sylk extends Component {
                     //utils.timestampedLog("Outgoing call media started");
                     newCurrentCall = this.state.currentCall;
                 }
+
             } else {
                 //utils.timestampedLog('Call state changed:', 'We have two calls in unclear state');
             }
@@ -4386,6 +4396,7 @@ class Sylk extends Component {
                 break;
 
             case 'ringing':
+                this.setProximityChosenDevice();
                 this.startRingback();
                 break;
 
@@ -4395,6 +4406,7 @@ class Sylk extends Component {
                     utils.timestampedLog(callUUID, 'Push sent to remote party devices');
                 }
 
+                this.setProximityChosenDevice();
                 this.startRingback();
                 break;
             case 'early-media':
@@ -4402,8 +4414,11 @@ class Sylk extends Component {
                 //this.backToForeground();
                 this.stopRingback();
                 this.audioManagerStart();
+                this.setProximityChosenDevice();
                 break;
             case 'established':
+                this.setProximityChosenDevice();
+
                 callsState = this.state.callsState;
                 callsState[callUUID] = {startTime: new Date()};
                 this.setState({callsState: callsState});
@@ -6063,14 +6078,14 @@ class Sylk extends Component {
         if (from in this.state.messages) {
 			const exists = messages[from].some(m => m._id === id);
 			if (exists) {
-			    console.log('Message is already loaded', id);
+			    //console.log('Message is already loaded', id);
 				return;
 			}
         } else {
 			const myContacts = this.state.myContacts;
 			if (from in myContacts) {
 				if (myContacts[from].unread.indexOf(id) > -1) {
-					console.log('Message is already loaded in unread', id);
+					//console.log('Message is already loaded in unread', id);
 					return;
 				}
 			}
@@ -6930,46 +6945,14 @@ class Sylk extends Component {
         message.content_type = contentType;
 		let selectedContact = this.state.selectedContact;
 		let myContacts = this.state.myContacts;
-
+		
 		if (contentType === 'application/sylk-message-metadata') {
-		     const metadataContent = message.metadata;
-		     const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-			 console.log('outgoing metadata message', message._id, metadataContent);
-
-			 this.setState(prev => {
-				const uri = prev.selectedContact.uri;
-		
-				// Clone old structures
-				const newMessagesMetadata = {
-					...prev.myContacts[uri].messagesMetadata,
-					[mId]: metadataContent
-				};
-		
-				const newSelectedContact = {
-					...prev.selectedContact,
-					messagesMetadata: newMessagesMetadata
-				};
-		
-				const newMyContacts = {
-					...prev.myContacts,
-					[uri]: {
-						...prev.myContacts[uri],
-						messagesMetadata: newMessagesMetadata
-					}
-				};
-		
-				return {
-					myContacts: newMyContacts,
-					selectedContact: newSelectedContact,
-					messagesMetadata: newMessagesMetadata
-				};
-			 });
-
-			 this.saveOutgoingMessage(uri, message, 0, contentType);
-			 this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
-			 return;
+			this.handleMessageMetadata(uri, message.content);
+			this.saveOutgoingMessage(uri, message, 0, contentType);
+			this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
+			return;
 		}
-
+		
         if (contentType === 'application/sylk-file-transfer') {
             let file_transfer = message.metadata;
             if (!file_transfer.path) {
@@ -7092,6 +7075,9 @@ class Sylk extends Component {
         let outputFile;
         let local_url = file_transfer.local_url;
         let remote_url = file_transfer.url.replace(/^wss:\/\//, 'https://');
+        let uri = file_transfer.receiver.uri;
+        
+        console.log('this.cancelledUploads', this.cancelledUploads);
 
         if (file_transfer.transfer_id in this.cancelledUploads) {
 		   console.log("File transfer already cancelled", file_transfer.transfer_id);
@@ -7101,18 +7087,26 @@ class Sylk extends Component {
 		if (file_transfer.transfer_id in this.uploadRequests) {
             const cancel_url = this.fileTransferUrl + '/cancel/' + file_transfer.transfer_id;
             // simple GET request
-            
+
+		    this.cancelledUploads[file_transfer.transfer_id] = true;
+		    this.deleteTransferProgress(file_transfer.transfer_id);
+		    this.deleteMessage(file_transfer.transfer_id, uri, false);
+
+            const task = this.uploadRequests[file_transfer.transfer_id];
+            task.cancel();
+
 			fetch(cancel_url)
 				  .then(res => {
 				               console.log("File transfer cancelled", file_transfer.transfer_id);
-				               this.cancelledUploads[file_transfer.transfer_id] = true;
 				}
 			  )
 			  .catch(error => console.error('File transfer cancel error:', error, file_transfer.transfer_id));
-			 return;
+
+		    delete this.uploadRequests[file_transfer.transfer_id];
+			return;
 		}
 
-        this.uploadRequests[file_transfer.transfer_id] = true;
+		this.updateFileTransferBubble(file_transfer);
 
         if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
             // scale down local_url file to 600px width
@@ -7136,8 +7130,6 @@ class Sylk extends Component {
             }
         }
         
-        let uri = file_transfer.receiver.uri;
-
         if (!file_transfer.filetype) {
             file_transfer.filetype = 'application/octet-stream';
             try {
@@ -7226,23 +7218,27 @@ class Sylk extends Component {
 			}
        }
 
-       utils.timestampedLog('--- Uploading file', local_url, 'to', remote_url);
 	   this.updateTransferProgress(file_transfer.transfer_id, 0, 'upload');
 
-		RNBlobUtil.fetch('POST', remote_url, {
+       utils.timestampedLog('--- Uploading file', local_url, 'to', remote_url);
+	   let task = RNBlobUtil.fetch('POST', remote_url, {
 		  'Content-Type': file_transfer.filetype,
-		}, RNBlobUtil.wrap(local_url))
-		.uploadProgress((written, total) => {
+		}, RNBlobUtil.wrap(local_url));
+
+        this.uploadRequests[file_transfer.transfer_id] = task;
+
+        task.uploadProgress((written, total) => {
 		  const progress = Math.floor((written / total) * 100);
+		  console.log('uploadProgress', progress, uri);   
 		  if (file_transfer.transfer_id in this.cancelledUploads) {
 		      console.log('Upload was cancelled');
 			  this.deleteMessage(file_transfer.transfer_id, uri, false);
 			  this.deleteTransferProgress(file_transfer.transfer_id);
               delete this.uploadRequests[file_transfer.transfer_id]
-		      //delete this.cancelledUploads[file_transfer.transfer_id];
+		      delete this.cancelledUploads[file_transfer.transfer_id];
 			  return;
 		  }
-		  console.log('Upload progress', progress);
+		  //console.log('Upload progress', progress);
 		  this.updateTransferProgress(file_transfer.transfer_id, progress, 'upload');
 		})
 		.then((res) => {
@@ -7251,13 +7247,17 @@ class Sylk extends Component {
 	        this.updateFileTransferBubble(file_transfer);
             delete this.uploadRequests[file_transfer.transfer_id]
 		})
+		.cancel((err) => {
+				console.log('Upload was cancelled', err);
+				delete this.uploadRequests[file_transfer.transfer_id];
+		})
 		.catch((err) => {
             delete this.uploadRequests[file_transfer.transfer_id]
 			this.deleteTransferProgress(file_transfer.transfer_id);
 		    if (file_transfer.transfer_id in this.cancelledUploads) {
 				console.log('Upload was cancelled');
 				this.deleteMessage(file_transfer.transfer_id, uri, false);
-			    delete this.cancelledUploads[file_transfer.transfer_id];
+			    //delete this.cancelledUploads[file_transfer.transfer_id];
 			    return;
 		    } else {
 				console.log('Upload error', err);
@@ -7266,6 +7266,16 @@ class Sylk extends Component {
 			    return;
             }
 		});
+	}
+	
+	updateFileMetadata(metadata, items={}) {
+	    if ('playing' in items) {
+	        if (!items.playing) {
+				this.updateFileTransferSql(metadata);	
+			}
+			metadata.playing = items.playing;
+			this.updateFileTransferBubble(metadata);
+		}
 	}
 	
     async reSendMessage(message, uri) {
@@ -7287,7 +7297,6 @@ class Sylk extends Component {
 	}
 
 	updateTransferProgress(id, progress, stage) {
-		//console.log('updateTransferProgress', id, progress, stage);
 		const dp = { ...this.state.transferProgress };
 		dp[id] = {stage: stage, progress: progress};
 		this.setState({ transferProgress: dp });
@@ -7588,7 +7597,9 @@ class Sylk extends Component {
 
     async deleteMessage(id, uri, remote=true, after=false) {
         //utils.timestampedLog('Message', id, 'is deleted');
-        //console.log('deleteMessage', id, 'remote', remote);
+        console.log('deleteMessage', id, 'remote', remote);
+		this.deleteRenderMessage(id, uri);
+
         let query;
 
         let message_ids = [id];
@@ -7739,38 +7750,61 @@ class Sylk extends Component {
         // TODO expire message
     }
 
-    async deleteRenderMessage(id, uri) {
+	async deleteRenderMessage(id, uri) {
+		const { messages, myContacts } = this.state;
+	
+		// If uri has no messages, do nothing
+		if (!(uri in messages)) {
+			return;
+		}
+	
+		const existingMessages = messages[uri];
+	
+		// Filter without mutating original array
+		const newRenderedMessages = existingMessages.filter(m => m._id !== id);
+	
+		// If nothing changed → exit early
+		if (newRenderedMessages.length === existingMessages.length) {
+			return;
+		}
+	
+		// Create NEW messages object (immutability)
+		const newMessages = {
+			...messages,
+			[uri]: newRenderedMessages,
+		};
+	
+		// Update myContacts immutably
+		let newMyContacts = { ...myContacts };
+	
+		if (uri in myContacts) {
+			const oldContact = myContacts[uri];
+	
+			const isDeletedLastMessage =
+				existingMessages.length > 0 &&
+				existingMessages[0]._id === id;
+	
+			const updatedContact = {
+				...oldContact,
+				totalMessages: oldContact.totalMessages - 1,
+				lastMessage: isDeletedLastMessage ? null : oldContact.lastMessage,
+				lastMessageId: isDeletedLastMessage ? null : oldContact.lastMessageId,
+			};
+	
+			newMyContacts = {
+				...newMyContacts,
+				[uri]: updatedContact,
+			};
+		}
+	
+		// Set NEW references → memoized components rerender
+		//console.log('deleteRenderMessage', id);
+		this.setState({
+			messages: newMessages,
+			myContacts: newMyContacts,
+		});
+	}
 
-        let changes = false;
-        let renderedMessages = this.state.messages;
-        let newRenderedMessages = [];
-        let myContacts = this.state.myContacts;
-        let existingMessages = [];
-
-        if (uri in this.state.messages) {
-            existingMessages = renderedMessages[uri];
-            existingMessages.forEach((m) => {
-                if (m._id !== id) {
-                    newRenderedMessages.push(m);
-                } else {
-                    changes = true;
-                }
-            });
-        }
-
-        if (changes) {
-            renderedMessages[uri] = newRenderedMessages;
-            if (uri in myContacts) {
-                myContacts[uri].totalMessages = myContacts[uri].totalMessages - 1;
-                if (existingMessages.length > 0 && existingMessages[0].id === id) {
-                    myContacts[uri].lastMessage = null;
-                    myContacts[uri].lastMessageId = null;
-                }
-            }
-            this.setState({messages: renderedMessages, myContacts: myContacts});
-        }
-
-    }
 
     async deleteRenderMessageSync(id, uri) {
         let changes = false;
@@ -8169,18 +8203,7 @@ class Sylk extends Component {
                     console.log('Message could not be decrypted', item.msg_id, item.content_type);
                     this.sendDispositionNotification(item, 'error', true);
                 } else {
-                    if (item.content_type === 'application/sylk-file-transfer') {
-                        const msg = utils.sql2GiftedChat(item);
-                        if (msg) {
-                            if (msg.audio || msg.video) {
-                                //console.log('Send displayed when users accesses the content');
-                            } else {
-								this.sendDispositionNotification(item, 'displayed', true);
-							}
-                        }
-					} else {
-						this.sendDispositionNotification(item, 'displayed', true);
-                    }
+					this.sendDispositionNotification(item, 'displayed', true);
                 }
             }
 
@@ -8246,13 +8269,13 @@ class Sylk extends Component {
         let id = message.msg_id || message.id || message.transfer_id || message._id;
         let uri =  message.sender ? message.sender.uri : message.from_uri;
         let timestamp = message.timestamp;
+
+        utils.timestampedLog('sendDispositionNotification', id, state, uri);
         
         if (message.metadata && message.metadata.sender) {
 			uri = message.metadata.sender.uri;
 			timestamp = message.metadata.timestamp;
         }
-
-        //utils.timestampedLog('sendDispositionNotification', id, state, uri);
 
         if (!this.canSend()) {
             //console.log('IMDN for', id, state, 'will be sent later');
@@ -8375,7 +8398,7 @@ class Sylk extends Component {
         }
 
         if (file_transfer.failed) {
-            console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is failed:', file_transfer.error);
+            //console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is failed:', file_transfer.error);
             return;
         }
 
@@ -8423,7 +8446,7 @@ class Sylk extends Component {
                 utils.timestampedLog('File transfer directory deleted', dir_path);
                 console.log('Deleted', dir_path);
             } catch (err) {
-                console.log('Error removing directory', err.message);
+                //console.log('Error removing directory', err.message);
             };
 
             file_transfer.local_url = null;
@@ -8471,7 +8494,7 @@ class Sylk extends Component {
         } catch (err) {
         };
 
-        //console.log('Adding request id', id, file_transfer.url);
+        console.log('Adding request id', id, file_transfer.url);
         //this.updateFileTransferBubble(file_transfer, 'Downloading, press to cancel');
         let filesize;
         this.downloadRequests[id] = RNBackgroundDownloader.download({
@@ -8928,6 +8951,7 @@ class Sylk extends Component {
         let orig_uri;
         let localpath;
         let filteredMessageIds = [];
+		let messagesMetadata = {};
 
         if (!uri) {
             query = "SELECT count(*) as rows FROM messages where account = ? and ((from_uri = ? and direction = 'outgoing') or (to_uri = ? and direction = 'incoming'))";
@@ -8974,7 +8998,7 @@ class Sylk extends Component {
         await this.ExecuteQuery(query, params).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
-            console.log('Got', total, 'messages with', uri, 'from database', );
+            //console.log('Got', total, 'messages with', uri, 'from database', );
         }).catch((error) => {
             console.log('SQL error:', error);
         });
@@ -9018,6 +9042,8 @@ class Sylk extends Component {
 			let metadataContent;
 			let oldMetadataContent;
 			let mId;
+			let related_msg_id;
+			let related_action;
 
             let last_content = null;
 
@@ -9090,70 +9116,78 @@ class Sylk extends Component {
 							continue;
 						} else if (item.content_type === 'text/pgp-public-key-imported') {
 							continue;
-						} else if (['application/sylk-message-metadata'].includes(item.content_type)) {
-							content = content;                    
-	
+						} else if (item.content_type === 'application/sylk-message-metadata') {
+						
+							const uri = orig_uri;
+							let metadataContent;
 							try {
-								metadataContent = JSON.parse(content);
-								mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-	
-							} catch (error) {
-								console.log('Cannot parse metadataMessage', content, item);
+								metadataContent = JSON.parse(item.content);
+							} catch (err) {
+								console.log("Cannot parse metadata message:", item.content, item);
 								continue;
 							}
-							try {
-
-								if (mId in metadataTimstamps) {
-									oldMetadataContent = myContacts[orig_uri].messagesMetadata[mId];
-									if (item.from_uri == this.state.accountId) {
-										if (oldMetadataContent.author != this.state.accountId) {
-											// is my own label
-											metadataTimstamps[mId] = item.unix_timestamp;
-											metadataContent.author = item.from_uri;
-											myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
-											foundMetadata = true;
-										} else {
-										    if (item.timestamp > metadataTimstamps[mId]) {
-												this.deleteMessage(item.msg_id, item.from_uri);
-												metadataTimstamps[mId] = item.unix_timestamp;
-												metadataContent.author = item.from_uri;
-												myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
-												foundMetadata = true;
-										    }
-										}
-									} else {
-										if (oldMetadataContent.author == metadataContent.author) {
-										    if (item.timestamp > metadataTimstamps[mId]) {
-												metadataTimstamps[mId] = item.unix_timestamp;
-												metadataContent.author = item.from_uri;
-												myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
-												foundMetadata = true;
-											} else {
-												this.deleteMessage(item.msg_id, item.from_uri);
-											}
-										}
+						
+							const messageId = metadataContent.messageId;
+						
+							if (!messageId) {
+								console.log("Metadata without messageId:", metadataContent);
+								continue;
+							}
+						
+							metadataContent.author = item.from_uri;
+							metadataContent.action = metadataContent.action;
+						
+							console.log("Loaded metadata from SQL:", item.related_action, metadataContent);
+						
+							// Ensure array exists for this messageId
+							if (!Array.isArray(messagesMetadata[messageId])) {
+								messagesMetadata[messageId] = [];
+							}
+									
+							// Ensure the container exists
+							if (!messagesMetadata[messageId]) {
+								messagesMetadata[messageId] = [];
+							}
+							
+							const metaArray = messagesMetadata[messageId];
+							const action = metadataContent.action;
+							
+							// Find an existing metadata object with the same action
+							let existingIndex = metaArray.findIndex(item => item.action === action);
+							
+							if (existingIndex >= 0) {
+								const existingItem = metaArray[existingIndex];
+							
+								if (action === 'consumed') {
+									// Only overwrite consumed if the new value is higher
+									if (metadataContent.value > (existingItem.value || 0)) {
+										metaArray[existingIndex] = metadataContent;
 									}
 								} else {
-									metadataTimstamps[mId] = item.unix_timestamp;
-									metadataContent.author = item.from_uri;
-									myContacts[orig_uri].messagesMetadata[mId] = metadataContent;
-									foundMetadata = true;
+									// For other actions (rotation, label, reply)
+									const oldTimestamp = existingItem.timestamp;
+									const newTimestamp = metadataContent.timestamp;
+							
+									if (newTimestamp && !oldTimestamp) {
+										// New has timestamp, old doesn't → overwrite
+										metaArray[existingIndex] = metadataContent;
+									} else if (newTimestamp && oldTimestamp) {
+										// Both have timestamps → overwrite only if new is later
+										if (newTimestamp > oldTimestamp) {
+											metaArray[existingIndex] = metadataContent;
+										}
+									}
+									// If new has no timestamp and old has → keep old
+									// If neither has timestamp → overwrite (optional, or keep old)
 								}
-								
-								if (foundMetadata) {
-									//console.log('foundMetadata', metadataContent);
-								}
-
-								if (foundMetadata && !metadataContent.replyId) {
-									//console.log('DB metadataContent', item.msg_id, item.timestamp, metadataContent);
-								}
-
-							} catch (error) {
-								console.log('Cannot handle metadataMessage', error);
-								continue;
+							} else {
+								// No existing metadata for this action → append
+								metaArray.push(metadataContent);
 							}
-								
+
+							foundMetadata = true;
 							continue;
+
 						} else {
 							console.log('Unknown message', item.msg_id, 'type', item.content_type);
 							myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
@@ -9248,21 +9282,16 @@ class Sylk extends Component {
 						myContacts[orig_uri].lastMessage = last_message;
 						myContacts[orig_uri].lastMessageId = last_message_id;
 						this.saveSylkContact(uri, myContacts[orig_uri], 'getMessages');
-						this.setState({myContacts: myContacts});
 					}
-					
-				}
-	
-				if (foundMetadata) {
+					myContacts[orig_uri].messagesMetadata = {...messagesMetadata};
 					this.setState({myContacts: myContacts});
-					const keyCount = Object.keys(myContacts[uri].messagesMetadata).length;
-					//console.log(Platform.OS, 'metadatas', keyCount);
 				}
 	
-				this.setState({messages: messages, 
-							   messagesMetadata: myContacts[uri].messagesMetadata,
-							   decryptingMessages: decryptingMessages});
-	
+				this.setState({messages: messages,
+							   messagesMetadata: messagesMetadata,
+					           decryptingMessages: decryptingMessages
+				});
+
 				let i = 1;
 				messages_to_decrypt.forEach((item) => {
 					var updateContact = messages_to_decrypt.length === i;
@@ -9919,13 +9948,13 @@ class Sylk extends Component {
         }
 
         setTimeout(() => {
+            if (this.state.selectedContact) {
+                this.getMessages(this.state.selectedContact.uri, {origin: 'journal'});
+            }
             this.addTestContacts();
             this.refreshNavigationItems();
             this.updateServerHistory('syncConversations')
-            if (this.state.selectedContact) {
-                this.getMessages(this.state.selectedContact.uri, 'journal');
-            }
-        }, 1000);
+        }, 100);
     }
 
     async syncConversations(messages) {       
@@ -9945,7 +9974,7 @@ class Sylk extends Component {
         this.syncStartTimestamp = new Date();
 
         let myContacts = this.state.myContacts;
-        let renderMessages = this.state.messages;
+        let renderMessages = { ...this.state.messages };  
         if (messages.length > 0) {
             utils.timestampedLog('Sync', messages.length, 'message events from server');
             //this._notificationCenter.postSystemNotification('Syncing messages with the server');
@@ -10119,15 +10148,6 @@ class Sylk extends Component {
 
                 if (message.sender.uri === this.state.account.id) {
 					 if (message.contentType === 'application/sylk-message-metadata') {
-						 try {
-							 const metadataContent = JSON.parse(message.content);
-							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;			
-							 console.log('new metadataContent from journal', metadataContent);
-							 myContacts[uri].messagesMetadata[mId] = metadataContent;
-							 
-						 } catch (e) {
-							 console.log("error parsing metadataContent", message.content);
-						 }
 					} else {
 						if (message.contentType !== 'application/sylk-contact-update') {
 							if (myContacts[uri].tags.indexOf('blocked') > -1) {
@@ -10148,24 +10168,10 @@ class Sylk extends Component {
                     }
 
                     stats.outgoing = stats.outgoing + 1;
-                    this.outgoingMessageSync(message);
+                    this.outgoingMessageFromJournal(message);
 
                 } else {
 					 if (message.contentType === 'application/sylk-message-metadata') {
-						 try {
-							 let metadataContent = JSON.parse(message.content);
-							 const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-							 if (mId in myContacts[uri].messagesMetadata) {
-							     const oldMetadataContent = myContacts[uri].messagesMetadata[mId];
-							     if (oldMetadataContent.author == uri ) {						     
-									 myContacts[uri].messagesMetadata[mId] = metadataContent;
-									 console.log('new metadataContent from journal', metadataContent);
-								 }
-							 }
-
-						 } catch (e) {
-							 console.log("error parsing metadataContent", message.content);
-						 }
 					} else {
 
 						if (myContacts[uri].tags.indexOf('blocked') > -1) {
@@ -10203,7 +10209,7 @@ class Sylk extends Component {
 					}
 
                     stats.incoming = stats.incoming + 1;
-                    this.incomingMessageSync(message);
+                    this.incomingMessageFromJournal(message);
                 }
             }
 
@@ -10211,14 +10217,6 @@ class Sylk extends Component {
         });
 
         this.updateTotalUread(myContacts);
-
-        /*
-        if (messages.length > 0) {
-            Object.keys(stats).forEach((key) => {
-                console.log('Sync', stats[key], key);
-            });
-        }
-        */
 
         this.setState({messages: {...renderMessages},
                        updateContactUris: updateContactUris,
@@ -10318,100 +10316,134 @@ class Sylk extends Component {
                 }
             }
         }
-
-        if (['application/sylk-message-metadata', 'application/sylk-message-reply'].includes(message.contentType)) {
-			let myContacts = this.state.myContacts;
-			let selectedContact = this.state.selectedContact;
-
-			try {
-				const metadataContent = JSON.parse(message.content);
-				const mId = metadataContent.transferId ? metadataContent.transferId : metadataContent.messageId;
-				console.log('incoming metadata message:', metadataContent);
-				let oldMetadataContent;
-				
-				const uri = message.sender.uri;
-				if (uri in this.state.myContacts && mId in this.state.myContacts[uri].messagesMetadata) {
-					oldMetadataContent = this.state.myContacts[uri].messagesMetadata[mId];
-					//console.log('oldMetadataContent', oldMetadataContent)
-				}
-				
-				let must_update = true;
-				
-				if (oldMetadataContent && oldMetadataContent.author != uri) {
-					must_update = false;
-				}
-				
-				if (must_update) {
-					 this.setState(prev => {
-						const uri = prev.selectedContact.uri;
-				
-						// Clone old structures
-						const newMessagesMetadata = {
-							...prev.myContacts[uri].messagesMetadata,
-							[mId]: metadataContent
-						};
-				
-						const newSelectedContact = {
-							...prev.selectedContact,
-							messagesMetadata: newMessagesMetadata
-						};
-				
-						const newMyContacts = {
-							...prev.myContacts,
-							[uri]: {
-								...prev.myContacts[uri],
-								messagesMetadata: newMessagesMetadata
-							}
-						};
-				
-						return {
-							myContacts: newMyContacts,
-							selectedContact: newSelectedContact,
-							messagesMetadata: newMessagesMetadata
-						};
-					 });
-				 }
-			 
-
-			} catch (error) {
-				console.log('Cannot parse metadata payload', error)
-			}
+        
+		if (message.contentType === 'application/sylk-message-metadata') {
+			this.handleMessageMetadata(message.sender.uri, content);
 			return;
 		}
 
-        let renderMessages = this.state.messages;
-
-        let gMsg = utils.sylk2GiftedChat(message, decryptedBody, 'incoming');
-
-        if (this.state.selectedContact) {
-            if (message.sender.uri === this.state.selectedContact.uri) {
-                if (message.sender.uri in renderMessages) {
-                    if (renderMessages[message.sender.uri].some((obj) => obj._id === message.id)) {
-                        return;
-                    }
-                } else {
-                    renderMessages[message.sender.uri] = [];
-                }
-
-                renderMessages[message.sender.uri].push(gMsg);
-                let selectedContact = this.state.selectedContact;
-                selectedContact.lastMessage = this.buildLastMessage(gMsg);
-                selectedContact.timestamp = message.timestamp;
-                selectedContact.direction = 'incoming';
-                selectedContact.lastCallDuration = null;
-                this.setState({selectedContact: selectedContact, messages: renderMessages});
-            }
-
-        } else {
-            this.setState({messages: renderMessages});
-        }
-
-        if (this.state.selectedContact || this.currentRoute === '/ready') {
-            //this.playMessageSound();
-        }
-
         this.notifyIncomingMessage(message);
+		const uri = message.sender.uri;
+
+		if (this.state.selectedContact && uri === this.state.selectedContact.uri) {
+			let renderMessages = { ...this.state.messages };
+			const existingList = renderMessages[uri] || [];
+			const gMsg = utils.sylk2GiftedChat(message, decryptedBody, 'incoming');
+	
+			// Create NEW array instead of mutating push()
+			if (!existingList.some(obj => obj._id === message.id)) {
+				renderMessages[uri] = [...existingList, gMsg];
+			}
+	
+			const selectedContact = {
+				...this.state.selectedContact,
+				lastMessage: this.buildLastMessage(gMsg),
+				timestamp: message.timestamp,
+				direction: 'incoming',
+				lastCallDuration: null,
+			};
+	
+			this.setState({ 
+				selectedContact,
+				messages: renderMessages
+			});
+		}
+
     }
+
+	handleMessageMetadata(uri, content) {
+	    console.log('handleMessageMetadata', uri, content);
+        if (!this.state.selectedContact || this.state.selectedContact.uri != uri) {
+            console.log('Skip handleMessageMetadata');
+			return;
+        }
+
+	    let metadataContent;
+		try {
+			metadataContent = JSON.parse(content);
+		} catch (error) {
+			console.log('handleMessageMetadata cannot parse payload', error);
+			return
+		}
+
+		metadataContent.author = uri;
+
+		// Determine messageId
+		const mId = metadataContent.messageId;
+		console.log("handle metadata message", metadataContent);
+
+		if (!mId) {
+			return;
+		}	
+
+		// If contact is NOT selected, do nothing (state will rebuild from SQL later)
+		if (!this.state.selectedContact || this.state.selectedContact.uri !== uri) {
+			console.log("No selected contact or wrong contact — skipping live metadata update.");
+			return;
+		}
+
+		this.setState(prev => {
+			const selectedUri = prev.selectedContact?.uri;
+			if (!selectedUri) return null; // still no contact? do nothing
+
+			const oldMetaByUri =
+				prev.myContacts?.[selectedUri]?.messagesMetadata ||
+				prev.messagesMetadata?.[selectedUri] ||
+				{};
+
+			const oldArray =
+				oldMetaByUri[mId] && Array.isArray(oldMetaByUri[mId])
+					? oldMetaByUri[mId]
+					: [];
+
+			// If previous metadata exists AND the previous one was not authored by this sender, skip
+			const lastEntry = oldArray.length ? oldArray[oldArray.length - 1] : null;
+
+			let mustUpdate = true;
+
+			if (lastEntry && lastEntry.author !== metadataContent.author) {
+				console.log("Ignoring metadata: previous author mismatch");
+				mustUpdate = false;
+			}
+
+			if (!mustUpdate) return null;
+
+			// Remove previous entries with same action
+			const filtered = oldArray.filter(
+				ev => ev.action !== metadataContent.action
+			);
+
+			// Add new entry
+			const newArray = [...filtered, metadataContent];
+
+			console.log("Updated metadata:", {mId, newArray});
+
+			// Rebuild URI-level metadata object
+			const newMetaByUri = {
+				...oldMetaByUri,
+				[mId]: newArray
+			};
+
+			// Update structures
+			const newMyContacts = {
+				...prev.myContacts,
+				[selectedUri]: {
+					...prev.myContacts[selectedUri],
+					messagesMetadata: newMetaByUri
+				}
+			};
+
+			const newMessagesMetadata = {
+				...prev.messagesMetadata,
+				[selectedUri]: newMetaByUri
+			};
+
+			return {
+				myContacts: newMyContacts,
+				messagesMetadata: newMessagesMetadata
+			};
+		});
+	}
 
     buildLastMessage(message, content=null) {
         let new_content = '';
@@ -10428,8 +10460,8 @@ class Sylk extends Component {
         return c;
     }
 
-    async incomingMessageSync(message) {
-        //console.log('incomingMessageSync', message, message);
+    async incomingMessageFromJournal(message) {
+        //console.log('incomingMessageFromJournal', message, message);
         // Handle incoming messages
 
 		if (this.state.blockedUris.indexOf(message.sender.uri) > -1) { 
@@ -10458,14 +10490,8 @@ class Sylk extends Component {
         }
 
         const is_encrypted =  message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
-        let content = message.content;
 
-        if (is_encrypted) {
-            await this.saveIncomingMessageSync(message, null, true);
-        } else {
-            //console.log('Incoming message', message.id, 'not encrypted from', message.sender.uri);
-            await this.saveIncomingMessageSync(message);
-        }
+		await this.saveincomingMessageFromJournal(message, null, is_encrypted);
 
         this.remove_sync_pending_item(message.id);
     }
@@ -10620,8 +10646,8 @@ class Sylk extends Component {
         }
     }
 
-    async outgoingMessageSync(message) {
-        //console.log('outgoingMessageSync', message.id, message.contentType , 'to', message.receiver);
+    async outgoingMessageFromJournal(message) {
+        //console.log('outgoingMessageFromJournal', message.id, message.contentType , 'to', message.receiver);
 
         if (message.content.indexOf('?OTRv3') > -1) {
             this.remove_sync_pending_item(message.id);
@@ -10673,7 +10699,7 @@ class Sylk extends Component {
     }
 
     saveOutgoingMessageSql(message, decryptedBody=null, is_encrypted=false) {
-        //console.log('saveOutgoingMessageSql', message.contentType);
+        console.log('saveOutgoingMessageSql', message.contentType);
 
         let pending = 0;
         let sent = null;
@@ -10681,6 +10707,13 @@ class Sylk extends Component {
         let encrypted = 0;
         let content = decryptedBody || message.content;
         let metadata;
+        let related_msg_id;
+        let relation_action;
+
+		if (item.content_type == 'application/sylk-message-metadata') {
+			related_msg_id = metadataContent.messageId;
+			relation_action = metadataContent.action;
+		}
 
         if (message.contentType === 'application/sylk-file-transfer') {
              message.metadata = content;
@@ -10724,8 +10757,8 @@ class Sylk extends Component {
         //console.log('--- metadata', metadata);
 
         let unix_timestamp = Math.floor(ts / 1000);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received];
-        this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, relation_action];
+        this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, relation_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
             this.remove_sync_pending_item(message.id);
 
@@ -10746,8 +10779,35 @@ class Sylk extends Component {
         });
     }
 
+    sendConsumedMessage(file_transfer) {
+        if (file_transfer.sender.uri === this.state.accountId) {
+			return;
+        }
+
+        console.log('sendConsumedMessage');
+		const mId = uuid.v4();
+		const timestamp = new Date();
+        try {
+		const metadataContent = {messageId: file_transfer.transfer_id, 
+		                         metadataId: mId,
+		                         value: file_transfer.consumed, 
+		                         timestamp: timestamp,
+		                         action: 'consumed'};
+		const metadataMessage = {_id: mId,
+								 key: mId,
+								 createdAt: timestamp,
+								 metadata: metadataContent,
+								 text: JSON.stringify(metadataContent),
+								};
+
+		this.sendMessage(file_transfer.sender.uri, metadataMessage, 'application/sylk-message-metadata');
+		} catch (e) {
+			console.log('sendConsumedMessage error', e);
+		}
+    }
+
     async updateFileTransferSql(file_transfer, encrypted=0, reset=false) {
-        //console.log('updateFileTransferSql reset:', reset)
+		let file_transfer_sql = file_transfer;
         let query = "SELECT * from messages where msg_id = ? and account = ?";
         await this.ExecuteQuery(query, [file_transfer.transfer_id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -10762,22 +10822,33 @@ class Sylk extends Component {
                 var item = rows.item(0);
                 let received = reset ? file_transfer.received : item.received;
 
-                if (!reset && this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
-                    if (encrypted === 2 || encrypted === 0) {
-                        //console.log('file_transfer', file_transfer);
-						if (utils.isAudio(file_transfer.filename) || utils.isVideo(file_transfer.filename)) {
-							//console.log('Will send displayed when users accesses the content');
-						} else {
-							this.sendDispositionNotification(item, 'displayed', true);
+				let metadata = JSON.parse(item.metadata);
+				if (file_transfer.consumed) {
+					if (metadata.consumed) {
+					    console.log('Existing SQL metadata.consumed', metadata.consumed);
+					    if (file_transfer.consumed > metadata.consumed) {
+							file_transfer_sql.consumed = file_transfer.consumed;
+							this.sendConsumedMessage(file_transfer_sql);
 						}
+					} else {
+					    console.log('no previous SQL metadata.consumed');
+						file_transfer_sql.consumed = file_transfer.consumed;
+						this.sendConsumedMessage(file_transfer_sql);
+					}
+				}
+
+                if (item.received != 2 && !reset && this.state.selectedContact && this.state.selectedContact.uri === file_transfer.sender.uri) {
+                    if (encrypted === 2 || encrypted === 0) {
+						this.sendDispositionNotification(item, 'displayed', true);
                     } else if (encrypted === 3) {
                         this.sendDispositionNotification(file_transfer, 'error', true);
                     }
                 }
-
-                let params = [JSON.stringify(file_transfer), encrypted, file_transfer.transfer_id, this.state.accountId];
+                
+                let params = [JSON.stringify(file_transfer_sql), encrypted, file_transfer.transfer_id, this.state.accountId];
                 query = "update messages set metadata = ?, encrypted = ? where msg_id = ? and account = ?"
                 this.ExecuteQuery(query, params).then((results) => {
+                    //console.log('updateFileTransferSql SQL OK');
 					this.updateFileTransferBubble(file_transfer);
                 }).catch((error) => {
                     console.log('updateFileTransferSql SQL error:', error);
@@ -10876,7 +10947,7 @@ class Sylk extends Component {
         let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state) VALUES "
 
         if (this.pendingNewSQLMessages.length > 0) {
-            console.log('Inserting', this.pendingNewSQLMessages.length, 'new messages');
+            console.log('insertPendingMessages', this.pendingNewSQLMessages.length, 'new messages');
         }
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
@@ -10917,7 +10988,7 @@ class Sylk extends Component {
 
             this.ExecuteQuery(query, all_values).then((result) => {
                 utils.timestampedLog('Saved', pendingNewSQLMessages.length, 'new messages');
-                this._notificationCenter.postSystemNotification('Saved ' + pendingNewSQLMessages.length + ' new messages');
+                //this._notificationCenter.postSystemNotification('Saved ' + pendingNewSQLMessages.length + ' new messages');
 
                 this.newSyncMessagesCount = this.newSyncMessagesCount + pendingNewSQLMessages.length;
                 // todo process file transfers
@@ -11042,8 +11113,8 @@ class Sylk extends Component {
 		if (!this.state.selectedContact) {
 			return;
 		}
-	
-		console.log('updateFileTransferBubble', metadata.filename);
+
+		//console.log('updateFileTransferBubble', metadata.filename, metadata.playing);
 	
 		const id = metadata.transfer_id;
 	
@@ -11080,6 +11151,7 @@ class Sylk extends Component {
 			newMsg.image = null;
 			newMsg.video = null;
 			newMsg.audio = null;
+			newMsg.playing = newMsg.metadata.playing;
 	
 			// handle media previews
 			const isAsc = metadata.local_url?.endsWith('.asc');
@@ -11116,8 +11188,6 @@ class Sylk extends Component {
 	
 		this.setState({ messages: renderMessages });
 	}
-	
-
 
     async renderSystemMessage(uri, content, direction, timestamp) {
         let myContacts = this.state.myContacts;
@@ -11174,6 +11244,33 @@ class Sylk extends Component {
         let encrypted = decryptedBody === null ? 0 : 2;
         let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : '';
         let file_transfer = {};
+        let related_action;
+        let related_msg_id;
+        let related_value;
+
+		if (message.contentType === 'application/sylk-message-metadata') {
+			let metadataContent;
+			try {
+				metadataContent = JSON.parse(message.content);
+				related_action = metadataContent.action;
+				related_value = metadataContent.value;
+				related_msg_id = metadataContent.messageId;
+			} catch (error) {
+				console.log('saveIncomingMessage cannot parse payload', error);
+			}
+			
+			console.log('saveIncomingMessage', related_action, related_msg_id, related_value);
+			if (related_action == 'consumed') {
+				let params = [this.state.accountId, related_action, related_msg_id];
+				await this.ExecuteQuery("delete from messages where account = ? and related_action = ? and related_msg_id = ?", params).then((result) => {
+					console.log(result.rowsAffected, 'consumed message deleted');
+				}).catch((error) => {
+					if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+						console.log('saveIncomingMessage SQL error:', error);
+					}
+				});
+			}
+		}
 
         if (message.contentType === 'application/sylk-file-transfer') {
             try {
@@ -11186,8 +11283,10 @@ class Sylk extends Component {
             }
         }
 
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received];
-        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id];
+        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+
+			console.log('saveIncomingMessage SQL OK');
 
             if (!myContacts[uri].name && message.sender.displayName) {
                 myContacts[uri].name = message.sender.displayName;
@@ -11242,7 +11341,7 @@ class Sylk extends Component {
         });
     }
 
-    async saveIncomingMessageSync(message, decryptedBody=null, is_encrypted=false) {
+    async saveincomingMessageFromJournal(message, decryptedBody=null, is_encrypted=false) {
         var content = decryptedBody || message.content;
         let encrypted = 0;
         if (decryptedBody !== null) {
@@ -11253,7 +11352,7 @@ class Sylk extends Component {
         let received = 0;
         let imdn_msg;
 
-        //console.log('saveIncomingMessageSync', message);
+        //console.log('saveincomingMessageFromJournal', message);
         
         let incomingMessage = this.state.incomingMessage;
         if (message.sender.uri in incomingMessage) {
@@ -12412,8 +12511,8 @@ class Sylk extends Component {
 
 			if (this.state.rejectNonContacts && item.direction == 'incoming') {
 				if (!(uri in this.state.myContacts) && !item.duration) {
-					console.log('Skip server history entry from unknown address', uri);                
-					return;
+					//console.log('Skip server history entry from unknown address', uri);                
+					//return;
 				}
 			}
 
@@ -12731,6 +12830,7 @@ class Sylk extends Component {
 					totalMessageExceeded = {this.state.totalMessageExceeded}
 					createChatContact = {this.createChatContact}
 					selectAudioDevice = {this.selectAudioDevice}
+					updateFileMetadata = {this.updateFileMetadata}
                 />
 
                 <ImportPrivateKeyModal

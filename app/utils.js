@@ -273,7 +273,9 @@ function sql2GiftedChat(item, content, filter = {}) {
         if (metadata.local_url && !metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
             metadata.local_url = null;
         }
-
+        
+        metadata.playing = false;
+        
         let isImg = isImage(filename, metadata.filetype);
         let isAud = isAudio(filename, metadata.filetype);
         let isVid = isVideo(filename, metadata.filetype);
@@ -375,7 +377,6 @@ function sql2GiftedChat(item, content, filter = {}) {
 
     return msg;
 }
-
 
 
 function beautyFileNameForBubble(metadata, lastMessage=false) {

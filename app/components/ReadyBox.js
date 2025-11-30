@@ -5,6 +5,7 @@ import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
 import { initialWindowMetrics } from 'react-native-safe-area-context';
+import SoundLevel from "react-native-sound-level";
 
 import { red } from '../colors'; 
 
@@ -85,7 +86,9 @@ class ReadyBox extends Component {
 			totalMessageExceeded: this.props.totalMessageExceeded,
 			sortOrder: 'desc',
 			orderBy: 'timestamp',
-			showOrderBar: false
+			showOrderBar: false,
+			playRecording: false,
+			level: 0
         };
         this.ended = false;
 
@@ -107,6 +110,7 @@ class ReadyBox extends Component {
 
         if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
+            this.setState({playRecording: false});
         }
 
         if (this.state.selectedContact !== nextProps.selectedContact ) {
@@ -154,6 +158,11 @@ class ReadyBox extends Component {
         
         if (nextProps.searchString) {
             this.setState({'searchString': nextProps.searchString});
+        }
+        
+        if ('playRecording' in nextProps) {
+            console.log('playRecording', extProps.playRecording);
+            this.setState({playRecording: nextProps.playRecording});
         }
         
         if ('recordingDuration' in nextProps) {
@@ -229,6 +238,13 @@ class ReadyBox extends Component {
     }
     
 	componentDidUpdate(prevProps, prevState) {
+	  if (prevState.searchMessages !== this.state.searchMessages && !this.state.searchMessages) {
+            this.setState({sortOrder: 'desc', 
+                           orderBy: 'timestamp',
+                           messagesCategoryFilter: null
+                           });
+      }
+
       if (prevState.orderBy !== this.state.orderBy) {
             if (this.state.orderBy == 'size') {
                 this.setState({'sortOrder': 'desc'});
@@ -238,14 +254,7 @@ class ReadyBox extends Component {
                 this.setState({'sortOrder': 'desc'});
             }
       }
-
-      if (prevState.sortOrder !== this.state.sortOrder) {
-	        //console.log('sortOrder changed', this.state.sortOrder);
-      }
     }
-      
-      //console.log('this.state.scrollToBottom', this.state.scrollToBottom);
-
 
     filterHistory(filter) {
        if (this.ended) {
@@ -361,12 +370,21 @@ class ReadyBox extends Component {
         return true;
     }
 
+   get showCategoryBar() {
+   
+	   if (this.state.selectedContact) {
+		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
+	   } else {
+		   return this.state.myContacts ? Object.keys(this.state.myContacts).length > 10 : false;
+	   }
+   }
+
     get showConferenceButton() {
         if (this.state.selectedContact) {
             return false;
         }
         
-        if (this.state.recording || this.state.playing) {
+        if (this.state.recording || this.state.previewRecording) {
             return false;
         }
 
@@ -377,7 +395,7 @@ class ReadyBox extends Component {
     }
 
     get showCallButtons() {
-        if (this.state.recording || this.state.playing || this.state.recordingFile || this.state.shareToContacts) {
+        if (this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.state.shareToContacts) {
             return false;
         }
         return true;
@@ -401,6 +419,10 @@ class ReadyBox extends Component {
         return true;
     }
 
+    get showAudioStopButton() {
+        return this.state.playRecording;
+    }
+
     get showAudioRecordButton() {
         if (!this.state.selectedContact) {
             return false;
@@ -417,6 +439,11 @@ class ReadyBox extends Component {
         if (this.state.recordingFile) {
             return false;
         }
+ 
+        if (this.state.playRecording) {
+            return false;
+        }
+ 
         return true;
     }
 
@@ -792,36 +819,17 @@ class ReadyBox extends Component {
         return false;
     }
 
-    renderNavigationItem(object) {
-        if (!object.item.enabled) {
-            return (null);
-        }
+	async starAudioPlayer() {
+	    //console.log('-- RB startAudioPlayer');
+		this.setState({playRecording: true});
+	}
 
-        let title = object.item.title;
-        let key = object.item.key;
-        let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
-
-        if (key === "hideQRCodeScanner") {
-            return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
-        }
-
-        if (key === "deleteAudio") {
-            return (<Button style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
-        }
-
-        if (key === "previewAudio") {
-            return (<Button style={buttonStyle} onPress={() => {this.previewAudio()}}>{title}</Button>);
-        }
-
-        if (key === "sendAudio") {
-            return (<Button style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
-        }
-
-        return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
-    }
+	async stopAudioPlayer() {
+		this.setState({playRecording: false});
+	}
 
     async previewAudio () {
-		this.setState({playing: true});
+		this.setState({previewRecording: true});
 
 		const path = this.state.recordingFile.startsWith('file://')
 		  ? this.state.recordingFile
@@ -829,11 +837,11 @@ class ReadyBox extends Component {
   
         try {
 			const msg = await audioRecorderPlayer.startPlayer(path);
-			this.setState({playing: true});
+			this.setState({previewRecording: true});
 	
 			audioRecorderPlayer.addPlayBackListener((e) => {
 				if (e.duration === e.currentPosition) {
-					this.setState({playing: false});
+					this.setState({previewRecording: false});
 				}
 	
 				this.setState({
@@ -849,15 +857,15 @@ class ReadyBox extends Component {
     };
 
     pausePreviewAudio = async () => {
-		this.setState({playing: false});
+		this.setState({previewRecording: false});
         await audioRecorderPlayer.pausePlayer();
     };
 
     onStopPlay = async () => {
-        if (!this.state.playing) {
+        if (!this.state.previewRecording) {
 			return;
         }
-        this.setState({playing: false});
+        this.setState({previewRecording: false});
         audioRecorderPlayer.stopPlayer();
         audioRecorderPlayer.removePlayBackListener();
     };
@@ -895,6 +903,42 @@ class ReadyBox extends Component {
         }, 6000);
     }
 
+    get categoryItems() {
+ 		let content_items = [];
+
+        if (this.state.selectedContact) {
+             
+            if (this.state.orderBy !== 'size') {
+				content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
+			}
+			content_items.push({key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
+			content_items.push({key: 'image', title: 'Image', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
+			content_items.push({key: 'video', title: 'Video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
+			content_items.push({key: 'other', title: 'Other', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
+
+            if ('pinned' in this.state.contentTypes) {
+                content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned});
+            }
+			content_items.push({key: 'orderByTime', title: 'By Time', enabled: this.state.orderBy === 'timestamp', selected: false});
+			content_items.push({key: 'orderBySize', title: 'By Size', enabled:  this.state.orderBy === 'size', selected: false});
+            content_items.push({key: 'orderAscending', title: '↑ Asc', enabled: this.state.sortOrder === 'asc', selected: false});
+            content_items.push({key: 'orderDescending', title: '↓ Desc', enabled: this.state.sortOrder === 'desc', selected: false});
+
+            return content_items;
+        }
+
+        if (this.showCategoryBar) {
+			content_items.push({key: 'orderByTime', title: 'Sort by most recent', enabled: this.state.orderBy === 'timestamp', selected: false});
+			content_items.push({key: 'orderBySize', title: 'Sort by storage', enabled:  this.state.orderBy === 'size', selected: false});
+            content_items.push({key: 'orderAscending', title: '↑ Ascending', enabled: this.state.sortOrder === 'asc', selected: false});
+            content_items.push({key: 'orderDescending', title: '↓ Descending', enabled: this.state.sortOrder === 'desc', selected: false});
+            return content_items;
+        }
+        
+        return content_items;
+
+    }
+
     get navigationItems() {
         let conferenceEnabled = Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
         if (this.state.inviteContacts) {
@@ -915,24 +959,6 @@ class ReadyBox extends Component {
               ];
         }
 
-        if (this.state.selectedContact) {
-            let content_items = [];
-             
-            if (this.state.orderBy !== 'size') {
-				content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
-			}
-			content_items.push({key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
-			content_items.push({key: 'image', title: 'Image', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
-			content_items.push({key: 'video', title: 'Video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
-			content_items.push({key: 'other', title: 'Other', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
-
-            if ('pinned' in this.state.contentTypes) {
-                content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned});
-            }
-
-            return content_items;
-        }
-
         return [
               {key: null, title: 'All', enabled: true, selected: false},
               {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
@@ -945,6 +971,61 @@ class ReadyBox extends Component {
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
               {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
               ];
+    }
+
+    get sortOrderItems() {
+        return [
+              {key: null, title: 'Order:', enabled: true, selected: false},
+              {key: 'orderByTime', title: 'Time', enabled: true, selected: this.state.orderBy === 'timestamp'},
+              {key: 'orderBySize', title: 'Size', enabled: true, selected: this.state.orderBy === 'size'},
+              {key: 'divider1', title: '', enabled: true, selected: false},
+              {key: 'orderAscending', title: '↑ Asc', enabled: true, selected: this.state.sortOrder === 'asc'},
+              {key: 'orderDescending', title: '↓ Desc', enabled: true, selected: this.state.sortOrder === 'desc'},
+              ];
+    }
+
+    renderNavigationItem(object) {
+        if (!object.item.enabled) {
+            return (null);
+        }
+
+        let title = object.item.title;
+        let key = object.item.key;
+        let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
+
+        if (key === "hideQRCodeScanner") {
+            return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
+        }
+
+        if (key === "deleteAudio") {
+            return (<Button style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
+        }
+
+        if (key === "previewAudio") {
+            return (<Button style={buttonStyle} onPress={() => {this.previewAudio()}}>{title}</Button>);
+        }
+
+        if (key === "sendAudio") {
+            return (<Button style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
+        }
+
+        if (key === "orderByTime") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
+        }
+
+        if (key === "orderBySize") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
+        }
+
+        if (key === "orderAscending") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
+        }
+
+        if (key === "orderDescending") {
+            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
+        }
+
+        return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
     renderOrderItem(object) {
@@ -972,20 +1053,7 @@ class ReadyBox extends Component {
             return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
         }
 
-
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
-    }
-
-
-    get sortOrderItems() {
-        return [
-              {key: null, title: 'Order:', enabled: true, selected: false},
-              {key: 'orderByTime', title: 'Time', enabled: true, selected: this.state.orderBy === 'timestamp'},
-              {key: 'orderBySize', title: 'Size', enabled: true, selected: this.state.orderBy === 'size'},
-              {key: 'divider1', title: '', enabled: true, selected: false},
-              {key: 'orderAscending', title: '↑ Asc', enabled: true, selected: this.state.sortOrder === 'asc'},
-              {key: 'orderDescending', title: '↓ Desc', enabled: true, selected: this.state.sortOrder === 'desc'},
-              ];
     }
     
     toggleQRCodeScanner(event) {
@@ -1011,6 +1079,7 @@ class ReadyBox extends Component {
         if (this.state.recordingFile) {
              return false;
         }
+        
         return true;
     }
 
@@ -1098,11 +1167,15 @@ class ReadyBox extends Component {
     }
 
     deleteAudio() {
-        //console.log('Delete audio');
+        console.log('Delete audio');
         this.setState({recordingFile: null, 
 					   recordingDuration: 0,
                        recording: false, 
-                       playing: false});
+                       previewRecording: false});
+
+        if (this.state.selectedContact) {
+			this.props.getMessages(this.state.selectedContact.uri);
+		}
     }
 
 	stopRecordingTimer() {
@@ -1121,7 +1194,16 @@ class ReadyBox extends Component {
 			audioSource: 6,     // android only (see below)
 			wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
 		};
-		
+
+		SoundLevel.start();
+	
+		SoundLevel.onNewFrame = (data) => {
+			  // data.value is in dB (e.g., -40 to -5)
+			  // Normalize to 0–1
+			  const normalized = Math.min(Math.max((data.value + 60) / 60, 0), 1);
+			  this.setState({ level: normalized });
+		   };
+         		
 		//console.log('Start audio recording...')
 
         try {
@@ -1157,6 +1239,7 @@ class ReadyBox extends Component {
         const result = await AudioRecord.stop();
         this.audioRecorded(result);
         this.setState({recordingFile: result});
+		SoundLevel.stop();
     };
 
     resetContact() {
@@ -1247,7 +1330,7 @@ class ReadyBox extends Component {
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS     : styles.disabledGreenButton;
         let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
         let recordIcon               = this.state.recording ? 'pause' : 'microphone';
-        let activityTitle            = this.state.recording ? "Recording audio..." : "Audio recording ready";
+        let activityTitle            = this.state.recording ? "Recording audio" : "Audio recording ready";
 
         let fileTransfersDisabled = false;
 
@@ -1302,7 +1385,7 @@ class ReadyBox extends Component {
             <Fragment>
                 <View style={[styles.container, containerExtraStyles]}>
                     <View>
-                    {this.state.selectedContact && this.state.searchMessages?
+                    {this.showCategoryBar?
                     <View style={styles.navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
@@ -1315,7 +1398,7 @@ class ReadyBox extends Component {
                                   }
                                 });
                               }}
-                            data={this.navigationItems}
+                            data={this.categoryItems}
                             extraData={this.state}
                             keyExtractor={(item, index) => item.key}
                             renderItem={this.renderNavigationItem}
@@ -1323,7 +1406,7 @@ class ReadyBox extends Component {
                     </View>
                     : null}
 
-                    {(this.state.selectedContact && this.state.searchMessages) ?
+                    {false ?
                     <View style={styles.navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
@@ -1353,7 +1436,8 @@ class ReadyBox extends Component {
                                 shareToContacts={this.state.shareToContacts}
                                 inviteContacts={this.state.inviteContacts}
                                 searchMessages={this.state.searchMessages}
-                                autoFocus={this.state.searchMessages}
+                                //autoFocus={this.state.searchMessages}
+                                autoFocus={false}
                                 dark={this.state.dark}
                             />
                         </View>
@@ -1403,14 +1487,14 @@ class ReadyBox extends Component {
                                   </View>
                                   : null }
 
-                                  {this.state.recordingFile ?
+                                  {this.state.recordingFile?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
                                             style={greenButtonClass}
                                             size={32}
-                                            onPress={this.state.playing ? this.pausePreviewAudio : this.previewAudio }
-                                            icon={this.state.playing ? "pause" : "play"}
+                                            onPress={this.state.previewRecording ? this.pausePreviewAudio : this.previewAudio }
+                                            icon={this.state.previewRecording ? "pause" : "play"}
                                         />
                                     </TouchableHighlight>
                                   </View>
@@ -1443,6 +1527,20 @@ class ReadyBox extends Component {
                                     </TouchableHighlight>
                                   </View>
                                   : null }
+
+                                  {this.showAudioStopButton ?
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={redButtonClass}
+                                            size={32}
+                                            onPress={() => {this.stopAudioPlayer()}}
+                                            icon="pause"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
+
                                   
                                   {this.showCallButtons ? 
                                   <View style={styles.buttonContainer}>
@@ -1456,6 +1554,7 @@ class ReadyBox extends Component {
                                         />
                                     </TouchableHighlight>
                                   </View>
+
                                   : null }
 
                                   {this.showCallButtons? 
@@ -1642,6 +1741,10 @@ class ReadyBox extends Component {
 						requestDndPermission = {this.props.requestDndPermission}
 						gettingSharedAsset = {this.state.gettingSharedAsset}
 						selectAudioDevice = {this.props.selectAudioDevice}
+						starAudioPlayerFunc = {this.starAudioPlayer}
+						stopAudioPlayerFunc = {this.stopAudioPlayer}
+						playRecording = {this.state.playRecording}
+						updateFileMetadata = {this.props.updateFileMetadata}
 					/>
 					}
 
@@ -1672,8 +1775,28 @@ class ReadyBox extends Component {
 
                     { this.state.recording  ?
                         <View style={styles.recordingContainer}>
-                            <ActivityIndicator animating={true} size={'large'} color={red[800]} />
+						 <View style={{borderBottom: 30}}>
                             <Title style={styles.activityTitle}>{activityTitle}</Title>
+						 </View>
+						 <View
+								style={{
+								  width: 20,
+								  height: 200,
+								  backgroundColor: "#ddd",
+								  overflow: "hidden",
+								alignSelf: "center",   // <<— Center horizontally inside parent
+								}}
+							  >
+								<View
+								  style={{
+									backgroundColor: "green",
+									width: "100%",
+									height: `${this.state.level * 100}%`,
+									position: "absolute",
+									bottom: 0,
+								  }}
+								/>
+							  </View>
                         </View>
                     : null
                     }
@@ -1806,7 +1929,8 @@ ReadyBox.propTypes = {
     sendDispositionNotification: PropTypes.func,
     totalMessageExceeded: PropTypes.bool,
     createChatContact: PropTypes.func,
-	selectAudioDevice: PropTypes.func
+	selectAudioDevice: PropTypes.func,
+	updateFileMetadata: PropTypes.func
 };
 
 

@@ -14,7 +14,7 @@ const styles = StyleSheet.create({
   },
 
   activityTitle: {
-    paddingTop: 25,
+    paddingBottom: 30,
     fontSize: 25,
     color: 'white',
     textAlign: 'center',

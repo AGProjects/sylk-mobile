@@ -5,6 +5,7 @@ import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text, IconButton } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { initialWindowMetrics } from 'react-native-safe-area-context';
+import { Keyboard } from 'react-native';
 
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
@@ -182,6 +183,7 @@ class NavigationBar extends Component {
     }
 
     handleMenu(event) {
+
         this.callUrl = `${config.publicUrl}/call/${this.state.accountId}`;
         switch (event) {
             case 'about':
@@ -300,6 +302,12 @@ class NavigationBar extends Component {
         }
         this.setState({menuVisible: false});
     }
+
+	componentDidUpdate(prevProps, prevState) {
+	    if (prevState.menuVisible !== this.state.menuVisible && this.state.menuVisible) {
+		    Keyboard.dismiss();
+		}
+	}
 
     toggleMute() {
         this.setState(prevState => ({mute: !prevState.mute}));

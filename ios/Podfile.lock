@@ -1354,8 +1354,6 @@ PODS:
     - React-Core
   - RNPermissions (3.1.0):
     - React-Core
-  - RNSensors (7.3.6):
-    - React-Core
   - RNSha1 (1.2.3):
     - React
   - RNShare (3.3.3):
@@ -1365,6 +1363,8 @@ PODS:
     - RNSound/Core (= 0.11.2)
   - RNSound/Core (0.11.2):
     - React-Core
+  - RNSoundLevel (1.3.0):
+    - React
   - RNSoundPlayer (0.14.5):
     - React-Core
   - RNSVG (12.1.0):
@@ -1503,10 +1503,10 @@ DEPENDENCIES:
   - RNFS (from `../node_modules/react-native-fs`)
   - "RNNotifee (from `../node_modules/@notifee/react-native`)"
   - RNPermissions (from `../node_modules/react-native-permissions`)
-  - RNSensors (from `../node_modules/react-native-sensors`)
   - RNSha1 (from `../node_modules/react-native-sha1`)
   - RNShare (from `../node_modules/react-native-share`)
   - RNSound (from `../node_modules/react-native-sound`)
+  - RNSoundLevel (from `../node_modules/react-native-sound-level`)
   - RNSoundPlayer (from `../node_modules/react-native-sound-player`)
   - RNSVG (from `../node_modules/react-native-svg`)
   - RNVectorIcons (from `../node_modules/react-native-vector-icons`)
@@ -1727,14 +1727,14 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@notifee/react-native"
   RNPermissions:
     :path: "../node_modules/react-native-permissions"
-  RNSensors:
-    :path: "../node_modules/react-native-sensors"
   RNSha1:
     :path: "../node_modules/react-native-sha1"
   RNShare:
     :path: "../node_modules/react-native-share"
   RNSound:
     :path: "../node_modules/react-native-sound"
+  RNSoundLevel:
+    :path: "../node_modules/react-native-sound-level"
   RNSoundPlayer:
     :path: "../node_modules/react-native-sound-player"
   RNSVG:
@@ -1864,10 +1864,10 @@ SPEC CHECKSUMS:
   RNFS: 89de7d7f4c0f6bafa05343c578f61118c8282ed8
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNPermissions: f4d693ff9e85c6097d870777295935f7995a264c
-  RNSensors: 111159597ac51505df10413c61b28bcd28e88983
   RNSha1: 499c19705125762cbd83834b9f2117cb01e9d385
   RNShare: 9392c6ae77a2fe4fd9a0786792a8fc99e712def8
   RNSound: 314cc5226453ef4a3314a196c65e8a65e5106a7b
+  RNSoundLevel: a48da8668fbde4f792c0bea948e27ab793bee7e1
   RNSoundPlayer: 7961678d02c7339d9e9cfb78b9f3e8fde17f9df2
   RNSVG: 3c713da19fcb9c86ffd506265f686142e15579b2
   RNVectorIcons: 24c506ef3aab67787a85607b8d4a312ce8f6f3b0
