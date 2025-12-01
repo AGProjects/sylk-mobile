@@ -388,6 +388,10 @@ class ContactsListBox extends Component {
         if (nextProps.contacts !== this.state.contacts) {
             this.setState({contacts: nextProps.contacts});
         }
+        
+        if (nextProps.myContacts !== this.state.myContacts) {
+            this.setState({myContacts: nextProps.myContacts});
+        }
 
         if (nextProps.orderBy !== this.state.orderBy) {
             this.setState({orderBy: nextProps.orderBy});
@@ -435,9 +439,6 @@ class ContactsListBox extends Component {
         if ('gettingSharedAsset' in nextProps) {
             this.setState({gettingSharedAsset: nextProps.gettingSharedAsset});
         }
-        
-		this.setState({myContacts: nextProps.myContacts});
-		
 		if ('playRecording' in nextProps) {
 			this.setState({playRecording: nextProps.playRecording});
 		}
@@ -1768,7 +1769,7 @@ renderSend = (props) => {
 	
 	const safeRatio =
 	  imageAspectRatio && isFinite(imageAspectRatio) ? imageAspectRatio : 1;
-		
+	  
 	  return (
 		<TouchableOpacity
 		  activeOpacity={0.8}
@@ -1873,6 +1874,7 @@ renderSend = (props) => {
 		this.props.contactStopShare();
         msg.metadata.preview = false;
 	    msg.metadata.fullSize = this.state.fullSize;
+	    console.log('uploadFile msg', msg);
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
     }
 
@@ -2255,13 +2257,47 @@ renderSend = (props) => {
 	
 	componentDidUpdate(prevProps, prevState) {
 	               
+	/*
+	  if (prevState.myContacts !== this.state.myContacts) {
+	
+		const oldContacts = prevState.myContacts;
+		const newContacts = this.state.myContacts;
+	
+		const changed = [];
+		const added   = [];
+		const removed = [];
+	
+		// Check updated + added
+		Object.keys(newContacts).forEach(uri => {
+		  if (!oldContacts[uri]) {
+			added.push(uri);
+		  } else if (oldContacts[uri] !== newContacts[uri]) {
+			changed.push(uri);
+		  }
+		});
+	
+		// Check removed
+		Object.keys(oldContacts).forEach(uri => {
+		  if (!newContacts[uri]) {
+			removed.push(uri);
+		  }
+		});
+		console.log("[SYLK] Contacts changed:");
+		if (changed.length) console.log("  updated:", changed);
+		if (added.length)   console.log("  added:", added);
+		if (removed.length) console.log("  removed:", removed);
+	  }
+	  */
+	  
+
       if (prevState.scrollToBottom !== this.state.scrollToBottom) {
-	        console.log('Scroll to bottom changed', this.state.scrollToBottom);
+	        //console.log('Scroll to bottom changed', this.state.scrollToBottom);
       }
             
 	  if (prevState.orderBy !== this.state.orderBy) {
 	        console.log('orderBy changed', this.state.orderBy);
       }
+
 
       if (prevState.playRecording !== this.state.playRecording) {
 			//console.log('Parent playRecording', prevState.playRecording, this.state.playRecording);
@@ -2315,7 +2351,6 @@ renderSend = (props) => {
 			console.log('replyMessages', this.state.replyMessages);
 			console.log('consumedMessages', this.state.consumedMessages);
 			*/
-			
 		}
 
 		if (prevState.messagesMetadata !== this.state.messagesMetadata) {
@@ -2468,6 +2503,8 @@ renderSend = (props) => {
 	  const videoMetaCache = this.state.videoMetaCache || {};
 	  const thumbnail = videoMetaCache[id]?.thumbnail;
 	  const isLoading = !!this.state.videoLoadingState?.[id];
+	  
+	  //console.log('renderMessageVideo', currentMessage.video);
 	
 		if (!this.state.videoMetaCache[id]) {
 		  //console.log('making thumbail');
@@ -2476,7 +2513,7 @@ renderSend = (props) => {
 		  // Prevent duplicate async calls for same id
 		  this.state.videoMetaCache[id] = { loading: true }; 
 	
-			 if (Platform.OS === 'android') {
+			 if (Platform.OS === 'android') {			 
 			  createThumbnailSafe({ url: uri, timeMs: 1000 })
 				.then(path => {
 				  this.setState(prev => ({
@@ -2488,7 +2525,7 @@ renderSend = (props) => {
 				  console.log(`Thumbnail ready for video ${id}:`, path);
 				})
 				.catch(err => {
-				  console.log('Thumbnail generation failed:', err);
+				  //console.log('Thumbnail generation failed:', err);
 				  this.setState(prev => {
 					const { [id]: _, ...rest } = prev.videoMetaCache;
 					return { videoMetaCache: rest };
@@ -2516,89 +2553,89 @@ renderSend = (props) => {
 					  });
 					});
 			}
-	}
+		}
                
-  return (
-    <TouchableOpacity
-      activeOpacity={0.8}
-      onPress={() => this.openVideoModal(uri)}
-      style={{
-        width: '100%',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginBottom: -5,
-      }}
-    >
-      {false && isLoading && (
-        <View
-          style={{
-            position: 'absolute',
-            zIndex: 2,
-            top: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-        >
-          <ActivityIndicator size="large" color="#aaa" />
-        </View>
-      )}
-
-      <View
-        style={{
-          width: '100%',
-          aspectRatio: 16 / 9,
-          backgroundColor: '#000',
-          justifyContent: 'center',
-          alignItems: 'center',
-          overflow: 'hidden',
-        }}
-      >
-        {/* Thumbnail if available, else black surface */}
-        {thumbnail ? (
-          <Image
-            source={{ uri: thumbnail }}
-            style={{
-              width: '100%',
-              height: '100%',
-              resizeMode: 'cover',
-            }}
-          />
-        ) : (
-          <View
-            style={{
-              width: '100%',
-              height: '100%',
-              backgroundColor: '#000',
-            }}
-          />
-        )}
-
-        {/* Play button overlay */}
-        <View
-          style={{
-            position: 'absolute',
-            justifyContent: 'center',
-            alignItems: 'center',
-            backgroundColor: 'rgba(0,0,0,0.4)',
-            borderRadius: 40,
-            width: 80,
-            height: 80,
-          }}
-        >
-          <IconButton
-            icon="play"
-            size={66}
-            iconColor="#fff"
-            onPress={() => this.openVideoModal(uri)}
-          />
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
-};
+	  return (
+		<TouchableOpacity
+		  activeOpacity={0.8}
+		  onPress={() => this.openVideoModal(uri)}
+		  style={{
+			width: '100%',
+			justifyContent: 'center',
+			alignItems: 'center',
+			marginBottom: -5,
+		  }}
+		>
+		  {false && isLoading && (
+			<View
+			  style={{
+				position: 'absolute',
+				zIndex: 2,
+				top: 0,
+				bottom: 0,
+				left: 0,
+				right: 0,
+				justifyContent: 'center',
+				alignItems: 'center',
+			  }}
+			>
+			  <ActivityIndicator size="large" color="#aaa" />
+			</View>
+		  )}
+	
+		  <View
+			style={{
+			  width: '100%',
+			  aspectRatio: 16 / 9,
+			  backgroundColor: '#000',
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			  overflow: 'hidden',
+			}}
+		  >
+			{/* Thumbnail if available, else black surface */}
+			{thumbnail ? (
+			  <Image
+				source={{ uri: thumbnail }}
+				style={{
+				  width: '100%',
+				  height: '100%',
+				  resizeMode: 'cover',
+				}}
+			  />
+			) : (
+			  <View
+				style={{
+				  width: '100%',
+				  height: '100%',
+				  backgroundColor: '#000',
+				}}
+			  />
+			)}
+	
+			{/* Play button overlay */}
+			<View
+			  style={{
+				position: 'absolute',
+				justifyContent: 'center',
+				alignItems: 'center',
+				backgroundColor: 'rgba(0,0,0,0.4)',
+				borderRadius: 40,
+				width: 80,
+				height: 80,
+			  }}
+			>
+			  <IconButton
+				icon="play"
+				size={66}
+				iconColor="#fff"
+				onPress={() => this.openVideoModal(uri)}
+			  />
+			</View>
+		  </View>
+		</TouchableOpacity>
+	  );
+	};
 
     videoError() {
         console.log('Video streaming error');
@@ -3197,7 +3234,6 @@ renderTime = (props) => {
       : timeString;
   }
   
-  
   //console.log('--- this.state.consumedMessages', this.state.consumedMessages);
 
   const consumed = this.state.consumedMessages?.[currentMessage._id];
@@ -3216,12 +3252,12 @@ renderTime = (props) => {
       {/* Progress bar on the LEFT */}
       {showProgress && (
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 40 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 10 }}>
           <UserIcon size={15} identity={this.state.selectedContact}/>
 
           <Progress.Bar
             progress={consumed/100}
-            width={80}
+            width={60}
             height={6}
             borderRadius={3}
             borderWidth={0}
@@ -3251,6 +3287,7 @@ renderTime = (props) => {
 
 	openVideoModal = (uri) => {	
 	  // Open fullscreen modal
+	  console.log('Play modalVideoUri', uri);
 	  this.setState({
 		showVideoModal: true,
 		modalVideoUri: uri,
@@ -3808,7 +3845,9 @@ scrollToMessage(id) {
         let chatMessages = this.state.focusedMessages || messages;
         // remove duplicate messages no mater what
         chatMessages = chatMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
-
+        const loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0
+        //console.log('items', items);
+        
         return (
             <SafeAreaView style={container}>
               {this.state.selectedContact ?
@@ -3822,10 +3861,11 @@ scrollToMessage(id) {
                 onLongPress={this.onLongMessagePress}
                 refreshing={this.state.isRefreshing}
                 data={items}
+                extraData={items}
                 renderItem={this.renderItem}
                 listKey={item => item.id}
                 key={this.props.orientation}
-                loadEarlier
+                loadEarlier={false}
              />
              }
 
@@ -3847,7 +3887,7 @@ scrollToMessage(id) {
 				  </View>
 				)}
 
-             {this.showChat && !this.state.inviteContacts?
+             {this.showChat && !this.state.inviteContacts ?
              <View style={[chatContainer, borderClass]}>
                 <GiftedChat 
 				  listViewProps={{
@@ -3883,7 +3923,7 @@ scrollToMessage(id) {
                   tickStyle={{ color: 'green' }}
                   renderTicks={this.state.orderBy === 'size' ? null : undefined}
                   infiniteScroll
-                  loadEarlier={!this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0}
+                  loadEarlier={loadEarlier}
                   isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
                   isTyping={this.state.isTyping}
@@ -3921,7 +3961,7 @@ scrollToMessage(id) {
               : (items.length === 1 && !this.state.expandedImage) ?
               <View style={[chatContainer, borderClass]}>
                 <GiftedChat innerRef={this.chatListRef}
-                  messages={this.state.renderMessages}
+                  messages={chatMessages}
                   renderInputToolbar={() => { return null }}
                   renderBubble={this.renderBubbleWithMessages}
                   renderMessageText={this.renderMessageText}
@@ -3935,7 +3975,7 @@ scrollToMessage(id) {
                   onPress={this.onMessagePress}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
-                  timeTextStyle={{ left: { color: 'red' }, right: { color: 'black' } }}
+                  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
                   infiniteScroll
                   loadEarlier={!this.state.totalMessageExceeded && this.state.selectedContact}
                   onLoadEarlier={this.loadEarlierMessages}

@@ -49,6 +49,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
     private static final String LOG_TAG = "[SYLK_FCM]";
 	private Map<String, List<String>> contactsByTag = new HashMap<>();
 	public static final Set<String> incomingCalls = new HashSet<>();
+	private static final String PREF_NAME = "SylkPrefs";
 
 	private void createNotificationChannel() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -88,7 +89,9 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			if (existing_channel != null) {
 				boolean canBypass = existing_channel.canBypassDnd();
-				if (!canBypass) {
+				boolean hasBadge = existing_channel.canShowBadge();
+
+				if (!hasBadge || !canBypass) {
 					manager.deleteNotificationChannel(channelId);
 					mustCreate = true;
 				}
@@ -100,12 +103,15 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				return;	
             }
 
+			mustCreate = true;
+
 			NotificationChannel channel = new NotificationChannel(
 				channelId,
 				channelName,
 				NotificationManager.IMPORTANCE_HIGH
 			);
 
+			channel.setShowBadge(true);
 			channel.setBypassDnd(true);
 			channel.setDescription("Bubble messages");
 
@@ -330,8 +336,66 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			   filter == NotificationManager.INTERRUPTION_FILTER_PRIORITY;   // Priority only (DND ON)
 	}
 
+	public static String getLauncherClassName(Context context) {
+		Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+		return launchIntent.getComponent().getClassName();
+	}
+
+	private int getUnreadForContact(String uri) {
+		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
+		return prefs.getInt("unread_chat_" + uri, 0);
+	}
+	
+	private void incrementUnreadForContact(String uri) {
+		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
+		int current = prefs.getInt("unread_chat_" + uri, 0) + 1;
+		Log.d("[SYLK]", "incrementUnreadForContact " + uri + " " + current);
+		prefs.edit().putInt("unread_chat_" + uri, current).apply();
+	}
+	
+	public static void setUnreadForContact(Context context, String uri, int count) {
+		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
+		Log.d("[SYLK]", "setUnreadForContact " + uri + " " + count);
+		prefs.edit().putInt("unread_chat_" + uri, count).apply();
+	}
+	
+	public static int getUnreadForContact(Context context, String uri) {
+		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
+		Log.d("[SYLK]", "getUnreadForContact " + uri);
+		return prefs.getInt("unread_chat_" + uri, 0);
+	}
+
+    public static void resetUnreadForContact(Context context, String uri) {
+        SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+		Log.d("[SYLK]", "resetUnreadForContact " + uri);
+        prefs.edit().putInt("unread_chat_" + uri, 0).apply();
+    }
+	
+	private int getTotalUnreadCount() {
+		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
+	
+		int total = 0;
+	
+		Map<String, ?> all = prefs.getAll();
+		for (Map.Entry<String, ?> entry : all.entrySet()) {
+			String key = entry.getKey();
+	
+			// only count keys that belong to unread_chat_<contactUri>
+			if (key.startsWith("unread_chat_")) {
+				Object value = entry.getValue();
+	
+				if (value instanceof Integer) {
+					total += (Integer) value;
+				}
+			}
+		}
+	
+		return total;
+	}
+
     @Override
     public void onMessageReceived(@NonNull RemoteMessage remoteMessage) {
+
         createNotificationChannel();
         createMessageChannel();
     
@@ -527,7 +591,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				Log.d("[SYLK]", "DND active, dropping message from " + fromUri);
 				return; // notification dropped
 			}
-			
+			    
 			if (dnd && canBypassDnd(tags)) {
 				Log.d("[SYLK]", "DND bypass for " + fromUri);
 			}
@@ -540,6 +604,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				Log.d("[SYLK]", "Skipping notification: user is in chat " + activeChat);
 				return;
 			}
+
+			// increase unread badge counter
+			incrementUnreadForContact(fromUri);
+			int unreadCount = getTotalUnreadCount();
+			Log.d("[SYLK]", "Badge unread counter:" + unreadCount);
 			
 			String content = data.get("content");
 			String contentType = data.get("content_type");
@@ -636,6 +705,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 							.setContentTitle("New message") // header
 							.setContentText("Message from " + fromUri) // second line
 							.setAutoCancel(true)
+							.setNumber(unreadCount)
 							.setPriority(NotificationCompat.PRIORITY_HIGH)
 							.setStyle(style)
 							.setContentIntent(tapIntent)

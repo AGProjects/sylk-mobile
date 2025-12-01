@@ -7,6 +7,8 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Promise
+import android.util.Log
+
 
 class SylkBridgeModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -18,6 +20,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveChat(chatId: String?) {
+        Log.d("[SYLK]", "setActiveChat: $chatId")
         prefs.edit().putString("currentChat", chatId).apply()
     }
 
@@ -29,6 +32,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveCall(target: String?) {
+        Log.d("[SYLK]", "setActiveCall: $target")
         prefs.edit().putString("currentCall", target).apply()
     }
 

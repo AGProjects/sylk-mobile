@@ -9,6 +9,9 @@ import RNFS from 'react-native-fs';
 import { Platform } from 'react-native';
 import { generateColor } from './MaterialColors';
 import CryptoJS from 'crypto-js';
+import ReactNativeBlobUtil from 'react-native-blob-util';
+import path from 'path-browserify';
+
 
 const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
 
@@ -192,6 +195,8 @@ let sql2GiftedChatErrorId = 0;
 // SAFE LOGGER (never throws)
 // -------------------------
 function nullWithLog(extra = {}) {
+    return null;
+
     sql2GiftedChatErrorId += 1;
 
     const msgId    = ("msgId" in extra)    ? extra.msgId    : "";
@@ -207,9 +212,19 @@ function nullWithLog(extra = {}) {
 }
 
 
-// -------------------------
-// MAIN FUNCTION
-// -------------------------
+function fixLocalUrl(localUrl) {
+	const parts = localUrl.split("/");
+	// Iterate and remove consecutive duplicates of user@domain segments
+	for (let i = 1; i < parts.length; i++) {
+		if (parts[i].includes("@") && parts[i] === parts[i - 1]) {
+			parts.splice(i, 1);
+			i--; // stay at the same index after removal
+		}
+	}
+	return parts.join("/");
+}
+
+
 function sql2GiftedChat(item, content, filter = {}) {
     let msg;
     let image, video, audio;
@@ -318,17 +333,36 @@ function sql2GiftedChat(item, content, filter = {}) {
         // Selected media type
         // -------------------------
         if (metadata.local_url && !metadata.error) {
-            let local = Platform.OS === "android" ? "file://" + metadata.local_url : metadata.local_url;
+            let local_url = Platform.OS === "android" ? "file://" + metadata.local_url : metadata.local_url;
 
-            if (isImg) {
-                image = metadata.b64
-                    ? `data:${metadata.filetype};base64,${metadata.b64}`
-                    : local;
-            } else if (isAud) {
-                audio = local;
-            } else if (isVid) {
-                video = local;
-            }
+			const fixed_local_url = fixLocalUrl(local_url);
+			if (fixed_local_url != local_url) {
+				local_url = fixed_local_url;
+				//console.log('Local URL was fixed', fixed_local_url);
+			}
+			
+			if (local_url) {
+				const exists = RNFS.exists(local_url);
+				if (exists) {
+					if (isImg) {
+						image = metadata.b64
+							? `data:${metadata.filetype};base64,${metadata.b64}`
+							: local_url;
+					} else if (isAud) {
+						audio = local_url;
+					} else if (isVid) {
+						video = local_url;
+					}
+					//console.log('local_url exists', local_url);
+					
+				} else {
+					//console.log('local_url does not exist', local_url);
+					local_url = '';
+					metadata.local_url = '';
+				}
+			} else {
+				//console.log('local_url not set', item.msg_id, metadata.filetype);
+			}
         }
 
         if (metadata.error) {
@@ -817,12 +851,38 @@ function getPGPCheckSum(base64_content) {
 }
 
 
+async function listAllFilesRecursive(path, level = 0) {
+  let totalSize = 0;
+
+  try {
+    const items = await RNFS.readDir(path);
+
+    for (const item of items) {
+      if (item.isFile()) {
+        //console.log(`${'  '.repeat(level)}File: ${item.name} - ${item.size} bytes`);
+        totalSize += item.size;
+      } else if (item.isDirectory()) {
+        //console.log(`${'  '.repeat(level)}Directory: ${item.name}`);
+        const dirSize = await listAllFilesRecursive(item.path, level + 1);
+        console.log(`${'     '.repeat(level + 1)}[Directory ${item.path} total size: ${dirSize} bytes]`);
+        totalSize += dirSize;
+      }
+    }
+  } catch (err) {
+    console.error(`Error reading directory ${path}:`, err);
+  }
+
+  return totalSize;
+}
+
 /**
  * Returns a list of { remote_party, size, prettySize } sorted by folder size (desc),
  * including a synthetic 'all' entry with the total size of all remote_party folders.
  * @param {string} accountId
  * @returns {Promise<Array<{ remote_party: string, size: number, prettySize: string }>>}
  */
+ 
+
 async function getRemotePartySizes(accountId) {
   const accountPath = `${RNFS.DocumentDirectoryPath}/${accountId}`;
   try {
@@ -835,11 +895,13 @@ async function getRemotePartySizes(accountId) {
         const remoteParty = item.name;
         const remotePartyPath = item.path;
         const size = await getFolderSize(remotePartyPath);
+        //console.log('calculate size:', item.path);
+        //listAllFilesRecursive(item.path);        
         totalSize += size;
         results.push({
           remote_party: remoteParty,
           size,
-          prettySize: formatBytes(size),
+           prettySize: formatBytes(size),
         });
       }
     }
@@ -900,9 +962,12 @@ function getErrorMessage(error) {
   } else if (error && typeof error === 'object') {
     // error is an object
     const message = error.error || 'Unknown error';
-    if (error.errorCode !== undefined) {
+    if (error.errorCode == 404) {
+       return 'File not found';
+    } else if (error.errorCode !== undefined) {
       return `${message} (${error.errorCode})`;
     }
+
     return message;
   } else {
     // fallback if error is null or some other type
@@ -930,7 +995,6 @@ function formatPGPMessage(pgpMessage, lineLength = 64) {
 	// Reconstruct the message
 	return [header, formattedBody, footer].filter(Boolean).join('\n');
 }
-
 
 async function fileChecksum(filePath) {
   try {

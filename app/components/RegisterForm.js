@@ -181,9 +181,9 @@ class RegisterForm extends Component {
                         icon="login"
                         disabled={
                             this.props.registrationInProgress ||
-                            !this.validInput() ||
-                            !this.state.connected
+                            !this.validInput()
                         }
+
                         onPress={this.handleSubmit}
                         mode="contained"
                         loading={this.state.registering}
@@ -198,16 +198,14 @@ class RegisterForm extends Component {
 						mode="contained"
 						onPress={this.createAccount}
 						disabled={
-							this.state.registering ||
-							!this.state.connected ||
-							this.state.accountId
+							this.state.registering || this.state.accountId
 						}
 					>Sign Up
 					</Button>
                     }
                 </View>
 
-                { !this.state.registering && this.state.accountId?
+                {!this.state.registering && this.state.accountId?
 
                 <Text onPress={handleLink} style={styles.recoverLink}>
                     Recover lost password...

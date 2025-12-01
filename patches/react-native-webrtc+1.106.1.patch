@@ -1,0 +1,108 @@
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+index 4e2d4f2..cd5ba1c 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+@@ -650,6 +650,25 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+         });
+     }
+ 
++    @ReactMethod
++    public void peerConnectionSendDTMF(String tone, int id) {
++        ThreadUtils.runOnExecutor(() ->
++        peerConnectionSendDTMFAsync(tone, id));
++    }
++
++    private void peerConnectionSendDTMFAsync(String tone, int id) {
++        PeerConnection peerConnection = getPeerConnection(id);
++
++        if (peerConnection != null) {
++
++            RtpSender sender = peerConnection.getSenders().get(0);
++            sender.dtmf().insertDtmf(tone, 100, 500);
++
++        } else {
++            Log.d(TAG, "peerConnectionSendDTMF() peerConnection is null");
++        }
++    }
++
+     @ReactMethod
+     public void peerConnectionCreateOffer(int id,
+                                           ReadableMap options,
+@@ -662,7 +681,6 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                 callback.invoke(false, "peerConnection is null");
+                 return;
+             }
+-
+             peerConnection.createOffer(new SdpObserver() {
+                 @Override
+                 public void onCreateFailure(String s) {
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCPeerConnection.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCPeerConnection.m
+index 822f58b..8a07887 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCPeerConnection.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCPeerConnection.m
+@@ -19,6 +19,7 @@
+ #import <WebRTC/RTCIceCandidate.h>
+ #import <WebRTC/RTCSessionDescription.h>
+ #import <WebRTC/RTCStatisticsReport.h>
++#import <WebRTC/RTCRtpSender.h>
+ 
+ #import "WebRTCModule.h"
+ #import "WebRTCModule+RTCDataChannel.h"
+@@ -110,6 +111,17 @@ @implementation WebRTCModule (RTCPeerConnection)
+     return nil;
+ }
+ 
++RCT_EXPORT_METHOD(peerConnectionSendDTMF:(nonnull NSString *)tone objectID:(nonnull NSNumber *)objectID)
++{
++  RTCPeerConnection *peerConnection = self.peerConnections[objectID];
++  if (!peerConnection) {
++    return;
++  }
++
++   RTCRtpSender *sender = peerConnection.senders[0];
++  [sender.dtmfSender insertDtmf:tone duration:0.1 interToneGap:0.5];
++}
++
+ RCT_EXPORT_METHOD(peerConnectionSetConfiguration:(RTCConfiguration*)configuration objectID:(nonnull NSNumber *)objectID)
+ {
+   RTCPeerConnection *peerConnection = self.peerConnections[objectID];
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule.m
+index 8162695..731526d 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule.m
+@@ -15,6 +15,7 @@
+ 
+ #import <WebRTC/RTCDefaultVideoDecoderFactory.h>
+ #import <WebRTC/RTCDefaultVideoEncoderFactory.h>
++#import <WebRTC/RTCFieldTrials.h>
+ 
+ #import "WebRTCModule.h"
+ #import "WebRTCModule+RTCPeerConnection.h"
+@@ -56,6 +57,12 @@ - (instancetype)initWithEncoderFactory:(nullable id<RTCVideoEncoderFactory>)enco
+ {
+   self = [super init];
+   if (self) {
++
++    // Initialize field trial for solving audio issues after hold when using CallKit.
++    // See: https://bugs.chromium.org/p/webrtc/issues/detail?id=8126#c35
++    NSDictionary *fieldTrials = @{ @"WebRTC-Audio-iOS-Holding" : kRTCFieldTrialEnabledValue };
++    RTCInitFieldTrialDictionary(fieldTrials);
++
+     if (encoderFactory == nil) {
+       encoderFactory = [[RTCDefaultVideoEncoderFactory alloc] init];
+     }
+diff --git a/node_modules/react-native-webrtc/src/RTCPeerConnection.ts b/node_modules/react-native-webrtc/src/RTCPeerConnection.ts
+index 640cafb..36f0cf2 100644
+--- a/node_modules/react-native-webrtc/src/RTCPeerConnection.ts
++++ b/node_modules/react-native-webrtc/src/RTCPeerConnection.ts
+@@ -75,6 +75,10 @@ export default class RTCPeerConnection extends defineCustomEventTarget(...PEER_C
+         this._registerEvents();
+     }
+ 
++    sendDTMF(tone) {
++        WebRTCModule.peerConnectionSendDTMF(tone, this._peerConnectionId);
++    }
++
+     addStream(stream: MediaStream): void {
+         const index = this._localStreams.indexOf(stream);
+         if (index !== -1) {

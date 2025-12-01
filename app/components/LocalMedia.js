@@ -29,6 +29,9 @@ class LocalMedia extends Component {
             terminatedReason: this.props.terminatedReason,
             orientation: this.props.orientation,
             mirror: true,
+		    availableAudioDevices: this.props.availableAudioDevices,
+			selectedAudioDevice: this.props.selectedAudioDevice
+
         };
     }
 
@@ -49,7 +52,10 @@ class LocalMedia extends Component {
                       reconnectingCall: nextProps.reconnectingCall,
                       orientation: nextProps.orientation,
                       mirror: nextProps.mirror,
-                      terminatedReason: nextProps.terminatedReason});
+                      terminatedReason: nextProps.terminatedReason,
+					  availableAudioDevices: nextProps.availableAudioDevices,
+					  selectedAudioDevice: nextProps.selectedAudioDevice
+                      });
     }
 
     toggleCamera(event) {
@@ -111,6 +117,10 @@ class LocalMedia extends Component {
                     media = {this.props.media}
                     goBackFunc = {this.props.goBackFunc}
                     isLandscape = {this.state.orientation === 'landscape'}
+					availableAudioDevices = {this.state.availableAudioDevices}
+					selectedAudioDevice = {this.state.selectedAudioDevice}
+					selectAudioDevice = {this.state.selectAudioDevice}
+					useInCallManger = {this.props.useInCallManger}
                 />
 
                 {this.showSaveDialog() ?
@@ -194,7 +204,12 @@ LocalMedia.propTypes = {
     showLogs            : PropTypes.func,
     goBackFunc          : PropTypes.func,
     terminatedReason    : PropTypes.string,
-    orientation         : PropTypes.string
+    orientation         : PropTypes.string,
+    availableAudioDevices : PropTypes.array,
+    selectedAudioDevice : PropTypes.string,
+    selectAudioDevice: PropTypes.func,
+    useInCallManger: PropTypes.bool
+
 };
 
 

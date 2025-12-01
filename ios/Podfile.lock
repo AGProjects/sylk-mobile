@@ -186,7 +186,7 @@ PODS:
   - hermes-engine (0.73.11):
     - hermes-engine/Pre-built (= 0.73.11)
   - hermes-engine/Pre-built (0.73.11)
-  - JitsiWebRTC (124.0.2)
+  - JitsiWebRTC (106.0.0)
   - libevent (2.1.12)
   - libwebp (1.5.0):
     - libwebp/demux (= 1.5.0)
@@ -1145,8 +1145,8 @@ PODS:
     - react-native-video/Video (= 5.2.1)
   - react-native-video/Video (5.2.1):
     - React-Core
-  - react-native-webrtc (124.0.7):
-    - JitsiWebRTC (~> 124.0.0)
+  - react-native-webrtc (1.106.1):
+    - JitsiWebRTC (~> 106.0.0)
     - React-Core
   - React-nativeconfig (0.73.11)
   - React-NativeModulesApple (0.73.11):
@@ -1774,7 +1774,7 @@ SPEC CHECKSUMS:
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
   hermes-engine: d992945b77c506e5164e6a9a77510c9d57472c59
-  JitsiWebRTC: b47805ab5668be38e7ee60e2258f49badfe8e1d0
+  JitsiWebRTC: f441eb0e2d67f0588bf24e21c5162e97342714fb
   libevent: 4049cae6c81cdb3654a443be001fb9bdceff7913
   libwebp: 02b23773aedb6ff1fd38cec7a77b81414c6842a8
   MMKV: 3eacda84cd1c4fc95cf848d3ecb69d85ed56006c
@@ -1828,7 +1828,7 @@ SPEC CHECKSUMS:
   react-native-sqlite-storage: cd23d30c96b642f435f7b15bde803bdbc0289ea2
   react-native-version-number: 3d74b5224ca4e1032b1593937d86d3f3c94bf95c
   react-native-video: 2aad0d963bf3952bd9ebb2f53fab799338e8e202
-  react-native-webrtc: e8f0ce746353adc2744a2b933645e1aeb41eaa74
+  react-native-webrtc: ea360b86e6667ce9f317748d332423c6943483fd
   React-nativeconfig: 8fd29a35a3e4e8c37682d976667663d834ba6165
   React-NativeModulesApple: 83d7077877f8eda8e1b6055b3f8f16f7db8463b5
   React-perflogger: 3887a05940ccd34a83457fd153fdeda509b31737

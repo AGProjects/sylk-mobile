@@ -273,13 +273,12 @@ const ChatBubble = memo(
 	  return false; // re-render
 	}
 
-	// Only re-render if the current message has a reply in the updated replyMessages
-	const prevReply = prev.replyMessages?.[currentId];
-	const nextReply = next.replyMessages?.[currentId];
+	const prevReply = prev.replyMessages?.[currentId] ?? false; // undefined → false
+	const nextReply = next.replyMessages?.[currentId] ?? false;
 	
 	if (prevReply !== nextReply) {
 	  console.log(`[Bubble ${currentId}] RERENDER → replyMessages changed from ${prevReply} to ${nextReply}`);
-	  return false; // re-render
+	  return false; // trigger re-render
 	}
 
   if (prev.fullSize != next.fullSize) {
@@ -299,7 +298,7 @@ const ChatBubble = memo(
   const prevImgState = prev.imageLoadingState?.[id];
   const nextImgState = next.imageLoadingState?.[id];
   if (prevImgState !== nextImgState) {
-    console.log(`[Bubble ${id}] RERENDER → image state changed`);
+    console.log(`[Bubble ${id}] RERENDER → image state changed ${prevImgState} -> ${nextImgState}`);
     return false;
   }
 

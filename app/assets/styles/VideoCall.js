@@ -106,6 +106,7 @@ const styles = StyleSheet.create({
   },
 
   hangupButton: {
+    marginLeft: 30,
     backgroundColor: 'rgba(169, 68, 66, 0.5)', // #a94442 + 0.5
   },
 

@@ -331,48 +331,47 @@ class ConferenceHeader extends React.Component {
                     <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
                     : null}
                     
-						<Divider />
+					<Divider />
 
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
-    {/* ───────────── AUDIO DEVICE SUBMENU ───────────── */}
-    <Divider />
-
-    <Menu
-        visible={this.state.audioMenuVisible}
-        onDismiss={() => this.setState({audioMenuVisible: false})}
-        anchor={
-            <Menu.Item
-                title="Audio device"
-                icon="volume-high"
-                onPress={() => this.setState({audioMenuVisible: true})}
-            />
-        }
-    >
-        {this.props.availableAudioDevices.map(device => {
-            const isSelected = device === this.props.selectedAudioDevice;
-
-            return (
-                <Menu.Item
-                    key={device}
-                    title={
-                        isSelected
-                            ? `✓ ${device}`        // show selected
-                            : device
-                    }
-                    onPress={() => {
-                        this.props.selectAudioDevice(device);
-						this.setState({
-							audioMenuVisible: false,
-							menuVisible: false
-						});
-                    }}
-                />
-            );
-        })}
-    </Menu>
-
-    
+					<Divider />
+				
+					<Menu
+						visible={this.state.audioMenuVisible}
+						onDismiss={() => this.setState({audioMenuVisible: false})}
+						anchor={
+							<Menu.Item
+								title="Audio device"
+								icon="volume-high"
+								onPress={() => this.setState({audioMenuVisible: true})}
+							/>
+						}
+					>
+						{this.props.availableAudioDevices.map(device => {
+							const isSelected = device === this.props.selectedAudioDevice;
+				
+							return (
+								<Menu.Item
+									key={device}
+									title={
+										isSelected
+											? `✓ ${device}`        // show selected
+											: device
+									}
+									onPress={() => {
+										this.props.selectAudioDevice(device);
+										this.setState({
+											audioMenuVisible: false,
+											menuVisible: false
+										});
+									}}
+								/>
+							);
+						})}
+					</Menu>
+				
+					
                 </Menu>
 
 			  </View>

@@ -26,6 +26,14 @@ function toTitleCase(str) {
 
 const MAX_POINTS = 30;
 
+const availableAudioDevicesIconsMap = {
+	BUILTIN_EARPIECE: 'phone',
+	WIRED_HEADSET: 'headphones',
+	BLUETOOTH_SCO: 'bluetooth-audio',
+	BUILTIN_SPEAKER: 'volume-high',
+};
+
+
 class AudioCallBox extends Component {
     constructor(props) {
         super(props);
@@ -195,7 +203,7 @@ class AudioCallBox extends Component {
         const remoteInbound = remoteAudio?.inbound?.[0];
 
         if (!remoteInbound || !inboundAudio || !outboundAudio) return;
-
+        
         const addData = {
             timestamp: audio.timestamp,
             incomingBitrate: inboundAudio.bitrate || 0,
@@ -213,6 +221,27 @@ class AudioCallBox extends Component {
             audioGraphData: [...state.audioGraphData, addData].slice(-MAX_POINTS)
         }));
     }
+
+	toggleAudioDevice() {
+		console.log('toggleAudioDevice');
+	
+		const devices = this.props.availableAudioDevices;
+		const current = this.props.selectedAudioDevice;
+	
+		if (!devices || devices.length === 0) return;
+	
+		// Find current index
+		const currentIndex = devices.indexOf(current);
+	
+		// Compute next index (wrap around)
+		const nextIndex = (currentIndex + 1) % devices.length;
+	
+		// Select next device
+		const nextDevice = devices[nextIndex];
+	
+		console.log('Switching audio device to:', nextDevice);
+		this.props.selectAudioDevice(nextDevice);
+	}
 
     showDtmfModal() {
         this.setState({showDtmfModal: true});
@@ -243,24 +272,24 @@ class AudioCallBox extends Component {
 
 	renderAudioDeviceButtons() {
 	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
+	  //console.log('renderAudioDeviceButtons', selectedAudioDevice);
 	  
-	  if (!call || call.state !== 'established') {
+	  if (!call) {
 		 return null;
 	  }
+	
+	  if (call.state !== 'established' && call.state !== 'accepted' ) {
+	     console.log('Call state is not established or accepted:', call.state);
+		 return null;
+ 	  }
 	 
 	  if (this.props.useInCallManger) {
+	     console.log('useInCallManger');
 		 return null;
 	  }
 
       if (!availableAudioDevices) return null;
 	  
-	  const availableAudioDevicesIconsMap = {
-		BUILTIN_EARPIECE: 'phone',
-		WIRED_HEADSET: 'headphones',
-		BLUETOOTH_SCO: 'bluetooth-audio',
-		BUILTIN_SPEAKER: 'volume-high',
-	  };
-	
 	  return (
 		<View style={styles.audioDeviceContainer}>
 		  {availableAudioDevices.map((device) => {
@@ -335,6 +364,9 @@ class AudioCallBox extends Component {
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
         
         let userIconSize = this.props.orientation === 'landscape' ? 75: 150;
+        
+        //console.log('this.state.selectedAudioDevice', this.state.selectedAudioDevice);
+
 
         return (
             <View style={styles.container}>
@@ -353,6 +385,10 @@ class AudioCallBox extends Component {
                     callState={this.props.callState}
                     terminatedReason={this.state.terminatedReason}
                     isLandscape={this.props.orientation === 'landscape'}
+					availableAudioDevices = {this.state.availableAudioDevices}
+					selectedAudioDevice = {this.state.selectedAudioDevice}
+					selectAudioDevice = {this.props.selectAudioDevice}
+					useInCallManger = {this.props.useInCallManger}
                 />
 
 				<View style={userIconContainerClass}>
@@ -454,7 +490,19 @@ class AudioCallBox extends Component {
                                         onPress={this.props.toggleSpeakerPhone} />
                                 </TouchableHighlight>
                             </View>
-                            : null}
+                            : 
+                            <View style={styles.buttonContainer}>
+                                <TouchableHighlight style={styles.roundshape}>
+                                    <IconButton
+                                        size={buttonSize}
+                                        style={whiteButtonClass}
+                                        icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
+										onPress={() => this.toggleAudioDevice()}
+                                        />
+                                </TouchableHighlight>
+                            </View>
+                            
+                            }
 
                             {isPhoneNumber ?
                                 <View style={styles.buttonContainer}>
@@ -493,8 +541,6 @@ class AudioCallBox extends Component {
                       </View>
                     </View>
                 }
-
-				{this.renderAudioDeviceButtons()}
 
                 <DTMFModal
                     show={this.state.showDtmfModal}

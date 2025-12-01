@@ -44,7 +44,9 @@ class CallOverlay extends React.Component {
             isLandscape: this.props.isLandscape,
             menuVisible: false,
             showUsage: false,
-            enableMyVideo: this.props.enableMyVideo
+            enableMyVideo: this.props.enableMyVideo,
+		    availableAudioDevices: this.props.availableAudioDevices,
+			selectedAudioDevice: this.props.selectedAudioDevice
         }
 
         this.duration = null;
@@ -110,7 +112,9 @@ class CallOverlay extends React.Component {
                        startTime: nextProps.callState ? nextProps.callState.startTime : null,
                        terminatedReason: nextProps.terminatedReason,
                        isLandscape: nextProps.isLandscape,
-                       enableMyVideo: nextProps.enableMyVideo
+                       enableMyVideo: nextProps.enableMyVideo,
+						availableAudioDevices: nextProps.availableAudioDevices,
+						selectedAudioDevice: nextProps.selectedAudioDevice
                        });
     }
 
@@ -292,8 +296,6 @@ class CallOverlay extends React.Component {
 						title={mediaLabel} subtitle={callDetail}
 					/>
 
-                { this.state.callState == 'established' && this.state.media == 'video' ?
-
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
@@ -308,22 +310,58 @@ class CallOverlay extends React.Component {
                         </View>
                     }
                 >
+					{this.state.media === 'video' && (
+					<>
                     <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
                     <Menu.Item onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
                     <Menu.Item onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
-                    
 					<Divider />
-
+					</>
+                    )}
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
+					<Divider />
+				
+					<Menu
+						visible={this.state.audioMenuVisible}
+						onDismiss={() => this.setState({audioMenuVisible: false})}
+						anchor={
+							<Menu.Item
+								title="Audio device"
+								icon="volume-high"
+								onPress={() => this.setState({audioMenuVisible: true})}
+							/>
+						}
+					>
+						{this.props.availableAudioDevices.map(device => {
+							const isSelected = device === this.props.selectedAudioDevice;
+				
+							return (
+								<Menu.Item
+									key={device}
+									title={
+										isSelected
+											? `✓ ${device}`        // show selected
+											: device
+									}
+									onPress={() => {
+										this.props.selectAudioDevice(device);
+										this.setState({
+											audioMenuVisible: false,
+											menuVisible: false
+										});
+									}}
+								/>
+							);
+						})}
+					</Menu>
+
                 </Menu>
-                : null}
                 
 				</Appbar.Header>
 			);
         }
-
-        return header
+        return header;
     }
 }
 
@@ -346,7 +384,12 @@ CallOverlay.propTypes = {
     toggleMyVideo: PropTypes.func,
     swapVideo: PropTypes.func,
     enableMyVideo: PropTypes.bool,
-    hangupCall: PropTypes.func
+    hangupCall: PropTypes.func,
+    availableAudioDevices : PropTypes.array,
+    selectedAudioDevice : PropTypes.string,
+    selectAudioDevice: PropTypes.func,
+    useInCallManger: PropTypes.bool
+
 };
 
 export default CallOverlay;

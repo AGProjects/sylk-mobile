@@ -100,7 +100,7 @@
     "react-native-video": "^5.2.1",
     "react-native-video-player": "^0.14.0",
     "react-native-voip-push-notification": "2.1.0",
-    "react-native-webrtc": "^124.0.7",
+    "react-native-webrtc": "1.106.1",
     "react-router-native": "^5.1.2",
     "sqlstring": "^2.3.2",
     "xss": "^1.0.8",

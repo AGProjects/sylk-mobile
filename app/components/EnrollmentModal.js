@@ -16,7 +16,6 @@ class EnrollmentModal extends Component {
         autoBind(this);
 
         this.initialState = {
-            displayName: '',
             username: '',
             password: '',
             password2: '',
@@ -38,13 +37,12 @@ class EnrollmentModal extends Component {
     }
 
     get validInput() {
-        const { displayName, username, password, password2, email, enrolling } = this.state;
+        const { username, password, password2, email, enrolling } = this.state;
         const emailReg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
         const validEmail = emailReg.test(email);
 
         return !enrolling &&
-            displayName.length > 2 &&
-            username.length > 3 &&
+            username.length > 2 &&
             password !== '' &&
             password === password2 &&
             validEmail;
@@ -61,7 +59,7 @@ class EnrollmentModal extends Component {
             username: this.state.username,
             password: this.state.password,
             phoneNumber: this.state.myPhoneNumber,
-            display_name: this.state.displayName
+            display_name: this.state.username
         };
 
         if (validEmail) data.email = this.state.email;
@@ -82,7 +80,7 @@ class EnrollmentModal extends Component {
                     this.props.handleEnrollment({
                         id: response.sip_address,
                         password: this.state.password,
-                        displayName: this.state.displayName,
+                        displayName: this.state.username,
                         email: validEmail ? this.state.email : undefined
                     });
                     this.setState(this.initialState);
@@ -128,20 +126,19 @@ class EnrollmentModal extends Component {
                             color="gray"
                         />
                     </TouchableOpacity>
-                </View>
 
                 <TextInput
                     label="Confirm Password"
                     secureTextEntry={!this.state.showPassword}  // same toggle
                     value={this.state.password2}
                     onChangeText={(text) => this.handleFormFieldChange(text, 'password2')}
-                    style={{ marginBottom: 16 }}
                     disabled={this.state.enrolling}
                     returnKeyType="done"
                     ref={ref => { this.password2Input = ref; }}
                     autoCapitalize="none"
                     autoCorrect={false}
                 />
+                </View>
             </>
         );
     }
@@ -153,95 +150,80 @@ class EnrollmentModal extends Component {
         const validEmail = emailReg.test(this.state.email);
 
         return (
-<Portal>
-  <Dialog visible={this.props.show} onDismiss={this.onHide}>
-    <Dialog.ScrollArea>
-      <KeyboardAwareScrollView
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}
-        enableOnAndroid={true}
-        keyboardShouldPersistTaps="handled"
-        extraScrollHeight={120}       
-      >
-        <View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
-          <Text style={{ textAlign: 'center', lineHeight: 20 }}>
-            The account is a new SIP address where people can call you using a SIP client or a web browser.
-          </Text>
-        </View>
+		<Portal>
+		  <Dialog visible={this.props.show} onDismiss={this.onHide}>
+			<Dialog.ScrollArea>
+			  <KeyboardAwareScrollView
+				contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}
+				enableOnAndroid={true}
+				keyboardShouldPersistTaps="handled"
+				extraScrollHeight={120}       
+			  >
+				<View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
+				  <Text style={{ textAlign: 'center', lineHeight: 20, fontSize: 18}}>
+					Create Sylk account
+				  </Text>
+				</View>
 
-        <TextInput
-          style={styles.row}
-          label="Your display name when you call others"
-          value={this.state.displayName}
-          onChangeText={(text) => this.handleFormFieldChange(text, 'displayName')}
-          disabled={this.state.enrolling}
-          returnKeyType="next"
-          onSubmitEditing={() => this.emailInput && this.emailInput.focus()}
-        />
-
-        {this.state.displayName.length > 2 && (
-          <TextInput
-            style={styles.row}
-            label="E-mail address to reset your password"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={this.state.email}
-            onChangeText={(text) => this.handleFormFieldChange(text, 'email')}
-            disabled={this.state.enrolling}
-            returnKeyType="next"
-            ref={ref => { this.emailInput = ref; }}
-            onSubmitEditing={() => validEmail && this.usernameInput && this.usernameInput.focus()}
-          />
-        )}
-
-        {validEmail && (
-          <TextInput
-            style={styles.row}
-            label="Username"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={this.state.username}
-            onChangeText={(text) => this.handleFormFieldChange(text, 'username')}
-            disabled={this.state.enrolling}
-            returnKeyType="next"
-            ref={ref => { this.usernameInput = ref; }}
-            onSubmitEditing={() => this.passwordInput && this.passwordInput.focus()}
-          />
-        )}
-
-        {this.state.username.length > 3 && this.renderPasswordFields()}
-
-        {this.validInput ? (
-          <Button
-            mode="contained"
-            style={styles.button}
-            disabled={!this.validInput}
-            onPress={this.enroll}
-          >
-            Sign Up
-          </Button>
-        ) : (
-          <Text style={styles.status}>
-            {this.state.displayName.length <= 2 ? 'Enter display name' :
-             !validEmail ? 'Enter valid email address' :
-             this.state.username.length <= 3 ? 'Enter username' :
-             !this.state.password ? 'Enter password' :
-             this.state.password !== this.state.password2 ? 'Passwords do not match' : ''}
-          </Text>
-        )}
-
-        <Snackbar
-          style={styles.snackbar}
-          visible={this.state.errorVisible}
-          duration={4000}
-          onDismiss={() => this.setState({ errorVisible: false })}
-        >
-          {this.state.error}
-        </Snackbar>
-      </KeyboardAwareScrollView>
-    </Dialog.ScrollArea>
-  </Dialog>
-</Portal>
+				  <TextInput
+					style={styles.row}
+					label="Username"
+					autoCapitalize="none"
+					autoCorrect={false}
+					value={this.state.username}
+					onChangeText={(text) => this.handleFormFieldChange(text, 'username')}
+					disabled={this.state.enrolling}
+					returnKeyType="next"
+					ref={ref => { this.usernameInput = ref; }}
+					onSubmitEditing={() => this.passwordInput && this.passwordInput.focus()}
+				  />
+		
+				  <TextInput
+					style={styles.row}
+					label="E-mail for password recovery"
+					keyboardType="email-address"
+					autoCapitalize="none"
+					autoCorrect={false}
+					value={this.state.email}
+					onChangeText={(text) => this.handleFormFieldChange(text, 'email')}
+					disabled={this.state.enrolling}
+					returnKeyType="next"
+					ref={ref => { this.emailInput = ref; }}
+					onSubmitEditing={() => validEmail && this.usernameInput && this.usernameInput.focus()}
+				  />
+		
+				{this.state.username.length > 2 && this.renderPasswordFields()}
+		
+				{this.validInput ? (
+				  <Button
+					mode="contained"
+					style={styles.button}
+					disabled={!this.validInput}
+					onPress={this.enroll}
+				  >
+					Sign Up
+				  </Button>
+				) : (
+				  <Text style={styles.status}>
+					{this.state.username.length <= 3 ? 'Enter username' :
+					 !validEmail ? 'Enter valid email address' :
+					 !this.state.password ? 'Enter password' :
+					 this.state.password !== this.state.password2 ? 'Passwords do not match' : ''}
+				  </Text>
+				)}
+		
+				<Snackbar
+				  style={styles.snackbar}
+				  visible={this.state.errorVisible}
+				  duration={4000}
+				  onDismiss={() => this.setState({ errorVisible: false })}
+				>
+				  {this.state.error}
+				</Snackbar>
+			  </KeyboardAwareScrollView>
+			</Dialog.ScrollArea>
+		  </Dialog>
+		</Portal>
 
         );
     }

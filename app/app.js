@@ -89,7 +89,8 @@ const { ScreenLockModule } = NativeModules;
 const { SharedDataModule } = NativeModules;
 const { AndroidSettings } = NativeModules;
 const { AudioRouteModule } = NativeModules;
-
+const { UnreadModule } = NativeModules;
+const { SylkBridge } = NativeModules;
 
 //debug.enable('sylkrtc*');
   
@@ -205,7 +206,6 @@ const unreadCounterTypes = new Set([
 ]);
 
 
-
 const mainStyle = StyleSheet.create({
 
  MainContainer: {
@@ -245,6 +245,70 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
   }
 });
 		
+
+async function fixDirectoryStructure(suffix = 'sufix') {
+  const basePath = `${RNFS.DocumentDirectoryPath}/${suffix}`;
+
+  try {
+    // Read all entries under the suffix folder
+    const entries = await RNFS.readDir(basePath);
+
+    for (const user1Entry of entries) {
+      if (!user1Entry.isDirectory()) continue;
+      const user1Path = user1Entry.path;
+
+      const user2Entries = await RNFS.readDir(user1Path);
+
+      for (const user2Entry of user2Entries) {
+        if (!user2Entry.isDirectory()) continue;
+        const user2Path = user2Entry.path;
+
+        const uuidEntries = await RNFS.readDir(user2Path);
+
+        for (const uuidEntry of uuidEntries) {
+          if (!uuidEntry.isDirectory()) continue;
+
+          const currentFolder = uuidEntry.path;
+          const uuidName = path.basename(currentFolder);
+
+          const targetFolder = path.join(user1Path, uuidName);
+
+          // Ensure parent exists
+          const targetParentExists = await RNFS.exists(user1Path);
+          if (!targetParentExists) {
+            await RNFS.mkdir(user1Path);
+          }
+
+          // Move UUID folder (with all files/folders inside)
+          await RNFS.moveFile(currentFolder, targetFolder);
+          console.log(`Moved ${currentFolder} -> ${targetFolder}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error fixing directory structure:', error);
+  }
+}
+
+		
+// Only override once
+if (!console.log.__isWrapped) {
+  const originalLog = console.log;
+
+/// if (Platform.OS === 'ios') {
+//   // mute all logs on iOS
+//   console.log = () => {};
+//  } else {
+    const LOG_PREFIX = `[${Platform.OS}]`;
+    console.log = function(...args) {
+      originalLog(LOG_PREFIX, ...args);
+    };
+//  }
+
+  
+  console.log.__isWrapped = true; // mark as wrapped
+}
+
 
 class Sylk extends Component {
     constructor() {
@@ -1669,8 +1733,11 @@ class Sylk extends Component {
                 Object.keys(this.state.incomingMessage).forEach((key) => {
                     const msg = this.state.incomingMessage[key];
 					if (key in myContacts) {
-					    //console.log('Increment unread count for', key);
+					    console.log('Increment unread count for', key);
 						myContacts[key].unread.push(msg._id);
+						
+						//UnreadModule.setUnreadForContact(key, myContacts[key].unread.length);
+						
 						myContacts[key].timestamp = msg.createdAt;
 						myContacts[key].lastMessageId = msg._id;
                     }
@@ -1722,6 +1789,11 @@ class Sylk extends Component {
 
 	componentDidUpdate(prevProps, prevState) {
 	     if (this.state.selectedContact && !prevState.selectedContact) {
+			 if (Platform.OS === 'android') {
+				 SylkBridge.setActiveChat(this.state.selectedContact.uri);
+				 UnreadModule.resetUnreadForContact(this.state.selectedContact.uri);
+			 }
+
 			 this.getMessages(this.state.selectedContact.uri, {origin: 'componentDidUpdate'});
 	     }
 
@@ -1730,7 +1802,7 @@ class Sylk extends Component {
 		 }
 		 
 		 if (prevState.userSelectedDevice !== this.state.userSelectedDevice && this.state.userSelectedDevice) {
-			 console.log('userSelectedDevice changed', prevState.userSelectedDevice, '->', this.state.userSelectedDevice);
+			 //console.log('userSelectedDevice changed', prevState.userSelectedDevice, '->', this.state.userSelectedDevice);
 			 this.setState({userSelectedDevice: null, waitForCommunicationsDevicesChanged: true});
 			 if ( !this.useInCallManger) {
 				 setTimeout(() => {this.setState({waitForCommunicationsDevicesChanged: false});
@@ -2291,7 +2363,7 @@ class Sylk extends Component {
 		if (route === '/ready') {
 			this.setState({contactIsSharing: false, totalMessageExceeded: false});
 			if (Platform.OS === 'android') {
-				NativeModules.SylkBridge.setActiveChat(null);
+				SylkBridge.setActiveChat(null);
 			}
 		}
 
@@ -2476,7 +2548,7 @@ class Sylk extends Component {
 		utils.timestampedLog('App will unmount');
 		
 		if (Platform.OS === 'android') {
-			NativeModules.SylkBridge.setActiveChat(null);
+			SylkBridge.setActiveChat(null);
 		}
 				
 		if (this.appStateSubscription) {
@@ -2548,7 +2620,7 @@ class Sylk extends Component {
             return;
 		}
         
-        utils.timestampedLog('proximityNear changed:', proximity);
+        //utils.timestampedLog('proximityNear changed:', proximity);
 		this.setState({ proximityNear: proximity});
 	};
   
@@ -2597,7 +2669,7 @@ class Sylk extends Component {
     async componentDidMount() {
         utils.timestampedLog('-- App did mount');
         this._loaded = true;
-                
+            
 		this.setState({dark: DarkModeManager.isDark()});
 
 		if (Platform.OS === 'ios') {
@@ -2757,7 +2829,7 @@ class Sylk extends Component {
     }
 
 	async selectAudioDevice(deviceType) {
-		console.log('User selectAudioDevice', deviceType);
+		//console.log('User selectAudioDevice', deviceType);
 
 		if (deviceType == this.state.selectedAudioDevice) {
 		    return;
@@ -3362,7 +3434,7 @@ class Sylk extends Component {
             this.initialChatContact = uri;
         }
 		if (Platform.OS === 'android') {
-			NativeModules.SylkBridge.setActiveChat(uri);
+			SylkBridge.setActiveChat(uri);
 		}
     }
 
@@ -3531,7 +3603,7 @@ class Sylk extends Component {
                 this.setFullScreen(false);
 				this.purgeSharedFiles();
 				if (Platform.OS === 'android') {
-					NativeModules.SylkBridge.setActiveChat(null);
+					SylkBridge.setActiveChat(null);
 				}
 			}
         }
@@ -3853,9 +3925,14 @@ class Sylk extends Component {
     }
     
     async getStorageUsage(accountId) {
-        //console.log('Getting storage usage...');
+        console.log('Getting storage usage...');
+        
+        await this.purgeFiles();
+        
 		const sizes = await utils.getRemotePartySizes(accountId);
-		//console.log('Sorted remote_party sizes:', sizes);
+        const psizes = JSON.stringify(sizes, null, 2);
+
+		//console.log('Sorted remote_party sizes:', psizes);
 
         const updatedContacts = { ...this.state.myContacts };
 
@@ -4371,6 +4448,8 @@ class Sylk extends Component {
         */
 
         let callsState;
+        let show_payment_message = false;
+        
 
         switch (newState) {
             case 'progress':
@@ -4477,6 +4556,7 @@ class Sylk extends Component {
                 break;
 
             case 'terminated':
+                let uri = call.remoteIdentity.uri.toLowerCase();
                 let startTime;
                 if (callUUID in this.state.callsState) {
                     callsState = this.state.callsState;
@@ -4498,7 +4578,7 @@ class Sylk extends Component {
                 }
 
 				if (direction === 'outgoing' && Platform.OS === 'android') {
-					NativeModules.SylkBridge.setActiveCall(null);
+					SylkBridge.setActiveCall(null);
 				}
 
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
@@ -4567,9 +4647,8 @@ class Sylk extends Component {
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
                     server_failure = true;
                     // this does not pass Janus, so the SIP Proxy does not save the CDR
-                    this.addHistoryEntry(call.remoteIdentity.uri.toLowerCase(), callUUID);
                 } else if (reason.match(/603/)) {
-                    reason = 'Cannot answer now';
+                    reason = 'Server rejected call';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else if (reason.match(/[5|6]\d\d/)) {
                     reason = 'Server failure: ' + reason;
@@ -4586,6 +4665,10 @@ class Sylk extends Component {
                 if (reason.indexOf('DTLS alert') > -1) {
 					reason = "TLS media failure";
                 }
+
+                if (direction === 'outgoing' && !(uri in this.state.myContacts)) {
+					this.addHistoryEntry(uri, callUUID);
+				}
 
                 utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason, '->', reason);
                 this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
@@ -4613,14 +4696,17 @@ class Sylk extends Component {
                     }
 
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
-                    this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
+                    this.saveSystemMessage(uri, msg, direction, missed);
                     reason = "Call ended after " + duration;
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
-                    this.saveSystemMessage(call.remoteIdentity.uri.toLowerCase(), msg, direction, missed);
-                    if (reason.indexOf('PSTN calls forbidden') > -1) {
+                    this.saveSystemMessage(uri, msg, direction, missed);
+
+                    if (reason.indexOf('Payment required') > -1) {
+                        show_payment_message = true;
                         setTimeout(() => {
-                            this.renderPurchasePSTNCredit(call.remoteIdentity.uri.toLowerCase());
+							msg = "See https://sip2sip.info/help for how to call PSTN numbers";
+							this.saveSystemMessage(uri, msg, 'incoming', missed, false);
                         }, 2000);
                     }
                 }
@@ -4642,7 +4728,6 @@ class Sylk extends Component {
                 
                 this.requestDisplayOverOtherAppsPermission();
                         
-
                 break;
             default:
                 break;
@@ -4658,18 +4743,16 @@ class Sylk extends Component {
             incomingCall: newincomingCall
         });
 
-        if (!this.state.currentCall && !this.state.incomingCall) {
-            this.speakerphoneOn();
-
-            if (!this.state.reconnectingCall) {
-                if (this.currentRoute !== '/ready') {
-                    utils.timestampedLog('Will go to ready in', readyDelay/1000, 'seconds (terminated)', callUUID);
-                    this.goToReadyTimer = setTimeout(() => {
-                        this.changeRoute('/ready', 'no_more_calls');
-                    }, readyDelay);
-                }
-            }
-        }
+		if (!this.state.currentCall && !this.state.incomingCall) {
+			if (!this.state.reconnectingCall) {
+				if (this.currentRoute !== '/ready') {
+					utils.timestampedLog('Will go to ready in', readyDelay/1000, 'seconds (terminated)', callUUID);
+					this.goToReadyTimer = setTimeout(() => {
+						this.changeRoute('/ready', 'no_more_calls');
+					}, readyDelay);
+				}
+			}
+		}
 
         if (this.state.currentCall) {
             //console.log('Current:', this.state.currentCall.id);
@@ -5654,7 +5737,7 @@ class Sylk extends Component {
         this.updateLoading(null, 'outgoing_call');
 		if (Platform.OS === 'android' && call.remoteIdentity.uri == this.state.accountId) {
 		    console.log('save to native'); 
-			NativeModules.SylkBridge.setActiveCall(call.remoteIdentity.uri);
+			SylkBridge.setActiveCall(call.remoteIdentity.uri);
 		}
     }
 
@@ -6085,7 +6168,7 @@ class Sylk extends Component {
 			const myContacts = this.state.myContacts;
 			if (from in myContacts) {
 				if (myContacts[from].unread.indexOf(id) > -1) {
-					//console.log('Message is already loaded in unread', id);
+					console.log('Message is already loaded in unread', id);
 					return;
 				}
 			}
@@ -6426,6 +6509,11 @@ class Sylk extends Component {
         }
 
         let unread_messages = contact.unread.toString();
+        
+		if (Platform.OS === 'android') {
+			UnreadModule.setUnreadForContact(uri, contact.unread);
+		}
+
         if (origin === 'saveIncomingMessage' && this.state.selectedContact && this.state.selectedContact.uri === uri) {
             unread_messages = '';
             console.log('Do not update unread messages for', uri);
@@ -6460,15 +6548,23 @@ class Sylk extends Component {
 
                 this.updateFavorite(uri, favorite);
                 this.updateBlocked(uri, blocked);
-                this.setState({myContacts: myContacts});
 
             } else {
                 this.setState({email: contact.email, displayName: contact.name})
                 if (myContacts[uri].tags.indexOf('chat') > -1 || myContacts[uri].tags.indexOf('history') > -1) {
                     myContacts[uri] = contact;
-                    this.setState({myContacts: myContacts});
                 }
             }
+
+			this.setState(prev => ({
+			  myContacts: {
+				...prev.myContacts,
+				[uri]: {
+				  ...prev.myContacts[uri],
+				  ...contact   // or simply contact if replacing entire object
+				}
+			  }
+			}));
 
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
@@ -6482,7 +6578,7 @@ class Sylk extends Component {
     }
 
     async updateSylkContact(uri, contact, origin=null) {
-        //console.log('updateSylkContact', contact);
+        console.log('updateSylkContact', uri, 'origin', origin);
         let unixTime = Math.floor(contact.timestamp / 1000);
         let unread_messages = contact.unread.toString();
         let media = contact.lastCallMedia.toString();
@@ -6518,6 +6614,17 @@ class Sylk extends Component {
                 let blocked = myContacts[uri].tags.indexOf('blocked') > -1 ? true: false;
                 this.updateFavorite(uri, favorite);
                 this.updateBlocked(uri, blocked);
+
+				this.setState(prev => ({
+				  myContacts: {
+					...prev.myContacts,
+					[uri]: {
+					  ...prev.myContacts[uri],
+					  ...contact   // or simply contact if replacing entire object
+					}
+				  }
+				}));
+
             } else {
                 this.setState({email: contact.email, displayName: contact.name})
             }
@@ -6960,7 +7067,7 @@ class Sylk extends Component {
                 return;
             }
 
-            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + file_transfer.sender.uri + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
+            const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
             if (file_transfer.path !== localPath) {
                 // the file may have already been copied
                 const dirname = path.dirname(localPath);
@@ -6976,8 +7083,13 @@ class Sylk extends Component {
                 try {
                     await RNFS.copyFile(file_transfer.path, localPath);
                 } catch (e) {
-                    this.renderSystemMessage(uri, e.message);
+                    if (e.message.indexOf('No such file') > -1) {
+						this.renderSystemMessage(uri, 'Original file not available anymore');
+                    } else {                
+						this.renderSystemMessage(uri, e.message);
+                    } 
                     console.log('Error copying file from', file_transfer.path, 'to', localPath, ':', e);
+                    this.deleteMessage(file_transfer.transfer_id, uri, false);
                     return;
                 }
             }
@@ -7070,6 +7182,7 @@ class Sylk extends Component {
 
     async uploadFile(file_transfer) {
         console.log('uploadFile', file_transfer.transfer_id);
+		console.log('file', JSON.stringify(file_transfer, null, 2));
 
         let encrypted_file;
         let outputFile;
@@ -7077,7 +7190,7 @@ class Sylk extends Component {
         let remote_url = file_transfer.url.replace(/^wss:\/\//, 'https://');
         let uri = file_transfer.receiver.uri;
         
-        console.log('this.cancelledUploads', this.cancelledUploads);
+        //console.log('this.cancelledUploads', this.cancelledUploads);
 
         if (file_transfer.transfer_id in this.cancelledUploads) {
 		   console.log("File transfer already cancelled", file_transfer.transfer_id);
@@ -7097,7 +7210,7 @@ class Sylk extends Component {
 
 			fetch(cancel_url)
 				  .then(res => {
-				               console.log("File transfer cancelled", file_transfer.transfer_id);
+				console.log("File transfer cancelled", file_transfer.transfer_id);
 				}
 			  )
 			  .catch(error => console.error('File transfer cancel error:', error, file_transfer.transfer_id));
@@ -7119,14 +7232,12 @@ class Sylk extends Component {
 						file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
 						file_transfer.path = resized.path;
 						local_url = resized.path;
-						//console.log('resized');
+						console.log('resized.path', resized.path);
 						//console.log('New transfer', file_transfer);
 					} catch (e) {
 						console.log('error resize', e);
 					}
 				}
-			} else {
-				console.log('do not resize');
             }
         }
         
@@ -7219,6 +7330,8 @@ class Sylk extends Component {
        }
 
 	   this.updateTransferProgress(file_transfer.transfer_id, 0, 'upload');
+	   	   
+	   console.log('upload final file', JSON.stringify(file_transfer, null, 2));
 
        utils.timestampedLog('--- Uploading file', local_url, 'to', remote_url);
 	   let task = RNBlobUtil.fetch('POST', remote_url, {
@@ -7248,8 +7361,8 @@ class Sylk extends Component {
             delete this.uploadRequests[file_transfer.transfer_id]
 		})
 		.cancel((err) => {
-				console.log('Upload was cancelled', err);
-				delete this.uploadRequests[file_transfer.transfer_id];
+			console.log('Upload was cancelled', err);
+			delete this.uploadRequests[file_transfer.transfer_id];
 		})
 		.catch((err) => {
             delete this.uploadRequests[file_transfer.transfer_id]
@@ -7932,7 +8045,7 @@ class Sylk extends Component {
 	  let uri;
 	  let hasChanges = false;
 	
-	  //console.log('updateRenderMessageState', id, state);
+	  console.log('updateRenderMessageState', id, state);
 	
 	  query = "SELECT * from messages where msg_id = ? and account = ?";
 	
@@ -8164,7 +8277,7 @@ class Sylk extends Component {
      }
 
      async confirmRead(uri, source) {
-        //console.log('confirmRead', uri, source);
+        console.log('confirmRead', uri, source);
 
         if (this.state.appState === 'background') {
             return;
@@ -8215,13 +8328,13 @@ class Sylk extends Component {
     }
 
     async resetUnreadCount(uri) {
-        //console.log('--- resetUnreadCount', uri);
+        console.log('--- resetUnreadCount', uri);
         let myContacts = this.state.myContacts;
         let missedCalls = this.state.missedCalls;
         let idx;
         let changes = false;
-        if (uri in myContacts) {
-        } else {
+
+        if (!(uri in myContacts)) {
             return;
         }
 
@@ -8261,6 +8374,7 @@ class Sylk extends Component {
 
 	async sendDispositionNotification(message, state='displayed', save=false) {
         let contentType = message.content_type || message.contentType;
+        //utils.timestampedLog('sendDispositionNotification', id, state, uri);
 
         if (contentType == 'application/sylk-message-metadata') {
 			return;
@@ -8269,8 +8383,24 @@ class Sylk extends Component {
         let id = message.msg_id || message.id || message.transfer_id || message._id;
         let uri =  message.sender ? message.sender.uri : message.from_uri;
         let timestamp = message.timestamp;
+        
+        if (uri in this.state.myContacts) {
+			const tags = this.state.myContacts[uri].tags;
+			if (tags.indexOf('noread') > -1) {
+				if (save) {
+					let received = (state === 'delivered') ? 1 : 2;
+					let query = "UPDATE messages set received = ? where msg_id = ? and account = ?";
+					this.ExecuteQuery(query, [received, id, this.state.accountId]).then((results) => {
+						utils.timestampedLog('received', received, id, message.content_type, 'saved');
+					}).catch((error) => {
+						utils.timestampedLog('sendDispositionNotification', id, uri, 'save error:', error.message);
+					});
+				}
+				utils.timestampedLog('sendDispositionNotification', id, state, uri, 'skipped');
+				return;
+			}
+        }
 
-        utils.timestampedLog('sendDispositionNotification', id, state, uri);
         
         if (message.metadata && message.metadata.sender) {
 			uri = message.metadata.sender.uri;
@@ -8366,21 +8496,20 @@ class Sylk extends Component {
             const exists = await RNFS.exists(file_transfer.local_url);
             if (exists) {
                 try {
-                    const { size } = await ReactNativeBlobUtil.fs.stat(file_transfer.path);
-                    
+                    const { size } = await ReactNativeBlobUtil.fs.stat(file_transfer.local_url);
                     //console.log('File exists local', file_transfer.transfer_id, file_transfer.local_url);
                     if (size === 0) {
                         this.deleteMessage(file_transfer.transfer_id, uri);
                     }
                 } catch (e) {
-                    consolo.log('Error stat file:', e.message);
+                    console.log('Error stat file:', e.message);
                     return;
                 }
             }
             return;
         }
 
-        //console.log('autoDownloadFile', file_transfer);
+        console.log('autoDownloadFile', file_transfer.filename, 'from', file_transfer.sender.uri);
 
         let difference;
         let now = new Date();
@@ -8398,28 +8527,36 @@ class Sylk extends Component {
         }
 
         if (file_transfer.failed) {
-            //console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is failed:', file_transfer.error);
+            console.log('File transfer', file_transfer.transfer_id, file_transfer.filename, 'is failed:', file_transfer.error);
             return;
         }
 
-        let ft_ts = new Date(file_transfer.timestamp);
-        difference = now.getTime() - ft_ts.getTime();
-        let days = Math.ceil(difference / (1000 * 3600 * 24));
-
-        if (days < 10) {
-            if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
-                this.downloadFile(file_transfer);
-            } else {
-                if (file_transfer.filesize < max_transfer_size) {
-                    this.downloadFile(file_transfer);
-                } else {
-					//console.log('--- File transfer', file_transfer.transfer_id, file_transfer.filename, 'is large:', file_transfer);
-                }
-            }
+        if (file_transfer.timestamp) {
+			let ft_ts = new Date(file_transfer.timestamp);
+			difference = now.getTime() - ft_ts.getTime();
+			let days = Math.ceil(difference / (1000 * 3600 * 24));
+	
+			if (days < 10) {
+				if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
+					this.downloadFile(file_transfer);
+				} else {
+					if (file_transfer.filesize < max_transfer_size) {
+						this.downloadFile(file_transfer);
+					} else {
+						console.log('--- File transfer', file_transfer.transfer_id, file_transfer.filename, 'is large:', file_transfer);
+					}
+				}
+			} else {
+				console.log('File transfer', file_transfer.transfer_id, 'is', days, 'day old');
+			}
         } else {
-            //console.log('File transfer', file_transfer.transfer_id, 'is too old');
+			this.downloadFile(file_transfer);
         }
     }
+    
+    async purgeFiles() {
+		fixDirectoryStructure(this.state.accountId);
+	}
 
     async downloadFile(file_transfer, force=false) {
         const res = await RNFS.getFSInfo();
@@ -8466,7 +8603,7 @@ class Sylk extends Component {
 
         await RNFS.mkdir(dir_path);
 
-       // console.log('Made directory', dir_path);
+        console.log('Made directory', dir_path);
 
         let file_path = dir_path + "/" + file_transfer.filename;
         let tmp_file_path = file_path + '.tmp';
@@ -8547,6 +8684,15 @@ class Sylk extends Component {
         }).error((error) => {
             console.log('File', file_transfer.filename, 'download failed:', error);
             file_transfer.error = utils.getErrorMessage(error);
+            
+            if (error && error.error == "not found" ) {
+				this.deleteMessage(file_transfer.transfer_id, file_transfer.sender.uri, false);
+            }
+
+            if (error && error.errorCode == 404 ) {
+				this.deleteMessage(file_transfer.transfer_id, file_transfer.sender.uri, false);
+            }
+            
 			this.deleteTransferProgress(file_transfer.transfer_id);
 			this.renderSystemMessage(file_transfer.filename, error, 'incoming');
             this.fileTransferStateChanged(id, 'failed', file_transfer);
@@ -8935,11 +9081,13 @@ class Sylk extends Component {
         });
     }
 
-    async getMessages(uri, filter={pinned: false, category: null, text:null}) {
+    async getMessages(uri, filter={pinned: false, category: null, text:null, contentType: null}) {
         console.log('Get messages', filter);
 
         let pinned=filter && 'pinned' in filter ? filter['pinned'] : false;
         let category=filter && 'category' in filter ? filter['category'] : null;
+        
+        let has_filter = pinned || category;
 
         let messages = this.state.messages;
         let myContacts = this.state.myContacts;
@@ -8952,6 +9100,7 @@ class Sylk extends Component {
         let localpath;
         let filteredMessageIds = [];
 		let messagesMetadata = {};
+		let fixed_local_url;
 
         if (!uri) {
             query = "SELECT count(*) as rows FROM messages where account = ? and ((from_uri = ? and direction = 'outgoing') or (to_uri = ? and direction = 'incoming'))";
@@ -8971,13 +9120,6 @@ class Sylk extends Component {
         if (Object.keys(myContacts).indexOf(uri) === -1) {
             this.setState({messages: {}});
             return;
-        }
-
-        if (utils.isPhoneNumber(uri) && uri.indexOf('@') === -1) {
-            uri = uri + '@' + this.defaultDomain;
-        } else {
-            this.resetUnreadCount(orig_uri);
-            this.lookupPublicKey(myContacts[orig_uri]);
         }
 
         //console.log('Get messages with', uri, 'with zoom factor', this.state.messageZoomFactor);
@@ -9075,9 +9217,11 @@ class Sylk extends Component {
 	
 					const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
 					enc = parseInt(item.encrypted);
+										
+					if (item.msg_id !== '28b85ea9-c031-4b1b-a7f5-a478942ab29f') {
+						//continue;
+					}
 					
-					//console.log('SQL item.msg_id', uri, item.content);
-	
 					if (is_encrypted && enc !== 3) {
 
 						myContacts[orig_uri].totalMessages = myContacts[orig_uri].totalMessages - 1;
@@ -9137,7 +9281,7 @@ class Sylk extends Component {
 							metadataContent.author = item.from_uri;
 							metadataContent.action = metadataContent.action;
 						
-							console.log("Loaded metadata from SQL:", item.related_action, metadataContent);
+							//console.log("Loaded metadata from SQL:", item.related_action, metadataContent);
 						
 							// Ensure array exists for this messageId
 							if (!Array.isArray(messagesMetadata[messageId])) {
@@ -9205,7 +9349,7 @@ class Sylk extends Component {
 						}
 
 						if (msg.metadata?.filename) {
-							//console.log('file', msg.metadata?.filename);
+							//console.log('SQL metadata',  JSON.stringify(msg.metadata, null, 2));
 						}
 	
 						if (!msg) {
@@ -9277,7 +9421,7 @@ class Sylk extends Component {
 					});
 				}
 	
-				if (orig_uri in myContacts) {
+				if (orig_uri in myContacts && !has_filter) {
 					if (last_message && last_message != myContacts[orig_uri].lastMessage && last_message !== 'Public key received') {
 						myContacts[orig_uri].lastMessage = last_message;
 						myContacts[orig_uri].lastMessageId = last_message_id;
@@ -10497,7 +10641,7 @@ class Sylk extends Component {
     }
 
     async outgoingMessage(message) {
-        //console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver);
+        console.log('Outgoing message', message.contentType, message.id, 'to', message.receiver, 'state', message.state);
 
         this.saveLastSyncId(message.id);
         let gMsg;
@@ -10510,6 +10654,11 @@ class Sylk extends Component {
             return;
         }
 
+        if (message.contentType === 'application/sylk-file-transfer') {
+			this.outgoingMessageStateChanged(message.id, message.state);
+			console.log('file transfer', JSON.stringify(message, null, 2));
+        }
+
         if (message.sender.uri.indexOf('@conference') > -1) {
             return;
         }
@@ -10517,7 +10666,7 @@ class Sylk extends Component {
         if (message.sender.uri.indexOf('@videoconference') > -1) {
             return;
         }
-
+        
         if (message.contentType === 'text/pgp-public-key-imported') {
             this.hideExportPrivateKeyModal();
             this.hideImportPrivateKeyModal();
@@ -11065,48 +11214,20 @@ class Sylk extends Component {
         }
     }
 
-    async saveSystemMessage(uri, content, direction, missed=false) {
+    async saveSystemMessage(uri, content, direction, missed=false, system=1) {
         let timestamp = new Date();
         let unix_timestamp = Math.floor(timestamp / 1000);
         let id = uuid.v4();
-        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, 1, direction];
+        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction];
 
         await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, pending, system, direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            this.renderSystemMessage(uri, content, direction, timestamp);
+            this.renderSystemMessage(uri, content, direction, timestamp, system);
 
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('saveSystemMessage SQL error:', error);
             }
         });
-    }
-
-    async renderPurchasePSTNCredit(uri) {
-        let url = 'https://mdns.sipthor.net/sip_settings.phtml?account='+ this.state.accountId + '&tab=credit';
-        let myContacts = this.state.myContacts;
-
-        if (Object.keys(myContacts).indexOf(uri) === -1 && utils.isPhoneNumber(uri) && uri.indexOf('@') > -1) {
-            uri = uri.split('@')[0];
-        }
-
-        let renderMessages = this.state.messages;
-        if (Object.keys(renderMessages).indexOf(uri) > - 1) {
-            let msg;
-
-            msg = {
-                _id: uuid.v4(),
-                text: 'To call phone numbers, you must purchase credit at ' + url,
-                createdAt: new Date(),
-                direction: 'incoming',
-                sent: true,
-                pending: false,
-                failed: false,
-                user: {_id: uri, name: uri}
-                }
-
-            renderMessages[uri].push(msg);
-            this.setState({renderMessages: renderMessages});
-        }
     }
 
 	updateFileTransferBubble(metadata, text = null) {
@@ -11189,7 +11310,7 @@ class Sylk extends Component {
 		this.setState({ messages: renderMessages });
 	}
 
-    async renderSystemMessage(uri, content, direction, timestamp) {
+    async renderSystemMessage(uri, content, direction, timestamp, system=true) {
         let myContacts = this.state.myContacts;
 
         if (Object.keys(myContacts).indexOf(uri) === -1 && utils.isPhoneNumber(uri) && uri.indexOf('@') > -1) {
@@ -11202,12 +11323,12 @@ class Sylk extends Component {
 
             msg = {
                 _id: uuid.v4(),
-                text: content,
+                text: utils.html2text(content),
                 createdAt: timestamp || new Date(),
                 direction: direction || 'outgoing',
                 sent: true,
+                system: system,
                 pending: false,
-                system: true,
                 failed: false,
                 user: direction == 'incoming' ? {_id: uri, name: uri} : {}
                 }
@@ -11460,16 +11581,21 @@ class Sylk extends Component {
     }
 
     newContact(uri, name=null, data={}) {
-        //console.log('Create new contact', uri, data.src);
+        //console.log('Create new contact', uri, name, data.src);
         let current_datetime = new Date();
 
         if (data.src !== 'init') {
             uri = uri.trim().toLowerCase();
         }
 
+		const els = uri.split('@');
+        const username = els[0];
+		const isNumber = utils.isPhoneNumber(username);
+		const displayName = name || data.name || username;
+
         let contact = { id: uuid.v4(),
                           uri: uri,
-                          name: name || data.name || '',
+                          name: displayName,
                           organization: data.organization || '',
                           email: '',
                           storage: 0,
@@ -11514,12 +11640,13 @@ class Sylk extends Component {
             total_unread = total_unread + contact.unread.length;
 		}
 
-      //console.log('Total unread messages', total_unread, 'origin', origin);
+      console.log('Total unread messages', total_unread);
 
        if (Platform.OS === 'ios') {
            PushNotification.setApplicationIconBadgeNumber(total_unread);
        } else {
             ShortcutBadge.setCount(total_unread);
+            //PushNotification.setApplicationIconBadgeNumber(total_unread)
        }
     }
 

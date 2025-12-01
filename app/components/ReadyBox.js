@@ -254,6 +254,7 @@ class ReadyBox extends Component {
                 this.setState({'sortOrder': 'desc'});
             }
       }
+
     }
 
     filterHistory(filter) {
@@ -435,6 +436,17 @@ class ReadyBox extends Component {
 	    if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@guest') > -1) {
             return false;
         }
+        
+        if (this.state.selectedContact) {
+			const els = this.state.selectedContact.uri.split('@');
+			const username = els[0];
+			const isNumber = utils.isPhoneNumber(username);
+			
+			if (isNumber && (username.startsWith('0') || username.startsWith('+'))) {
+				return false;
+			}
+		}
+
 	 
         if (this.state.recordingFile) {
             return false;
@@ -737,6 +749,14 @@ class ReadyBox extends Component {
             return true;
         }
 
+		const els = uri.split('@');
+        const username = els[0];
+		const isNumber = utils.isPhoneNumber(username);
+
+        if (isNumber) {
+            return false;
+        }
+
         if (uri.indexOf('@') > -1) {
             let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
             let validEmail = email_reg.test(uri);
@@ -871,6 +891,8 @@ class ReadyBox extends Component {
     };
 
     bounceNavigation() {
+        return;
+        
         if (this.ended) {
             return;
         }

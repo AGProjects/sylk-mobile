@@ -40,6 +40,15 @@ function appendBits(bits) {
     return `${Math.max(bits, 0.1).toFixed(bits < 100 ? 1 : 0)} ${byteUnits[i]}bits/s`;
 };
 
+
+  const availableAudioDevicesIconsMap = {
+	BUILTIN_EARPIECE: 'phone',
+	WIRED_HEADSET: 'headphones',
+	BLUETOOTH_SCO: 'bluetooth-audio',
+	BUILTIN_SPEAKER: 'volume-high',
+  };
+
+
 class VideoBox extends Component {
     constructor(props) {
         super(props);
@@ -248,6 +257,27 @@ class VideoBox extends Component {
         }
     }
 
+	toggleAudioDevice() {
+		console.log('toggleAudioDevice');
+	
+		const devices = this.props.availableAudioDevices;
+		const current = this.props.selectedAudioDevice;
+	
+		if (!devices || devices.length === 0) return;
+	
+		// Find current index
+		const currentIndex = devices.indexOf(current);
+	
+		// Compute next index (wrap around)
+		const nextIndex = (currentIndex + 1) % devices.length;
+	
+		// Select next device
+		const nextDevice = devices[nextIndex];
+	
+		console.log('Switching audio device to:', nextDevice);
+		this.props.selectAudioDevice(nextDevice);
+	}
+
     toggleCamera(event) {
         event.preventDefault();
         const localStream = this.state.localStream;
@@ -435,13 +465,6 @@ class VideoBox extends Component {
 
       if (!availableAudioDevices) return null;
 	  
-	  const availableAudioDevicesIconsMap = {
-		BUILTIN_EARPIECE: 'phone',
-		WIRED_HEADSET: 'headphones',
-		BLUETOOTH_SCO: 'bluetooth-audio',
-		BUILTIN_SPEAKER: 'volume-high',
-	  };
-	
 	  return (
 	  <View style={buttonsContainerClass}>
 		<View style={styles.audioDeviceContainer}>
@@ -579,7 +602,13 @@ class VideoBox extends Component {
                     icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
                     onPress={this.props.toggleSpeakerPhone}
                 />
-                : null
+                : 
+                <IconButton
+                    size={buttonSize}
+                    style={[buttonClass]}
+                    icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
+                    onPress={() => this.toggleAudioDevice()}
+                />
                 }
 
                 <IconButton
@@ -760,6 +789,10 @@ class VideoBox extends Component {
                     swapVideo= {this.swapVideo}    
                     enableMyVideo={this.state.enableMyVideo}    
                     hangupCall={this.hangupCall}
+					availableAudioDevices = {this.state.availableAudioDevices}
+					selectedAudioDevice = {this.state.selectedAudioDevice}
+					selectAudioDevice = {this.props.selectAudioDevice}
+					useInCallManger = {this.props.useInCallManger}
                 />
 
                 {this.showRemote?
@@ -817,8 +850,6 @@ class VideoBox extends Component {
                 }
 
                 {buttons}
-
-				{this.renderAudioDeviceButtons()}
 
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}

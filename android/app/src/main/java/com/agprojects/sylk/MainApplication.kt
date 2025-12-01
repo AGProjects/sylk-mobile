@@ -34,6 +34,8 @@ class MainApplication : Application(), ReactApplication {
               add(CallForegroundServicePackage())
               add(AndroidSettingsPackage())
               add(AudioRoutePackage())
+              add(UnreadPackage())
+
             }
 
         override fun getJSMainModuleName(): String = "index"

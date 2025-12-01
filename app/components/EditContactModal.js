@@ -168,6 +168,9 @@ const editableTags = {
     description: 'Mute notifications',
     invisibleIfTags: ['blocked', 'bypassdnd'],
     removeTags: ['bypassdnd']
+  },
+  noread: {
+    description: 'No read receipts'
   }
 };
 
