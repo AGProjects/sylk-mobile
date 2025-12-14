@@ -33,7 +33,7 @@ public class IncomingCallActivity extends AppCompatActivity {
     private String callId;
     private int notificationId;
     private String mediaType;
-    private String fromUri;
+    private String from_uri;
     private boolean phoneLocked;
 
     private Handler timeoutHandler = new Handler(Looper.getMainLooper());
@@ -69,7 +69,7 @@ public class IncomingCallActivity extends AppCompatActivity {
             callId = getIntent().getStringExtra("session-id");
             notificationId = Math.abs(callId != null ? callId.hashCode() : 0);
             mediaType = getIntent().getStringExtra("media-type");
-            fromUri = getIntent().getStringExtra("from_uri");
+            from_uri = getIntent().getStringExtra("from_uri");
             phoneLocked = getIntent().getBooleanExtra("phoneLocked", false);
         }
 
@@ -83,7 +83,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 					SQLiteDatabase.OPEN_READONLY
 			);
 			String query = "SELECT * FROM contacts WHERE uri = ?";
-			cursor = db.rawQuery(query, new String[]{fromUri}); // use parameterized query to avoid SQL injection
+			cursor = db.rawQuery(query, new String[]{from_uri}); // use parameterized query to avoid SQL injection
 			if (cursor != null && cursor.moveToFirst()) {
 				displayName = cursor.getString(cursor.getColumnIndexOrThrow("name"));
 			}
@@ -96,7 +96,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 		}
 
 		if (displayName == null || displayName.trim().isEmpty()) {
-			displayName = fromUri;
+			displayName = from_uri;
 		}
 
         // Caller name / info
@@ -144,6 +144,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 				.setAction("ACTION_REJECT_CALL")
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked)
+				.putExtra("from_uri", from_uri)
 				.putExtra("notification-id", notificationId);
 	
 		sendBroadcast(intent);
@@ -157,6 +158,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 				.setAction(action)
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked)
+				.putExtra("from_uri", from_uri)
 				.putExtra("notification-id", notificationId);
 	
 		sendBroadcast(intent);

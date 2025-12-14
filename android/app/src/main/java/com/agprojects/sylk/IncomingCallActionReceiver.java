@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.util.Log;
+import android.os.Bundle;
 
 import android.os.Build;
 import androidx.core.app.NotificationManagerCompat;
@@ -30,8 +31,18 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
         String action = intent.getAction();
 		String callUUID = intent.getStringExtra("session-id");
+		String from_uri = intent.getStringExtra("from_uri");
 		boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 		int notificationId = intent.getIntExtra("notification-id", -1);
+
+		/*
+		Bundle extras = intent.getExtras();
+		if (extras != null) {
+			for (String key : extras.keySet()) {
+				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+			}
+		}
+		*/
  
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
@@ -43,7 +54,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 Log.d(LOG_TAG, "Notification canceled immediately: " + notificationId);
             }
 
-            ReactEventEmitter.sendEventToReact(action, callUUID, phoneLocked, (ReactApplication) context.getApplicationContext());
+            ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, phoneLocked, (ReactApplication) context.getApplicationContext());
 
 			// 2. Close the IncomingCallActivity layout
 			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");
@@ -55,6 +66,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 Intent cleanupIntent = new Intent(context, IncomingCallService.class);
                 cleanupIntent.putExtra("event", action);
                 cleanupIntent.putExtra("session-id", callUUID);
+                cleanupIntent.putExtra("from_uri", from_uri);
                 cleanupIntent.putExtra("notification-id", notificationId);
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

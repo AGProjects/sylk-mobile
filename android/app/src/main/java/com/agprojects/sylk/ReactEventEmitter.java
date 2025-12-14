@@ -20,13 +20,14 @@ public class ReactEventEmitter {
     private static final Queue<WritableMap> pendingEvents = new LinkedList<>();
 
     // Add phoneLocked as argument
-    public static void sendEventToReact(String action, String callUUID, boolean phoneLocked, ReactApplication app) {
+    public static void sendEventToReact(String action, String callUUID,  String fromUri, boolean phoneLocked, ReactApplication app) {
         try {
             ReactInstanceManager reactInstanceManager = app.getReactNativeHost().getReactInstanceManager();
             ReactContext reactContext = reactInstanceManager.getCurrentReactContext();
 
             WritableMap payload = Arguments.createMap();
             payload.putString("callUUID", callUUID);
+            payload.putString("fromUri", fromUri);
             payload.putString("action", action);
             payload.putBoolean("phoneLocked", phoneLocked);
 

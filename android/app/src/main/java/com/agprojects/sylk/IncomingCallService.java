@@ -8,6 +8,8 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Bundle;
+
 import android.util.Log;
 
 import java.util.Set;
@@ -112,19 +114,19 @@ public class IncomingCallService extends Service {
 		return result;
 	}
 
-	private boolean isFavorite(String fromUri) {
-		if (fromUri == null) return false;
+	private boolean isFavorite(String from_uri) {
+		if (from_uri == null) return false;
 		List<String> favorites = contactsByTag.get("favorites");
-		return favorites != null && favorites.contains(fromUri);
+		return favorites != null && favorites.contains(from_uri);
 	}
 	
-	private boolean isAutoAnswer(String fromUri) {
-		if (fromUri == null) return false;
+	private boolean isAutoAnswer(String from_uri) {
+		if (from_uri == null) return false;
 		List<String> autoanswer = contactsByTag.get("autoanswer");
-		return autoanswer != null && autoanswer.contains(fromUri);
+		return autoanswer != null && autoanswer.contains(from_uri);
 	}	
 
-	private void startRingtone(String fromUri) {
+	private void startRingtone(String from_uri) {
 		// Start vibration if system setting allows
 		vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
 
@@ -151,15 +153,12 @@ public class IncomingCallService extends Service {
 		
 		Log.d(LOG_TAG, "Current ringer mode: " + modeString);
 
-		boolean isFavorite = isFavorite(fromUri);
+		boolean isFavorite = isFavorite(from_uri);
 	
 		// Check ringer mode
-		if (!isFavorite) {
-			if (ringerMode == AudioManager.RINGER_MODE_SILENT ||
-				audioManager.getStreamVolume(AudioManager.STREAM_RING) == 0) {
-				Log.d(LOG_TAG, "Do Not Disturb or silent mode, not playing ringtone");
-				return;
-			}
+		if (!isFavorite && ringerMode == AudioManager.RINGER_MODE_SILENT) {
+			Log.d(LOG_TAG, "Do Not Disturb or silent mode, not playing ringtone");
+			return;
 		}
 	
 		try {
@@ -179,7 +178,7 @@ public class IncomingCallService extends Service {
 			ringtonePlayer.start();
 			Log.d(LOG_TAG, "Ringtone started");
 	
-			if (vibrator != null && ringerMode == AudioManager.RINGER_MODE_VIBRATE) {
+			if (vibrator != null && vibrator.hasVibrator() && ringerMode == AudioManager.RINGER_MODE_VIBRATE) {
 				long[] pattern = {0, 1000, 3000}; // wait, vibrate, pause
 				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 					vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0)); // 0 = repeat
@@ -187,6 +186,8 @@ public class IncomingCallService extends Service {
 					vibrator.vibrate(pattern, 0); // deprecated but works on older devices
 				}
 				Log.d(LOG_TAG, "Vibration started");
+			} else {
+				Log.d(LOG_TAG, "Not vibrating (ringer mode not VIBRATE or vibrator missing)");
 			}
 	
 		} catch (Exception e) {
@@ -207,11 +208,16 @@ public class IncomingCallService extends Service {
 		}
 	
 		// Stop vibration
-		if (vibrator != null) {
-			vibrator.cancel();
-			vibrator = null;
-			Log.d(LOG_TAG, "Vibration stopped");
+		try {
+			if (vibrator != null) {
+				vibrator.cancel();
+				Log.d(LOG_TAG, "Vibration stopped");
+			}
+		} catch (Exception e) {
+			Log.e(LOG_TAG, "Error stopping vibration", e);
 		}
+		
+		vibrator = null;
 	}
 
     @Override
@@ -252,18 +258,29 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
 
+        /*        
+		Bundle extras = intent.getExtras();
+		if (extras != null) {
+			for (String key : extras.keySet()) {
+				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+			}
+		}
+		*/
+
+        // IncomingCallService → PendingIntent → BroadcastReceiver, from_uri is not being passed.
+
         String event = intent.getStringExtra("event");
         String callId = intent.getStringExtra("session-id");
-        String fromUri = intent.getStringExtra("from_uri");
+        String from_uri = intent.getStringExtra("from_uri");
         String toUri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
         String title = "Sylk Incoming Call";
-        String subtitle = fromUri + " is calling";
+        String subtitle = from_uri + " is calling";
                 
 		int notificationId = Math.abs(callId.hashCode());
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
-		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId);
+		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId + " from " + from_uri);
 		//Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
 
         if (callId == null || event == null) {
@@ -298,7 +315,7 @@ public class IncomingCallService extends Service {
         }
            
 		if ("ACTION_ACCEPT_AUDIO".equals(event) || "ACTION_ACCEPT_VIDEO".equals(event)) {		 
-			Log.d(LOG_TAG, "Starting app for accepted call " + callId);
+			Log.d(LOG_TAG, "Starting app for accepted call " + callId + " from " + from_uri);
 			stopRingtone();
 	 
 	        handledCalls.add(callId);
@@ -313,6 +330,7 @@ public class IncomingCallService extends Service {
 		
 				// Optional: pass call info to React Native if needed
 				launchIntent.putExtra("session-id", callId);
+				launchIntent.putExtra("from_uri", from_uri);
 				launchIntent.putExtra("media-type", "ACTION_ACCEPT_AUDIO".equals(event) ? "audio" : "video");
 				launchIntent.putExtra("event", event);
 		
@@ -333,12 +351,12 @@ public class IncomingCallService extends Service {
 
 		// Handle incoming session
 		if ("incoming_session".equals(event) || "incoming_conference_request".equals(event)) {
-            startRingtone(fromUri); // <-- start ringing
+            startRingtone(from_uri); // <-- start ringing
             
             if ("incoming_conference_request".equals(event)) {
 				title = "Sylk Conference Call";
 				String room = toUri.split("@")[0];
-				String caller = fromUri;
+				String caller = from_uri;
 				
 				if (caller.contains("anonymous")) {
 					caller = "Somebody";
@@ -352,8 +370,8 @@ public class IncomingCallService extends Service {
 				Log.d(LOG_TAG, subtitle);
             }
 
-			if (isAutoAnswer(fromUri)) {
-    			startAutoAnswerCountdownWithProgress(callId, fromUri, mediaType, notificationId, 30);
+			if (isAutoAnswer(from_uri)) {
+    			startAutoAnswerCountdownWithProgress(callId, from_uri, mediaType, notificationId, 30);
 			}
 
             // Variant 1. This launches the main app when incoming call arrives (make sure RN app shows the alert panel)
@@ -403,6 +421,7 @@ public class IncomingCallService extends Service {
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_REJECT_CALL")
 							.putExtra("session-id", callId)
+							.putExtra("from_uri", from_uri) 
 							.putExtra("phoneLocked", false)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -413,8 +432,9 @@ public class IncomingCallService extends Service {
 					this, notificationId + 200,
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_ACCEPT_AUDIO")
-							.putExtra("phoneLocked", false)
 							.putExtra("session-id", callId)
+							.putExtra("from_uri", from_uri) 
+							.putExtra("phoneLocked", false)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -424,8 +444,9 @@ public class IncomingCallService extends Service {
 					this, notificationId + 300,
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_ACCEPT_VIDEO")
-							.putExtra("phoneLocked", false)
 							.putExtra("session-id", callId)
+							.putExtra("from_uri", from_uri) 
+							.putExtra("phoneLocked", false)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -478,7 +499,7 @@ public class IncomingCallService extends Service {
 		return START_STICKY;
     }
 
-	private void handleAcceptCall(String callId, String mediaType, int notificationId) {
+	private void handleAcceptCall(String callId, String from_uri, String mediaType, int notificationId) {
 		if (callId == null) return;
 	
 		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId);
@@ -505,6 +526,7 @@ public class IncomingCallService extends Service {
 		if (launchIntent != null) {
 			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
 			launchIntent.putExtra("session-id", callId);
+			launchIntent.putExtra("from_uri", from_uri);
 			launchIntent.putExtra("media-type", mediaType);
 			launchIntent.putExtra("event", "auto_accept");
 			startActivity(launchIntent);
@@ -515,7 +537,7 @@ public class IncomingCallService extends Service {
 	
 		// Notify React Native
 		if (getApplication() instanceof ReactApplication) {
-			ReactEventEmitter.sendEventToReact("ACTION_ACCEPT_AUDIO", callId, false, (ReactApplication) getApplication());
+			ReactEventEmitter.sendEventToReact("ACTION_ACCEPT_AUDIO", callId, from_uri, false, (ReactApplication) getApplication());
 			Log.d(LOG_TAG, "Sent React Native event for call: " + callId);
 		}
 	
@@ -523,7 +545,7 @@ public class IncomingCallService extends Service {
 	}
 
 	private void startAutoAnswerCountdownWithProgress(
-			String callId, String fromUri, String mediaType, int notificationId, int seconds
+			String callId, String from_uri, String mediaType, int notificationId, int seconds
 	) {
 		final Handler handler = new Handler(Looper.getMainLooper());
 		final long endTime = System.currentTimeMillis() + seconds * 1000L;
@@ -548,8 +570,9 @@ public class IncomingCallService extends Service {
 						IncomingCallService.this, notificationId + 200,
 						new Intent(IncomingCallService.this, IncomingCallActionReceiver.class)
 								.setAction("ACTION_ACCEPT_AUDIO")
-								.putExtra("phoneLocked", false)
 								.putExtra("session-id", callId)
+								.putExtra("from_uri", from_uri)
+								.putExtra("phoneLocked", false)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 				);
@@ -559,6 +582,7 @@ public class IncomingCallService extends Service {
 						new Intent(IncomingCallService.this, IncomingCallActionReceiver.class)
 								.setAction("ACTION_REJECT_CALL")
 								.putExtra("session-id", callId)
+								.putExtra("from_uri", from_uri)
 								.putExtra("phoneLocked", false)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -570,7 +594,7 @@ public class IncomingCallService extends Service {
 						IncomingCallService.this, CHANNEL_ID
 				)
 						.setContentTitle("Incoming Sylk Call")
-						.setContentText(fromUri + " is calling")
+						.setContentText(from_uri + " is calling")
 						.setSmallIcon(R.drawable.ic_notification)
 						.setPriority(NotificationCompat.PRIORITY_HIGH)
 						.setCategory(NotificationCompat.CATEGORY_CALL)
@@ -594,7 +618,7 @@ public class IncomingCallService extends Service {
 					handler.postDelayed(this, 1000); // update every second
 				} else {
 					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callId);
-					handleAcceptCall(callId, mediaType, notificationId);
+					handleAcceptCall(callId, from_uri, mediaType, notificationId);
 				}
 			}
 		};
