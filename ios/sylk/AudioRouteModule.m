@@ -117,11 +117,10 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 }
 
 - (NSString *)typeStringForPortType:(NSString *)portType {
-  // Map AVAudioSession port type constants to friendly strings similar to Android names
+  // Map AVAudioSession port type constants
   //NSLog(@"[sylk_app][AudioRouteModule] typeStringForPortType: %@", portType);
   if ([portType isEqualToString:AVAudioSessionPortBuiltInReceiver]) return @"BUILTIN_EARPIECE";
   if ([portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) return @"BUILTIN_SPEAKER";
-  if ([portType isEqualToString:AVAudioSessionPortHeadphones]) return @"WIRED_HEADPHONES";
   if ([portType isEqualToString:AVAudioSessionPortHeadsetMic]) return @"WIRED_HEADSET";
   if ([portType isEqualToString:AVAudioSessionPortBluetoothHFP]) return @"BLUETOOTH_SCO";
   if ([portType isEqualToString:AVAudioSessionPortBluetoothA2DP]) return @"BLUETOOTH_A2DP";
@@ -129,7 +128,9 @@ RCT_EXPORT_MODULE(AudioRouteModule);
   if ([portType isEqualToString:AVAudioSessionPortHDMI]) return @"HDMI";
   if ([portType isEqualToString:AVAudioSessionPortCarAudio]) return @"CAR_AUDIO";
   if ([portType isEqualToString:AVAudioSessionPortBluetoothLE]) return @"BLUETOOTH_LE";
-  return [NSString stringWithFormat:@"UNKNOWN(%@)", portType];
+  if ([portType isEqualToString:AVAudioSessionPortBuiltInMic] || [portType isEqualToString:@"MicrophoneBuiltIn"]) return @"BUILTIN_MIC";
+    
+    return [NSString stringWithFormat:@"UNKNOWN (%@)", portType];
 }
 
 - (NSArray *)getAudioInputsArray {
@@ -227,25 +228,95 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 
 
 - (NSDictionary *)getCurrentRouteInfoDictionary {
-  //NSLog(@"[sylk_app][AudioRouteModule] getCurrentRouteInfoDictionary");
-  AVAudioSession *session = [AVAudioSession sharedInstance];
-  AVAudioSessionRouteDescription *route = session.currentRoute;
-  if (route.outputs.count > 0) {
-    // Choose first output as selected output
-    AVAudioSessionPortDescription *p = route.outputs.firstObject;
-    NSDictionary *d = [self deviceDictForPort:p typeForIOS:NO];
-    if (d[@"type"]) _currentRoute = d[@"type"];
-    //NSLog(@"[sylk_app][AudioRouteModule] currentRouteInfo=%@", d);
-    return d;
-  }
-  // Fallback: no outputs, return virtual current route if known
-  if (_currentRoute) {
-    NSDictionary *fallback = @{@"id": @"", @"name": @"", @"type": _currentRoute};
-    NSLog(@"[sylk_app][AudioRouteModule] no outputs, returning fallback currentRoute=%@", _currentRoute);
-    return fallback;
-  }
-  return @{};
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    AVAudioSessionRouteDescription *route = session.currentRoute;
+
+    NSMutableArray *inputs = [[self getAudioInputsArray] mutableCopy];
+    NSMutableArray *outputs = [[self getAudioOutputsArray] mutableCopy];
+
+    NSDictionary *selected = nil;
+
+    if (route.outputs.count > 0) {
+        NSLog(@"[sylk_app][AudioRouteModule] currentRoute: outputs exist, picking first output");
+        AVAudioSessionPortDescription *firstOutput = route.outputs.firstObject;
+        selected = [self deviceDictForPort:firstOutput typeForIOS:NO];
+        NSLog(@"[sylk_app][AudioRouteModule] initial selected device from output: %@", selected);
+
+        // Try to find same device in inputs by UID
+        BOOL usedInputType = NO;
+        for (NSDictionary *input in inputs) {
+            if ([input[@"id"] isEqualToString:selected[@"id"]]) {
+                NSMutableDictionary *mutableSelected = [selected mutableCopy];
+                mutableSelected[@"type"] = input[@"type"];
+                selected = [mutableSelected copy];
+                usedInputType = YES;
+                //NSLog(@"[sylk_app][AudioRouteModule] matched selected device in inputs, using input type: %@", selected[@"type"]);
+                break;
+            }
+        }
+        if (!usedInputType) {
+            //NSLog(@"[sylk_app][AudioRouteModule] selected device not found in inputs, keeping output type: %@", selected[@"type"]);
+        }
+
+        // If selected device not in inputs, add it as input-only
+        BOOL foundInInputs = NO;
+        for (NSDictionary *input in inputs) {
+            if ([input[@"id"] isEqualToString:selected[@"id"]]) {
+                foundInInputs = YES;
+                break;
+            }
+        }
+        if (!foundInInputs) {
+            NSDictionary *inputOnlyDevice = @{@"id": selected[@"id"],
+                                              @"name": selected[@"name"],
+                                              @"type": selected[@"type"]};
+            [inputs addObject:inputOnlyDevice];
+            //NSLog(@"[sylk_app][AudioRouteModule] added selected device to inputs: %@", inputOnlyDevice);
+        } else {
+            //NSLog(@"[sylk_app][AudioRouteModule] selected device already exists in inputs");
+        }
+
+        // If selected device not in outputs, add it as output-only
+        BOOL foundInOutputs = NO;
+        for (NSDictionary *output in outputs) {
+            if ([output[@"id"] isEqualToString:selected[@"id"]]) {
+                foundInOutputs = YES;
+                break;
+            }
+        }
+        if (!foundInOutputs) {
+            NSDictionary *outputOnlyDevice = @{@"id": selected[@"id"],
+                                               @"name": selected[@"name"],
+                                               @"type": selected[@"type"]};
+            [outputs addObject:outputOnlyDevice];
+            NSLog(@"[sylk_app][AudioRouteModule] added selected device to outputs: %@", outputOnlyDevice);
+        } else {
+            NSLog(@"[sylk_app][AudioRouteModule] selected device already exists in outputs");
+        }
+
+        if (selected[@"type"]) {
+            _currentRoute = selected[@"type"];
+            NSLog(@"[sylk_app][AudioRouteModule] _currentRoute updated to: %@", _currentRoute);
+        }
+
+        return selected;
+    } else {
+        NSLog(@"[sylk_app][AudioRouteModule] no outputs in current route");
+    }
+
+    // Fallback: no outputs, return virtual current route if known
+    if (_currentRoute) {
+        NSDictionary *fallback = @{@"id": @"", @"name": @"", @"type": _currentRoute};
+        NSLog(@"[sylk_app][AudioRouteModule] returning fallback currentRoute: %@", _currentRoute);
+        return fallback;
+    } else {
+        NSLog(@"[sylk_app][AudioRouteModule] no current route known, returning empty dictionary");
+    }
+
+    return @{};
 }
+
+
 
 #pragma mark - Notification handlers
 
@@ -633,7 +704,6 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
       // We search availableInputs and current route outputs for matching port types
       NSString *targetPortType = nil;
       if ([type isEqualToString:@"WIRED_HEADSET"]) targetPortType = AVAudioSessionPortHeadsetMic;
-      else if ([type isEqualToString:@"WIRED_HEADPHONES"]) targetPortType = AVAudioSessionPortHeadphones;
       else if ([type isEqualToString:@"BLUETOOTH_SCO"]) targetPortType = AVAudioSessionPortBluetoothHFP;
       else if ([type isEqualToString:@"BLUETOOTH_A2DP"]) targetPortType = AVAudioSessionPortBluetoothA2DP;
       else if ([type isEqualToString:@"BUILTIN_EARPIECE"]) targetPortType = AVAudioSessionPortBuiltInReceiver;
