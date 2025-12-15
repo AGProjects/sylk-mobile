@@ -20,7 +20,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveChat(chatId: String?) {
-        Log.d("[SYLK]", "setActiveChat: $chatId")
+        //Log.d("[SYLK]", "setActiveChat: $chatId")
         prefs.edit().putString("currentChat", chatId).apply()
     }
 

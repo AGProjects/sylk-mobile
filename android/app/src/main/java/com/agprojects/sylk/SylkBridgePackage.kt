@@ -6,11 +6,18 @@ import com.facebook.react.uimanager.ViewManager
 import com.facebook.react.bridge.ReactApplicationContext
 
 class SylkBridgePackage : ReactPackage {
-    override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(SylkBridgeModule(reactContext))
+    override fun createNativeModules(
+        reactContext: ReactApplicationContext
+    ): List<NativeModule> {
+        return listOf(
+            SylkBridgeModule(reactContext),
+            CallEventModule(reactContext)
+        )
     }
 
-    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+    override fun createViewManagers(
+        reactContext: ReactApplicationContext
+    ): List<ViewManager<*, *>> {
         return emptyList()
     }
 }

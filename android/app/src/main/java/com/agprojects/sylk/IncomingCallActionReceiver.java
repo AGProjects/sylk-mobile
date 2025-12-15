@@ -29,21 +29,20 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
             return;
         }
 
-        String action = intent.getAction();
-		String callUUID = intent.getStringExtra("session-id");
-		String from_uri = intent.getStringExtra("from_uri");
-		boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
-		int notificationId = intent.getIntExtra("notification-id", -1);
-
-		/*
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
 				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
-		*/
- 
+
+        String action = intent.getAction();
+		String callUUID = intent.getStringExtra("session-id");
+		String from_uri = intent.getStringExtra("from_uri");
+		String phoneLockedStr = intent.getStringExtra("phoneLocked");
+		boolean phoneLocked = "true".equals(phoneLockedStr);
+		int notificationId = intent.getIntExtra("notification-id", -1);
+
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
             Log.d(LOG_TAG, "Local user action: " + action + " for call: " + callUUID);
@@ -53,6 +52,8 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 NotificationManagerCompat.from(context).cancel(notificationId);
                 Log.d(LOG_TAG, "Notification canceled immediately: " + notificationId);
             }
+
+			Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
 
             ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, phoneLocked, (ReactApplication) context.getApplicationContext());
 
@@ -67,6 +68,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 cleanupIntent.putExtra("event", action);
                 cleanupIntent.putExtra("session-id", callUUID);
                 cleanupIntent.putExtra("from_uri", from_uri);
+                cleanupIntent.putExtra("phoneLocked", phoneLocked);
                 cleanupIntent.putExtra("notification-id", notificationId);
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

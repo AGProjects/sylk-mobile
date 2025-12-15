@@ -252,19 +252,28 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 					case Intent.ACTION_HEADSET_PLUG:
 						handler.postDelayed(() -> {
 							List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
+							Log.d(TAG, "HEADSET plugged");
 						
 							for (AudioDeviceInfo device : devices) {
 								if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
-									Log.d(TAG, "HEADSET plugged");
-						
 									Map<String, String> wiredDevice = new HashMap<>();
 									wiredDevice.put("id", String.valueOf(device.getId()));
-									wiredDevice.put("name",
-											device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
+									wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
 									wiredDevice.put("type", "WIRED_HEADSET");
-						
+				
 									Log.d(TAG, "Auto route to wired headset");
 									switchAudioRoute(wiredDevice);
+								} else if (device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
+									Map<String, String> wiredDevice = new HashMap<>();
+									wiredDevice.put("id", String.valueOf(device.getId()));
+									wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
+									wiredDevice.put("type", "USB_HEADSET");
+				
+									Log.d(TAG, "Auto route to USB headset");
+									switchAudioRoute(wiredDevice);
+								} else {
+									String typeName = getDeviceTypeName(device.getType());
+									Log.d(TAG, "Other device found - ID: " + device.getId() + " Type: " + device.getType() + " " + typeName);
 								}
 							}
 						
@@ -403,11 +412,15 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 			case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER: return "BUILTIN_SPEAKER";
 			case AudioDeviceInfo.TYPE_WIRED_HEADSET: return "WIRED_HEADSET";
 			case AudioDeviceInfo.TYPE_WIRED_HEADPHONES: return "WIRED_HEADPHONES";
+			case AudioDeviceInfo.TYPE_USB_HEADSET: return "USB_HEADSET";
 			case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: return "BLUETOOTH_SCO";
 			case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP: return "BLUETOOTH_A2DP";
-			case AudioDeviceInfo.TYPE_HDMI: return "HDMI";
+			case AudioDeviceInfo.TYPE_TELEPHONY: return "TELEPHONY";
+			case AudioDeviceInfo.TYPE_HEARING_AID: return "HEARING_AID";
+			case AudioDeviceInfo.TYPE_AUX_LINE: return "AUX_LINE";
+			case AudioDeviceInfo.TYPE_LINE_ANALOG: return "LINE_ANALOG";
 			case AudioDeviceInfo.TYPE_USB_DEVICE: return "USB_DEVICE";
-			default: return "UNKNOWN(" + type + ")";
+			default: return "UNKNOWN (" + type + ")";
 		}
 	}
 
@@ -449,6 +462,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 			case "SPEAKER_PHONE": return AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
 			case "WIRED_HEADSET": return AudioDeviceInfo.TYPE_WIRED_HEADSET;
 			case "WIRED_HEADPHONES": return AudioDeviceInfo.TYPE_WIRED_HEADPHONES;
+			case "USB_HEADSET": return AudioDeviceInfo.TYPE_USB_HEADSET;
 			case "BLUETOOTH_SCO": return AudioDeviceInfo.TYPE_BLUETOOTH_SCO;
 			default: return -1;
 		}
@@ -784,9 +798,10 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 			String typeName;
 			switch (device.getType()) {
 				case AudioDeviceInfo.TYPE_BUILTIN_MIC: typeName = "BUILTIN_MIC"; break;
-				case AudioDeviceInfo.TYPE_AUX_LINE: typeName = "AUX_LINE"; break;
 				case AudioDeviceInfo.TYPE_WIRED_HEADSET: typeName = "WIRED_HEADSET"; break;
-				case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: typeName = "BLUETOOTH_SCO"; break;
+				case AudioDeviceInfo.TYPE_USB_HEADSET: typeName = "USB_HEADSET"; break;
+				case AudioDeviceInfo.TYPE_AUX_LINE: typeName = "AUX_LINE"; break;
+				case AudioDeviceInfo.TYPE_LINE_ANALOG: typeName = "LINE_ANALOG"; break;
 				default: continue; // skip unknowns
 			}
 	
@@ -807,17 +822,15 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 		return inputsArray;
 	}
 
-
 	private boolean isKnownOutputType(int type) {
 		switch (type) {
 			case AudioDeviceInfo.TYPE_BUILTIN_EARPIECE:
 			case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER:
 			case AudioDeviceInfo.TYPE_WIRED_HEADSET:
-			case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+			case AudioDeviceInfo.TYPE_USB_HEADSET:
 			case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
 			case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
 			case AudioDeviceInfo.TYPE_HDMI:
-			case AudioDeviceInfo.TYPE_USB_DEVICE:
 				return true;
 	
 			default:

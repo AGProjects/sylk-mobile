@@ -61,6 +61,8 @@ public class IncomingCallActivity extends AppCompatActivity {
             Log.d(LOG_TAG, "Phone is unlocked, skipping layout display.");
             finish();
             return;
+        } else {
+            Log.d(LOG_TAG, "Phone is locked");
         }
 
         setContentView(R.layout.activity_incoming_call);
@@ -72,6 +74,8 @@ public class IncomingCallActivity extends AppCompatActivity {
             from_uri = getIntent().getStringExtra("from_uri");
             phoneLocked = getIntent().getBooleanExtra("phoneLocked", false);
         }
+
+        Log.d(LOG_TAG, "IncomingCallActivity phoneLocked=" + phoneLocked);
 
         String displayName = null;
 		Cursor cursor = null;
@@ -157,7 +161,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 		Intent intent = new Intent(this, IncomingCallActionReceiver.class)
 				.setAction(action)
 				.putExtra("session-id", callId)
-				.putExtra("phoneLocked", phoneLocked)
+				.putExtra("phoneLocked", phoneLocked ? "true" : "false")
 				.putExtra("from_uri", from_uri)
 				.putExtra("notification-id", notificationId);
 	
