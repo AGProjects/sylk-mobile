@@ -25,8 +25,6 @@ import SylkAppbarContent from './SylkAppbarContent';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 
-import config from '../config';
-
 import styles from '../assets/styles/NavigationBar';
 
 class NavigationBar extends Component {
@@ -74,7 +72,9 @@ class NavigationBar extends Component {
 			rejectNonContacts: this.props.rejectNonContacts,
 			searchMessages: this.props.searchMessages,
 			isLandscape: this.props.isLandscape,
-			backupKey: false
+			backupKey: false,
+			serverSettingsUrl: this.props.serverSettingsUrl,
+			publicUrl: this.props.publicUrl
         }
 
         this.menuRef = React.createRef();
@@ -169,7 +169,9 @@ class NavigationBar extends Component {
  					   rejectAnonymous: nextProps.rejectAnonymous,
  					   rejectNonContacts: nextProps.rejectNonContacts,
  					   searchMessages: nextProps.searchMessages,
- 					   isLandscape: nextProps.isLandscape
+ 					   isLandscape: nextProps.isLandscape,
+					   serverSettingsUrl: nextProps.serverSettingsUrl,
+					   publicUrl: nextProps.publicUrl
                        });
 
                     if (nextProps.menuVisible) {
@@ -184,7 +186,7 @@ class NavigationBar extends Component {
 
     handleMenu(event) {
 
-        this.callUrl = `${config.publicUrl}/call/${this.state.accountId}`;
+        this.callUrl = `${this.state.publicUrl}/call/${this.state.accountId}`;
         switch (event) {
             case 'about':
                 this.toggleAboutModal();
@@ -295,7 +297,7 @@ class NavigationBar extends Component {
                 }
                 break;
             case 'settings':
-                Linking.openURL(config.serverSettingsUrl);
+                Linking.openURL(this.state.serverSettingsUrl);
                 break;
             default:
                 break;
@@ -448,7 +450,7 @@ class NavigationBar extends Component {
             statusColor = 'orange';
         }
 
-        let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
+        let callUrl = callUrl = this.state.publicUrl + "/call/" + this.state.accountId;
         let proximityTitle = this.state.proximity ? 'Disable proximity sensor' : 'Enable proximity sensor';
         let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
         let rejectAnonymousTitle = this.state.rejectAnonymous ? 'Allow anonymous callers' : 'Reject anonymous callers';
@@ -456,7 +458,7 @@ class NavigationBar extends Component {
         let isConference = false;
 
 		const friendlyName = this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0] : '';
-		const conferenceUrl = `${config.publicUrl}/conference/${friendlyName}`;
+		const conferenceUrl = `${this.state.publicUrl}/conference/${friendlyName}`;
 
         if (this.state.selectedContact) {
             tags = this.state.selectedContact.tags;
@@ -597,16 +599,6 @@ class NavigationBar extends Component {
                 />
                 : null}
 
-                { !this.state.selectedContact ?
-                <IconButton
-                    style={bellStyle}
-                    size={18}
-                    disabled={false}
-                    onPress={this.props.toggleDnd}
-                    icon={bellIcon}
-                />
-                : null}
-
                 {this.state.selectedContact ?
                 <IconButton
                     style={styles.whiteButton}
@@ -615,9 +607,28 @@ class NavigationBar extends Component {
                     onPress={this.props.toggleSearchMessages}
                     icon={searchIcon}
                 />
+                : 
+				<IconButton
+                    style={styles.whiteButton}
+                    size={18}
+                    disabled={false}
+                    onPress={this.props.toggleSearchContacts}
+                    icon={searchIcon}
+                />
+
+                }
+
+               { !this.state.selectedContact ?
+                <IconButton
+                    style={[bellStyle, {marginLeft: 10}]}
+                    size={18}
+                    disabled={false}
+                    onPress={this.props.toggleDnd}
+                    icon={bellIcon}
+                />
                 : null}
 
-
+ 
                 {statusColor == 'greenXXX' ?
                     <Icon name={statusIcon} size={20} color={statusColor} />
                 : null }
@@ -967,7 +978,9 @@ NavigationBar.propTypes = {
     toggleSearchMessages: PropTypes.func,
     toggleSearchContacts: PropTypes.func,
     searchMessages: PropTypes.bool,
-    isLandscape: PropTypes.bool
+    isLandscape: PropTypes.bool,
+    publicUrl: PropTypes.string,
+    serverSettingsUrl: PropTypes.string
 };
 
 export default NavigationBar;

@@ -1,58 +1,105 @@
-import React from 'react';
-import { View, Text  } from 'react-native';
-import PropTypes from 'prop-types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View } from 'react-native';
 
 import RegisterForm from './RegisterForm';
 import Logo from './Logo';
 import styles from '../assets/styles/blink/_RegisterBox.scss';
 
-const RegisterBox = (props) => {
-    let containerClass;
+const RegisterBox = ({
+  enrollmentUrl,
+  serverSettingsUrl,
+  defaultDomain,
+  sylkDomain,
+  serverIsValid,
+  handleSignIn,
+  handleEnrollment,
+  registrationInProgress,
+  showLogo,
+  orientation,
+  isTablet,
+  connected,
+  myPhoneNumber,
+  lookupSylkServer,
+  SylkServerDiscovery,
+  SylkServerDiscoveryResult,
+  SylkServerStatus,
+  resetSylkServerStatus
+}) => {
 
-    if (props.isTablet) {
-        containerClass = props.orientation === 'landscape' ? styles.landscapeTabletRegisterBox : styles.portraitTabletRegisterBox;
-    } else {
-        containerClass = props.orientation === 'landscape' ? styles.landscapeRegisterBox : styles.portraitRegisterBox;
+  // ---------------------------------------------
+  // 1) Derive state from props (if needed)
+  // ---------------------------------------------
+  const [isLandscape, setIsLandscape] = useState(orientation === 'landscape');
+
+  useEffect(() => {
+    // runs whenever orientation changes
+    setIsLandscape(orientation === 'landscape');
+  }, [orientation]);
+
+
+  // ---------------------------------------------
+  // 2) Memoize heavy derived values (optional)
+  // ---------------------------------------------
+  const containerStyle = useMemo(() => {
+    if (isTablet) {
+      return isLandscape
+        ? styles.landscapeTabletRegisterBox
+        : styles.portraitTabletRegisterBox;
     }
+    return isLandscape
+      ? styles.landscapeRegisterBox
+      : styles.portraitRegisterBox;
+  }, [isTablet, isLandscape]);
 
-    return (
-        <View style={containerClass}>
-            {props.showLogo ?
-            <View>
-                <Logo
-                    orientation={props.orientation}
-                    isTablet={props.isTablet}
-                />
 
-            </View>
-            : null}
+  // ---------------------------------------------
+  // 3) React to other prop changes (optional)
+  // ---------------------------------------------
+  useEffect(() => {
+    if (serverIsValid === false) {
+      console.log('❌ Server became invalid');
+    }
+  }, [serverIsValid]);
 
-            <View>
-                <RegisterForm
-                    registrationInProgress={props.registrationInProgress}
-                    handleSignIn={props.handleSignIn}
-                    handleEnrollment={props.handleEnrollment}
-                    orientation={props.orientation}
-                    isTablet={props.isTablet}
-                    connected={props.connected}
-                    myPhoneNumber={props.myPhoneNumber}
-                />
+  useEffect(() => {
+    if (connected) {
+      console.log('📶 Connection restored');
+    }
+  }, [connected]);
 
-            </View>
 
+  return (
+    <View style={containerStyle}>
+      {showLogo && (
+        <View>
+          <Logo orientation={orientation} isTablet={isTablet} />
         </View>
-    );
-};
+      )}
 
-RegisterBox.propTypes = {
-    handleSignIn           : PropTypes.func.isRequired,
-    handleEnrollment       : PropTypes.func.isRequired,
-    registrationInProgress : PropTypes.bool,
-    showLogo               : PropTypes.bool,
-    orientation            : PropTypes.string,
-    isTablet               : PropTypes.bool,
-    connected              : PropTypes.bool,
-    myPhoneNumber          : PropTypes.string
+      <View>
+        <RegisterForm
+          enrollmentUrl={enrollmentUrl}
+          serverSettingsUrl={serverSettingsUrl}
+          defaultDomain={defaultDomain}
+          sylkDomain={sylkDomain}
+          serverIsValid={serverIsValid}
+          registrationInProgress={registrationInProgress}
+          handleSignIn={handleSignIn}
+          handleEnrollment={handleEnrollment}
+          orientation={orientation}
+          isTablet={isTablet}
+          connected={connected}
+          myPhoneNumber={myPhoneNumber}
+          lookupSylkServer={lookupSylkServer}
+          SylkServerDiscovery={SylkServerDiscovery}
+          SylkServerDiscoveryResult={SylkServerDiscoveryResult}
+          SylkServerStatus={SylkServerStatus}
+          resetSylkServerStatus={resetSylkServerStatus}
+        />
+      </View>
+    </View>
+  );
 };
 
 export default RegisterBox;
+

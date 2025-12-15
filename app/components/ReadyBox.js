@@ -14,7 +14,6 @@ import ContactsListBox from './ContactsListBox';
 
 import FooterBox from './FooterBox';
 import URIInput from './URIInput';
-import config from '../config';
 import utils from '../utils';
 import {Keyboard} from 'react-native';
 import QRCodeScanner from 'react-native-qrcode-scanner';
@@ -88,7 +87,8 @@ class ReadyBox extends Component {
 			orderBy: 'timestamp',
 			showOrderBar: false,
 			playRecording: false,
-			level: 0
+			level: 0,
+			callHistoryUrl: this.props.callHistoryUrl
         };
         this.ended = false;
 
@@ -203,7 +203,8 @@ class ReadyBox extends Component {
                         messagesMetadata: nextProps.messagesMetadata,
                         fullScreen: nextProps.fullScreen,
 					    transferProgress: nextProps.transferProgress,
-					    contactIsSharing: nextProps.contactIsSharing
+					    contactIsSharing: nextProps.contactIsSharing,
+					    callHistoryUrl: nextProps.callHistoryUrl
                         });
     }
 
@@ -349,6 +350,10 @@ class ReadyBox extends Component {
         if (!this.state.searchMessages && !this.state.searchContacts) {
 			return false;
         }
+        
+		if (this.state.messagesCategoryFilter == 'image') {
+			return false;
+		}
 
         if (this.state.selectedContact) {
             if (!this.state.searchMessages) {
@@ -376,7 +381,7 @@ class ReadyBox extends Component {
 	   if (this.state.selectedContact) {
 		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
 	   } else {
-		   return this.state.myContacts ? Object.keys(this.state.myContacts).length > 10 : false;
+		   return this.state.searchContacts && this.state.myContacts && Object.keys(this.state.myContacts).length > 10;
 	   }
    }
 
@@ -464,6 +469,10 @@ class ReadyBox extends Component {
             return false;
         }
                         
+        if (this.state.inviteContacts) {
+			return true;
+        }
+                        
         if (this.state.shareToContacts) {
 			return true;
         }
@@ -497,7 +506,7 @@ class ReadyBox extends Component {
         }
 
         if (this.state.call) {
-            return true;
+            return false;
         }
 
         if (!this.state.targetUri) {
@@ -1403,6 +1412,7 @@ class ReadyBox extends Component {
 			}
 		}
 		
+		//console.log('RB', this.state.shareToContacts);
         return (
             <Fragment>
                 <View style={[styles.container, containerExtraStyles]}>
@@ -1691,7 +1701,7 @@ class ReadyBox extends Component {
 						isLandscape={this.state.isLandscape}
 						account={this.props.account}
 						password={this.props.password}
-						config={this.props.config}
+						callHistoryUrl={this.state.callHistoryUrl}
 						refreshHistory={this.props.refreshHistory}
 						refreshFavorites={this.props.refreshFavorites}
 						localHistory={this.props.localHistory}
@@ -1862,7 +1872,7 @@ class ReadyBox extends Component {
 ReadyBox.propTypes = {
     account         : PropTypes.object,
     password        : PropTypes.string.isRequired,
-    config          : PropTypes.object.isRequired,
+    callHistoryUrl  : PropTypes.string,
     startCall       : PropTypes.func.isRequired,
     startConference : PropTypes.func.isRequired,
     contacts        : PropTypes.array,

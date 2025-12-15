@@ -77,7 +77,7 @@ const AddContactModal = ({
 			>
 			  <TextInput
 				mode="flat"
-				label="Enter user@domain"
+				label="Enter SIP address"
 				onChangeText={onUriChange}
 				value={uri}
   			    autoCapitalize="none"

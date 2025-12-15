@@ -11,6 +11,7 @@ import { Colors } from 'react-native-paper';
 import SylkAppbarContent from './SylkAppbarContent';
 import { Platform, Dimensions} from 'react-native';
 import { initialWindowMetrics } from 'react-native-safe-area-context';
+import utils from '../utils';
 
 import styles from '../assets/styles/AudioCall';
 
@@ -229,7 +230,7 @@ class CallOverlay extends React.Component {
                 } else if (this.state.callState) {
                     callDetail = toTitleCase(this.state.callState);
                 } else if (!this.state.call) {
-					callDetail = 'Making call...';
+					callDetail = 'Starting call...';
                 } else if (!this.state.localMedia) {
                     if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;
@@ -258,7 +259,7 @@ class CallOverlay extends React.Component {
 			let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
 			let myUsageTitle = this.state.showUsage ? 'Hide bandwidth' : 'Show bandwidth';
 			
-			//console.log(this.state.showUsage);
+			//console.log('this.state.callState', this.state.callState);
 
 			let barContainer = {
 				backgroundColor: 'rgba(34,34,34,.7)',
@@ -310,7 +311,7 @@ class CallOverlay extends React.Component {
                         </View>
                     }
                 >
-					{this.state.media === 'video' && (
+					{this.state.media === 'video' && this.state.callState == "established" && (
 					<>
                     <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
                     <Menu.Item onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
@@ -318,10 +319,7 @@ class CallOverlay extends React.Component {
 					<Divider />
 					</>
                     )}
-                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
-
-					<Divider />
-				
+			
 					<Menu
 						visible={this.state.audioMenuVisible}
 						onDismiss={() => this.setState({audioMenuVisible: false})}
@@ -335,14 +333,15 @@ class CallOverlay extends React.Component {
 					>
 						{this.props.availableAudioDevices.map(device => {
 							const isSelected = device === this.props.selectedAudioDevice;
+							const deviceTitle = utils.availableAudioDeviceNames[device];
 				
 							return (
 								<Menu.Item
 									key={device}
 									title={
 										isSelected
-											? `✓ ${device}`        // show selected
-											: device
+											? `✓ ${deviceTitle}`
+											: deviceTitle
 									}
 									onPress={() => {
 										this.props.selectAudioDevice(device);
@@ -355,6 +354,9 @@ class CallOverlay extends React.Component {
 							);
 						})}
 					</Menu>
+
+					<Divider />
+                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
                 </Menu>
                 

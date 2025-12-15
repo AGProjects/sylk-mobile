@@ -7,7 +7,6 @@ import autoBind from 'auto-bind';
 
 import ConferenceBox from './ConferenceBox';
 import LocalMedia from './LocalMedia';
-import config from '../config';
 import utils from '../utils';
 
 const DEBUG = debug('blinkrtc:Conference');
@@ -47,7 +46,8 @@ class Conference extends React.Component {
               room: room,
               messages: this.props.messages,
 			  availableAudioDevices : this.props.availableAudioDevices,
-			  selectedAudioDevice: this.props.selectedAudioDevice
+			  selectedAudioDevice: this.props.selectedAudioDevice,
+			  iceServers: this.props.iceServers
         }
               
         if (this.props.connection) {
@@ -238,7 +238,7 @@ class Conference extends React.Component {
 
         const options = {
             id: this.state.callUUID,
-            pcConfig: {iceServers: config.iceServers},
+            pcConfig: {iceServers: this.state.iceServers},
             localStream: this.state.localMedia,
             audio: this.props.proposedMedia.audio,
             video: this.props.proposedMedia.video,
@@ -491,7 +491,7 @@ Conference.propTypes = {
     selectAudioDevice       : PropTypes.func,
     startRingback           : PropTypes.func,
     stopRingback            : PropTypes.func,
-
+    iceServers              : PropTypes.array,
 };
 
 

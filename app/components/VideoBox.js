@@ -17,7 +17,6 @@ import CallOverlay from './CallOverlay';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
 
-import config from '../config';
 //import TrafficStats from './BarChart';
 import utils from '../utils';
 
@@ -39,14 +38,6 @@ function appendBits(bits) {
 
     return `${Math.max(bits, 0.1).toFixed(bits < 100 ? 1 : 0)} ${byteUnits[i]}bits/s`;
 };
-
-
-  const availableAudioDevicesIconsMap = {
-	BUILTIN_EARPIECE: 'phone',
-	WIRED_HEADSET: 'headphones',
-	BLUETOOTH_SCO: 'bluetooth-audio',
-	BUILTIN_SPEAKER: 'volume-high',
-  };
 
 
 class VideoBox extends Component {
@@ -381,16 +372,12 @@ class VideoBox extends Component {
 	}
 	
 
-
-
-    hangupCall(event) {
-        //event.preventDefault();
+    hangupCall() {
         this.props.hangupCall('user_hangup_call');
         this.userHangup = true;
     }
 
-    cancelCall(event) {
-        event.preventDefault();
+    cancelCall() {
         this.props.hangupCall('user_cancel_call');
     }
 
@@ -469,7 +456,7 @@ class VideoBox extends Component {
 	  <View style={buttonsContainerClass}>
 		<View style={styles.audioDeviceContainer}>
 		  {availableAudioDevices.map((device) => {
-			const icon = availableAudioDevicesIconsMap[device];
+			const icon = utils.availableAudioDevicesIconsMap[device];
 			if (!icon) return null;
 	
 			const isSelected = device === selectedAudioDevice;
@@ -606,7 +593,7 @@ class VideoBox extends Component {
                 <IconButton
                     size={buttonSize}
                     style={[buttonClass]}
-                    icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
+                    icon={utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
                     onPress={() => this.toggleAudioDevice()}
                 />
                 }
@@ -793,6 +780,7 @@ class VideoBox extends Component {
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
+
                 />
 
                 {this.showRemote?

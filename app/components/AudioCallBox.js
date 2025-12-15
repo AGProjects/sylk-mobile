@@ -26,14 +26,6 @@ function toTitleCase(str) {
 
 const MAX_POINTS = 30;
 
-const availableAudioDevicesIconsMap = {
-	BUILTIN_EARPIECE: 'phone',
-	WIRED_HEADSET: 'headphones',
-	BLUETOOTH_SCO: 'bluetooth-audio',
-	BUILTIN_SPEAKER: 'volume-high',
-};
-
-
 class AudioCallBox extends Component {
     constructor(props) {
         super(props);
@@ -178,19 +170,16 @@ class AudioCallBox extends Component {
         this.props.escalateToConference(participants);
     }
 
-    hangupCall(event) {
-        event.preventDefault();
+    hangupCall() {
         this.props.hangupCall('user_hangup_call');
         this.userHangup = true;
     }
 
-    cancelCall(event) {
-        event.preventDefault();
+    cancelCall() {
         this.props.hangupCall('user_cancel_call');
     }
 
-    muteAudio(event) {
-        event.preventDefault();
+    muteAudio() {
         this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
     }
 
@@ -293,7 +282,7 @@ class AudioCallBox extends Component {
 	  return (
 		<View style={styles.audioDeviceContainer}>
 		  {availableAudioDevices.map((device) => {
-			const icon = availableAudioDevicesIconsMap[device];
+			const icon = utils.availableAudioDevicesIconsMap[device];
 			if (!icon) return null;
 	
 			const isSelected = device === selectedAudioDevice;
@@ -385,6 +374,7 @@ class AudioCallBox extends Component {
                     callState={this.props.callState}
                     terminatedReason={this.state.terminatedReason}
                     isLandscape={this.props.orientation === 'landscape'}
+					hangupCall = {this.hangupCall}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
@@ -496,7 +486,7 @@ class AudioCallBox extends Component {
                                     <IconButton
                                         size={buttonSize}
                                         style={whiteButtonClass}
-                                        icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
+                                        icon={utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
 										onPress={() => this.toggleAudioDevice()}
                                         />
                                 </TouchableHighlight>

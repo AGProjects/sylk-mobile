@@ -9,7 +9,6 @@ import uuid from 'react-native-uuid';
 import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
-import config from '../config';
 import utils from '../utils';
 
 // import {
@@ -101,7 +100,8 @@ class Call extends Component {
                       callEndReason: null,
                       userStartedCall: false,
                       availableAudioDevices: this.props.availableAudioDevices,
-                      selectedAudioDevice: this.props.selectedAudioDevice
+                      selectedAudioDevice: this.props.selectedAudioDevice,
+                      iceServers: this.props.iceServers
                       }
     }
 
@@ -200,7 +200,8 @@ class Call extends Component {
                          selectedContacts: nextProps.selectedContacts,
                          speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
                          availableAudioDevices: nextProps.availableAudioDevices,
-                         selectedAudioDevice: nextProps.selectedAudioDevice
+                         selectedAudioDevice: nextProps.selectedAudioDevice,
+                         iceServers: nextProps.iceServers
                          });
     }
 
@@ -216,7 +217,7 @@ class Call extends Component {
     async answerCall(localMedia) {
         const media = localMedia ? localMedia : this.state.localMedia;
         if (this.state.call && this.state.call.state === 'incoming' && media) {
-            let options = {pcConfig: {iceServers: config.iceServers}};
+            let options = {pcConfig: {iceServers: this.state.iceServers}};
             options.localStream = media;
             utils.timestampedLog('Answering call...');
 
@@ -492,7 +493,7 @@ class Call extends Component {
         }
 
         let options = {
-                       pcConfig: {iceServers: config.iceServers},
+                       pcConfig: {iceServers: this.state.iceServers},
                        id: this.state.callUUID,
                        localStream: this.state.localMedia
                        };
@@ -743,7 +744,8 @@ Call.propTypes = {
     selectAudioDevice       : PropTypes.func,
     startRingback           : PropTypes.func,
     stopRingback            : PropTypes.func,
-    useInCallManger         : PropTypes.bool
+    useInCallManger         : PropTypes.bool,
+    iceServers              : PropTypes.array
 };
 
 

@@ -7,8 +7,6 @@ import PropTypes from 'prop-types';
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
 
-import config from '../config';
-
 const ConferenceModal = ({
   show,
   handleConferenceCall,

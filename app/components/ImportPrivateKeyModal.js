@@ -141,7 +141,7 @@ class ImportPrivateKeyModal extends Component {
                         <Surface style={styles.container}>
                             <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
                              <Text style={styles.body}>
-                                 You have used Sylk on more than one device or perhaps you have deleted Sylk from this device. To decrypt your messages, you need the same private key on all devices.
+                                 You have used Sylk on multiple devices. To decrypt your messages, you need the same private key on all devices.
                             </Text>
                              <Text style={styles.body}>
                                  To use the private key from another device, on that device chose the menu option 'Export private key'.

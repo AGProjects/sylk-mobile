@@ -29,7 +29,8 @@ import UserIcon from './UserIcon';
 
 import * as Progress from 'react-native-progress';
 
-import ChatBubble from './ChatBubble'
+import ChatBubble from './ChatBubble';
+import ThumbnailGrid from './ThumbnailGrid';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -184,7 +185,8 @@ class ContactsListBox extends Component {
 			loadedMinIndex: null,      // lowest index loaded in focusedMessages
 		    loadedMaxIndex: null,      // highest index loaded in focusedMessages
 		    playRecording: this.props.playRecording,
-		    audioRecordingStatus: {}
+		    audioRecordingStatus: {},
+		    callHistoryUrl: this.props.callHistoryUrl
         }
 
         this.ended = false;
@@ -474,7 +476,8 @@ class ContactsListBox extends Component {
                        fullScreen: nextProps.fullScreen,
 					   transferProgress: nextProps.transferProgress,
 					   totalMessageExceeded: nextProps.totalMessageExceeded,
-					   playRecording: nextProps.playRecording
+					   playRecording: nextProps.playRecording,
+					   callHistoryUrl: nextProps.callHistoryUrl
 					});
 
         if (nextProps.isTyping) {
@@ -1372,7 +1375,7 @@ renderSend = (props) => {
 								 text: JSON.stringify(metadataContent),
 								};
 
-		this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+		this.props.sendMessage(this.state.accountId, metadataMessage, 'application/sylk-message-metadata');
 	}
 
     searchedContact(uri, contact=null) {
@@ -1396,6 +1399,10 @@ renderSend = (props) => {
         if (!this.state.accountId) {
             return;
         }
+        
+        if (!this.state.callHistoryUrl) {
+			return;
+        }
 
         if (this.ended || !this.state.accountId || this.state.isRefreshing) {
             return;
@@ -1410,7 +1417,7 @@ renderSend = (props) => {
 
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
-            `${this.props.config.serverCallHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
+            `${this.state.callHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
             this.state.accountId.split('@')[0],
             this.state.password
         );
@@ -2544,6 +2551,7 @@ renderSend = (props) => {
 							},
 					  }));
 					  console.log(`Thumbnail ready for video ${id}:`, path);
+					  // TODO cache thumbnail
 					})
 					.catch((err) => {
 					  console.log('Thumbnail generation failed:', err);
@@ -3483,10 +3491,25 @@ scrollToMessage(id) {
 	  }
 	}
 
+    get showImageGrid() {		
+		if (this.state.messagesCategoryFilter == 'image') {
+			return true;
+		}
+		return false;
+	}
+
     get showChat() {
 		if (this.state.expandedImage) {
 			return false;
 		}    
+		
+		if (this.state.inviteContacts) {
+			return false;
+		}    
+		
+		if (this.state.messagesCategoryFilter == 'image') {
+			return false;
+		}
 
        if (this.state.selectedContact) {
            if (this.state.selectedContact.tags && this.state.selectedContact.tags.indexOf('blocked') > -1) {
@@ -3514,6 +3537,18 @@ scrollToMessage(id) {
        }
 
        return false;
+    }
+
+    get showReadonlyChat() {
+		if (this.state.messagesCategoryFilter == 'image') {
+			return false;
+		}
+		
+		if (this.state.expandedImage) {
+			return false;
+		}
+		
+        return true;
     }
 
   onViewableItemsChanged = ({ viewableItems }: { viewableItems: any[] }) => {
@@ -3848,6 +3883,14 @@ scrollToMessage(id) {
         const loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0
         //console.log('items', items);
         
+        const images = chatMessages
+		  .filter(m => !!m.image)   // only messages that contain images
+		  .map(msg => ({
+			id: String(msg._id),
+			uri: msg.image,
+			title: msg.text || '',
+		  }));
+
         return (
             <SafeAreaView style={container}>
               {this.state.selectedContact ?
@@ -3886,8 +3929,22 @@ scrollToMessage(id) {
 					<ActivityIndicator size="large" color="#999" />
 				  </View>
 				)}
+  
+             { this.showImageGrid ?
+			  <ThumbnailGrid
+				images={images}
+				isLandscape={this.state.isLandscape}
+				numColumns={3}
+				onLongPress={(item) => console.log('long', item)}
+				renderThumb={({item, index, size}) => (
+				  <View style={{flex:1}}>
+					<Image source={{uri:item.uri}} style={{width:size, height:size, borderRadius:6}} />
+				  </View>
+				)}
+			  />
+			  : null}
 
-             {this.showChat && !this.state.inviteContacts ?
+             {this.showChat ?
              <View style={[chatContainer, borderClass]}>
                 <GiftedChat 
 				  listViewProps={{
@@ -3958,7 +4015,7 @@ scrollToMessage(id) {
 
               </View>
 
-              : (items.length === 1 && !this.state.expandedImage) ?
+              : (items.length === 1 && this.showReadonlyChat) ?
               <View style={[chatContainer, borderClass]}>
                 <GiftedChat innerRef={this.chatListRef}
                   messages={chatMessages}
@@ -4107,7 +4164,7 @@ scrollToMessage(id) {
 ContactsListBox.propTypes = {
     account         : PropTypes.object,
     password        : PropTypes.string.isRequired,
-    config          : PropTypes.object.isRequired,
+    callHistoryUrl: PropTypes.string,
     targetUri       : PropTypes.string,
     selectedContact : PropTypes.object,
     contacts        : PropTypes.array,

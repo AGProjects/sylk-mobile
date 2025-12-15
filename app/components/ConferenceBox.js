@@ -25,7 +25,6 @@ import { useEffect, useRef } from 'react';
 
 import uuid from 'react-native-uuid';
 
-import config from '../config';
 import utils from '../utils';
 //import AudioPlayer from './AudioPlayer';
 import ConferenceDrawer from './ConferenceDrawer';
@@ -236,7 +235,7 @@ class ConferenceBox extends Component {
 
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
         //if (window.location.origin.startsWith('file://')) {
-            this.conferenceUrl = `${config.publicUrl}/conference/${friendlyName}`;
+            this.conferenceUrl = `${this.state.publicUrl}/conference/${friendlyName}`;
         //} else {
         //    this.conferenceUrl = `${window.location.origin}/conference/${friendlyName}`;
         //}
@@ -1922,6 +1921,7 @@ class ConferenceBox extends Component {
 	}
 
 	renderAudioDeviceButtons() {
+	  return null; 
 	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
 	  
 	  if (!this.state.callOverlayVisible) {
@@ -2294,9 +2294,9 @@ class ConferenceBox extends Component {
         let participants_uris = [];
         let sessionButtons = floatingButtons;
 
-        let callUrl = callUrl = config.publicUrl + "/call/" + this.state.accountId;
+        let callUrl = callUrl = this.state.publicUrl + "/call/" + this.state.accountId;
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
-        const conferenceUrl = `${config.publicUrl}/conference/${friendlyName}`;
+        const conferenceUrl = `${this.state.publicUrl}/conference/${friendlyName}`;
 
         //console.log(this.state.statistics);
         let container = styles.container;
@@ -3438,6 +3438,7 @@ ConferenceBox.propTypes = {
     availableAudioDevices   : PropTypes.array,
     selectedAudioDevice     : PropTypes.string,
     selectAudioDevice       : PropTypes.func,
+    publicUrl               : PropTypes.string,
 };
 
 export default ConferenceBox;

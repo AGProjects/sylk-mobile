@@ -294,6 +294,7 @@ const ChatBubble = memo(
     return false;
   }
 	
+	/*
   // ==== Image loading state ====
   const prevImgState = prev.imageLoadingState?.[id];
   const nextImgState = next.imageLoadingState?.[id];
@@ -301,6 +302,7 @@ const ChatBubble = memo(
     console.log(`[Bubble ${id}] RERENDER → image state changed ${prevImgState} -> ${nextImgState}`);
     return false;
   }
+*/
 
 // ==== Consumed ====
 const prevConsumed = prev.consumedMessages?.[currentId];
@@ -337,14 +339,20 @@ if ((prevThumb ?? null) !== (nextThumb ?? null)) {
 	  }
 	}
 
-  // ==== Status flags ====
-  const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'consumed'];
-  for (let f of flags) {
-    if (p[f] !== n[f]) {
-      //console.log(`[Bubble ${id}] RERENDER → status '${f}' changed`);
-      return false;
-    }
-  }
+	// ==== Status flags ====
+	const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'consumed', 'rotation', 'label'];
+	
+	for (let f of flags) {
+		// Treat undefined as null
+		const oldValue = p[f] !== undefined ? p[f] : null;
+		const newValue = n[f] !== undefined ? n[f] : null;
+	
+		// Only trigger if they actually differ
+		if (oldValue !== newValue) {
+			console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
+			return false;
+		}
+	}
   
   // NOTHING changed → skip render
   // console.log(`[Bubble ${id}] SKIP`);  // enable to see skips too

@@ -8,7 +8,6 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import LoadingScreen from './LoadingScreen';
 import styles from '../assets/styles/blink/_EnrollmentModal.scss';
-import config from '../config';
 
 class EnrollmentModal extends Component {
     constructor(props) {
@@ -65,7 +64,7 @@ class EnrollmentModal extends Component {
         if (validEmail) data.email = this.state.email;
 
 		console.log('Enrollment requested for', this.state.username);
-        superagent.post(config.enrollmentUrl)
+        superagent.post(this.props.enrollmentUrl)
             .send(superagent.serialize['application/x-www-form-urlencoded'](data))
             .end((error, res) => {
                 this.setState({ enrolling: false });
@@ -161,7 +160,7 @@ class EnrollmentModal extends Component {
 			  >
 				<View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
 				  <Text style={{ textAlign: 'center', lineHeight: 20, fontSize: 18}}>
-					Create Sylk account
+					Create SIP address
 				  </Text>
 				</View>
 
@@ -230,6 +229,7 @@ class EnrollmentModal extends Component {
 }
 
 EnrollmentModal.propTypes = {
+	enrollmentUrl: PropTypes.string,
     handleEnrollment: PropTypes.func.isRequired,
     show: PropTypes.bool.isRequired,
     myPhoneNumber: PropTypes.string,

@@ -224,8 +224,7 @@ function fixLocalUrl(localUrl) {
 	return parts.join("/");
 }
 
-
-function sql2GiftedChat(item, content, filter = {}) {
+async function sql2GiftedChat(item, content, filter = {}) {
     let msg;
     let image, video, audio;
     let metadata = {};
@@ -285,10 +284,31 @@ function sql2GiftedChat(item, content, filter = {}) {
         let filename = metadata.filename;  // <--- ALWAYS LOWERCASE
         text = beautyFileNameForBubble(metadata);
 
-        if (metadata.local_url && !metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
-            metadata.local_url = null;
+        if (metadata.local_url) {        
+            if (!metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
+				metadata.local_url = null;
+            } else {
+				const exists = await RNFS.exists(metadata.local_url);
+				if (exists) {
+					try {
+						const { size } = await ReactNativeBlobUtil.fs.stat(metadata.local_url);
+						//console.log('File exists local', metadata.local_url);
+						if (size === 0) {
+							metadata.local_url = null;
+						} else {
+							//console.log('FT', item.msg_id, metadata.filename, beautySize(size));
+						
+						}
+					} catch (e) {
+						console.log('Error stat file:', e.message);
+					}
+				} else {
+					console.log('File does not exist', item.msg_id, metadata.local_url);
+					metadata.local_url = null;
+				}
+            }
         }
-        
+
         metadata.playing = false;
         
         let isImg = isImage(filename, metadata.filetype);
@@ -342,26 +362,15 @@ function sql2GiftedChat(item, content, filter = {}) {
 			}
 			
 			if (local_url) {
-				const exists = RNFS.exists(local_url);
-				if (exists) {
-					if (isImg) {
-						image = metadata.b64
-							? `data:${metadata.filetype};base64,${metadata.b64}`
-							: local_url;
-					} else if (isAud) {
-						audio = local_url;
-					} else if (isVid) {
-						video = local_url;
-					}
-					//console.log('local_url exists', local_url);
-					
-				} else {
-					//console.log('local_url does not exist', local_url);
-					local_url = '';
-					metadata.local_url = '';
+				if (isImg) {
+					image = metadata.b64
+						? `data:${metadata.filetype};base64,${metadata.b64}`
+						: local_url;
+				} else if (isAud) {
+					audio = local_url;
+				} else if (isVid) {
+					video = local_url;
 				}
-			} else {
-				//console.log('local_url not set', item.msg_id, metadata.filetype);
 			}
         }
 
@@ -383,6 +392,10 @@ function sql2GiftedChat(item, content, filter = {}) {
             text = text + " - decryption failed";
         }
     }
+    
+    const thumbnail = null;
+    const rotation = null;
+    const label = null;
 
     // -------------------------
     // Construct final message
@@ -394,6 +407,9 @@ function sql2GiftedChat(item, content, filter = {}) {
         audio,
         image,
         video,
+        thumbnail,
+        rotation,
+        label,
         metadata,
         contentType: item.content_type,
         text,
@@ -1036,6 +1052,22 @@ function deepEqual(a, b) {
   return true;
 }
 
+const availableAudioDevicesIconsMap = {
+	BUILTIN_EARPIECE: 'phone',
+	WIRED_HEADSET: 'headphones',
+	USB_HEADSET: 'usb',
+	BLUETOOTH_SCO: 'bluetooth-audio',
+	BUILTIN_SPEAKER: 'volume-high',
+};
+
+const availableAudioDeviceNames = {
+	BUILTIN_EARPIECE: 'Earpiece',
+	WIRED_HEADSET: 'Wired headset',
+	USB_HEADSET: 'USB headset',
+	BLUETOOTH_SCO: 'Bluetooth',
+	BUILTIN_SPEAKER: 'Speaker',
+};
+
 exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;
@@ -1068,4 +1100,5 @@ exports.getPGPCheckSum = getPGPCheckSum;
 exports.isFileEncryptable = isFileEncryptable;
 exports.fileChecksum = fileChecksum;
 exports.deepEqual = deepEqual;
-
+exports.availableAudioDevicesIconsMap = availableAudioDevicesIconsMap;
+exports.availableAudioDeviceNames = availableAudioDeviceNames;

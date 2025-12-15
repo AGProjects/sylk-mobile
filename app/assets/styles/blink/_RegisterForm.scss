@@ -75,6 +75,15 @@
     margin-top: 30px;
 }
 
+.serverButton {
+    margin-top: 30px;
+    border-radius: 1px;
+    border: 1px;
+    width: 180;
+    margin: 0 auto;
+    margin-top: 30px;
+}
+
 .input {
     border-radius: 0px;
 }
@@ -84,4 +93,18 @@
     font-size: 12px;
     text-align: center;
     color: white;
+}
+
+.brokenServer {
+    margin-top: 20px;
+    font-size: 16px;
+    text-align: center;
+    color: red;
+}
+
+.goodServer {
+    margin-top: 20px;
+    font-size: 16px;
+    text-align: center;
+    color: green;
 }

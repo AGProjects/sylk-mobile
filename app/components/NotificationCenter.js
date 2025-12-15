@@ -5,8 +5,6 @@ import autoBind from 'auto-bind';
 import styles from '../assets/styles/blink/_StatusBox.scss';
 import { Text, withTheme } from 'react-native-paper';
 
-import config from '../config';
-
 class NotificationCenter extends Component {
 
     constructor(props) {
@@ -75,16 +73,10 @@ class NotificationCenter extends Component {
         }
         const currentDate = moment().format('MMMM Do YYYY [at] HH:mm:ss');
         let action;
-        const defaultGuestDomain = 'guest.' + config.defaultDomain;
-        
-        if (originator.uri.endsWith(defaultGuestDomain)) {
-            action = null;
-        } else {
-            action = {
-                label: 'Call',
-                onPress: () => { cb(originator.uri); }
-            };
-        }
+		action = {
+			label: 'Call',
+			onPress: () => { cb(originator.uri); }
+		};
         this.setState({
             visible: true,
             message: `From ${(originator.displayName || originator.uri)} <br />On ${currentDate}`,

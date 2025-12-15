@@ -58,8 +58,7 @@ class LocalMedia extends Component {
                       });
     }
 
-    toggleCamera(event) {
-        event.preventDefault();
+    toggleCamera() {
         const localMedia = this.state.localMedia;
         if (localMedia.getVideoTracks().length > 0) {
             const track = localMedia.getVideoTracks()[0];
@@ -68,8 +67,7 @@ class LocalMedia extends Component {
         }
     }
 
-    saveConference(event) {
-        event.preventDefault();
+    saveConference() {
         this.props.saveConference();
     }
 
@@ -81,9 +79,8 @@ class LocalMedia extends Component {
         return this.props.showSaveDialog();
     }
 
-    hangupCall(event) {
-        event.preventDefault();
-        this.props.hangupCall('user_hangup_conference_confirmed');
+    hangupCall() {
+        this.props.hangupCall('user_hangup_local_media');
     }
 
     render() {
@@ -116,6 +113,7 @@ class LocalMedia extends Component {
                     reconnectingCall = {this.state.reconnectingCall}
                     media = {this.props.media}
                     goBackFunc = {this.props.goBackFunc}
+                    hangupCall = {this.hangupCall}
                     isLandscape = {this.state.orientation === 'landscape'}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}

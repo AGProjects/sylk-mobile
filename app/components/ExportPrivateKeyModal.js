@@ -34,7 +34,6 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
 
   if (!show) return null;
 
-console.log('backup', propBackup);
   // Conditional title and body based on backup prop
   const title = propBackup ? 'Backup private key' : 'Export private key';
   const buttonTitle = propBackup ? 'Backup' : 'Export';
