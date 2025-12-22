@@ -27,6 +27,7 @@
 #import <React/RCTEventDispatcher.h>
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTRootView.h>
+#import <AVFoundation/AVFoundation.h>
 
 @interface AppDelegate () <UNUserNotificationCenterDelegate>
 - (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)userInfo;
@@ -45,6 +46,8 @@
 {
     UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
     center.delegate = self;
+    
+    AVAudioSession *session = [AVAudioSession sharedInstance]; [session setCategory:AVAudioSessionCategoryAmbient withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
     
     self.moduleName = @"Sylk";
 
@@ -418,6 +421,13 @@
        NSString *event = [data[@"event"] lowercaseString];
        NSString *fromUri = [[data[@"from_uri"] lowercaseString] copy];
        NSString *toUri   = [[data[@"to_uri"] lowercaseString] copy];
+
+       NSString *activeChat = [[NSUserDefaults standardUserDefaults] stringForKey:@"activeChatJID"];
+       if (activeChat != nil && [fromUri isEqualToString:[activeChat lowercaseString]]) {
+           NSLog(@"[sylk_app] Suppressing foreground notification for %@", fromUri);
+           completionHandler(UNNotificationPresentationOptionNone); // do not show banner/sound
+           return;
+       }
 
        NSLog(@"[sylk_app] willPresentNotification event=%@ from=%@ to=%@", event, fromUri, toUri);
 

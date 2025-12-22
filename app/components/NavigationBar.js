@@ -69,8 +69,10 @@ class NavigationBar extends Component {
             myuuid: this.props.myuuid,
             transferedFiles: this.props.transferedFiles,
             rejectAnonymous: this.props.rejectAnonymous,
+            chatSounds: this.props.chatSounds,
 			rejectNonContacts: this.props.rejectNonContacts,
 			searchMessages: this.props.searchMessages,
+			searchContacts: this.props.searchContacts,
 			isLandscape: this.props.isLandscape,
 			backupKey: false,
 			serverSettingsUrl: this.props.serverSettingsUrl,
@@ -167,8 +169,10 @@ class NavigationBar extends Component {
                        myPhoneNumber: nextProps.myPhoneNumber,
  					   transferedFiles: nextProps.transferedFiles,
  					   rejectAnonymous: nextProps.rejectAnonymous,
+ 					   chatSounds: nextProps.chatSounds,
  					   rejectNonContacts: nextProps.rejectNonContacts,
  					   searchMessages: nextProps.searchMessages,
+ 					   searchContacts: nextProps.searchContacts,
  					   isLandscape: nextProps.isLandscape,
 					   serverSettingsUrl: nextProps.serverSettingsUrl,
 					   publicUrl: nextProps.publicUrl
@@ -493,7 +497,7 @@ class NavigationBar extends Component {
         
         let subtitle = this.state.accountId;
         let title = this.state.myDisplayName || 'Myself';
-        let searchIcon = this.state.searchMessages ? "close" : "magnify";
+        let searchIcon = (this.state.searchMessages || this.state.searchContacts) ? "close" : "magnify";
 
 		function capitalizeFirstLetter(str) {
 		  if (!str) return ""; // Handle empty string
@@ -618,7 +622,17 @@ class NavigationBar extends Component {
 
                 }
 
-               { !this.state.selectedContact ?
+               { (!this.state.selectedContact && !this.state.searchContacts) ?
+                <IconButton
+                    style={styles.whiteButton}
+                    size={18}
+                    disabled={false}
+                    onPress={this.conferenceCall}
+                    icon="account-group"
+                />
+                : null}
+
+               { (!this.state.selectedContact && !this.state.searchContacts) ?
                 <IconButton
                     style={[bellStyle, {marginLeft: 10}]}
                     size={18}
@@ -634,7 +648,7 @@ class NavigationBar extends Component {
                 : null }
                 
 
-                { this.state.selectedContact?
+                { this.state.selectedContact ?
                     <Menu
                         visible={this.state.menuVisible}
                         onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
@@ -849,6 +863,8 @@ class NavigationBar extends Component {
  				    toggleRejectNonContacts={this.props.toggleRejectNonContacts}
 					rejectAnonymous={this.state.rejectAnonymous}
  				    toggleRejectAnonymous={this.props.toggleRejectAnonymous}
+					chatSounds={this.state.chatSounds}
+ 				    toggleChatSounds={this.props.toggleChatSounds}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -973,11 +989,13 @@ NavigationBar.propTypes = {
     transferedFiles: PropTypes.object,
     rejectAnonymous: PropTypes.bool,
     toggleRejectAnonymous: PropTypes.func,
+    toggleChatSounds: PropTypes.func,
     rejectNonContacts: PropTypes.bool,
     toggleRejectNonContacts: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
     toggleSearchContacts: PropTypes.func,
     searchMessages: PropTypes.bool,
+    searchContacts: PropTypes.bool,
     isLandscape: PropTypes.bool,
     publicUrl: PropTypes.string,
     serverSettingsUrl: PropTypes.string

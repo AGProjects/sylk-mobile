@@ -24,7 +24,6 @@ import uuid from 'react-native-uuid';
 import fileType from 'react-native-file-type';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import Sound from 'react-native-sound';
-import SoundPlayer from 'react-native-sound-player';
 
 import styles from '../assets/styles/ReadyBox';
 

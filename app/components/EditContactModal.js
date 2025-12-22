@@ -27,7 +27,9 @@ const EditContactModal = ({
   rejectNonContacts,
   toggleRejectNonContacts,
   rejectAnonymous,
-  toggleRejectAnonymous
+  toggleRejectAnonymous,
+  chatSounds,
+  toggleChatSounds
 }) => {
   const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
@@ -365,6 +367,17 @@ const editableTags = {
                       </View>
                     )}
 
+                    {myself && (
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={chatSounds} onValueChange={toggleChatSounds} />
+                        ) : (
+                          <Checkbox status={chatSounds ? 'checked' : 'unchecked'} onPress={toggleChatSounds} />
+                        )}
+                        <Text> Chat sounds</Text>
+                      </View>
+                    )}
+
                     <View style={styles.buttonRow}>
                       <Button
                         mode="contained"
@@ -437,7 +450,9 @@ EditContactModal.propTypes = {
   rejectNonContacts: PropTypes.bool,
   toggleRejectNonContacts: PropTypes.func,
   rejectAnonymous: PropTypes.bool,
-  toggleRejectAnonymous: PropTypes.func
+  toggleRejectAnonymous: PropTypes.func,
+  chatSounds: PropTypes.bool,
+  toggleChatSounds: PropTypes.func
 };
 
 export default EditContactModal;

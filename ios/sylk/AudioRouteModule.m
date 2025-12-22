@@ -70,12 +70,6 @@ RCT_EXPORT_MODULE(AudioRouteModule);
             NSLog(@"[sylk_app][AudioRouteModule] setMode: VoiceChat OK");
         }
 
-        BOOL activated = [session setActive:YES error:&err];
-        if (!activated) {
-            NSLog(@"[sylk_app][AudioRouteModule] Failed to activate session: %@", err);
-        } else {
-            NSLog(@"[sylk_app][AudioRouteModule] AVAudioSession activated");
-        }
     }
     return self;
 }
@@ -576,8 +570,11 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
       }
     }
 
-    BOOL deact = [session setActive:NO error:&err];
-    if (!deact) {
+    BOOL deact = [session setActive:NO
+                          withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+                                error:&err];
+      
+      if (!deact) {
       NSLog(@"[sylk_app][AudioRouteModule] Failed to deactivate session: %@", err);
     } else {
       NSLog(@"[sylk_app][AudioRouteModule] session deactivated");

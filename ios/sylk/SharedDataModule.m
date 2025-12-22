@@ -13,6 +13,7 @@
 @end
 
 @implementation SharedDataModule
+static NSString *activeChatJID = nil;
 
 RCT_EXPORT_MODULE();
 
@@ -34,5 +35,17 @@ RCT_EXPORT_MODULE();
   NSString *data = notification.object;
   [self sendEventWithName:@"SharedDataReceived" body:@{@"data": data ?: @""}];
 }
+
+RCT_EXPORT_METHOD(setActiveChat:(NSString *)jid)
+{
+    if (jid != nil && [jid length] > 0) {
+        activeChatJID = [jid copy];
+        NSLog(@"[SharedDataModule] Active chat set to %@", activeChatJID);
+    } else {
+        activeChatJID = nil;
+        NSLog(@"[SharedDataModule] Active chat cleared");
+    }
+}
+
 
 @end

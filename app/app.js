@@ -330,6 +330,8 @@ class Sylk extends Component {
             enrollmentUrl: 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
             iceServers: [{"urls":"stun:stun.sipthor.net:3478"}],
             serverSettingsUrl: 'https://mdns.sipthor.net/sip_settings.phtml',
+            fileTransferUrl: 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filetransfer',
+            fileSharingUrl: 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
             configurationJson: null,
 			testNumbers:[{uri: '4444@sylk.link', name: 'Test microphone'}, {uri: '3333@sylk.link', name: 'Test video'}],    
             serverIsValid: true,
@@ -439,6 +441,7 @@ class Sylk extends Component {
             contentTypes: {},
             dnd: false,
             rejectAnonymous: false,
+            chatSounds: true,
             rejectNonContacts: false,
             headsetIsPlugged: false,
             sortBy: 'timestamp',
@@ -505,10 +508,7 @@ class Sylk extends Component {
         this._onFinishedLoadingURLSubscription = null
 
         this.cancelRingtoneTimer = null;
-        
-        this.fileSharingUrl = null;
-        this.fileTransferUrl = null;
-
+    
         this.sync_pending_items = [];
         this.signup = {};
         this.last_signup = null;
@@ -631,7 +631,7 @@ class Sylk extends Component {
         this.sqlTableVersions = {'messages': 13,
                                  'contacts': 7,
                                  'keys': 3,
-                                 'accounts': 5
+                                 'accounts': 6
                                  }
 
         this.updateTableQueries = {'messages': {1: [],
@@ -669,7 +669,8 @@ class Sylk extends Component {
                                             },
                                    'accounts': {3: [{query: 'alter table accounts add column dnd TEXT', params: []}],
 												4: [{query: 'alter table accounts add column reject_anonymous TEXT', params: []}],
-												5: [{query: 'alter table accounts add column reject_non_contacts TEXT', params: []}]
+												5: [{query: 'alter table accounts add column reject_non_contacts TEXT', params: []}],
+												6: [{query: 'alter table accounts add column chat_sounds TEXT', params: []}]
                                                }
                                    };
 
@@ -955,9 +956,9 @@ class Sylk extends Component {
 	}
 
 	async lookupSylkServer(domain, checkOnly = false) {
-	  console.log('lookupSylkServer', domain, checkOnly);
+	    console.log(' --- lookupSylkServer', domain, checkOnly);
 		if (domain == this.state.sylkDomain) {
-		    return;
+		    //return;
 		}
 
 	  this.setState({SylkServerDiscovery: true, SylkServerDiscoveryResult: null, SylkServerStatus: ''});
@@ -973,12 +974,11 @@ class Sylk extends Component {
 		console.log('DNS response', configurationUrl);
 		
 		if (!configurationUrl) {
-			this.setState({SylkServerDiscoveryResult: 'noDNSrecord', SylkServerDiscovery: false, SylkServerStatus: 'No DNS TXT record'});
-			return;
-		}
-		
-		if (configurationUrl == this.state.configurationUrl) {
-			this.setState({SylkServerDiscovery: false, SylkServerDiscoveryResult: null});
+			this.setState({SylkServerDiscoveryResult: 'noDNSrecord', 
+			               SylkServerDiscovery: false, 
+			               SylkServerStatus: 'No DNS TXT record'}
+			               );
+			console.log('no configurationUrl');
 			return;
 		}
 	
@@ -1500,6 +1500,24 @@ class Sylk extends Component {
 		});
     }
 
+    async toggleChatSounds () {
+        if (this.state.chatSounds) {
+            this._notificationCenter.postSystemNotification('Play chat sounds');
+        } else {
+            this._notificationCenter.postSystemNotification('No chat sounds');
+        }
+
+        this.setState({chatSounds: !this.state.chatSounds})
+        
+        const chatSounds = (!this.state.chatSounds) ? '1': '0';
+		let params = [chatSounds, this.state.account.id];
+		await this.ExecuteQuery("update accounts set chat_sounds = ? where account = ?", params).then((result) => {
+			console.log('SQL update chatSounds for account OK', chatSounds);
+		}).catch((error) => {
+			console.log('SQL update chatSounds error:', error);
+		});
+    }
+
     async toggleRejectNonContacts () {
         //console.log('Toggle reject anonymous to', !this.state.rejectAnonymous);
         if (this.state.rejectNonContacts) {
@@ -1537,6 +1555,7 @@ class Sylk extends Component {
 				const data = rows.item(0);
 				const new_state = {rejectAnonymous: data.reject_anonymous == "1",
 				                  dnd: data.dnd == "1",
+				                  chatSounds: data.chat_sounds == "1",
 				                  rejectNonContacts: data.reject_non_contacts == "1"};
 				this.setState(new_state)
 			};
@@ -1899,6 +1918,8 @@ class Sylk extends Component {
 				 if (Platform.OS === 'android') {
 					 SylkBridge.setActiveChat(this.state.selectedContact.uri);
 					 UnreadModule.resetUnreadForContact(this.state.selectedContact.uri);
+				 } else {
+					 NativeModules.SharedDataModule.setActiveChat(this.state.selectedContact.uri); 
 				 }
 	
 				 this.getMessages(this.state.selectedContact.uri, {origin: 'componentDidUpdate'});
@@ -2199,7 +2220,8 @@ class Sylk extends Component {
 			'active' TEXT,
 			'dnd' TEXT,
 			'reject_anonymous' TEXT,
-			'reject_non_contacts' TEXT
+			'reject_non_contacts' TEXT,
+			'chat_sounds' TEXT
 		  )
 		`;
 
@@ -2485,6 +2507,8 @@ class Sylk extends Component {
 			this.setState({contactIsSharing: false, totalMessageExceeded: false});
 			if (Platform.OS === 'android') {
 				SylkBridge.setActiveChat(null);
+			} else {
+				NativeModules.SharedDataModule.setActiveChat(null); 
 			}
 		}
 
@@ -2788,7 +2812,7 @@ class Sylk extends Component {
     }
 
     initConfiguration(configurationJson, origin=null) {
-		//console.log('--- initConfiguration', configurationJson, origin);
+		console.log('--- initConfiguration', configurationJson, origin);
 		try {
 			configuration = JSON.parse(configurationJson);
 			let server = configuration.wsServer;
@@ -2798,9 +2822,6 @@ class Sylk extends Component {
 				server = server.slice(0, -3);
 			}
     
-			this.fileSharingUrl = server + '/filesharing';
-			this.fileTransferUrl = server + '/filetransfer';
-			
 			this.setState({
 						   configurationUrl: configuration.configurationUrl,
 			               sylkDomain: configuration.sylkDomain,
@@ -2885,6 +2906,8 @@ class Sylk extends Component {
 		const configuration = await AsyncStorage.getItem("configuration");
 		if (configuration) {
 			this.initConfiguration(configuration, "storage");
+        } else {
+            console.log('No stored configuration found');
         }
 
 		this.lookupSylkServer(this.state.sylkDomain);
@@ -3903,7 +3926,7 @@ class Sylk extends Component {
     }
 
     connectionStateChanged(oldState, newState) {
-        //console.log('--- connectionStateChanged', newState);
+        console.log('--- connectionStateChanged', newState);
         if (this.unmounted) {
             //console.log('App is not yet mounted');
             return;
@@ -7277,10 +7300,6 @@ class Sylk extends Component {
     }
 
     async sendMessage(uri, message, contentType='text/plain') {
-		if (!this.fileTransferUrl) {
-            return;
-        }
-
         message.pending = true;
         message.sent = false;
         message.received = false;
@@ -7316,6 +7335,10 @@ class Sylk extends Component {
 		}
 		
         if (contentType === 'application/sylk-file-transfer') {
+			if (!this.state.fileTransferUrl) {
+				console.log('No fileTransferUrl');
+				return;
+			}
 
             let file_transfer = message.metadata;
             if (!file_transfer.path) {
@@ -7351,7 +7374,7 @@ class Sylk extends Component {
             }
 
             file_transfer.local_url = localPath;
-            file_transfer.url = this.fileTransferUrl + '/' + file_transfer.sender.uri + '/' + file_transfer.receiver.uri + '/' + file_transfer.transfer_id + '/' + file_transfer.filename;
+            file_transfer.url = this.state.fileTransferUrl + '/' + file_transfer.sender.uri + '/' + file_transfer.receiver.uri + '/' + file_transfer.transfer_id + '/' + file_transfer.filename;
             message.metadata = file_transfer;
             this.uploadFile(message.metadata);
         }        
@@ -7437,7 +7460,8 @@ class Sylk extends Component {
 		}
 
     async uploadFile(file_transfer) {
-        if (!this.fileTransferUrl) {
+        if (!this.state.fileTransferUrl) {
+			console.log('No fileTransferUrl');
             return;
         }
 
@@ -7464,7 +7488,7 @@ class Sylk extends Component {
         }
 
 		if (file_transfer.transfer_id in this.uploadRequests) {
-            const cancel_url = this.fileTransferUrl + '/cancel/' + file_transfer.transfer_id;
+            const cancel_url = this.state.fileTransferUrl + '/cancel/' + file_transfer.transfer_id;
             // simple GET request
 
 		    this.cancelledUploads[file_transfer.transfer_id] = true;
@@ -8252,8 +8276,16 @@ class Sylk extends Component {
                 if (this.signOut) {
                    return;
                 }
-
+                
                 var item = rows.item(i);
+                console.log('sendPendingMessages item', item);
+                 
+                if (!item.to_uri) {
+                    console.log('Skip broken item without to_uri');
+					this.deleteMessage(item.msg_id, item.to_uri);
+                    continue;
+                }
+
                 if (item.to_uri.indexOf('@conference.') > -1) {
                     //console.log('Skip outgoing conference conference messages');
                     continue;
@@ -9244,9 +9276,10 @@ class Sylk extends Component {
 
                 if (this.mustPlayIncomingSoundAfterSync) {
                     if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                        this.playMessageSound('incoming');
                         // don't play message if inside the same chat
                     } else {
-                        //this.playMessageSound();
+                        this.playMessageSound('incoming');
                     }
                     this.mustPlayIncomingSoundAfterSync = false;
                 }
@@ -10063,6 +10096,13 @@ class Sylk extends Component {
 
     playMessageSound(direction='incoming') {
         console.log('---- playMessageSound', direction);
+
+        if (!this.state.chatSounds) {
+			console.log('---- playMessageSound disabled');
+            return;
+        }
+
+
         let must_play_sound = true;
 
         if (this.state.dnd) {
@@ -10098,9 +10138,6 @@ class Sylk extends Component {
         }
 
         try {
-          if (Platform.OS === 'ios') {
-              SoundPlayer.setSpeaker(true);
-          }
           //SoundPlayer.playSoundFile('message_received', 'wav');
           if (direction === 'incoming') {
             this.incoming_sound_ts = Date.now();
@@ -13095,7 +13132,6 @@ class Sylk extends Component {
         return (
             <Fragment>
                { !this.state.fullScreen ?
-
                 <NavigationBar
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
@@ -13161,6 +13197,8 @@ class Sylk extends Component {
                     toggleDnd = {this.toggleDnd}
                     toggleRejectAnonymous = {this.toggleRejectAnonymous}
                     rejectAnonymous = {this.state.rejectAnonymous}
+                    toggleChatSounds = {this.toggleChatSounds}
+                    chatSounds = {this.state.chatSounds}
                     toggleRejectNonContacts = {this.toggleRejectNonContacts}
                     rejectNonContacts = {this.state.rejectNonContacts}
                     dnd = {this.state.dnd}
@@ -13170,6 +13208,7 @@ class Sylk extends Component {
                     toggleSearchMessages = {this.toggleSearchMessages}
                     toggleSearchContacts = {this.toggleSearchContacts}
                     searchMessages = {this.state.searchMessages}
+                    searchContacts = {this.state.searchContacts}
                     searchString = {this.state.searchString}
                     isLandscape = {this.state.orientation === 'landscape'}
                     serverSettingsUrl = {this.state.serverSettingsUrl}
@@ -13466,7 +13505,7 @@ class Sylk extends Component {
                 isTablet = {this.state.isTablet}
                 muted = {this.state.muted}
                 defaultDomain = {this.state.defaultDomain}
-                fileSharingUrl = {this.fileSharingUrl}
+                fileSharingUrl = {this.state.fileSharingUrl}
                 startedByPush = {this.startedByPush}
                 inFocus = {this.state.inFocus}
                 reconnectingCall = {this.state.reconnectingCall}

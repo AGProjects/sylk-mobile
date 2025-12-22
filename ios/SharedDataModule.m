@@ -10,6 +10,8 @@
 // Only one RCT_EXPORT_MODULE per class
 RCT_EXPORT_MODULE();
 
+static NSString *activeChatJID = nil;
+
 + (BOOL)requiresMainQueueSetup
 {
   NSLog(@"[sylk_share] requiresMainQueueSetup called");
@@ -65,6 +67,21 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
   }
   
   resolve(@(YES));
+}
+
+RCT_EXPORT_METHOD(setActiveChat:(NSString * _Nullable)jid)
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+
+    if (jid != nil && [jid length] > 0) {
+        [defaults setObject:jid forKey:@"activeChatJID"];
+        NSLog(@"[SharedDataModule] Active chat set to %@", jid);
+    } else {
+        [defaults removeObjectForKey:@"activeChatJID"];
+        NSLog(@"[SharedDataModule] Active chat cleared");
+    }
+
+    [defaults synchronize]; // ensure it's written immediately
 }
 
 @end
