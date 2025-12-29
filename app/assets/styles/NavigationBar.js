@@ -57,6 +57,16 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
 
+  backButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'red',
+    color: 'white',
+    marginRight: 20,
+    borderRadius: 5,
+    borderWidth: 1,
+  },
+
   redButton: {
     backgroundColor: 'red',
   },
@@ -67,6 +77,14 @@ const styles = StyleSheet.create({
 
   whiteButton: {
     backgroundColor: 'white',
+  },
+
+  orangeButton: {
+    backgroundColor: 'orange',
+  },
+
+  blueButton: {
+    backgroundColor: 'blue',
   },
 });
 

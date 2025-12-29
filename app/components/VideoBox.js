@@ -9,7 +9,6 @@ import { View, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform,
 import { RTCView } from 'react-native-webrtc';
 import {StatusBar} from 'react-native';
 import Immersive from 'react-native-immersive';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native';
 import { Surface } from 'react-native-paper';
 
@@ -72,7 +71,9 @@ class VideoBox extends Component {
             enableMyVideo: true,
             swapVideo: false,
 			availableAudioDevices : this.props.availableAudioDevices,
-			selectedAudioDevice: this.props.selectedAudioDevice
+			selectedAudioDevice: this.props.selectedAudioDevice,
+			insets: this.props.insets,
+			isLandscape:  this.props.isLandscape
         };
 
 		this.prevStats = {}; // initialize here
@@ -150,7 +151,9 @@ class VideoBox extends Component {
                        localMedia: nextProps.localMedia,
                        terminatedReason: nextProps.terminatedReason,
 					   availableAudioDevices: nextProps.availableAudioDevices,
-					   selectedAudioDevice: nextProps.selectedAudioDevice
+					   selectedAudioDevice: nextProps.selectedAudioDevice,
+					   insets: nextProps.insets,
+					   isLandscape: nextProps.isLandscape
                        });
 
     }
@@ -185,9 +188,6 @@ class VideoBox extends Component {
 		return this.state.showMyself && !this.state.videoMuted && this.state.enableMyVideo;
 	}
 
-    get isLandscape() {
-		return this.props.orientation === 'landscape';
-	}
 
     handleFullscreen(event) {
         event.preventDefault();
@@ -437,9 +437,9 @@ class VideoBox extends Component {
 	  let buttonsContainerClass;
 
         if (this.props.isTablet) {
-            buttonsContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
+            buttonsContainerClass = this.state.isLandscape ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
         } else {
-            buttonsContainerClass = this.props.orientation === 'landscape' ? styles.landscapebuttonsContainer : styles.portraitbuttonsContainer;
+            buttonsContainerClass = this.state.isLandscape ? styles.landscapebuttonsContainer : styles.portraitbuttonsContainer;
         }
 	  
 	  if (!call || call.state !== 'established') {
@@ -503,10 +503,10 @@ class VideoBox extends Component {
         const buttonSize = this.props.isTablet ? 40 : 34;
 
         if (this.props.isTablet) {
-            buttonsContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
+            buttonsContainerClass = this.state.isLandscape ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
             userIconContainerClass = styles.tabletUserIconContainer;
         } else {
-            buttonsContainerClass = this.props.orientation === 'landscape' ? styles.landscapebuttonsContainer : styles.portraitbuttonsContainer;
+            buttonsContainerClass = this.state.isLandscape ? styles.landscapebuttonsContainer : styles.portraitbuttonsContainer;
         }
 
         let disablePlus = true;
@@ -527,10 +527,10 @@ class VideoBox extends Component {
         const show = this.state.callOverlayVisible || this.state.reconnectingCall;
 		let { width, height } = Dimensions.get('window');
         
-		const topInset = initialWindowMetrics?.insets.top || 0;
-		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
-		const leftInset = initialWindowMetrics?.insets.left || 0;
-		const rightInset = initialWindowMetrics?.insets.right || 0;
+		const topInset = this.state.insets.top || 0;
+		const bottomInset = this.state.insets.bottom || 0;
+		const leftInset = this.state.insets.left || 0;
+		const rightInset = this.state.insets.right || 0;
 
 	    const cornerOrder = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
 
@@ -634,8 +634,8 @@ class VideoBox extends Component {
 			right: 0,
 			top: headerBarHeight + topInset,
 			bottom: 0,
-			width: this.isLandscape  ? width - bottomInset : width,
-			height: this.isLandscape ? height - headerBarHeight - topInset: height - bottomInset - headerBarHeight - topInset,
+			width: this.state.isLandscape ? width - bottomInset : width,
+			height: this.state.isLandscape ? height - headerBarHeight - topInset: height - bottomInset - headerBarHeight - topInset,
 			borderWidth: debugBorderWidth,
 			borderColor: 'red'
 		};
@@ -647,14 +647,17 @@ class VideoBox extends Component {
 		}
 		
 		if (Platform.OS === 'android') {
-		      if (this.isLandscape) {
+		      if (this.state.isLandscape) {
 				  corners = {
 					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, left: 0 },
-					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, right: this.state.fullScreen ? 0: bottomInset },
-					  bottomRight: { bottom: -bottomInset, right: this.state.fullScreen ? 0: bottomInset },
-					  bottomLeft: { bottom: -bottomInset, left: 0},
+					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, right: this.state.fullScreen ? 0: rightInset },
+					  bottomRight: { bottom: this.state.fullScreen ? -rightInset - headerBarHeight: -rightInset, right: this.state.fullScreen ? 0: rightInset },
+					  bottomLeft: { bottom: this.state.fullScreen ? -rightInset - headerBarHeight: -rightInset, left: 0},
 					  id: 'android-landscape'
 				  };
+
+				  remoteVideoContainer.width = remoteVideoContainer.width - rightInset;
+
 			  } else {
 				  corners = {
 					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, left: 0 },
@@ -666,10 +669,10 @@ class VideoBox extends Component {
 			  }
 		} else {
 			// ios
-		      if (this.isLandscape) {
+		      if (this.state.isLandscape) {
 				  corners = {
-					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight +5, left: this.state.fullScreen ? -topInset : 0 },
-					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight +5, right: this.state.fullScreen  ? -25 - bottomInset: -25 },
+					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight, left: this.state.fullScreen ? -topInset : 0 },
+					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight, right: this.state.fullScreen  ? -25 - bottomInset: -25 },
 					  bottomRight: { bottom: -bottomInset, right: this.state.fullScreen  ? -25 - bottomInset: -25 },
 					  bottomLeft: { bottom: -bottomInset, left: this.state.fullScreen ? -topInset : 0 },
 					  id: 'ios-landscape'
@@ -689,8 +692,8 @@ class VideoBox extends Component {
 				  corners = {
 					  topLeft: { top: this.state.fullScreen ? -topInset : topInset, left: 0 },
 					  topRight: { top: this.state.fullScreen ? -topInset : topInset, right: 0},
-					  bottomRight: { bottom:  this.state.fullScreen ? -bottomInset: 150, right: 0 },
-					  bottomLeft: { bottom: this.state.fullScreen ? -bottomInset: 150, left: 0},
+					  bottomRight: { bottom:  this.state.fullScreen ? -bottomInset: 120, right: 0 },
+					  bottomLeft: { bottom: this.state.fullScreen ? -bottomInset: 120, left: 0},
 					  id: 'ios-portrait'
 				  };
 
@@ -771,7 +774,7 @@ class VideoBox extends Component {
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
                     terminatedReason={this.state.terminatedReason}
-                    isLandscape = {this.isLandscape}         
+                    isLandscape = {this.state.isLandscape}         
                     toggleMyVideo= {this.toggleMyVideo}    
                     swapVideo= {this.swapVideo}    
                     enableMyVideo={this.state.enableMyVideo}    
@@ -780,7 +783,7 @@ class VideoBox extends Component {
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
-
+					insets = {this.state.insets}
                 />
 
                 {this.showRemote?
@@ -869,7 +872,7 @@ VideoBox.propTypes = {
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     intercomDtmfTone        : PropTypes.string,
-    orientation             : PropTypes.string,
+    isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
@@ -896,6 +899,7 @@ VideoBox.propTypes = {
     availableAudioDevices   : PropTypes.array,
     selectedAudioDevice     : PropTypes.string,
     selectAudioDevice       : PropTypes.func,
+	insets                  : PropTypes.object
 };
 
 export default VideoBox;

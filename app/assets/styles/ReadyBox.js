@@ -115,6 +115,16 @@ const styles = StyleSheet.create({
     marginLeft: 1,
   },
 
+  buttonGroup: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    paddingLeft: 20,
+    paddingRight: 20,
+    paddingTop: 10,
+    paddingBottom: 10,
+    alignSelf: 'center'
+  },
+
   landscapeButtonGroup: {
     flex: 1,
     flexDirection: 'row',
@@ -134,14 +144,6 @@ const styles = StyleSheet.create({
     width: '100%',
   },
 
-  buttonGroup: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    paddingLeft: 20,
-    paddingRight: 20,
-    paddingTop: 10,
-    paddingBottom: 10,
-  },
 
   buttonContainer: {
     justifyContent: 'center',
@@ -170,7 +172,7 @@ const styles = StyleSheet.create({
   },
 
   redButton: {
-    backgroundColor: 'orange',
+    backgroundColor: 'red',
   },
 
   disabledBlueButton: {

@@ -46,21 +46,22 @@ const styles = StyleSheet.create({
 
   tabletButtonContainer: {
     position: 'absolute',
-    bottom: 60,
+    bottom: 100,
     width: '90%',
     zIndex: 99,
     justifyContent: 'center',
     alignItems: 'center',
+    alignSelf: 'center',
   },
 
   buttonContainer: {
     position: 'absolute',
-    marginLeft: 20,
-    bottom: 120,
+    bottom: 30,
     width: '90%',
     zIndex: 99,
     justifyContent: 'center',
     alignItems: 'center',
+    alignSelf: 'center',
   },
 
   buttonRow: {

@@ -30,8 +30,9 @@ class LocalMedia extends Component {
             orientation: this.props.orientation,
             mirror: true,
 		    availableAudioDevices: this.props.availableAudioDevices,
-			selectedAudioDevice: this.props.selectedAudioDevice
-
+			selectedAudioDevice: this.props.selectedAudioDevice,
+			insets: this.props.insets,
+			isLandscape: this.props.isLandscape
         };
     }
 
@@ -54,7 +55,9 @@ class LocalMedia extends Component {
                       mirror: nextProps.mirror,
                       terminatedReason: nextProps.terminatedReason,
 					  availableAudioDevices: nextProps.availableAudioDevices,
-					  selectedAudioDevice: nextProps.selectedAudioDevice
+					  selectedAudioDevice: nextProps.selectedAudioDevice,
+					  insets: nextProps.insets,
+					  isLandscape: nextProps.isLandscape
                       });
     }
 
@@ -84,19 +87,20 @@ class LocalMedia extends Component {
     }
 
     render() {
+        let displayName = this.props.remoteDisplayName;
+        if (this.props.remoteUri.indexOf('@videoconference') > -1) {
+			const room = this.props.remoteUri.split('@')[0];        
+			displayName = 'Room ' + room;
+        }
+        
         let {height, width} = Dimensions.get('window');
         let videoStyle = {height, width};
 
         const streamUrl = this.props.localMedia ? this.props.localMedia.toURL() : null;
         const buttonSize = this.props.isTablet ? 40 : 34;
-        const buttonContainerClass = this.props.isTablet ? styles.tabletButtonContainer : styles.buttonContainer;
 
-        let displayName = this.props.remoteDisplayName;
-
-        if (this.props.remoteUri.indexOf('@videoconference') > -1) {
-			const room = this.props.remoteUri.split('@')[0];        
-			displayName = 'Room ' + room;
-        }
+        let buttonContainerClass = this.props.isTablet ? styles.tabletButtonContainer : styles.buttonContainer;
+		const bottomInset = this.state.insets?.bottom || 0;
 
         const participants = this.state.participants ? this.state.participants.toString().replace(/,/g, ', '): '';
 
@@ -114,11 +118,12 @@ class LocalMedia extends Component {
                     media = {this.props.media}
                     goBackFunc = {this.props.goBackFunc}
                     hangupCall = {this.hangupCall}
-                    isLandscape = {this.state.orientation === 'landscape'}
+                    isLandscape = {this.state.isLandscape}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.state.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
+					insets = {this.state.insets}
                 />
 
                 {this.showSaveDialog() ?
@@ -146,7 +151,11 @@ class LocalMedia extends Component {
                     </View>
                 :
 
-                <View style={buttonContainerClass}>
+                <View style={[
+						buttonContainerClass,
+						{ bottom: buttonContainerClass.bottom + bottomInset },
+					  ]}>
+
 			    { this.state.mediaType == 'video' ?
                         <TouchableHighlight style={styles.roundshape}>
 						<IconButton
@@ -202,12 +211,12 @@ LocalMedia.propTypes = {
     showLogs            : PropTypes.func,
     goBackFunc          : PropTypes.func,
     terminatedReason    : PropTypes.string,
-    orientation         : PropTypes.string,
+    isLandscape         : PropTypes.bool,
     availableAudioDevices : PropTypes.array,
     selectedAudioDevice : PropTypes.string,
     selectAudioDevice: PropTypes.func,
-    useInCallManger: PropTypes.bool
-
+    useInCallManger: PropTypes.bool,
+	insets: PropTypes.object
 };
 
 

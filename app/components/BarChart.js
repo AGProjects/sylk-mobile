@@ -8,7 +8,7 @@ import styles from '../assets/styles/blink/_TrafficStats.scss';
 
 
 const TrafficStats = (props) => {
-    const { data, isTablet, orientation } = props;
+    const { data, isTablet, isLandscape } = props;
 
     if (!data || !Array.isArray(data) || data.length === 0) {
         return <View style={styles.container} />;
@@ -22,7 +22,7 @@ const TrafficStats = (props) => {
         return <View style={styles.container} />;
     }
 
-    if (!isTablet && orientation === 'landscape') {
+    if (!isTablet && isLandscape) {
         return <View style={styles.container} />;
     }
 
@@ -83,7 +83,7 @@ const TrafficStats = (props) => {
 };
 
 TrafficStats.propTypes = {
-    orientation: PropTypes.string,
+    isLandscape: PropTypes.bool,
     isTablet: PropTypes.bool,
     media: PropTypes.string,
     data: PropTypes.array.isRequired

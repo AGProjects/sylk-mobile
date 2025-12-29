@@ -5,11 +5,11 @@ import PropTypes from 'prop-types';
 import moment from 'moment';
 import { StyleSheet } from 'react-native';
 import { Platform, Dimensions} from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
-
 import momentFormat from 'moment-duration-format';
 import { Text, Appbar, Menu, Divider } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+import utils from '../utils';
 
 const styles = StyleSheet.create({
   container: {
@@ -45,7 +45,8 @@ class ConferenceHeader extends React.Component {
             audioOnly: this.props.audioOnly,
             enableMyVideo: this.props.enableMyVideo,
 			availableAudioDevices : this.props.availableAudioDevices,
-			selectedAudioDevice: this.props.selectedAudioDevice
+			selectedAudioDevice: this.props.selectedAudioDevice,
+			insets: this.props.insets
         }
 
         this.duration = null;
@@ -129,7 +130,9 @@ class ConferenceHeader extends React.Component {
                        enableMyVideo: nextProps.enableMyVideo,
                        participants: nextProps.participants,
 					   availableAudioDevices: nextProps.availableAudioDevices,
-					   selectedAudioDevice: nextProps.selectedAudioDevice});
+					   selectedAudioDevice: nextProps.selectedAudioDevice,
+					   insets: nextProps.insets
+					   });
     }
 
     callStateChanged(oldState, newState, data) {
@@ -235,17 +238,19 @@ class ConferenceHeader extends React.Component {
         if (this.state.info && callDetail) {
             //callDetail = callDetail + ' - ' + this.state.info;
         }
+
         let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
         
 		const { width, height } = Dimensions.get('window');
-		const topInset = initialWindowMetrics?.insets.top || 0;
-		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
+		const topInset = this.state.insets.top || 0;
+		const bottomInset = this.state.insets.bottom || 0;
+		const rightInset = this.state.insets.right || 0;
 
         let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
 
-		const navBarWidth = this.state.isLandscape && Platform.OS === 'android' ? width - bottomInset : width;
-		const marginLeft = this.state.isLandscape && Platform.OS === 'android' ? - bottomInset : 0;
-
+		const navBarWidth = this.state.isLandscape ? width - rightInset : width;
+		const marginLeft = this.state.isLandscape ? -rightInset : 0;
+		
 /*
 				<Appbar.Action color="white" onPress={() => this.handleMenu('invite')} icon="account-plus" />
 				<Appbar.Action color="white" onPress={() => this.handleMenu('share')} icon="share-variant" />
@@ -256,27 +261,10 @@ class ConferenceHeader extends React.Component {
 				marginLeft: marginLeft,
 				marginTop: -topInset,
 				width: navBarWidth,
+				borderColor: 'red',
+				borderWidth: 0,
 				height: this.props.height,
 		}
-				
-       if (Platform.OS === 'ios') {
-             if (this.state.isLandscape) {
-				 barContainer = {
-					backgroundColor: 'rgba(34,34,34,.7)',
-				    height: this.props.height,
-					marginLeft: -topInset,
-					width: width - topInset - bottomInset,
-					height: this.props.height,
-				}
-			} else {
-				barContainer = {
-				  backgroundColor: 'rgba(34,34,34,.7)',
-				  height: this.props.height,
-				  width: width,
-				  marginTop: -topInset
-				};
-			}
-        }
         
         return (
 			<Appbar.Header
@@ -306,7 +294,6 @@ class ConferenceHeader extends React.Component {
 				}
 
 				{this.props.buttons.additional}
-
 
                 <Menu
                     visible={this.state.menuVisible}
@@ -350,14 +337,15 @@ class ConferenceHeader extends React.Component {
 					>
 						{this.props.availableAudioDevices.map(device => {
 							const isSelected = device === this.props.selectedAudioDevice;
+							const deviceTitle = utils.availableAudioDeviceNames[device] || device;
 				
 							return (
 								<Menu.Item
 									key={device}
 									title={
 										isSelected
-											? `✓ ${device}`        // show selected
-											: device
+											? `✓ ${deviceTitle}`        // show selected
+											: deviceTitle
 									}
 									onPress={() => {
 										this.props.selectAudioDevice(device);
@@ -379,12 +367,6 @@ class ConferenceHeader extends React.Component {
 			);
 		}
 	}
-
-/*
-
-This menu somehow causes the action button and menu itself to require double tap to be activated!
-*/
-
 
 
 ConferenceHeader.propTypes = {
@@ -413,14 +395,11 @@ ConferenceHeader.propTypes = {
     toggleDrawer: PropTypes.func,
     enableMyVideo: PropTypes.bool,    
     toggleMyVideo: PropTypes.func,
-    availableAudioDevices   : PropTypes.array,
-    selectedAudioDevice     : PropTypes.string,
-    selectAudioDevice       : PropTypes.func,
-
+    availableAudioDevices: PropTypes.array,
+    selectedAudioDevice: PropTypes.string,
+    selectAudioDevice: PropTypes.func,
+    insets: PropTypes.object
 };
 
 export default ConferenceHeader;
-
-
-
 

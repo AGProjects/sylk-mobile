@@ -17,7 +17,6 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import DocumentPicker from 'react-native-document-picker';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import VideoPlayer from 'react-native-video-player';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
 import Immersive from 'react-native-immersive';
 import { getStatusBarHeight } from 'react-native-status-bar-height';
 
@@ -165,7 +164,6 @@ class ConferenceBox extends Component {
                 }
 
                 giftedChatMessage = utils.sylk2GiftedChat(sylkMessage, null, direction);
-
                 renderMessages.push(giftedChatMessage);
                 this.saveConferenceMessage(this.props.remoteUri, giftedChatMessage);
             });
@@ -230,7 +228,8 @@ class ConferenceBox extends Component {
             deviceHeight    : Dimensions.get('window').height,
             statistics: [],
 			availableAudioDevices : this.props.availableAudioDevices,
-			selectedAudioDevice: this.props.selectedAudioDevice
+			selectedAudioDevice: this.props.selectedAudioDevice,
+		    insets: this.props.insets
         };
 
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
@@ -480,7 +479,8 @@ class ConferenceBox extends Component {
                        accountId: !this.state.accountId && nextProps.call ? this.props.call.account.id : this.state.accountId,
                        selectedContacts: nextProps.selectedContacts,
 					   availableAudioDevices: nextProps.availableAudioDevices,
-					   selectedAudioDevice: nextProps.selectedAudioDevice
+					   selectedAudioDevice: nextProps.selectedAudioDevice,
+					   insets: nextProps.insets
                        });
 
     }
@@ -2308,10 +2308,10 @@ class ConferenceBox extends Component {
 		let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
 		let conferenceHeader = styles.conferenceHeader;
 
-		const topInset = initialWindowMetrics?.insets.top || 0;
-		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
-		const leftInset = initialWindowMetrics?.insets.left || 0;
-		const rightInset = initialWindowMetrics?.insets.right || 0;
+		const topInset = this.state.insets.top || 0;
+		const bottomInset = this.state.insets.bottom || 0;
+		const leftInset = this.state.insets.left || 0;
+		const rightInset = this.state.insets.right || 0;
 		let debugBorderWidth = 1;
 		
 		if (this.props.audioOnly) {
@@ -2465,13 +2465,12 @@ class ConferenceBox extends Component {
 				marginBottom: marginBottom,
 	            borderWidth: debugBorderWidth,
 			    borderColor: 'white',
-			    width: width
+			    width: this.state.isLandscape ? width - rightInset: width
  		    };
 
   		    conferenceHeader = {
   		      top: 0,
 			  height: 60,
-			  width: width,
 			  marginTop: 0,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'yellow'
@@ -2479,8 +2478,8 @@ class ConferenceBox extends Component {
 
             if (Platform.OS === 'ios' ) { 
                 if (this.state.isLandscape) {
-					conferenceHeader.width = conferenceHeader.width - bottomInset - topInset;
-					container.width = container.width - bottomInset - topInset;
+					conferenceHeader.width = conferenceHeader.width - rightInset - topInset;
+					container.width = container.width - topInset;
                 }
             }
 
@@ -2490,6 +2489,7 @@ class ConferenceBox extends Component {
 			  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
 			  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
 			  height: '100%',
+			  width: this.state.isLandscape ? width - rightInset: width,
   			  marginTop: 0,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'blue'
@@ -2581,11 +2581,11 @@ class ConferenceBox extends Component {
 						availableAudioDevices = {this.state.availableAudioDevices}
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
+						insets = {this.state.insets}
 					/>
 				</View>
 
-
-				<View style={styles.buttonsContainer}>
+				<View style={[styles.buttonsContainer]}>
 					{sessionButtons}
 				</View>
 
@@ -2868,13 +2868,16 @@ class ConferenceBox extends Component {
 		let buttonsContainer = this.state.isLandscape ? styles.buttonsContainerLandscape : styles.buttonsContainer;
 		mediaContainer = this.state.isLandscape? styles.videoContainerLandscape : styles.videoContainer;
         
-		const marginRight = this.state.isLandscape && Platform.OS === 'android' ? 48 : 0;
-		const marginBottom = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+		const marginRight = this.state.isLandscape ? rightInset : 0;
+		const marginBottom = this.state.isLandscape  ? -rightInset : 0;
 
 		let audioHeight = this.state.renderMessages.length < 6 ? 300 : 240; 
 		audioHeight = this.state.keyboardVisible ? 150 : audioHeight;
+
 		const statusBarHeight = getStatusBarHeight(); 
+
 		let navigationBarHeight = 0;
+
 		if (Platform.OS === 'android') {
             navigationBarHeight = bottomInset;
         }
@@ -2962,7 +2965,7 @@ class ConferenceBox extends Component {
 					container = {
 						width: this.fullScreen ? width: width,
 						height: height,
-						marginLeft: -topInset,
+						marginLeft: -rightInset,
 						marginBottom: marginBottom,
 						borderWidth: debugBorderWidth,
 						borderColor: 'blue'
@@ -2970,15 +2973,15 @@ class ConferenceBox extends Component {
 
 		          } else {
 						corners = {
-						  topLeft: { top: conferenceHeader.height, left: 0 },
-						  topRight: { top: conferenceHeader.height, right: 0 },
+						  topLeft: { top: conferenceHeader.height +5, left: 0 },
+						  topRight: { top: conferenceHeader.height + 5, right: 0 },
 						  bottomRight: { bottom: 0, right:  0 },
 						  bottomLeft: { bottom: 0, left: 0},
 						  id: 'ios-landscape'
 						};
 
 					container = {
-						width: width - topInset - bottomInset,
+						width: width - topInset - rightInset,
 						height: height,
 						marginBottom: marginBottom,
 						borderWidth: debugBorderWidth,
@@ -2990,7 +2993,7 @@ class ConferenceBox extends Component {
 					  alignContent: 'flex-start',
 					  justifyContent: 'flex-start',
 					  height: height - conferenceHeader.height,
-					  width: width - bottomInset - topInset,
+					  width: width - rightInset - topInset,
 					  marginTop: conferenceHeader.height,
 					  borderColor: 'green',
 					  borderWidth: debugBorderWidth,
@@ -2998,20 +3001,11 @@ class ConferenceBox extends Component {
 
 					mediaContainer = {
 					  width: this.state.isLandscape ? videoWidth : '100%',
-					  height: height - bottomInset - topInset + 30,
+					  height: height - rightInset - topInset + 30,
 					  borderColor: 'red',
 					  borderWidth: debugBorderWidth,
 					};
 				}
-				conferenceHeader = {
-				  top: topInset,
-				  marginLeft: 0,
-				  height: 60,
-				  width: width - topInset - bottomInset,
-				  marginTop: -topInset,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white'
-				};
 
 			} else {
 				  corners = {
@@ -3051,13 +3045,23 @@ class ConferenceBox extends Component {
 		} else {
 		    // android
 		    if (this.state.isLandscape) {
-				  corners = {
-					  topLeft: { top: this.fullScreen ? 0 : conferenceHeader.height, left: navigationBarHeight },
-					  topRight: { top: this.fullScreen ? 0 : conferenceHeader.height, right: -navigationBarHeight },
-					  bottomRight: { bottom: 0, right: -navigationBarHeight },
-					  bottomLeft: { bottom: 0, left: navigationBarHeight},
-					  id: 'android-landscape'
-				  };
+		          if (this.fullScreen) {
+					  corners = {
+						  topLeft: { top: 0, left: rightInset },
+						  topRight: { top: 0, right:  -rightInset},
+						  bottomRight: { bottom: 0, right: -rightInset },
+						  bottomLeft: { bottom: 0, left: rightInset},
+						  id: 'android-landscape'
+					  };
+				  } else {
+					  corners = {
+						  topLeft: { top: conferenceHeader.height, left: rightInset },
+						  topRight: { top: conferenceHeader.height, right: 0 },
+						  bottomRight: { bottom: 0, right: 0},
+						  bottomLeft: { bottom: 0, left: rightInset},
+						  id: 'android-landscape'
+					  };
+				  }
 
 				container = {
 					flex: 1,
@@ -3226,6 +3230,7 @@ class ConferenceBox extends Component {
 						availableAudioDevices = {this.state.availableAudioDevices}
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
+						insets = {this.state.insets}
 					/>
 				</View>
 
@@ -3292,8 +3297,7 @@ class ConferenceBox extends Component {
 				</View>
 				}
 
-				{this.state.chatView && Platform.OS === 'ios'?	
-
+				{this.state.chatView && Platform.OS === 'ios' ?
 					<GiftedChat
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
 					  messages={renderMessages}
@@ -3439,6 +3443,7 @@ ConferenceBox.propTypes = {
     selectedAudioDevice     : PropTypes.string,
     selectAudioDevice       : PropTypes.func,
     publicUrl               : PropTypes.string,
+    insets                  : PropTypes.object
 };
 
 export default ConferenceBox;

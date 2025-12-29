@@ -10,7 +10,6 @@ import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { Colors } from 'react-native-paper';
 import SylkAppbarContent from './SylkAppbarContent';
 import { Platform, Dimensions} from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
 import utils from '../utils';
 
 import styles from '../assets/styles/AudioCall';
@@ -47,7 +46,8 @@ class CallOverlay extends React.Component {
             showUsage: false,
             enableMyVideo: this.props.enableMyVideo,
 		    availableAudioDevices: this.props.availableAudioDevices,
-			selectedAudioDevice: this.props.selectedAudioDevice
+			selectedAudioDevice: this.props.selectedAudioDevice,
+			insets: this.props.insets
         }
 
         this.duration = null;
@@ -115,7 +115,8 @@ class CallOverlay extends React.Component {
                        isLandscape: nextProps.isLandscape,
                        enableMyVideo: nextProps.enableMyVideo,
 						availableAudioDevices: nextProps.availableAudioDevices,
-						selectedAudioDevice: nextProps.selectedAudioDevice
+						selectedAudioDevice: nextProps.selectedAudioDevice,
+						insets: nextProps.insets
                        });
     }
 
@@ -253,39 +254,19 @@ class CallOverlay extends React.Component {
             
 			const { width, height } = Dimensions.get('window');
 	
-			const topInset = initialWindowMetrics?.insets.top || 0;
-			const bottomInset = initialWindowMetrics?.insets.bottom || 0;
+			const topInset = this.state.insets.top || 0;
+			const bottomInset = this.state.insets.bottom || 0;
+			const rightInset = this.state.insets.right || 0;
 
 			let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
 			let myUsageTitle = this.state.showUsage ? 'Hide bandwidth' : 'Show bandwidth';
 			
-			//console.log('this.state.callState', this.state.callState);
-
 			let barContainer = {
 				backgroundColor: 'rgba(34,34,34,.7)',
-				marginLeft: this.state.isLandscape ? - bottomInset : 0,
+				marginLeft: this.state.isLandscape ? - rightInset : 0,
 				marginTop: 0,
-				width: this.state.isLandscape ? width - bottomInset: width,
+				width: this.state.isLandscape ? width - rightInset: width,
 				height: 60,
-			}
-			
-		   if (Platform.OS === 'ios') {
-				 if (this.state.isLandscape) {
-					 barContainer = {
-						backgroundColor: 'rgba(34,34,34,.7)',
-						height: 60,
-						marginLeft: -topInset,
-						width: width - topInset - bottomInset,
-						height: this.props.height,
-					}
-				} else {
-					barContainer = {
-					  backgroundColor: 'rgba(34,34,34,.7)',
-					  height: 60,
-					  width: width,
-					  marginTop: -topInset
-					};
-				}
 			}
         
 			header = (
@@ -390,8 +371,8 @@ CallOverlay.propTypes = {
     availableAudioDevices : PropTypes.array,
     selectedAudioDevice : PropTypes.string,
     selectAudioDevice: PropTypes.func,
-    useInCallManger: PropTypes.bool
-
+    useInCallManger: PropTypes.bool,
+    insets: PropTypes.object
 };
 
 export default CallOverlay;

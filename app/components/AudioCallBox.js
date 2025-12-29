@@ -51,7 +51,9 @@ class AudioCallBox extends Component {
             audioGraphData              : [],
             userStartedCall             : this.props.userStartedCall,
 			availableAudioDevices       : this.props.availableAudioDevices,
-			selectedAudioDevice         : this.props.selectedAudioDevice
+			selectedAudioDevice         : this.props.selectedAudioDevice,
+			insets                      : this.props.insets,
+			isLandscape                 : this.props.isLandscape
         };
 
         this.remoteAudio = React.createRef();
@@ -151,7 +153,9 @@ class AudioCallBox extends Component {
             speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
             localMedia: nextProps.localMedia,
 		    availableAudioDevices: nextProps.availableAudioDevices,
-			selectedAudioDevice: nextProps.selectedAudioDevice
+			selectedAudioDevice: nextProps.selectedAudioDevice,
+			insets: nextProps.insets,
+			isLandscape: nextProps.isLandscape
         });
     }
 
@@ -331,10 +335,10 @@ class AudioCallBox extends Component {
         }
 
         if (this.props.isTablet) {
-            buttonContainerClass = this.props.orientation === 'landscape' ? styles.tabletLandscapeButtonContainer : styles.tabletPortraitButtonContainer;
+            buttonContainerClass = this.state.isLandscape ? styles.tabletLandscapeButtonContainer : styles.tabletPortraitButtonContainer;
             userIconContainerClass = styles.tabletUserIconContainer;
         } else {
-            buttonContainerClass = this.props.orientation === 'landscape' ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
+            buttonContainerClass = this.state.isLandscape ? styles.landscapeButtonContainer : styles.portraitButtonContainer;
             userIconContainerClass = styles.userIconContainer;
         }
 
@@ -352,10 +356,9 @@ class AudioCallBox extends Component {
         let hangupButtonClass        = Platform.OS === 'ios' ? styles.hangupButtoniOS        : styles.hangupButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
         
-        let userIconSize = this.props.orientation === 'landscape' ? 75: 150;
+        let userIconSize = this.state.isLandscape ? 75: 150;
         
         //console.log('this.state.selectedAudioDevice', this.state.selectedAudioDevice);
-
 
         return (
             <View style={styles.container}>
@@ -373,12 +376,13 @@ class AudioCallBox extends Component {
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
                     terminatedReason={this.state.terminatedReason}
-                    isLandscape={this.props.orientation === 'landscape'}
+                    isLandscape={this.state.isLandscape}
 					hangupCall = {this.hangupCall}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
+					insets = {this.state.insets}
                 />
 
 				<View style={userIconContainerClass}>
@@ -421,12 +425,12 @@ class AudioCallBox extends Component {
 
                 <TrafficStats
                     isTablet={this.props.isTablet}
-                    orientation={this.props.orientation}
+                    isLandscape={this.state.isLandscape}
                     data={this.state.audioGraphData}
                     media="audio"
                 />
 
-                {this.props.orientation !== 'landscape' && this.state.reconnectingCall ?
+                {!this.state.isLandscape && this.state.reconnectingCall ?
                     <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
                     : null
                 }
@@ -491,7 +495,6 @@ class AudioCallBox extends Component {
                                         />
                                 </TouchableHighlight>
                             </View>
-                            
                             }
 
                             {isPhoneNumber ?
@@ -566,7 +569,7 @@ AudioCallBox.propTypes = {
     toggleMute: PropTypes.func,
     toggleSpeakerPhone: PropTypes.func,
     speakerPhoneEnabled: PropTypes.bool,
-    orientation: PropTypes.string,
+    isLandscape: PropTypes.bool,
     isTablet: PropTypes.bool,
     reconnectingCall: PropTypes.bool,
     muted: PropTypes.bool,
@@ -593,7 +596,8 @@ AudioCallBox.propTypes = {
     availableAudioDevices : PropTypes.array,
     selectedAudioDevice : PropTypes.string,
     selectAudioDevice: PropTypes.func,
-    useInCallManger: PropTypes.bool
+    useInCallManger: PropTypes.bool,
+	insets: PropTypes.object
 };
 
 export default AudioCallBox;

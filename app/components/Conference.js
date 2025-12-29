@@ -47,7 +47,9 @@ class Conference extends React.Component {
               messages: this.props.messages,
 			  availableAudioDevices : this.props.availableAudioDevices,
 			  selectedAudioDevice: this.props.selectedAudioDevice,
-			  iceServers: this.props.iceServers
+			  iceServers: this.props.iceServers,
+			  isLandscape: this.props.isLandscape,
+			  insets: this.props.insets
         }
               
         if (this.props.connection) {
@@ -62,6 +64,14 @@ class Conference extends React.Component {
             });
         }
     }
+
+	componentDidUpdate(prevProps, prevState) {
+		 if (prevState.isLandscape !== this.state.isLandscape) {
+		     console.log('---- Conference isLandscape', this.state.isLandscape);
+			 //this.setState({searchContacts: this.state.orientation == 'portrait'});
+		 }
+	}
+
 
     componentDidMount() {
         if (this.state.currentCall) {
@@ -143,7 +153,9 @@ class Conference extends React.Component {
                        selectedContacts: nextProps.selectedContacts,
                        messages: nextProps.messages,
 					   availableAudioDevices: nextProps.availableAudioDevices,
-					   selectedAudioDevice: nextProps.selectedAudioDevice
+					   selectedAudioDevice: nextProps.selectedAudioDevice,
+					   insets: nextProps.insets,
+					   isLandscape: nextProps.isLandscape
                        });
     }
 
@@ -264,7 +276,8 @@ class Conference extends React.Component {
 			} else {
 				this.props.stopRingback();
 			}
-        }, 2000);
+        }, 3000);
+        // see startRingback
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -383,7 +396,7 @@ class Conference extends React.Component {
                         speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                         toggleMute = {this.props.toggleMute}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
-                        isLandscape = {this.props.isLandscape}
+                        isLandscape = {this.state.isLandscape}
                         isTablet = {this.props.isTablet}
                         muted = {this.props.muted}
                         defaultDomain = {this.props.defaultDomain}
@@ -406,6 +419,7 @@ class Conference extends React.Component {
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
+						insets = {this.state.insets}
                    />
                 );
             } else {
@@ -424,11 +438,13 @@ class Conference extends React.Component {
                         terminated={this.userHangup}
                         reconnectingCall={this.state.reconnectingCall}
                         goBackFunc={this.props.goBackFunc}
+						isLandscape = {this.state.isLandscape}
                         media={media}
 						availableAudioDevices = {this.state.availableAudioDevices}
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
+						insets = {this.state.insets}
                     />
 
                 );
@@ -492,6 +508,7 @@ Conference.propTypes = {
     startRingback           : PropTypes.func,
     stopRingback            : PropTypes.func,
     iceServers              : PropTypes.array,
+    insets                  : PropTypes.object
 };
 
 

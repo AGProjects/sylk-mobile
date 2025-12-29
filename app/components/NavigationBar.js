@@ -2,7 +2,7 @@ import React, { Component } from 'react';
 import { Linking, Image, Platform, View , TouchableHighlight, Dimensions} from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Appbar, Menu, Divider, Text, IconButton } from 'react-native-paper';
+import { Appbar, Menu, Divider, Text, IconButton, Button } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { initialWindowMetrics } from 'react-native-safe-area-context';
 import { Keyboard } from 'react-native';
@@ -76,7 +76,9 @@ class NavigationBar extends Component {
 			isLandscape: this.props.isLandscape,
 			backupKey: false,
 			serverSettingsUrl: this.props.serverSettingsUrl,
-			publicUrl: this.props.publicUrl
+			publicUrl: this.props.publicUrl,
+			insets: this.props.insets,
+			call: this.props.call
         }
 
         this.menuRef = React.createRef();
@@ -175,7 +177,9 @@ class NavigationBar extends Component {
  					   searchContacts: nextProps.searchContacts,
  					   isLandscape: nextProps.isLandscape,
 					   serverSettingsUrl: nextProps.serverSettingsUrl,
-					   publicUrl: nextProps.publicUrl
+					   publicUrl: nextProps.publicUrl,
+					   insets: nextProps.insets,
+					   call: nextProps.call
                        });
 
                     if (nextProps.menuVisible) {
@@ -416,6 +420,25 @@ class NavigationBar extends Component {
         this.props.hideExportPrivateKeyModalFunc()
     }
 
+    get showBackToCallButton() {
+        if (this.state.shareToContacts) {
+			return false;
+        }
+        
+        if (!this.state.isLandscape) {
+			return false;
+        }
+
+        if (this.state.call) {
+            console.log('this.state.call.state', this.state.call.state);
+            if (this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated') {
+				return true;
+			}
+        }
+
+		return false;
+    }
+
     render() {
          const muteIcon = this.state.mute ? 'bell-off' : 'bell';
          const bellIcon = this.state.dnd ? 'bell-off' : 'bell';
@@ -524,22 +547,14 @@ class NavigationBar extends Component {
 		}
 
 		const { width, height } = Dimensions.get('window');
-		const topInset = initialWindowMetrics?.insets.top || 0;
-		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
-		const leftInset = initialWindowMetrics?.insets.left || 0;
-		const rightInset = initialWindowMetrics?.insets.right || 0;
-
-		let navBarWidth = width;
-		let marginLeft = this.state.isLandscape ? - bottomInset : 0;
+		const topInset = this.state.insets.top || 0;
+		const bottomInset = this.state.insets.bottom || 0;
+		const leftInset = this.state.insets.left || 0;
+		const rightInset = this.state.insets.right || 0;
 
 		const as = 40; //avatar size
-		
-		if (Platform.OS === 'ios') {
-			marginLeft = this.state.isLandscape ? - topInset : 0;
-			navBarWidth = this.state.isLandscape ? width - bottomInset - topInset: width;
-		} else {
-			navBarWidth = this.state.isLandscape ? width - bottomInset : width;
-		}
+		let marginLeft = this.state.isLandscape ? - rightInset : 0;
+		let navBarWidth = this.state.isLandscape ? width - rightInset : width;
 		
 		let barStyles = {backgroundColor: 'black', 
                          marginLeft: marginLeft,
@@ -548,10 +563,20 @@ class NavigationBar extends Component {
                          borderColor: 'red'
                  };
 
+        let backButtonTitle = 'Back to call';
+
+        if (this.showBackToCallButton) {
+            if (this.state.call.hasOwnProperty('_participants')) {
+                backButtonTitle = 'Back to conference';
+            } else {
+                backButtonTitle = 'Back to call';
+            }
+        }
+
         return (
-			<View style={{ width: navBarWidth}}>
+			<View style={{ width: navBarWidth, borderWidth: 0, borderColor: 'red'}}>
                          
-            <Appbar.Header 
+            <Appbar.Header
                  style={barStyles} 
                  statusBarHeight={Platform.OS === "ios" ? 0 : undefined} 
                  dark
@@ -583,6 +608,17 @@ class NavigationBar extends Component {
                 <Text style={subtitleStyle}>{subtitle} </Text>
                 : null}
 
+				{ this.showBackToCallButton ?
+						<Button
+							mode="contained"
+						    labelStyle={{ fontSize: 14 }}
+						    style={styles.backButton}
+							onPress={this.props.goBackToCallFunc}
+							accessibilityLabel={backButtonTitle}
+							>{backButtonTitle}
+						</Button>
+                : null}
+
                 { false && !this.state.rejectNonContacts && ! this.state.selectedContact?
                 <IconButton
                     style={styles.whiteButton}
@@ -593,19 +629,9 @@ class NavigationBar extends Component {
                 />
                 : null}
 
-                {this.state.isLandscape && !this.state.selectedContact?
-                <IconButton
-                    style={styles.whiteButton}
-                    size={18}
-                    disabled={false}
-                    onPress={this.props.toggleSearchContacts}
-                    icon={searchIcon}
-                />
-                : null}
-
                 {this.state.selectedContact ?
                 <IconButton
-                    style={styles.whiteButton}
+                    style={[styles.whiteButton ]}
                     size={18}
                     disabled={false}
                     onPress={this.props.toggleSearchMessages}
@@ -941,6 +967,7 @@ NavigationBar.propTypes = {
     isTablet           : PropTypes.bool,
     selectedContact    : PropTypes.object,
     goBackFunc         : PropTypes.func,
+    goBackToCallFunc   : PropTypes.func,
     exportKey          : PropTypes.func,
     publicKeyHash      : PropTypes.string,
     publicKey          : PropTypes.string,
@@ -998,7 +1025,9 @@ NavigationBar.propTypes = {
     searchContacts: PropTypes.bool,
     isLandscape: PropTypes.bool,
     publicUrl: PropTypes.string,
-    serverSettingsUrl: PropTypes.string
+    serverSettingsUrl: PropTypes.string,
+	insets: PropTypes.object,
+	call: PropTypes.object
 };
 
 export default NavigationBar;

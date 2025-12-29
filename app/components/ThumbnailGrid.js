@@ -19,6 +19,7 @@ import ImageViewer from 'react-native-image-zoom-viewer';
 
 const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
 const windowDims = Dimensions.get('window');
+//console.log(windowDims);
 
 /**
  * ThumbnailGrid

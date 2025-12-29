@@ -15,7 +15,6 @@ const ChatBubble = memo(
     bubbleWidths = {},
     mediaLabels = {},
 	replyMessages = {},
-	consumedMessages = {},
     videoMetaCache = {},
     visibleMessageIds = [],
     transferProgress = {},
@@ -255,11 +254,15 @@ const ChatBubble = memo(
 
 	// ==== Reply messages ====
 	const currentId = p._id;
-
+	
 	const prevLabel = prev.mediaLabels?.[currentId];
 	const nextLabel = next.mediaLabels?.[currentId];
 	
 	if (prevLabel !== nextLabel) {
+	  if ( nextLabel === undefined) {
+		  return true;
+	  }
+
 	  console.log(`[Bubble ${currentId}] RERENDER → mediaLabels changed ${prevLabel} -> ${nextLabel}`);
 	  return false;
 	}
@@ -273,8 +276,8 @@ const ChatBubble = memo(
 	  return false; // re-render
 	}
 
-	const prevReply = prev.replyMessages?.[currentId] ?? false; // undefined → false
-	const nextReply = next.replyMessages?.[currentId] ?? false;
+	const prevReply = prev.replyMessages?.[currentId] ?? null;
+	const nextReply = next.replyMessages?.[currentId] ?? null;
 	
 	if (prevReply !== nextReply) {
 	  console.log(`[Bubble ${currentId}] RERENDER → replyMessages changed from ${prevReply} to ${nextReply}`);
@@ -304,20 +307,6 @@ const ChatBubble = memo(
   }
 */
 
-// ==== Consumed ====
-const prevConsumed = prev.consumedMessages?.[currentId];
-const nextConsumed = next.consumedMessages?.[currentId];
-
-// Skip re-render if prev is 100 and next is null/undefined
-if (!(prevConsumed === 100 && (nextConsumed === undefined || nextConsumed === null))) {
-  if (prevConsumed !== nextConsumed) {
-    console.log(
-      `[Bubble ${currentId}] RERENDER → consumedMessages changed ${prevConsumed} -> ${nextConsumed}`
-    );
-    return false; // re-render
-  }
-}
-
 // ==== Thumbnail / video meta ====
 const prevThumb = prev.videoMetaCache?.[id]?.thumbnail;
 const nextThumb = next.videoMetaCache?.[id]?.thumbnail;
@@ -334,28 +323,58 @@ if ((prevThumb ?? null) !== (nextThumb ?? null)) {
 	  const oldVal = p[f] ?? null;  // convert undefined to null
 	  const newVal = n[f] ?? null;  // convert undefined to null
 	  if (oldVal !== newVal) {
-		console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], n[f]);
+		console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
 		return false;
 	  }
 	}
 
 	// ==== Status flags ====
-	const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'consumed', 'rotation', 'label'];
+	const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label'];
 	
 	for (let f of flags) {
-		// Treat undefined as null
 		const oldValue = p[f] !== undefined ? p[f] : null;
 		const newValue = n[f] !== undefined ? n[f] : null;
 	
 		// Only trigger if they actually differ
+
+		if (f == 'playing') {
+			if (oldValue == null) {
+				oldValue = false;
+			}
+
+			if (newValue == null) {
+				newValue = false;
+			}
+		}
+
+		if ( f == 'consumed' && oldValue && newValue && newValue < oldValue) {
+			return true;
+		}
+
+		if ( f == 'rotation' || f == 'position') {
+		    if (oldValue == null && newValue == 0) {
+				return true;
+			}
+
+			if (newValue == null) {
+				return true;
+			}
+		}
+
+		if (oldValue != null && newValue == null) {
+			// ignore transient disappearance
+			return true;
+		}
+
+		//console.log(`[Bubble ${id}] RERENDER → status '${f}' : ${oldValue} -> ${newValue}`);
+		
 		if (oldValue !== newValue) {
 			console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
 			return false;
 		}
 	}
-  
-  // NOTHING changed → skip render
-  // console.log(`[Bubble ${id}] SKIP`);  // enable to see skips too
+
+  // nothing relevant has changed  
   return true;
 }
 

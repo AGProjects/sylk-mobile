@@ -4,7 +4,7 @@ import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
+import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import SoundLevel from "react-native-sound-level";
 
 import { red } from '../colors'; 
@@ -87,7 +87,8 @@ class ReadyBox extends Component {
 			showOrderBar: false,
 			playRecording: false,
 			level: 0,
-			callHistoryUrl: this.props.callHistoryUrl
+			callHistoryUrl: this.props.callHistoryUrl,
+			insets: this.props.insets
         };
         this.ended = false;
 
@@ -203,7 +204,8 @@ class ReadyBox extends Component {
                         fullScreen: nextProps.fullScreen,
 					    transferProgress: nextProps.transferProgress,
 					    contactIsSharing: nextProps.contactIsSharing,
-					    callHistoryUrl: nextProps.callHistoryUrl
+					    callHistoryUrl: nextProps.callHistoryUrl,
+					    insets: nextProps.insets
                         });
     }
 
@@ -339,7 +341,7 @@ class ReadyBox extends Component {
         }
 
         if (this.state.recording) {
-            return false;
+            //return false;
         }
 
         return true;
@@ -368,9 +370,11 @@ class ReadyBox extends Component {
             return true;
         }
 
+        /*
         if (this.state.call && this.state.call.state !== 'incoming' && !this.state.inviteContacts) {
             return false;
         }
+        */
 
         return true;
     }
@@ -513,7 +517,7 @@ class ReadyBox extends Component {
         }
 
         if (this.state.isLandscape) {
-            return false;
+            //return false;
         }
 
 
@@ -847,7 +851,7 @@ class ReadyBox extends Component {
         return false;
     }
 
-	async starAudioPlayer() {
+	async startAudioPlayer() {
 	    //console.log('-- RB startAudioPlayer');
 		this.setState({playRecording: true});
 	}
@@ -1103,11 +1107,11 @@ class ReadyBox extends Component {
 
     get showContactsList() {
         if (this.state.recording) {
-             return false;
+             //return false;
         }
 
         if (this.state.recordingFile) {
-             return false;
+             //return false;
         }
         
         return true;
@@ -1302,8 +1306,28 @@ class ReadyBox extends Component {
 			this.setState({recording: false, recordingFile: file});
         }
     }
+    
+    get showBackToCallButton() {
+        if (this.state.shareToContacts) {
+			return false;
+        }
+
+        if (this.state.isLandscape) {
+			return false;
+        }
+        
+        if (this.state.call) {
+            if (this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated') {
+				return true;
+			}
+        }
+
+		return false;
+    
+    }
 
     render() {
+    
         let URIContainerClass = styles.portraitUriInputBox;
         let uriGroupClass = styles.portraitUriButtonGroup;
         let titleClass = styles.portraitTitle;
@@ -1319,8 +1343,6 @@ class ReadyBox extends Component {
                 uri = uri.split("@")[0] + '@' + this.props.defaultConferenceDomain;
             }
         }
-
-        //console.log('RB', this.state.searchContacts);
 
         if (this.state.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;
@@ -1341,12 +1363,12 @@ class ReadyBox extends Component {
         }
 
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
-        const buttonGroupClass = this.props.orientation === 'landscape' ? styles.landscapeButtonGroup : styles.buttonGroup;
+        const buttonGroupClass = this.props.orientation === 'landscape' ? styles.buttonGroup : styles.buttonGroup;
         const borderClass = this.state.chat ? null : styles.historyBorder;
         let backButtonTitle = 'Back to call';
 
-        const showBackToCallButton = !this.state.shareToContacts && this.state.call && this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated' ? true : false ;
-        if (showBackToCallButton) {
+        //console.log('this.state.call', this.state.call);
+        if (this.showBackToCallButton) {
             if (this.state.call.hasOwnProperty('_participants')) {
                 backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
             } else {
@@ -1381,10 +1403,10 @@ class ReadyBox extends Component {
         }
 
         let extraStyles = {paddingBottom: Platform.OS === 'android' ? 0 : 0};
-		const topInset = initialWindowMetrics?.insets.top || 0;
-		const bottomInset = initialWindowMetrics?.insets.bottom || 0;
-		const leftInset = initialWindowMetrics?.insets.left || 0;
-		const rightInset = initialWindowMetrics?.insets.right || 0;
+		const topInset = this.state.insets.top || 0;
+		const bottomInset = this.state.insets.bottom || 0;
+		const leftInset = this.state.insets.left || 0;
+		const rightInset = this.state.insets.right || 0;
 
 		const { width, height } = Dimensions.get('window');
 		const isLandscape = width > height;
@@ -1395,23 +1417,25 @@ class ReadyBox extends Component {
 
 		let containerExtraStyles = {
 		                   width: containerWidth,
-		                   marginRight: marginRight, 
+		                   marginRight: marginRight,
 		                   borderWidth: 0,
 		                   borderColor: 'red'}
 
 		if (Platform.OS === 'ios') {
 			if (isLandscape) {
-				containerExtraStyles.width = containerWidth - bottomInset - topInset;
-				containerExtraStyles.marginBottom = -10;
+				containerExtraStyles.width = containerWidth - rightInset;
+				containerExtraStyles.borderWidth = 0;
+				containerExtraStyles.borderColor = 'red';
+				
 			}
 		} else {
 			if (isLandscape) {
-				containerExtraStyles.width = containerWidth - bottomInset;
-				containerExtraStyles.marginBottom = - bottomInset;
+				containerExtraStyles.width = containerWidth - rightInset;
+				containerExtraStyles.marginBottom = - rightInset;
 			}
 		}
 		
-		//console.log('RB', this.state.shareToContacts);
+		//console.log('containerExtraStyles', containerExtraStyles);
         return (
             <Fragment>
                 <View style={[styles.container, containerExtraStyles]}>
@@ -1474,27 +1498,42 @@ class ReadyBox extends Component {
                         </View>
                         : null}
 
-                        {this.showButtonsBar ?
-                        <View style={uriGroupClass}>
-
-                        {this.showSearchBar && this.state.isLandscape ?
-
-                        <View style={URIContainerClass}>
-                            <URIInput
-                                defaultValue={this.state.searchMessages ? "" : this.state.targetUri}
-                                onChange={this.handleSearch}
-                                onSelect={this.handleTargetSelect}
-                                shareToContacts={this.state.shareToContacts}
-                                inviteContacts={this.state.inviteContacts}
-                                searchMessages={this.state.searchMessages}
-                                autoFocus={false}
-                            />
-                        </View>
-                        : null}
-                            {showBackToCallButton ?
+                           {this.showBackToCallButton ?
                             <View style={buttonGroupClass}>
                                 <Button
                                     mode="contained"
+                                    style={styles.backButton}
+                                    onPress={this.props.goBackFunc}
+                                    accessibilityLabel={backButtonTitle}
+                                    >{backButtonTitle}
+                                </Button>
+                            </View>
+                            :
+                            null}
+
+                        {this.showButtonsBar ?
+							<View style={uriGroupClass}>
+	
+							{this.showSearchBar && this.state.isLandscape ?
+	
+							<View style={URIContainerClass}>
+								<URIInput
+									defaultValue={this.state.searchMessages ? "" : this.state.targetUri}
+									onChange={this.handleSearch}
+									onSelect={this.handleTargetSelect}
+									shareToContacts={this.state.shareToContacts}
+									inviteContacts={this.state.inviteContacts}
+									searchMessages={this.state.searchMessages}
+									autoFocus={false}
+								/>
+							</View>
+							: null}
+
+                            {this.showBackToCallButton ?
+                            <View style={buttonGroupClass}>
+                                <Button
+                                    mode="contained"
+                                    labelStyle={{ fontSize: 14 }}
                                     style={styles.backButton}
                                     onPress={this.props.goBackFunc}
                                     accessibilityLabel={backButtonTitle}
@@ -1514,6 +1553,35 @@ class ReadyBox extends Component {
                                         onPress={this.handleChat}
                                         icon="chat"
                                     />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
+
+                                  {this.showCallButtons ? 
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.callButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
+                                            size={32}
+                                            disabled={this.callButtonDisabled}
+                                            onPress={this.handleAudioCall}
+                                            icon="phone"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+
+                                  : null }
+
+                                  {this.showCallButtons? 
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.videoButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
+                                            size={32}
+                                            disabled={this.videoButtonDisabled}
+                                            onPress={this.handleVideoCall}
+                                            icon="video"
+                                        />
                                     </TouchableHighlight>
                                   </View>
                                   : null }
@@ -1573,35 +1641,6 @@ class ReadyBox extends Component {
                                   : null }
 
                                   
-                                  {this.showCallButtons ? 
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.callButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
-                                            size={32}
-                                            disabled={this.callButtonDisabled}
-                                            onPress={this.handleAudioCall}
-                                            icon="phone"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-
-                                  : null }
-
-                                  {this.showCallButtons? 
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.videoButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
-                                            size={32}
-                                            disabled={this.videoButtonDisabled}
-                                            onPress={this.handleVideoCall}
-                                            icon="video"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
                                   { this.state.shareToContacts ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
@@ -1676,6 +1715,46 @@ class ReadyBox extends Component {
                         : null}
 
                     </View>
+
+                    { this.state.recording  ?
+                        <View style={styles.recordingContainer}>
+						 <View style={{borderBottom: 30}}>
+                            <Title style={styles.activityTitle}>{activityTitle}</Title>
+						 </View>
+						 <View
+								style={{
+								  width: 20,
+								  height: 200,
+								  backgroundColor: "#ddd",
+								  overflow: "hidden",
+								alignSelf: "center",   // <<— Center horizontally inside parent
+								}}
+							  >
+								<View
+								  style={{
+									backgroundColor: "green",
+									width: "100%",
+									height: `${this.state.level * 100}%`,
+									position: "absolute",
+									bottom: 0,
+								  }}
+								/>
+							  </View>
+                        </View>
+                    : null
+                    }
+
+                    { this.state.recordingFile  ?
+                        <View style={styles.recordingContainer}>
+                            <Title style={styles.activityTitle}>{activityTitle}</Title>
+                            {this.state.recordingDuration ?
+                            <Text style={styles.subtitle}>{this.state.recordingDuration + ' seconds'}</Text>
+                            :null}
+                            
+                        </View>
+
+                    : null
+                    }
 
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
@@ -1772,10 +1851,13 @@ class ReadyBox extends Component {
 						requestDndPermission = {this.props.requestDndPermission}
 						gettingSharedAsset = {this.state.gettingSharedAsset}
 						selectAudioDevice = {this.props.selectAudioDevice}
-						starAudioPlayerFunc = {this.starAudioPlayer}
+						startAudioPlayerFunc = {this.startAudioPlayer}
 						stopAudioPlayerFunc = {this.stopAudioPlayer}
 						playRecording = {this.state.playRecording}
-						updateFileMetadata = {this.props.updateFileMetadata}
+						updateFileTransferMetadata = {this.props.updateFileTransferMetadata}
+						isAudioRecording = {this.state.recording}
+						recordingFile = {this.state.recordingFile}
+						sendAudioFile = {this.sendAudioFile}
 					/>
 					}
 
@@ -1803,46 +1885,6 @@ class ReadyBox extends Component {
                         />
                     </View>
                     : null}
-
-                    { this.state.recording  ?
-                        <View style={styles.recordingContainer}>
-						 <View style={{borderBottom: 30}}>
-                            <Title style={styles.activityTitle}>{activityTitle}</Title>
-						 </View>
-						 <View
-								style={{
-								  width: 20,
-								  height: 200,
-								  backgroundColor: "#ddd",
-								  overflow: "hidden",
-								alignSelf: "center",   // <<— Center horizontally inside parent
-								}}
-							  >
-								<View
-								  style={{
-									backgroundColor: "green",
-									width: "100%",
-									height: `${this.state.level * 100}%`,
-									position: "absolute",
-									bottom: 0,
-								  }}
-								/>
-							  </View>
-                        </View>
-                    : null
-                    }
-
-                    { this.state.recordingFile  ?
-                        <View style={styles.recordingContainer}>
-                            <Title style={styles.activityTitle}>{activityTitle}</Title>
-                            {this.state.recordingDuration ?
-                            <Text style={styles.subtitle}>{this.state.recordingDuration + ' seconds'}</Text>
-                            :null}
-                            
-                        </View>
-
-                    : null
-                    }
 
 
                     {this.state.isTablet && 0?
@@ -1961,8 +2003,8 @@ ReadyBox.propTypes = {
     totalMessageExceeded: PropTypes.bool,
     createChatContact: PropTypes.func,
 	selectAudioDevice: PropTypes.func,
-	updateFileMetadata: PropTypes.func
+	updateFileTransferMetadata: PropTypes.func,
+	insets: PropTypes.object,
 };
-
 
 export default ReadyBox;

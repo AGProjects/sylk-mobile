@@ -58,7 +58,6 @@ class Call extends Component {
             remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
             direction = this.props.call.direction;
             callUUID = this.props.call.id;
-
         } else {
             remoteUri = this.props.targetUri;
             remoteDisplayName = this.props.targetUri;
@@ -101,7 +100,9 @@ class Call extends Component {
                       userStartedCall: false,
                       availableAudioDevices: this.props.availableAudioDevices,
                       selectedAudioDevice: this.props.selectedAudioDevice,
-                      iceServers: this.props.iceServers
+                      iceServers: this.props.iceServers,
+                      insets: this.props.insets,
+                      isLandscape: this.props.isLandscape
                       }
     }
 
@@ -201,7 +202,9 @@ class Call extends Component {
                          speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
                          availableAudioDevices: nextProps.availableAudioDevices,
                          selectedAudioDevice: nextProps.selectedAudioDevice,
-                         iceServers: nextProps.iceServers
+                         iceServers: nextProps.iceServers,
+                         insets: nextProps.insets,
+                         isLandscape: nextProps.isLandscape
                          });
     }
 
@@ -381,7 +384,6 @@ class Call extends Component {
     }
 
     canConnect() {
-        
         if (!this.state.connection) {
             utils.timestampedLog('Call: no connection yet');
             return false;
@@ -530,7 +532,6 @@ class Call extends Component {
         let box = null;
         if (this.state.localMedia !== null) {
             if (this.state.audioOnly) {
-
                 box = (
                     <AudioCallBox
                         remoteUri = {this.state.remoteUri}
@@ -547,7 +548,7 @@ class Call extends Component {
                         toggleMute = {this.props.toggleMute}
                         speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
-                        orientation = {this.props.orientation}
+                        isLandscape = {this.state.isLandscape}
                         isTablet = {this.props.isTablet}
                         reconnectingCall = {this.state.reconnectingCall}
                         muted = {this.props.muted}
@@ -575,7 +576,8 @@ class Call extends Component {
                         selectedAudioDevice = {this.state.selectedAudioDevice}
                         selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
-                        />
+						insets = {this.state.insets}
+					/>
                 );
             } else {
                 if (this.state.call !== null && (this.state.call.state === 'established' || (this.state.call.state === 'terminated' && this.state.reconnectingCall))) {
@@ -598,7 +600,7 @@ class Call extends Component {
                             speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                             toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                             intercomDtmfTone = {this.props.intercomDtmfTone}
-                            orientation = {this.props.orientation}
+                            isLandscape = {this.state.isLandscape}
                             isTablet = {this.props.isTablet}
                             reconnectingCall = {this.state.reconnectingCall}
                             muted = {this.props.muted}
@@ -625,7 +627,8 @@ class Call extends Component {
 							selectedAudioDevice = {this.state.selectedAudioDevice}
 							selectAudioDevice = {this.props.selectAudioDevice}
 							useInCallManger = {this.props.useInCallManger}
-                            />
+							insets = {this.state.insets}
+						/>
                     );
                 } else {
                     if (this.state.call && this.state.call.state === 'terminated' && this.state.reconnectingCall) {
@@ -643,7 +646,7 @@ class Call extends Component {
                                 generatedVideoTrack = {this.props.generatedVideoTrack}
                                 accountId = {this.state.accountId}
                                 connection = {this.state.connection}
-                                orientation = {this.props.orientation}
+                                isLandscape = {this.state.isLandscape}
                                 isTablet = {this.props.isTablet}
                                 media = 'video'
                                 showLogs = {this.props.showLogs}
@@ -653,7 +656,8 @@ class Call extends Component {
 								selectedAudioDevice = {this.state.selectedAudioDevice}
 								selectAudioDevice = {this.props.selectAudioDevice}
 								useInCallManger = {this.props.useInCallManger}
-                                />
+								insets = {this.state.insets}
+							/>
                         );
                     }
                 }
@@ -674,7 +678,7 @@ class Call extends Component {
                     toggleMute = {this.props.toggleMute}
                     speakerPhoneEnabled = {this.props.speakerPhoneEnabled}
                     toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
-                    orientation = {this.props.orientation}
+                    isLandscape = {this.state.isLandscape}
                     isTablet = {this.props.isTablet}
                     reconnectingCall = {this.state.reconnectingCall}
                     muted = {this.props.muted}
@@ -689,7 +693,8 @@ class Call extends Component {
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
-                    />
+					insets = {this.state.insets}
+				/>
             );
         }
         return box;
@@ -715,7 +720,7 @@ Call.propTypes = {
     callUUID                : PropTypes.string,
     contacts                : PropTypes.array,
     intercomDtmfTone        : PropTypes.string,
-    orientation             : PropTypes.string,
+    isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
@@ -745,7 +750,8 @@ Call.propTypes = {
     startRingback           : PropTypes.func,
     stopRingback            : PropTypes.func,
     useInCallManger         : PropTypes.bool,
-    iceServers              : PropTypes.array
+    iceServers              : PropTypes.array,
+	insets                  : PropTypes.object
 };
 
 

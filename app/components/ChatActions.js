@@ -36,15 +36,26 @@ class CustomActions extends React.Component {
         if (this.state.texting || this.state.sendingImage || (this.props.selectedContact && this.props.selectedContact.tags.indexOf('test') > -1)) {
             return (<View></View>)
         }
+        
+        let icon = "microphone";
+        let color = "green";
+
+        if (this.props.recordingFile) {
+			icon = "delete";
+			color = "red";
+        } else if (this.props.isAudioRecording) {
+            icon = "pause";
+			color = "blue";
+        }
 
         return (
             <View>
 				<Icon
 				  type="font-awesome"
-				  name="microphone"
+				  name={icon}
 				  style={styles.chatAudioIcon}
 				  size={20}
-				  color="green"
+				  color={color}
 				/>
              </View>
          )
@@ -66,6 +77,8 @@ class CustomActions extends React.Component {
 
 CustomActions.propTypes = {
 	recordAudio: PropTypes.func,
+	isAudioRecording: PropTypes.bool,
+	recordingFile: PropTypes.string,
     texting: PropTypes.bool,
     sendingImage: PropTypes.bool,
     selectedContact: PropTypes.object

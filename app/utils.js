@@ -119,14 +119,16 @@ function generateUniqueId() {
 
 function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') {
     direction = direction || sylkMessage.direction;
+    
+    //console.log('sylk2GiftedChat', sylkMessage);
 
     let encrypted = decryptedBody ? 2 : 0;
 
     let system = false;
-    let image;
-    let video;
-    let audio;
-    let text;
+    let image = null;
+    let video = null;
+    let audio = null;
+    let text = null;
     let metadata = {};
     let content = decryptedBody || sylkMessage.content;
     let file_transfer;
@@ -182,6 +184,7 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
         createdAt: sylkMessage.timestamp,
         received: direction === 'incoming',
         direction: direction,
+		failed: false,
         system: system,
         user: direction === 'incoming' ? {_id: sylkMessage.sender.uri, name: sylkMessage.sender.toString()} : {}
         }
@@ -226,7 +229,9 @@ function fixLocalUrl(localUrl) {
 
 async function sql2GiftedChat(item, content, filter = {}) {
     let msg;
-    let image, video, audio;
+    let image = null;
+    let video = null;
+    let audio = null;
     let metadata = {};
     let category = filter.category || null;
 
@@ -241,7 +246,6 @@ async function sql2GiftedChat(item, content, filter = {}) {
     let received = item.received === 1;
     let sent = item.sent === 1;
     let pending = item.pending === 1;
-
     let from_uri = item.sender ? item.sender : item.from_uri;
 
     // -------------------------
@@ -283,7 +287,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
     if (metadata.filename) {
         let filename = metadata.filename;  // <--- ALWAYS LOWERCASE
         text = beautyFileNameForBubble(metadata);
-
+        
         if (metadata.local_url) {        
             if (!metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
 				metadata.local_url = null;
@@ -310,6 +314,13 @@ async function sql2GiftedChat(item, content, filter = {}) {
         }
 
         metadata.playing = false;
+        if (!metadata.position) {
+			metadata.position = 0;
+        }
+
+        if (!metadata.consumed) {
+			metadata.consumed = 0;
+        }
         
         let isImg = isImage(filename, metadata.filetype);
         let isAud = isAudio(filename, metadata.filetype);
@@ -393,9 +404,12 @@ async function sql2GiftedChat(item, content, filter = {}) {
         }
     }
     
-    const thumbnail = null;
-    const rotation = null;
-    const label = null;
+    const thumbnail = metadata.thumbnail || null;
+    const rotation = metadata.rotation || 0;
+    const label = metadata.label || null;
+    const consumed = metadata.consumed || 0;
+    const position = metadata.position || 0;
+    const playing = metadata.playing || false;
 
     // -------------------------
     // Construct final message
@@ -410,6 +424,9 @@ async function sql2GiftedChat(item, content, filter = {}) {
         thumbnail,
         rotation,
         label,
+        consumed,
+        playing,
+        position,
         metadata,
         contentType: item.content_type,
         text,
