@@ -27,7 +27,7 @@ import android.database.sqlite.SQLiteDatabase;
 
 public class IncomingCallActivity extends AppCompatActivity {
 
-    private static final String LOG_TAG = "[SYLK_ACTIVITY]";
+    private static final String LOG_TAG = "[SYLK CALL ACTIVITY]";
     private static final long TIMEOUT_MS = 60 * 1000; // 60 seconds
 
     private String callId;
@@ -42,8 +42,17 @@ public class IncomingCallActivity extends AppCompatActivity {
     private final BroadcastReceiver closeReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+
             String sessionId = intent.getStringExtra("session-id");
             Log.d(LOG_TAG, "closeReceiver triggered for session: " + sessionId);
+            Log.d(LOG_TAG, "existing callId: " + callId);
+			Bundle extras = intent.getExtras();
+			if (extras != null) {
+				for (String key : extras.keySet()) {
+					Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				}
+			}
+
             if (callId != null && callId.equals(sessionId)) {
                 Log.d(LOG_TAG, "Closing IncomingCallActivity due to remote cancel");
                 finish();
@@ -54,11 +63,12 @@ public class IncomingCallActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+		Log.d(LOG_TAG, "IncomingCallActivity onCreate");
 
         // Check if device is locked
         KeyguardManager keyguardManager = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
         if (keyguardManager != null && !keyguardManager.isKeyguardLocked()) {
-            Log.d(LOG_TAG, "Phone is unlocked, skipping layout display.");
+            Log.d(LOG_TAG, "Phone is unlocked, skip alert panel");
             finish();
             return;
         } else {
@@ -138,6 +148,8 @@ public class IncomingCallActivity extends AppCompatActivity {
 			acceptButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_AUDIO"));
 			rejectButtonAudio.setOnClickListener(v -> sendRejectIntent());
 		}
+        Log.d(LOG_TAG, "IncomingCallActivity alert panel displayed");
+
 	}
 
 	// Utility methods
@@ -173,6 +185,7 @@ public class IncomingCallActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         // Register the close receiver
+        //Log.d(LOG_TAG, "onResume");
         IntentFilter filter = new IntentFilter("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");
         LocalBroadcastManager.getInstance(this).registerReceiver(closeReceiver, filter);
 
@@ -188,6 +201,7 @@ public class IncomingCallActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         LocalBroadcastManager.getInstance(this).unregisterReceiver(closeReceiver);
+        //Log.d(LOG_TAG, "onPause");
 
         // Remove timeout callbacks to avoid leaks
         if (timeoutRunnable != null) {

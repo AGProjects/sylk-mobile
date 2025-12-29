@@ -33,7 +33,7 @@ public class ReactEventEmitter {
             payload.putString("action", action);
             payload.putBoolean("phoneLocked", phoneLocked);
 
-            if (rc != null) {
+			if (rc != null && CallEventModule.isRNready()) {
                 Log.d(LOG_TAG, "RN ready → event emitted");
                 emit(rc, payload);
             } else {

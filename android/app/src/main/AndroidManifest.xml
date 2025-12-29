@@ -198,13 +198,13 @@
 
       <activity
 	  android:name=".IncomingCallActivity"
-	  android:launchMode="singleTop"
+      android:launchMode="singleTask"
+      android:taskAffinity="com.agprojects.sylk.incomingcall"
 	  android:excludeFromRecents="true"
 	  android:showWhenLocked="true"
 	  android:turnScreenOn="true"
 	  android:allowEmbedded="true"
 	  android:exported="true"
-	  android:taskAffinity=""
 	  android:theme="@style/Theme.Transparent">
     
        </activity>

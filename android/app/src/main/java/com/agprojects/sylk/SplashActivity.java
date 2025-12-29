@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.os.Bundle;
 import androidx.appcompat.app.AppCompatActivity;
 import android.net.Uri;
+import android.util.Log;
 
 public class SplashActivity extends AppCompatActivity {
     @Override
@@ -31,6 +32,9 @@ public class SplashActivity extends AppCompatActivity {
         if (action != null) {
             intent.setAction(action);
         }
+        
+        Log.d("[SYLK]", "SplashActivity onCreate intent=" + intent + " action=" + action);
+ 
         startActivity(intent);
         finish();
     }

@@ -1,5 +1,6 @@
 package com.agprojects.sylk;
 
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.app.Service;
@@ -15,6 +16,7 @@ import android.util.Log;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.io.File;
 
@@ -46,13 +48,16 @@ import android.os.Vibrator;
 import android.os.VibrationEffect;
 
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+import androidx.lifecycle.ProcessLifecycleOwner;
+import android.content.Context;
+
 
 
 public class IncomingCallService extends Service {
 
     public static final String CHANNEL_ID = "incoming-sylk-calls";
     public static final Set<String> handledCalls = new HashSet<>();
-    private static final String LOG_TAG = "[SYLK CAL SERVICE]";
+    private static final String LOG_TAG = "[SYLK CALL SERVICE]";
     private Map<String, List<String>> contactsByTag = new HashMap<>();
     
     private Handler autoCancelHandler;
@@ -187,7 +192,7 @@ public class IncomingCallService extends Service {
 				}
 				Log.d(LOG_TAG, "Vibration started");
 			} else {
-				Log.d(LOG_TAG, "Not vibrating (ringer mode not VIBRATE or vibrator missing)");
+				//Log.d(LOG_TAG, "Not vibrating (ringer mode not VIBRATE or vibrator missing)");
 			}
 	
 		} catch (Exception e) {
@@ -258,14 +263,12 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
 
-        /*        
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
 				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
-		*/
 
         // IncomingCallService → PendingIntent → BroadcastReceiver, from_uri is not being passed.
 
@@ -274,14 +277,14 @@ public class IncomingCallService extends Service {
         String from_uri = intent.getStringExtra("from_uri");
         String toUri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
-        String title = "Sylk Incoming Call";
-        String subtitle = from_uri + " is calling";
-                
-		int notificationId = Math.abs(callId.hashCode());
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
+        String title = "Sylk Incoming Call";
+        String subtitle = from_uri + " is calling";
+		int notificationId = Math.abs(callId.hashCode());
+
 		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId + " from " + from_uri);
-		//Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
+		Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
 
         if (callId == null || event == null) {
             Log.w(LOG_TAG, "Missing callId or event");
@@ -295,7 +298,7 @@ public class IncomingCallService extends Service {
 
         if ("cancel".equals(event) || "ACTION_REJECT_CALL".equals(event)) {
             Log.d(LOG_TAG, "action received: " + event + " for " + callId);
-			stopRingtone(); // <-- stop ringing
+			stopRingtone();
 	        handledCalls.add(callId);
 			// Cancel auto-answer if scheduled
 			Runnable scheduled = autoAnswerRunnables.remove(callId);
@@ -317,41 +320,14 @@ public class IncomingCallService extends Service {
 		if ("ACTION_ACCEPT_AUDIO".equals(event) || "ACTION_ACCEPT_VIDEO".equals(event)) {		 
 			Log.d(LOG_TAG, "Starting app for accepted call " + callId + " from " + from_uri);
 			stopRingtone();
-	 
-	        handledCalls.add(callId);
-
-			Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-			if (launchIntent != null) {
-	    		launchIntent.addFlags(
-						Intent.FLAG_ACTIVITY_NEW_TASK |
-						Intent.FLAG_ACTIVITY_CLEAR_TOP |
-						Intent.FLAG_ACTIVITY_SINGLE_TOP
-				);
-		
-				// Optional: pass call info to React Native if needed
-				launchIntent.putExtra("session-id", callId);
-				launchIntent.putExtra("from_uri", from_uri);
-				launchIntent.putExtra("media-type", "ACTION_ACCEPT_AUDIO".equals(event) ? "audio" : "video");
-				launchIntent.putExtra("event", event);
-		
-				// 2. Start the app (if dead, this brings it up; if alive, brings it to foreground)
-				startActivity(launchIntent);
-				Log.d(LOG_TAG, "App launch intent sent for call: " + callId);
-			} else {
-				Log.w(LOG_TAG, "Launch intent is null");
-			}
-		
-			cancelNotification(notificationId);
-		
-			// No need to keep this service alive anymore
-			Log.d(LOG_TAG, "Stop " + callId);
-			stopSelf();
+			String acceptedMediaType = "ACTION_ACCEPT_AUDIO".equals(event) ? "audio" : "video";
+			handleAcceptCall(callId, from_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked);
 			return START_NOT_STICKY;
 		}
 
 		// Handle incoming session
 		if ("incoming_session".equals(event) || "incoming_conference_request".equals(event)) {
-            startRingtone(from_uri); // <-- start ringing
+            startRingtone(from_uri);
             
             if ("incoming_conference_request".equals(event)) {
 				title = "Sylk Conference Call";
@@ -371,10 +347,11 @@ public class IncomingCallService extends Service {
             }
 
 			if (isAutoAnswer(from_uri)) {
-    			startAutoAnswerCountdownWithProgress(callId, from_uri, mediaType, notificationId, 30);
+    			startAutoAnswerCountdownWithProgress(callId, from_uri, mediaType, notificationId, 20, phoneLocked);
 			}
 
             // Variant 1. This launches the main app when incoming call arrives (make sure RN app shows the alert panel)
+
             /*
 			Intent fullScreenIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
 			if (fullScreenIntent != null) {
@@ -386,8 +363,9 @@ public class IncomingCallService extends Service {
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
 			*/
-			
+
             // Variant 2. This launches the fullscreen layout when incoming call arrives
+
   			Intent fullScreenIntent = new Intent(this, IncomingCallActivity.class);
 			fullScreenIntent.putExtras(intent);
 			fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -397,12 +375,15 @@ public class IncomingCallService extends Service {
 				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
 
+            /*
 			new Handler(Looper.getMainLooper()).post(() -> {
 				Intent activityIntent = new Intent(this, IncomingCallActivity.class);
 				activityIntent.putExtras(intent);
 				activityIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
 				startActivity(activityIntent);
 			});
+			*/
+
 			
             // Variant 3. This launches the notifications bubble when incoming call arrives
             /*
@@ -422,7 +403,7 @@ public class IncomingCallService extends Service {
 							.setAction("ACTION_REJECT_CALL")
 							.putExtra("session-id", callId)
 							.putExtra("from_uri", from_uri) 
-							.putExtra("phoneLocked", false)
+							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -434,7 +415,7 @@ public class IncomingCallService extends Service {
 							.setAction("ACTION_ACCEPT_AUDIO")
 							.putExtra("session-id", callId)
 							.putExtra("from_uri", from_uri) 
-							.putExtra("phoneLocked", false)
+							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -446,7 +427,7 @@ public class IncomingCallService extends Service {
 							.setAction("ACTION_ACCEPT_VIDEO")
 							.putExtra("session-id", callId)
 							.putExtra("from_uri", from_uri) 
-							.putExtra("phoneLocked", false)
+							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
@@ -461,12 +442,21 @@ public class IncomingCallService extends Service {
 					.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 					.setOngoing(true)
 					.setSound(null)
-					.setDefaults(0)
 					.setFullScreenIntent(fullScreenPendingIntent, true)
+					.setDefaults(0)
 					.addAction(0, "Reject", rejectPendingIntent);
-		
+	
 			builder.setStyle(new NotificationCompat.BigTextStyle()
 				.bigText(subtitle));
+
+            /*
+			if (phoneLocked) { $
+				builder.setFullScreenIntent(fullScreenPendingIntent, true); $
+			} else {
+				// Just a heads-up notification
+				builder.setContentIntent(fullScreenPendingIntent);
+			}
+			*/
 
 			builder.setGroup(null);
 
@@ -493,49 +483,45 @@ public class IncomingCallService extends Service {
 				Log.d(LOG_TAG, "Stop " + callId);
 				stopSelf();
 			};
+
 			autoCancelHandler.postDelayed(autoCancelRunnable, 60_000);
 		}
 
 		return START_STICKY;
     }
 
-	private void handleAcceptCall(String callId, String from_uri, String mediaType, int notificationId) {
+	private void handleAcceptCall(String callId, String from_uri, String mediaType, int notificationId, boolean phoneLocked) {
 		if (callId == null) return;
 	
-		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId);
+		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked);
 	
-		// Stop ringtone
 		stopRingtone();
 	
 		// Cancel any scheduled auto-answer countdown
 		Runnable scheduled = autoAnswerRunnables.remove(callId);
 		if (scheduled != null) {
 			new Handler(Looper.getMainLooper()).removeCallbacks(scheduled);
-			Log.d(LOG_TAG, "Canceled scheduled auto-answer for call: " + callId);
+			Log.d(LOG_TAG, "Cancelled scheduled auto-answer for call: " + callId);
 		}
 	
-		// Mark call handled
 		handledCalls.add(callId);
-		Log.d(LOG_TAG, "Call " + callId + " marked as handled");
 	
-		// Cancel notification
 		cancelNotification(notificationId);
 	
-		// Launch app for call
+		Log.d(LOG_TAG, "-- Launching Sylk app");
 		Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
 		if (launchIntent != null) {
-			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
 			launchIntent.putExtra("session-id", callId);
 			launchIntent.putExtra("from_uri", from_uri);
 			launchIntent.putExtra("media-type", mediaType);
 			launchIntent.putExtra("event", "auto_accept");
+			launchIntent.putExtra("phoneLocked", phoneLocked);
 			startActivity(launchIntent);
-			Log.d(LOG_TAG, "App launched for call: " + callId);
-		} else {
-			Log.w(LOG_TAG, "Launch intent is null for call: " + callId);
+			Log.d(LOG_TAG, "RN app launched for call: " + callId);
 		}
-	
-		// Notify React Native
+
+		// RN app alive → send event only
 		if (getApplication() instanceof ReactApplication) {
 			ReactEventEmitter.sendEventToReact("ACTION_ACCEPT_AUDIO", callId, from_uri, false, (ReactApplication) getApplication());
 			Log.d(LOG_TAG, "Sent React Native event for call: " + callId);
@@ -544,9 +530,25 @@ public class IncomingCallService extends Service {
 		stopSelf();
 	}
 
-	private void startAutoAnswerCountdownWithProgress(
-			String callId, String from_uri, String mediaType, int notificationId, int seconds
-	) {
+	private boolean isAppInForeground() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			// Modern way using Lifecycle
+			return ProcessLifecycleOwner.get().getLifecycle().getCurrentState().isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED);
+		} else {
+			ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+			List<ActivityManager.RunningAppProcessInfo> running = am.getRunningAppProcesses();
+			if (running == null) return false;
+			for (ActivityManager.RunningAppProcessInfo proc : running) {
+				if (proc.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+						&& proc.processName.equals(getPackageName())) {
+					return true;
+				}
+			}
+			return false;
+		}
+	}
+
+	private void startAutoAnswerCountdownWithProgress(String callId, String from_uri, String mediaType, int notificationId, int seconds, boolean phoneLocked) {
 		final Handler handler = new Handler(Looper.getMainLooper());
 		final long endTime = System.currentTimeMillis() + seconds * 1000L;
 	
@@ -572,7 +574,7 @@ public class IncomingCallService extends Service {
 								.setAction("ACTION_ACCEPT_AUDIO")
 								.putExtra("session-id", callId)
 								.putExtra("from_uri", from_uri)
-								.putExtra("phoneLocked", false)
+								.putExtra("phoneLocked", phoneLocked)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 				);
@@ -583,7 +585,7 @@ public class IncomingCallService extends Service {
 								.setAction("ACTION_REJECT_CALL")
 								.putExtra("session-id", callId)
 								.putExtra("from_uri", from_uri)
-								.putExtra("phoneLocked", false)
+								.putExtra("phoneLocked", phoneLocked)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 				);
@@ -618,7 +620,7 @@ public class IncomingCallService extends Service {
 					handler.postDelayed(this, 1000); // update every second
 				} else {
 					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callId);
-					handleAcceptCall(callId, from_uri, mediaType, notificationId);
+					handleAcceptCall(callId, from_uri, mediaType, notificationId, phoneLocked);
 				}
 			}
 		};

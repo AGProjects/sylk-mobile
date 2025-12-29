@@ -108,6 +108,6 @@ public class MainActivity extends ReactActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        //Log.w("[SYLK]", "MainActivity onPause (focus lost)");
+        Log.w("[SYLK]", "MainActivity lost focus");
     }
 }
