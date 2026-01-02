@@ -34,6 +34,7 @@ public class IncomingCallActivity extends AppCompatActivity {
     private int notificationId;
     private String mediaType;
     private String from_uri;
+    private String to_uri;
     private boolean phoneLocked;
 
     private Handler timeoutHandler = new Handler(Looper.getMainLooper());
@@ -82,6 +83,7 @@ public class IncomingCallActivity extends AppCompatActivity {
             notificationId = Math.abs(callId != null ? callId.hashCode() : 0);
             mediaType = getIntent().getStringExtra("media-type");
             from_uri = getIntent().getStringExtra("from_uri");
+            to_uri = getIntent().getStringExtra("to_uri");
             phoneLocked = getIntent().getBooleanExtra("phoneLocked", false);
         }
 
@@ -161,6 +163,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked)
 				.putExtra("from_uri", from_uri)
+				.putExtra("to_uri", to_uri)
 				.putExtra("notification-id", notificationId);
 	
 		sendBroadcast(intent);
@@ -175,6 +178,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked ? "true" : "false")
 				.putExtra("from_uri", from_uri)
+				.putExtra("to_uri", to_uri)
 				.putExtra("notification-id", notificationId);
 	
 		sendBroadcast(intent);

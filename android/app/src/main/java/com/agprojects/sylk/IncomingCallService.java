@@ -272,10 +272,11 @@ public class IncomingCallService extends Service {
 
         // IncomingCallService → PendingIntent → BroadcastReceiver, from_uri is not being passed.
 
+        String action = intent.getAction();
         String event = intent.getStringExtra("event");
         String callId = intent.getStringExtra("session-id");
         String from_uri = intent.getStringExtra("from_uri");
-        String toUri = intent.getStringExtra("to_uri");
+        String to_uri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
@@ -285,6 +286,8 @@ public class IncomingCallService extends Service {
 
 		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId + " from " + from_uri);
 		Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
+		Log.w(LOG_TAG, "action " + action);
+		Log.w(LOG_TAG, "event " + event);
 
         if (callId == null || event == null) {
             Log.w(LOG_TAG, "Missing callId or event");
@@ -296,8 +299,8 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
 		}
 
-        if ("cancel".equals(event) || "ACTION_REJECT_CALL".equals(event)) {
-            Log.d(LOG_TAG, "action received: " + event + " for " + callId);
+        if ("cancel".equals(action) || "ACTION_REJECT_CALL".equals(action)) {
+            Log.d(LOG_TAG, "action received: " + action + " for " + callId);
 			stopRingtone();
 	        handledCalls.add(callId);
 			// Cancel auto-answer if scheduled
@@ -317,11 +320,11 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
            
-		if ("ACTION_ACCEPT_AUDIO".equals(event) || "ACTION_ACCEPT_VIDEO".equals(event)) {		 
+		if ("ACTION_ACCEPT_AUDIO".equals(action) || "ACTION_ACCEPT_VIDEO".equals(action)) {		 
 			Log.d(LOG_TAG, "Starting app for accepted call " + callId + " from " + from_uri);
 			stopRingtone();
-			String acceptedMediaType = "ACTION_ACCEPT_AUDIO".equals(event) ? "audio" : "video";
-			handleAcceptCall(callId, from_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked);
+			String acceptedMediaType = "ACTION_ACCEPT_AUDIO".equals(action) ? "audio" : "video";
+			handleAcceptCall(callId, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
 			return START_NOT_STICKY;
 		}
 
@@ -331,7 +334,7 @@ public class IncomingCallService extends Service {
             
             if ("incoming_conference_request".equals(event)) {
 				title = "Sylk Conference Call";
-				String room = toUri.split("@")[0];
+				String room = to_uri.split("@")[0];
 				String caller = from_uri;
 				
 				if (caller.contains("anonymous")) {
@@ -347,7 +350,7 @@ public class IncomingCallService extends Service {
             }
 
 			if (isAutoAnswer(from_uri)) {
-    			startAutoAnswerCountdownWithProgress(callId, from_uri, mediaType, notificationId, 20, phoneLocked);
+    			startAutoAnswerCountdownWithProgress(callId, from_uri, to_uri, mediaType, notificationId, 20, phoneLocked, event);
 			}
 
             // Variant 1. This launches the main app when incoming call arrives (make sure RN app shows the alert panel)
@@ -374,16 +377,6 @@ public class IncomingCallService extends Service {
 				this, notificationId, fullScreenIntent,
 				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
-
-            /*
-			new Handler(Looper.getMainLooper()).post(() -> {
-				Intent activityIntent = new Intent(this, IncomingCallActivity.class);
-				activityIntent.putExtras(intent);
-				activityIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-				startActivity(activityIntent);
-			});
-			*/
-
 			
             // Variant 3. This launches the notifications bubble when incoming call arrives
             /*
@@ -402,7 +395,9 @@ public class IncomingCallService extends Service {
 					new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_REJECT_CALL")
 							.putExtra("session-id", callId)
-							.putExtra("from_uri", from_uri) 
+							.putExtra("from_uri", from_uri)
+							.putExtra("to_uri", to_uri)
+							.putExtra("event", event)
 							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -415,6 +410,8 @@ public class IncomingCallService extends Service {
 							.setAction("ACTION_ACCEPT_AUDIO")
 							.putExtra("session-id", callId)
 							.putExtra("from_uri", from_uri) 
+							.putExtra("to_uri", to_uri)
+							.putExtra("event", event)
 							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -427,6 +424,8 @@ public class IncomingCallService extends Service {
 							.setAction("ACTION_ACCEPT_VIDEO")
 							.putExtra("session-id", callId)
 							.putExtra("from_uri", from_uri) 
+							.putExtra("to_uri", to_uri)
+							.putExtra("event", event)
 							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -490,12 +489,20 @@ public class IncomingCallService extends Service {
 		return START_STICKY;
     }
 
-	private void handleAcceptCall(String callId, String from_uri, String mediaType, int notificationId, boolean phoneLocked) {
+	private void handleAcceptCall(String callId, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
+		stopRingtone();
+
 		if (callId == null) return;
 	
-		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked);
-	
-		stopRingtone();
+		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked + " event " + event );
+		Log.d(LOG_TAG, "handleAcceptCall from_uri: " + from_uri);
+		Log.d(LOG_TAG, "handleAcceptCall to_uri: " + to_uri);
+		Log.d(LOG_TAG, "handleAcceptCall mediaType: " + mediaType);
+		
+		String action = "ACTION_ACCEPT_AUDIO";
+		if ("video".equalsIgnoreCase(mediaType)) {
+			action = "ACTION_ACCEPT_VIDEO";
+		}
 	
 		// Cancel any scheduled auto-answer countdown
 		Runnable scheduled = autoAnswerRunnables.remove(callId);
@@ -514,8 +521,9 @@ public class IncomingCallService extends Service {
 			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
 			launchIntent.putExtra("session-id", callId);
 			launchIntent.putExtra("from_uri", from_uri);
+			launchIntent.putExtra("to_uri", to_uri);
 			launchIntent.putExtra("media-type", mediaType);
-			launchIntent.putExtra("event", "auto_accept");
+			launchIntent.putExtra("event", event);
 			launchIntent.putExtra("phoneLocked", phoneLocked);
 			startActivity(launchIntent);
 			Log.d(LOG_TAG, "RN app launched for call: " + callId);
@@ -523,7 +531,7 @@ public class IncomingCallService extends Service {
 
 		// RN app alive → send event only
 		if (getApplication() instanceof ReactApplication) {
-			ReactEventEmitter.sendEventToReact("ACTION_ACCEPT_AUDIO", callId, from_uri, false, (ReactApplication) getApplication());
+			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, false, event, (ReactApplication) getApplication());
 			Log.d(LOG_TAG, "Sent React Native event for call: " + callId);
 		}
 	
@@ -548,7 +556,7 @@ public class IncomingCallService extends Service {
 		}
 	}
 
-	private void startAutoAnswerCountdownWithProgress(String callId, String from_uri, String mediaType, int notificationId, int seconds, boolean phoneLocked) {
+	private void startAutoAnswerCountdownWithProgress(String callId, String from_uri, String to_uri, String mediaType, int notificationId, int seconds, boolean phoneLocked, String event) {
 		final Handler handler = new Handler(Looper.getMainLooper());
 		final long endTime = System.currentTimeMillis() + seconds * 1000L;
 	
@@ -574,6 +582,8 @@ public class IncomingCallService extends Service {
 								.setAction("ACTION_ACCEPT_AUDIO")
 								.putExtra("session-id", callId)
 								.putExtra("from_uri", from_uri)
+								.putExtra("to_uri", to_uri)
+								.putExtra("event", event)
 								.putExtra("phoneLocked", phoneLocked)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -585,6 +595,7 @@ public class IncomingCallService extends Service {
 								.setAction("ACTION_REJECT_CALL")
 								.putExtra("session-id", callId)
 								.putExtra("from_uri", from_uri)
+								.putExtra("to_uri", to_uri)
 								.putExtra("phoneLocked", phoneLocked)
 								.putExtra("notification-id", notificationId),
 						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -620,7 +631,7 @@ public class IncomingCallService extends Service {
 					handler.postDelayed(this, 1000); // update every second
 				} else {
 					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callId);
-					handleAcceptCall(callId, from_uri, mediaType, notificationId, phoneLocked);
+					handleAcceptCall(callId, from_uri, to_uri,  mediaType, notificationId, phoneLocked, event);
 				}
 			}
 		};

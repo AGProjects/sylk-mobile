@@ -38,7 +38,9 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
         String action = intent.getAction();
 		String callUUID = intent.getStringExtra("session-id");
+		String event = intent.getStringExtra("event");
 		String from_uri = intent.getStringExtra("from_uri");
+		String to_uri = intent.getStringExtra("to_uri");
 		String phoneLockedStr = intent.getStringExtra("phoneLocked");
 		boolean phoneLocked = "true".equals(phoneLockedStr);
 		int notificationId = intent.getIntExtra("notification-id", -1);
@@ -46,6 +48,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
             Log.d(LOG_TAG, "Local user action: " + action + " for call: " + callUUID);
+            Log.d(LOG_TAG, "event " + event);
 
             // Cancel notification immediately
             if (notificationId != -1) {
@@ -53,9 +56,9 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 Log.d(LOG_TAG, "Notification canceled immediately: " + notificationId);
             }
 
-			Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
+			//Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
 
-            ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, phoneLocked, (ReactApplication) context.getApplicationContext());
+            ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, to_uri, phoneLocked,  event, (ReactApplication) context.getApplicationContext());
 
 			// 2. Close the IncomingCallActivity layout
 			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");
@@ -65,9 +68,11 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
             // Notify IncomingCallService to clean up
             if (notificationId != -1) {
                 Intent cleanupIntent = new Intent(context, IncomingCallService.class);
-                cleanupIntent.putExtra("event", action);
+                cleanupIntent.setAction(action);
+                cleanupIntent.putExtra("event", event);
                 cleanupIntent.putExtra("session-id", callUUID);
                 cleanupIntent.putExtra("from_uri", from_uri);
+                cleanupIntent.putExtra("to_uri", to_uri);
                 cleanupIntent.putExtra("phoneLocked", phoneLocked);
                 cleanupIntent.putExtra("notification-id", notificationId);
 

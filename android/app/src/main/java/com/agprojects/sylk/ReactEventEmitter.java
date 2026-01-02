@@ -19,7 +19,9 @@ public class ReactEventEmitter {
             String action,
             String callUUID,
             String fromUri,
+            String toUri,
             boolean phoneLocked,
+            String event,
             ReactApplication app
     ) {
         try {
@@ -30,8 +32,13 @@ public class ReactEventEmitter {
             WritableMap payload = Arguments.createMap();
             payload.putString("callUUID", callUUID);
             payload.putString("fromUri", fromUri);
+            payload.putString("toUri", toUri);
             payload.putString("action", action);
+            payload.putString("event", event);
             payload.putBoolean("phoneLocked", phoneLocked);
+
+            Log.d(LOG_TAG, "action " + action);
+            Log.d(LOG_TAG, "event " + event);
 
 			if (rc != null && CallEventModule.isRNready()) {
                 Log.d(LOG_TAG, "RN ready → event emitted");
