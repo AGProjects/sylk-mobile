@@ -268,6 +268,10 @@ class CallOverlay extends React.Component {
 				width: this.state.isLandscape ? width - rightInset: width,
 				height: 60,
 			}
+			
+			if (Platform.OS === 'ios') {
+				barContainer.marginTop = -topInset;
+			}
         
 			header = (
 				<Appbar.Header style={[barContainer]}

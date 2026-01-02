@@ -228,6 +228,7 @@ function fixLocalUrl(localUrl) {
 }
 
 async function sql2GiftedChat(item, content, filter = {}) {
+    //console.log('-- sql2GiftedChat', item);
     let msg;
     let image = null;
     let video = null;
@@ -440,11 +441,11 @@ async function sql2GiftedChat(item, content, filter = {}) {
         user: item.direction === "incoming"
             ? { _id: from_uri, name: from_uri }
             : {}
+
     };
 
     return msg;
 }
-
 
 function beautyFileNameForBubble(metadata, lastMessage=false) {
     let text = metadata.filename;
@@ -1084,7 +1085,7 @@ const availableAudioDeviceNames = {
 	BLUETOOTH_SCO: 'Bluetooth',
 	BUILTIN_SPEAKER: 'Speaker',
 };
-
+                    
 exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;

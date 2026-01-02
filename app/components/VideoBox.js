@@ -543,7 +543,6 @@ class VideoBox extends Component {
 		};
 
         const debugBorderWidth = 0;
-        
         const myVideoCorner = this.state.myVideoCorner;
 
         let container = styles.container;
@@ -561,6 +560,7 @@ class VideoBox extends Component {
                     icon="account-plus"
                 />
                 : null}
+
                 <IconButton
                     size={buttonSize}
                     style={buttonClass}
@@ -573,6 +573,7 @@ class VideoBox extends Component {
                     onPress={this.muteVideo}
                     icon={muteVideoButtonIcons}
                 />
+
                 <IconButton
                     size={buttonSize}
                     style={[buttonClass]}
@@ -604,8 +605,6 @@ class VideoBox extends Component {
                     onPress={this.hangupCall}
                     icon="phone-hangup"
                 />
-                
-                
             </View>);
             buttons = (<View style={buttonsContainer}>{content}</View>);
         }
@@ -671,18 +670,18 @@ class VideoBox extends Component {
 			// ios
 		      if (this.state.isLandscape) {
 				  corners = {
-					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight, left: this.state.fullScreen ? -topInset : 0 },
-					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight, right: this.state.fullScreen  ? -25 - bottomInset: -25 },
-					  bottomRight: { bottom: -bottomInset, right: this.state.fullScreen  ? -25 - bottomInset: -25 },
-					  bottomLeft: { bottom: -bottomInset, left: this.state.fullScreen ? -topInset : 0 },
+					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight,  left: this.state.fullScreen ? -rightInset -topInset : 0 },
+					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight, right: -rightInset},
+					  bottomRight: { bottom: -bottomInset,                          right: -rightInset },
+					  bottomLeft: { bottom: -bottomInset,                           left: this.state.fullScreen ? -rightInset -topInset : 0 },
 					  id: 'ios-landscape'
 				  };
 
 				remoteVideoContainer = {
 					position: 'absolute',
-					left: this.state.fullScreen ? - topInset : 0,
+					left: this.state.fullScreen ? - rightInset : 0,
 					top: this.state.fullScreen ? 0 : headerBarHeight,
-					width: this.state.fullScreen ? width: width - bottomInset - topInset,
+					width: this.state.fullScreen ? width: width -rightInset -topInset,
 					height: this.state.fullScreen ? height : height - topInset ,
 					borderWidth: debugBorderWidth,
 					borderColor: 'red'

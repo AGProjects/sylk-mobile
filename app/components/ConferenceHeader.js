@@ -275,7 +275,7 @@ class ConferenceHeader extends React.Component {
 			
 			  {/* Title + Subtitle */}
 			  <View style={{ flexDirection: 'column', justifyContent: 'center', flex: 1 }}>
-				<Text style={{ fontSize: 18, fontWeight: 'bold', color: 'white' }}>
+				<Text style={{ fontSize: 16, fontWeight: 'bold', color: 'white' }}>
 				  {displayName}
 				</Text>
 				<Text style={{ fontSize: 14, color: 'white' }}>
@@ -357,9 +357,7 @@ class ConferenceHeader extends React.Component {
 								/>
 							);
 						})}
-					</Menu>
-				
-					
+					</Menu>			
                 </Menu>
 
 			  </View>

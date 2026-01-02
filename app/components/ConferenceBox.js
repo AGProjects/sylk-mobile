@@ -229,7 +229,8 @@ class ConferenceBox extends Component {
             statistics: [],
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
-		    insets: this.props.insets
+		    insets: this.props.insets,
+		    publicUrl: this.props.publicUrl
         };
 
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
@@ -480,7 +481,8 @@ class ConferenceBox extends Component {
                        selectedContacts: nextProps.selectedContacts,
 					   availableAudioDevices: nextProps.availableAudioDevices,
 					   selectedAudioDevice: nextProps.selectedAudioDevice,
-					   insets: nextProps.insets
+					   insets: nextProps.insets,
+					   publicUrl: nextProps.publicUrl
                        });
 
     }
@@ -2298,7 +2300,7 @@ class ConferenceBox extends Component {
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
         const conferenceUrl = `${this.state.publicUrl}/conference/${friendlyName}`;
 
-        //console.log(this.state.statistics);
+        //console.log(this.state.publicUrl);
         let container = styles.container;
 
 		let { width, height } = Dimensions.get('window');
@@ -2312,7 +2314,7 @@ class ConferenceBox extends Component {
 		const bottomInset = this.state.insets.bottom || 0;
 		const leftInset = this.state.insets.left || 0;
 		const rightInset = this.state.insets.right || 0;
-		let debugBorderWidth = 1;
+		let debugBorderWidth = 0;
 		
 		if (this.props.audioOnly) {
 			chatContainer = this.state.isLandscape ? styles.chatContainerLandscapeAudio : styles.chatContainerPortraitAudio;
@@ -2511,6 +2513,8 @@ class ConferenceBox extends Component {
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'gray'
 			};
+			
+			const insets = this.state.insets;
 
 			if (debugBorderWidth) {
 				const values = {
@@ -2524,6 +2528,7 @@ class ConferenceBox extends Component {
 				  conferenceContainer,
 				  mediaContainer,
 				  chatContainer,
+				  insets				  
 				};
 
 				const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
@@ -2973,8 +2978,8 @@ class ConferenceBox extends Component {
 
 		          } else {
 						corners = {
-						  topLeft: { top: conferenceHeader.height +5, left: 0 },
-						  topRight: { top: conferenceHeader.height + 5, right: 0 },
+						  topLeft: { top: conferenceHeader.height, left: 0 },
+						  topRight: { top: conferenceHeader.height, right: 0 },
 						  bottomRight: { bottom: 0, right:  0 },
 						  bottomLeft: { bottom: 0, left: 0},
 						  id: 'ios-landscape'
@@ -2994,7 +2999,6 @@ class ConferenceBox extends Component {
 					  justifyContent: 'flex-start',
 					  height: height - conferenceHeader.height,
 					  width: width - rightInset - topInset,
-					  marginTop: conferenceHeader.height,
 					  borderColor: 'green',
 					  borderWidth: debugBorderWidth,
 					};
@@ -3037,7 +3041,7 @@ class ConferenceBox extends Component {
 				  marginTop: 0,
 				  height: this.fullScreen ? height: '100%',
 				  width: width,
-				  borderWidth: debugBorderWidth,
+				  borderWidth: debugBorderWidth, 
 				  borderColor: 'white'
 				};		
 			}
@@ -3047,42 +3051,39 @@ class ConferenceBox extends Component {
 		    if (this.state.isLandscape) {
 		          if (this.fullScreen) {
 					  corners = {
-						  topLeft: { top: 0, left: rightInset },
-						  topRight: { top: 0, right:  -rightInset},
-						  bottomRight: { bottom: 0, right: -rightInset },
-						  bottomLeft: { bottom: 0, left: rightInset},
-						  id: 'android-landscape'
+						  topLeft: { top: 0, left: 48 },
+						  topRight: { top: 0, right:  -48},
+						  bottomRight: { bottom: 0, right: -48 },
+						  bottomLeft: { bottom: 0, left: 48},
+						  id: 'android-landscape-fs'
 					  };
+
+					container = {
+						flex: 1,
+						flexDirection: 'column',
+						borderWidth: debugBorderWidth,
+						borderColor: 'red',
+//						transform: this.fullScreen ? [{ translateY: statusBarHeight }] : [],
+					};
+	
+					mediaContainer = {
+					  position: 'absolute',
+					  resizeMode: 'cover',
+					  height:  '100%',
+					  width: '100%',
+					  borderWidth: debugBorderWidth,
+					  borderColor: 'white',
+					};		
 				  } else {
 					  corners = {
 						  topLeft: { top: conferenceHeader.height, left: rightInset },
-						  topRight: { top: conferenceHeader.height, right: 0 },
-						  bottomRight: { bottom: 0, right: 0},
+						  topRight: { top: conferenceHeader.height, right: -rightInset },
+						  bottomRight: { bottom: 0, right: -rightInset},
 						  bottomLeft: { bottom: 0, left: rightInset},
 						  id: 'android-landscape'
 					  };
 				  }
 
-				container = {
-					flex: 1,
-					flexDirection: 'column',
-					marginRight: 0,
-					marginTop: this.fullScreen ? 0 : topInset,
-				    width: this.fullScreen ? width: width - navigationBarHeight,
-				    height: this.fullScreen ? height + navigationBarHeight : '100%',
-					marginBottom: marginBottom,
-					borderWidth: debugBorderWidth,
-					borderColor: 'red'
-				};
-
-				mediaContainer = {
-				  position: 'absolute',
-				  resizeMode: 'cover',
-				  height: this.fullScreen ? height : '100%',
-				  width: this.fullScreen ? width : width - navigationBarHeight,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white',
-				};		
 
 //			  transform: this.fullScreen ? [{ translateY: -statusBarHeight }] : [],
 			} else {

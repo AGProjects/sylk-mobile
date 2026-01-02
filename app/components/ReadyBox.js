@@ -517,7 +517,7 @@ class ReadyBox extends Component {
         }
 
         if (this.state.isLandscape) {
-            //return false;
+            return false;
         }
 
 
@@ -1256,6 +1256,8 @@ class ReadyBox extends Component {
 				this.onStopRecord();
 			}, 30000);
 
+			this.props.vibrate();
+
         } catch (e) {
             console.log(e.message);
         }
@@ -1410,7 +1412,7 @@ class ReadyBox extends Component {
 
 		const { width, height } = Dimensions.get('window');
 		const isLandscape = width > height;
-		const marginRight = isLandscape && Platform.OS === 'android' ? bottomInset : 0;
+		const marginRight = isLandscape ? rightInset : 0;
 
 		let containerWidth = width;
 		let containerHeight = height;
@@ -1426,12 +1428,13 @@ class ReadyBox extends Component {
 				containerExtraStyles.width = containerWidth - rightInset;
 				containerExtraStyles.borderWidth = 0;
 				containerExtraStyles.borderColor = 'red';
+				containerExtraStyles.marginBottom = -bottomInset;
 				
 			}
 		} else {
 			if (isLandscape) {
 				containerExtraStyles.width = containerWidth - rightInset;
-				containerExtraStyles.marginBottom = - rightInset;
+				containerExtraStyles.marginBottom = -rightInset;
 			}
 		}
 		
@@ -1498,7 +1501,7 @@ class ReadyBox extends Component {
                         </View>
                         : null}
 
-                           {this.showBackToCallButton ?
+                           {(this.showBackToCallButton && !this.showButtonsBar)?
                             <View style={buttonGroupClass}>
                                 <Button
                                     mode="contained"
@@ -2005,6 +2008,7 @@ ReadyBox.propTypes = {
 	selectAudioDevice: PropTypes.func,
 	updateFileTransferMetadata: PropTypes.func,
 	insets: PropTypes.object,
+	vibrate: PropTypes.func
 };
 
 export default ReadyBox;

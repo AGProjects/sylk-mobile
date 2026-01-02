@@ -145,8 +145,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         missingDimensionStrategy "RNNotifications.reactNativeVersion", "reactNative60"
         missingDimensionStrategy "react-native-camera", "general"
-        versionCode 416
-        versionName "4.1.6"
+        versionCode 425
+        versionName "4.2.5"
         multiDexEnabled true
     }
 

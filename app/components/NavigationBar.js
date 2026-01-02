@@ -78,7 +78,8 @@ class NavigationBar extends Component {
 			serverSettingsUrl: this.props.serverSettingsUrl,
 			publicUrl: this.props.publicUrl,
 			insets: this.props.insets,
-			call: this.props.call
+			call: this.props.call,
+			deleteContact: false
         }
 
         this.menuRef = React.createRef();
@@ -144,52 +145,56 @@ class NavigationBar extends Component {
 			this.setState({showDeleteFileTransfers: nextProps.showDeleteFileTransfers});
         }
 
+        if ('deleteContact' in nextProps) {
+			this.setState({deleteContact: nextProps.deleteContact});
+        }
+
         this.setState({registrationState: nextProps.registrationState,
-                       connection: nextProps.connection,
-                       syncConversations: nextProps.syncConversations,
-                       contactsLoaded: nextProps.contactsLoaded,
-                       displayName: displayName,
-                       myDisplayName: nextProps.myDisplayName,
-                       appStoreVersion: nextProps.appStoreVersion,
-                       showExportPrivateKeyModal: nextProps.showExportPrivateKeyModal,
-                       email: nextProps.email,
-                       organization: organization,
-                       proximity: nextProps.proximity,
-                       account: nextProps.account,
-                       userClosed: true,
-                       inCall: nextProps.inCall,
-                       publicKey: nextProps.publicKey,
-                       showGenerateKeysModal: nextProps.showGenerateKeysModal,
-                       messages: nextProps.messages,
-                       showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
-                       blockedUris: nextProps.blockedUris,
-                       filteredMessageIds: nextProps.filteredMessageIds,
-                       contentTypes: nextProps.contentTypes,
-                       sharingAction: nextProps.sharingAction,
-                       dnd: nextProps.dnd,
-                       myuuid: nextProps.myuuid,
-                       myPhoneNumber: nextProps.myPhoneNumber,
- 					   transferedFiles: nextProps.transferedFiles,
- 					   rejectAnonymous: nextProps.rejectAnonymous,
- 					   chatSounds: nextProps.chatSounds,
- 					   rejectNonContacts: nextProps.rejectNonContacts,
- 					   searchMessages: nextProps.searchMessages,
- 					   searchContacts: nextProps.searchContacts,
- 					   isLandscape: nextProps.isLandscape,
-					   serverSettingsUrl: nextProps.serverSettingsUrl,
-					   publicUrl: nextProps.publicUrl,
-					   insets: nextProps.insets,
-					   call: nextProps.call
-                       });
+			   connection: nextProps.connection,
+			   syncConversations: nextProps.syncConversations,
+			   contactsLoaded: nextProps.contactsLoaded,
+			   displayName: displayName,
+			   myDisplayName: nextProps.myDisplayName,
+			   appStoreVersion: nextProps.appStoreVersion,
+			   showExportPrivateKeyModal: nextProps.showExportPrivateKeyModal,
+			   email: nextProps.email,
+			   organization: organization,
+			   proximity: nextProps.proximity,
+			   account: nextProps.account,
+			   userClosed: true,
+			   inCall: nextProps.inCall,
+			   publicKey: nextProps.publicKey,
+			   showGenerateKeysModal: nextProps.showGenerateKeysModal,
+			   messages: nextProps.messages,
+			   showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
+			   blockedUris: nextProps.blockedUris,
+			   filteredMessageIds: nextProps.filteredMessageIds,
+			   contentTypes: nextProps.contentTypes,
+			   sharingAction: nextProps.sharingAction,
+			   dnd: nextProps.dnd,
+			   myuuid: nextProps.myuuid,
+			   myPhoneNumber: nextProps.myPhoneNumber,
+			   transferedFiles: nextProps.transferedFiles,
+			   rejectAnonymous: nextProps.rejectAnonymous,
+			   chatSounds: nextProps.chatSounds,
+			   rejectNonContacts: nextProps.rejectNonContacts,
+			   searchMessages: nextProps.searchMessages,
+			   searchContacts: nextProps.searchContacts,
+			   isLandscape: nextProps.isLandscape,
+			   serverSettingsUrl: nextProps.serverSettingsUrl,
+			   publicUrl: nextProps.publicUrl,
+			   insets: nextProps.insets,
+			   call: nextProps.call,
+			   deleteContact: nextProps.deleteContact
+		   });
 
-                    if (nextProps.menuVisible) {
-                        console.log('Next menu visible', nextProps.menuVisible);
-                    }
-                    
-                    if ('backupKey' in nextProps) {
-                        this.setState({backupKey: nextProps.backupKey});
-                    }
-
+		   if (nextProps.menuVisible) {
+		       console.log('Next menu visible', nextProps.menuVisible);
+		   }
+			
+		   if ('backupKey' in nextProps) {
+		       this.setState({backupKey: nextProps.backupKey});
+		   }
     }
 
     handleMenu(event) {
@@ -258,7 +263,10 @@ class NavigationBar extends Component {
                 this.props.toggleSearchMessages();
                 break;
             case 'deleteMessages':
-                this.setState({showDeleteHistoryModal: true});
+                this.setState({showDeleteHistoryModal: true, deleteContact: false});
+                break;
+            case 'deleteContact':
+                this.setState({showDeleteHistoryModal: true, deleteContact: true});
                 break;
             case 'deleteFileTransfers':
                 this.setState({showDeleteFileTransfers: true});
@@ -363,7 +371,7 @@ class NavigationBar extends Component {
     }
 
     closeDeleteHistoryModal() {
-        this.setState({showDeleteHistoryModal: false});
+        this.setState({showDeleteHistoryModal: false, deleteContact: false});
     }
 
     closeDeleteFileTransfers() {
@@ -713,7 +721,7 @@ class NavigationBar extends Component {
                         : null
                         }
 
-                        {!this.state.searchMessages && this.myself && !this.state.selectedContact ?
+                        {!this.state.searchMessages && false?
                         <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> 
                         : null}
 
@@ -734,7 +742,6 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
 
-
                         {!isConference && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
                         : null}
@@ -752,7 +759,7 @@ class NavigationBar extends Component {
                         : null}
 
                         {!this.state.inCall && tags.indexOf('test') === -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title={deleteTitle}/>
+                        <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
                         : null}
                         
                     </Menu>
@@ -849,6 +856,7 @@ class NavigationBar extends Component {
                     deleteMessages={this.props.deleteMessages}
                     filteredMessageIds={this.state.filteredMessageIds}
                     selectedContact={this.state.selectedContact}
+                    deleteContact={this.state.deleteContact}
                     myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
                 />
 
@@ -983,7 +991,6 @@ NavigationBar.propTypes = {
     startConference    : PropTypes.func,
     saveContact        : PropTypes.func,
     addContact         : PropTypes.func,
-    deleteContact      : PropTypes.func,
     removeContact      : PropTypes.func,
     deletePublicKey    : PropTypes.func,
     sendPublicKey      : PropTypes.func,

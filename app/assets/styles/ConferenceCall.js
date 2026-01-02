@@ -115,6 +115,8 @@ const styles = StyleSheet.create({
   carouselContainer: {
     position: 'absolute',
     justifyContent: 'center',
+    borderColor: 'white',
+    borderWidth: 0,
     bottom: 30,
     left: 5,
     right: 5,

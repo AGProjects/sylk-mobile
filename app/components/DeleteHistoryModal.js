@@ -112,7 +112,7 @@ class DeleteHistoryModal extends Component {
             periodFilterKey: '2',
             periodType: 'after',
             remoteDelete: true,
-            deleteContact: false,
+            deleteContact: this.props.deleteContact,
             confirm: false,
             confirm_again: false,
             incoming: false,
@@ -150,8 +150,6 @@ class DeleteHistoryModal extends Component {
     deleteMessages(event) {
         event.preventDefault();
         if (this.state.confirm_again) {
-            this.setState({ confirm: false, remoteDelete: false, deleteContact: false });
-
             const filter = {
                 period: this.getPeriodFilterDate(),
                 periodType: this.state.periodType,
@@ -163,6 +161,7 @@ class DeleteHistoryModal extends Component {
             };
     
             this.props.deleteMessages(this.state.uri, this.state.remoteDelete, filter);
+            this.setState({ confirm: false, remoteDelete: false, deleteContact: false });
             this.props.close();
         } else if (this.state.confirm) {
             this.setState({ confirm_again: true }); 
@@ -171,21 +170,18 @@ class DeleteHistoryModal extends Component {
         }
     }
 
-    deleteContact(event) {
+    deleteContactAction(event) {
         event.preventDefault();
+
         if (this.state.confirm_again) {
             this.setState({ confirm: false, remoteDelete: false, deleteContact: false });
 
             const filter = {
-                period: this.getPeriodFilterDate(),
-                periodType: this.state.periodType,
-                incoming: this.state.incoming,
-                outgoing: this.state.outgoing,
                 deleteContact: true,
                 simulate: this.state.simulate
             };
 
-            this.props.deleteMessages(this.state.uri, this.state.remoteDelete, filter);
+            this.props.deleteMessages(this.state.uri, true, filter);
             this.props.close();
         } else if (this.state.confirm) {
             this.setState({ confirm_again: true }); 
@@ -304,7 +300,7 @@ class DeleteHistoryModal extends Component {
         if (this.state.confirm) deleteLabel = 'Confirm';
         if (this.state.confirm_again) deleteLabel = 'Confirm again';
         
-        if (!this.state.hasMessages && this.state.uri) {
+        if ((!this.state.hasMessages && this.state.uri) || this.state.deleteContact) {
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
@@ -323,7 +319,7 @@ class DeleteHistoryModal extends Component {
                                         styles.button,
                                         deleteLabel.includes('Confirm') && { backgroundColor: 'red' }
                                     ]}
-                                    onPress={this.deleteContact}
+                                    onPress={this.deleteContactAction}
                                     icon="delete"
                                     accessibilityLabel="Delete"
                                 >
@@ -404,7 +400,7 @@ class DeleteHistoryModal extends Component {
                             </View>
                         )}
 
-                        {!this.state.myself && this.state.uri && this.state.filteredMessageIds.length === 0 && (
+                        {!this.state.myself && this.state.uri && this.state.filteredMessageIds.length === 0 && false && (
                             <View style={styles.checkBoxRow}>
                                 {Platform.OS === 'ios' ? (
                                     <Switch value={this.state.deleteContact} onValueChange={this.toggleDeleteContact} />
@@ -458,6 +454,7 @@ DeleteHistoryModal.propTypes = {
     uri: PropTypes.string,
     displayName: PropTypes.string,
     deleteMessages: PropTypes.func,
+    deleteContact: PropTypes.bool,
     deleteContactFunc: PropTypes.func,
     hasMessages: PropTypes.bool,
     myself: PropTypes.bool,

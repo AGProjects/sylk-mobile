@@ -652,7 +652,7 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('CallKeep: handle conference', callUUID, 'from', from_uri, 'to room', room, outgoingMedia);
+        utils.timestampedLog('CallKeep: handle conference', callUUID, room, outgoingMedia);
 
         if (this._incoming_conferences.has(callUUID)) {
             let existingConferenceRequest = this._incoming_conferences.get(callUUID);

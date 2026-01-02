@@ -49,7 +49,8 @@ class Conference extends React.Component {
 			  selectedAudioDevice: this.props.selectedAudioDevice,
 			  iceServers: this.props.iceServers,
 			  isLandscape: this.props.isLandscape,
-			  insets: this.props.insets
+			  insets: this.props.insets,
+			  publicUrl: this.props.publicUrl
         }
               
         if (this.props.connection) {
@@ -155,7 +156,8 @@ class Conference extends React.Component {
 					   availableAudioDevices: nextProps.availableAudioDevices,
 					   selectedAudioDevice: nextProps.selectedAudioDevice,
 					   insets: nextProps.insets,
-					   isLandscape: nextProps.isLandscape
+					   isLandscape: nextProps.isLandscape,
+					   publicUrl: nextProps.publicUrl
                        });
     }
 
@@ -203,7 +205,7 @@ class Conference extends React.Component {
     }
 
     async startCallWhenReady() {
-        utils.timestampedLog('Conference: start conference', this.state.callUUID, 'when ready to', this.state.room);
+        utils.timestampedLog('Conference: start conference when ready to', this.state.room);
         this.waitCounter = 0;
 
         //utils.timestampedLog('Conference: waiting for connecting to the conference', this.waitInterval, 'seconds');
@@ -246,7 +248,8 @@ class Conference extends React.Component {
         if (this.state.currentCall) {
             console.log('Conference: call already in progress');
         }
-
+        
+        //console.log('Conference START');
 
         const options = {
             id: this.state.callUUID,
@@ -267,17 +270,17 @@ class Conference extends React.Component {
             utils.timestampedLog('Initial participants', this.props.participantsToInvite);
         }
 
-		this.props.startRingback();
-		setTimeout(() => {
-			let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
-			if (confCall) {
-				confCall.on('stateChanged', this.callStateChanged);
-				this.setState({currentCall: confCall});
-			} else {
+		let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
+
+		if (confCall) {
+			this.props.startRingback();
+			this.setState({currentCall: confCall});
+			confCall.on('stateChanged', this.callStateChanged);
+			setTimeout(() => {
 				this.props.stopRingback();
-			}
-        }, 3000);
-        // see startRingback
+			}, 2000);
+		}
+
     }
 
     saveParticipant(callUUID, room, uri) {
@@ -420,6 +423,7 @@ class Conference extends React.Component {
 						selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
+						publicUrl = {this.state.publicUrl}
                    />
                 );
             } else {
@@ -508,7 +512,8 @@ Conference.propTypes = {
     startRingback           : PropTypes.func,
     stopRingback            : PropTypes.func,
     iceServers              : PropTypes.array,
-    insets                  : PropTypes.object
+    insets                  : PropTypes.object,
+    publicUrl               : PropTypes.string
 };
 
 

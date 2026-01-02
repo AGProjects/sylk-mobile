@@ -26,6 +26,7 @@ import { StatusBar } from 'react-native';
 import { createThumbnail } from "react-native-create-thumbnail";
 import { createThumbnailSafe } from '../thumbnailService';
 import UserIcon from './UserIcon';
+import { CustomMessageText } from './CustomMessageText';
 
 import * as Progress from 'react-native-progress';
 
@@ -2716,7 +2717,6 @@ class ContactsListBox extends Component {
 	        stage = stage.charAt(0).toUpperCase() + stage.substr(1).toLowerCase() + 'ing...';
 	    }
 	    
-	    
 	    let mediaLabel = currentMessage.text;
 	    if ( currentMessage.metadata?.label ) {
 		    mediaLabel = currentMessage.metadata?.label;
@@ -3239,11 +3239,29 @@ class ContactsListBox extends Component {
 					/>
 					: null}
 
-                    <MessageText
-                        {...props}
-                         {...labelProps}
-                        customTextStyle={styles.messageText}
-                    />
+				  {/* MessageText with clickable, styled links */}
+				  <CustomMessageText
+					{...props}
+					{...labelProps}
+					customTextStyle={styles.messageText}
+					linkStyle={styles.linkText}
+					enableUrlPreview={false} // disables default auto-link open
+					parse={[
+					  {
+						type: 'url',
+						style: styles.linkText,
+						onPress: (url) => {
+						  console.log('URL clicked:', url); // log click
+						  Linking.openURL(url); // open the link
+						},
+					  },
+					  {
+						pattern: /#(\w+)/,
+						style: styles.hashtag,
+						onPress: (hashtag) => console.log('Hashtag clicked:', hashtag),
+					  },
+					]}
+				  />
 
                 </View>
             );
@@ -4080,7 +4098,7 @@ scrollToMessage(id) {
                   inverted={true}
                   timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
                   infiniteScroll
-                  loadEarlier={!this.state.totalMessageExceeded && this.state.selectedContact}
+                  loadEarlier={!this.state.totalMessageExceeded && this.state.selectedContact !== null}
                   onLoadEarlier={this.loadEarlierMessages}
                 />
               </View>
