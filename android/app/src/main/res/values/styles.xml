@@ -1,16 +1,17 @@
 <resources>
 
-    <!-- Base application theme. -->
+    <!-- Base application theme -->
     <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- Text color -->
         <item name="android:textColor">#000000</item>
-    </style>
 
-    <style name="SplashTheme" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="android:windowBackground">@drawable/background_splash</item>
+        <!-- System splash (Android 12+) -->
+        <item name="android:windowSplashScreenBackground">@drawable/background_splash</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
         <item name="android:statusBarColor">@color/dark_blue</item>
     </style>
 
+    <!-- Optional transparent theme for calls / overlays -->
     <style name="Theme.Transparent" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>

@@ -1,6 +1,7 @@
 package com.agprojects.sylk;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 
@@ -16,6 +17,8 @@ import io.wazo.callkeep.RNCallKeepModule;
 
 public class MainActivity extends ReactActivity {
 
+    private static final String TAG = "[SYLK]";
+
     @Override
     protected String getMainComponentName() {
         return "Sylk";
@@ -25,8 +28,9 @@ public class MainActivity extends ReactActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Log.d("[SYLK]", "MainActivity onCreate intent=" + getIntent());
+        Log.d(TAG, "MainActivity onCreate intent=" + getIntent());
 
+        // Handle the launch intent (replaces SplashActivity)
         handleIntent(getIntent());
 
         // Fix EXTERNAL_STORAGE env (legacy native code dependency)
@@ -39,7 +43,7 @@ public class MainActivity extends ReactActivity {
                 true
             );
         } catch (ErrnoException e) {
-            e.printStackTrace();
+            Log.e(TAG, "Failed to set EXTERNAL_STORAGE", e);
         }
     }
 
@@ -49,8 +53,36 @@ public class MainActivity extends ReactActivity {
     private void handleIntent(Intent intent) {
         if (intent == null) return;
 
-        // Only keep intent parsing here if truly needed
-        // Otherwise delegate to services that call ReactEventEmitter
+        String action = intent.getAction();
+        Uri data = intent.getData();
+
+        Log.d(TAG, "handleIntent action=" + action + " data=" + data);
+
+        // This exactly mirrors what SplashActivity forwarded
+        if (Intent.ACTION_VIEW.equals(action) && data != null) {
+            handleViewIntent(data);
+        }
+
+        // ACTION_MAIN = normal launcher start
+        // Other intent types (SEND, calls, notifications)
+        // are already handled by RN / CallKeep services
+    }
+
+    /**
+     * Handle deep links (sylk://, https://webrtc.sipthor.net)
+     * Forward to React Native via Linking / event emitter
+     */
+    private void handleViewIntent(Uri uri) {
+        Log.d(TAG, "Deep link received: " + uri);
+
+        // IMPORTANT:
+        // Do NOT start another Activity here.
+        // React Native's Linking module will read getInitialURL()
+        // or receive this via onNewIntent.
+
+        // If you later want to manually emit:
+        // ReactContext ctx = getReactInstanceManager().getCurrentReactContext();
+        // ...
     }
 
     /* ----------------------------------
@@ -59,9 +91,12 @@ public class MainActivity extends ReactActivity {
     @Override
     public void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        Log.d("[SYLK]", "MainActivity onNewIntent intent=" + intent);
 
+        Log.d(TAG, "MainActivity onNewIntent intent=" + intent);
+
+        // Required so RN Linking sees updated intent
         setIntent(intent);
+
         handleIntent(intent);
     }
 
@@ -108,6 +143,6 @@ public class MainActivity extends ReactActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        Log.w("[SYLK]", "MainActivity lost focus");
+        Log.w(TAG, "MainActivity lost focus");
     }
 }
