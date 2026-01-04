@@ -1284,7 +1284,6 @@ class ContactsListBox extends Component {
 				this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
 			}
 
-
 			this.props.deleteMessage(message._id, this.state.selectedContact.uri);
 
 			message._id = messageId;

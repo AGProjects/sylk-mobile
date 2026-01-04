@@ -8504,6 +8504,14 @@ class Sylk extends Component {
 			  });
 			  hasChanges = true;
 			  break;
+
+			case 'error':
+			  Object.assign(updated, {
+				pending: false,
+				failed: true,
+			  });
+			  hasChanges = true;
+			  break;
 	
 			case 'pinned':
 			  updated.pinned = true;
