@@ -371,9 +371,16 @@ render() {
                   />
                 ) : null}
                 {contact.timestamp && (
-                  <Text style={[styles.timestamp, isDark && darkStyles.timestamp]}>
-                    {moment(contact.timestamp).format('HH:mm')}
-                  </Text>
+				<Text style={[styles.timestamp, isDark && darkStyles.timestamp]}>
+				  {contact.timestamp && (
+					moment(contact.timestamp).isSame(moment(), 'day')
+					  ? moment(contact.timestamp).format('HH:mm') // Today
+					  : moment().diff(moment(contact.timestamp), 'months') < 12
+					  ? moment(contact.timestamp).format('MMM D HH:mm') // Within last 12 months
+					  : moment(contact.timestamp).format('MMM D YY HH:mm') // Older than 12 months → show year
+				  )}
+				</Text>
+
                 )}
               </View>
               <Text style={[styles.storageText, isDark && darkStyles.textSecondary]}>

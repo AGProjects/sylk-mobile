@@ -60,7 +60,9 @@ export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) =
 
 const styles = StyleSheet.create({
   messageTextContainer: {
-    padding: 6,
+    paddingRight: 16,
+    paddingTop: 6,
+    paddingBottom: 4,
   },
 
   messageText: {
