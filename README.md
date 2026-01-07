@@ -36,21 +36,14 @@ Copyright 2022 [AG Projects](https://ag-projects.com)
 ## Features
 
 * 1-to-1 audio and video calls
-* Encrypted end-to-end text messaging
-* Encrypted end-to-end file transfers
+* Messaging and file transfers
 * Synchronization between multiple devices 
-* Multiparty conferencing for all supported media
-* Call history entries management
-* Native address book lookup
-* Native OS telephony integration
-* Multiparty conferences for all media
+* Multiparty conferencing
 * Support for landscape and portrait modes
 * Interoperable with SIP clients
 * Receive calls from the web
 
-Messages are encrypted end-to-end using OpenPGP. 
-
-File transfers are encrypted end-to-end using OpenPGP, whenever possible.
+Messages are encrypted end-to-end using methods described in RFC 9580.
 
 
 ## Credits
@@ -65,14 +58,14 @@ File transfers are encrypted end-to-end using OpenPGP, whenever possible.
 ### People
 
 * Adrian Georgescu - Project lead, maintenace and support
-* Saúl Ibarra Corretgé - Inception architect / original idea
 * Tijmen de Mes - API, Conference, Chat and desktop features
+
+### Previous contributions
+
+* Alexander Blom - Support for Self Sovereign Identity (SSI)
+* Saúl Ibarra Corretgé - Inception architect / original idea
 * Dan Jenkins - WebRTC and React Native mechanic
-* Michiel Leenaars - Strategic guidance
-
-### Old contributions
-
-* Support for Self Sovereign Identity (SSI): Alexander Blom
+* Michiel Leenaars - Liaison with NLnet Foundation
 
 
 ## Running dependencies
