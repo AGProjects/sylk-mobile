@@ -287,7 +287,7 @@ class ConferenceHeader extends React.Component {
 			  <View style={{ flexDirection: 'row', alignItems: 'center'}}>
 				{this.state.isLandscape &&
 				  this.props.buttons.bottom?.map((btn, idx) => (
-					<View key={idx} style={{ marginLeft: 8 }}>
+					<View key={idx} style={{ marginLeft: 3 }}>
 					  {btn}
 					</View>
 				  ))

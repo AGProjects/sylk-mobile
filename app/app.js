@@ -1854,7 +1854,6 @@ class Sylk extends Component {
                     }
 
                     formatted_date = contact.timestamp.getFullYear() + "-" + utils.appendLeadingZeroes(contact.timestamp.getMonth() + 1) + "-" + utils.appendLeadingZeroes(contact.timestamp.getDate()) + " " + utils.appendLeadingZeroes(contact.timestamp.getHours()) + ":" + utils.appendLeadingZeroes(contact.timestamp.getMinutes()) + ":" + utils.appendLeadingZeroes(contact.timestamp.getSeconds());
-                    //console.log('Loaded contact', item.uri, item.tags);
 
                     if(contact.participants) {
                         myInvitedParties[contact.uri.split('@')[0]] = contact.participants;
@@ -1871,6 +1870,8 @@ class Sylk extends Component {
                     if (contact.tags.indexOf('autoanswer') > -1) {
                         autoanswerUris.push(contact.uri);
                     }
+
+					//console.log(' -- Loaded contact', item.uri, contact.photo);
 
                     if (updated) {
                         this.saveSylkContact(contact.uri, contact, 'update contact at init because of ' + updated);
@@ -8702,8 +8703,9 @@ class Sylk extends Component {
 
         //console.log('confirmRead', uri, source);
         let displayed = [];
-
-        await this.ExecuteQuery("SELECT * FROM messages where from_uri = '" + uri + "' and received = 1 and encrypted not in (1) and system is NULL and to_uri = ?", [this.state.accountId]).then((results) => {
+        let params = [uri, this.state.accountId, this.state.accountId];
+    
+        await this.ExecuteQuery("SELECT * FROM messages where from_uri = ? and received = 1 and encrypted not in (1) and system is NULL and to_uri = ? and account = ? ", params).then((results) => {
             let rows = results.rows;
             if (rows.length > 0) {
                //console.log('Confirm read for', rows.length, 'new messages');
@@ -8780,13 +8782,14 @@ class Sylk extends Component {
         let contentType = message.content_type || message.contentType;
 
         let id = message.msg_id || message.id || message.transfer_id || message._id;
+	    //console.log('sendDispositionNotification', id, state);
         let uri =  message.sender ? message.sender.uri : message.from_uri;
         let timestamp = message.timestamp;
 
         if (contentType == 'application/sylk-message-metadata') {
 			let query = "UPDATE messages set received = 2 where msg_id = ? and account = ?";
 			this.ExecuteQuery(query, [id, this.state.accountId]).then((results) => {
-				utils.timestampedLog('IMDN', id, state, uri, 'saved');
+				utils.timestampedLog('IMDN', id, state, uri, 'SQL just saved');
 			}).catch((error) => {
 				utils.timestampedLog('IMDN', id, state, uri, 'error:', error.message);
 			});
@@ -8830,16 +8833,19 @@ class Sylk extends Component {
                 if (!error) {
                     if (save) {
                         let received = (state === 'delivered') ? 1 : 2;
+                        let params = [received, id, this.state.accountId];                       
                         let query = "UPDATE messages set received = ? where msg_id = ? and account = ?";
-                        this.ExecuteQuery(query, [received, id, this.state.accountId]).then((results) => {
-							utils.timestampedLog('IMDN', id, state, uri, 'sent');
+                        this.ExecuteQuery(query, params).then((result) => {
+							if (result.rowsAffected) {
+								//utils.timestampedLog('IMDN', id, state, uri, 'saved');
+							}
                         }).catch((error) => {
-							utils.timestampedLog('IMDN', id, state, uri, 'error:', error.message);
+							console.log('IMDN', id, state, uri, 'error:', error.message);
                         });
                     }
                     resolve(true);
                 } else {
-					utils.timestampedLog('IMDN', id, state, uri, 'error:', error);
+					console.log('IMDN', id, state, uri, 'error:', error);
                     resolve(false);
                 }
             });
@@ -10653,12 +10659,24 @@ class Sylk extends Component {
             uri = null;
 
             if (message.contentType === 'application/sylk-message-remove') {
+                if (!this.state.lastSyncId) {
+					continue;
+                }
                 uri = message.content.contact;
             } else if (message.contentType === 'application/sylk-conversation-remove') {
+                if (!this.state.lastSyncId) {
+					continue;
+                }
                 uri = message.content;
             } else if (message.contentType === 'application/sylk-conversation-read' ) {
+                if (!this.state.lastSyncId) {
+					continue;
+                }
                 uri = message.content;
             } else if (message.contentType === 'message/imdn') {
+                if (!this.state.lastSyncId) {
+					continue;
+                }
             } else {
                 if (message.sender.uri === this.state.account.id) {
                     uri = message.receiver;
@@ -12188,15 +12206,15 @@ class Sylk extends Component {
 
         if (data.sqlItem) {
             const item = data.sqlItem;
+			contact.timestamp = item.timestamp ? new Date(item.timestamp * 1000) : current_datetime;
 			contact.organization = item.organization;
 			contact.email = item.email;
 			contact.photo = item.photo;
 			contact.publicKey = item.public_key;
 			contact.direction = item.direction;
-			contact.tags = item.tags ? item.tags.split(',') : [];
+			contact.tags = item.tags ? item.tags.split(',').map(tag => tag.trim()) : [];
 			contact.participants = item.participants ? item.participants.split(',') : [];
 			contact.unread = item.unread_messages ? item.unread_messages.split(',') : [];
-			contact.timestamp = new Date(item.timestamp * 1000);;
 			contact.lastCallId = item.last_call_id;
 			contact.lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
 			contact.lastCallDuration = item.last_call_duration;
@@ -13108,11 +13126,14 @@ class Sylk extends Component {
 	onInsetsChange = (insets) => {
 	  if (
 		!this._lastInsets ||
-		this._lastInsets.top !== insets.top ||
-		this._lastInsets.bottom !== insets.bottom
+		this._lastInsets.bottom !== insets.bottom ||
+		this._lastInsets.top !== insets.top       ||
+		this._lastInsets.left !== insets.left     ||
+		this._lastInsets.right !== insets.right
 	  ) {
+		console.log('insets changed', insets);
 		this._lastInsets = insets;
-		this.setState({ insets }); // safe because called from callback, not render
+		this.setState({ insets });
 	  }
 	};
 
@@ -13170,11 +13191,8 @@ return (
           >
             <SafeAreaInsetsContext.Consumer>
               {(insets) => {
-				if (!this._lastInsets) {
-				  this._lastInsets = insets;
-				  // set initial state once in componentDidMount or constructor
-				  this.onInsetsChange(insets);
-				}
+			  //this._lastInsets = insets;
+			  this.onInsetsChange(insets);
 
                 return (
                   <SafeAreaView
@@ -13513,7 +13531,7 @@ return (
                     isLandscape = {this.state.orientation === 'landscape'}
                     serverSettingsUrl = {this.state.serverSettingsUrl}
                     publicUrl = {this.state.publicUrl}
-					insets = {this.state.insets}
+					insets = {this._lastInsets}
 					call = {this.state.currentCall || this.state.incomingCall}
                 />
                 : null}
@@ -13616,7 +13634,7 @@ return (
 					createChatContact = {this.createChatContact}
 					selectAudioDevice = {this.selectAudioDevice}
 					updateFileTransferMetadata = {this.updateFileTransferMetadata}
-					insets = {this.state.insets}
+					insets = {this._lastInsets}
 					vibrate = {this.vibrate}
                 />
 
@@ -13725,7 +13743,7 @@ return (
 				selectedAudioDevice = {this.state.selectedAudioDevice}
 				selectAudioDevice = {this.selectAudioDevice}
 				iceServers = {this.state.iceServers}
-				insets = {this.state.insets}
+				insets = {this._lastInsets}
             />
         )
     }
@@ -13834,7 +13852,7 @@ return (
 				stopRingback = {this.stopRingback}
 				publicUrl = {this.state.publicUrl}
 				iceServers = {this.state.iceServers}
-				insets = {this.state.insets}
+				insets = {this._lastInsets}
             />
         )
     }

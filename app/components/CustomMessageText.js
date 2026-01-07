@@ -1,4 +1,3 @@
-// CustomMessageText.js
 import React from 'react';
 import { View, StyleSheet, Linking } from 'react-native';
 import ParsedText from 'react-native-parsed-text';

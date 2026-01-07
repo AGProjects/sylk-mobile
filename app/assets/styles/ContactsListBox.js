@@ -232,8 +232,11 @@ replyPreviewContainerOutgoing: {
     backgroundColor: '#4CAF50',
     borderRadius: 2,
   },
+
   replyPreviewText: {
-    fontSize: 12,
+    marginTop: 6,
+    marginRight: 6,
+    fontSize: 11,
     color: '#fff',
   },
   

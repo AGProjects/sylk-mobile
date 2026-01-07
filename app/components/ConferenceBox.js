@@ -171,9 +171,6 @@ class ConferenceBox extends Component {
 
         const videoEnabled = this.props.call && this.props.call.getLocalStreams()[0].getVideoTracks().length > 0;
 
-        let bottomHeight = Dimensions.get('window').height * 50/100;
-        //console.log('bottomHeight', bottomHeight);
-
         let participants = [];
         if (props.call) {
             props.call.participants.forEach((p) => {
@@ -223,9 +220,6 @@ class ConferenceBox extends Component {
             myVideoCorner: 'bottomRight',
             enableMyVideo: true,
             offset          : 0,
-            topHeight       : Dimensions.get('window').height - bottomHeight,
-            bottomHeight    : bottomHeight,
-            deviceHeight    : Dimensions.get('window').height,
             statistics: [],
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
@@ -285,6 +279,21 @@ class ConferenceBox extends Component {
             this.listSharedFiles();
         }, 1000);
     }
+
+	componentDidUpdate(prevProps, prevState) {
+	     if (this.state.insets != prevState.insets) {
+			//console.log(' --- CB insets did change', this.state.insets);
+			let { width, height } = Dimensions.get('window');
+			//console.log('width', width);
+			//console.log('height', height);
+	     }
+
+	     if (this.state.isLandscape != prevState.isLandscape) {
+			let { width, height } = Dimensions.get('window');
+			//console.log('width', width);
+			//console.log('height', height);
+	     }
+	}
 
     componentDidMount() {
         for (let p of this.state.participants) {
@@ -461,13 +470,6 @@ class ConferenceBox extends Component {
         
         if ('enableMyVideo' in nextProps) {
             this.setState({enableMyVideo: nextProps.enableMyVideo});
-        }
-
-        if (nextProps.bottomHeight) {
-            this.setState({
-                       topHeight       : nextProps.keyboardVisible === false ? nextProps.topHeight : 0, // min height for top pane heade
-                       bottomHeight    : nextProps.bottomHeight, // min height for bottom pane header,
-                       });
         }
 
         this.setState({terminated: nextProps.terminated,
@@ -3049,19 +3051,22 @@ class ConferenceBox extends Component {
 		} else {
 		    // android
 		    if (this.state.isLandscape) {
-		          if (this.fullScreen) {
-					  corners = {
+		        if (this.fullScreen) {
+					 corners = {
 						  topLeft: { top: 0, left: 48 },
-						  topRight: { top: 0, right:  -48},
+						  topRight: { top: 0, right: -48 },
 						  bottomRight: { bottom: 0, right: -48 },
 						  bottomLeft: { bottom: 0, left: 48},
 						  id: 'android-landscape-fs'
-					  };
+					};
 
 					container = {
+					    position: 'absolute',
 						flex: 1,
 						flexDirection: 'column',
 						borderWidth: debugBorderWidth,
+					    height:  height,
+					    width: '100%',
 						borderColor: 'red',
 //						transform: this.fullScreen ? [{ translateY: statusBarHeight }] : [],
 					};
@@ -3069,20 +3074,20 @@ class ConferenceBox extends Component {
 					mediaContainer = {
 					  position: 'absolute',
 					  resizeMode: 'cover',
-					  height:  '100%',
+					  height:  height,
 					  width: '100%',
 					  borderWidth: debugBorderWidth,
 					  borderColor: 'white',
 					};		
-				  } else {
-					  corners = {
+				} else {
+				    corners = {
 						  topLeft: { top: conferenceHeader.height, left: rightInset },
 						  topRight: { top: conferenceHeader.height, right: -rightInset },
 						  bottomRight: { bottom: 0, right: -rightInset},
 						  bottomLeft: { bottom: 0, left: rightInset},
 						  id: 'android-landscape'
-					  };
-				  }
+					};
+				}
 
 
 //			  transform: this.fullScreen ? [{ translateY: -statusBarHeight }] : [],
@@ -3103,7 +3108,7 @@ class ConferenceBox extends Component {
 				  top: 0,
 				  left: 0,
 				  flexDirection: 'column',
-				  marginTop: this.fullScreen ? 0 :topInset,
+				  marginTop: this.fullScreen ? 0 : topInset,
 				  width: width,
 				  height: this.fullScreen ? height : '100%',
 				  marginBottom: marginBottom,

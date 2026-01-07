@@ -167,7 +167,7 @@ class VideoBox extends Component {
             this.state.call.on('stateChanged', this.callStateChanged);
         }
 
-        //this.armOverlayTimer();
+        this.armOverlayTimer();
 
         if (this.state.selectedContacts.length > 0) {
             this.toggleEscalateConferenceModal();
@@ -388,7 +388,7 @@ class VideoBox extends Component {
     armOverlayTimer() {
         clearTimeout(this.overlayTimer);
         this.overlayTimer = setTimeout(() => {
-            this.setState({callOverlayVisible: false});
+            this.toggleFullScreen();
         }, 4000);
     }
 
@@ -722,14 +722,12 @@ class VideoBox extends Component {
 		};
 		
 		let fullScreen = this.state.fullScreen;
+		let insets = this.state.insets;
 
   
 		if (debugBorderWidth) {
 			const values = {
-			  topInset,
-			  bottomInset,
-			  leftInset,
-			  rightInset,
+			  insets, 
 			  container,
 			  remoteVideoContainer,
 			  buttonsContainer,
