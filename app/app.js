@@ -158,14 +158,7 @@ const URL_SCHEMES = [
   'sylk://',
 ];
 
-const ONE_SECOND_IN_MS = 1000;
-
-const VIBRATION_PATTERN = [
-    1 * ONE_SECOND_IN_MS,
-    1 * ONE_SECOND_IN_MS,
-    4 * ONE_SECOND_IN_MS
-  ];
-
+const VIBRATION_PATTERN = [0, 1000, 4000];
 
 let bundleId = `${getBundleId()}`;
 const deviceId = getUniqueId();
@@ -4413,7 +4406,7 @@ class Sylk extends Component {
             this.cancelRingtoneTimer = null;
         } else {
             console.log('Play local ringtone and vibrate');
-            Vibration.vibrate(VIBRATION_PATTERN, true);
+            //Vibration.vibrate(VIBRATION_PATTERN, true);
             InCallManager.startRingtone('_BUNDLE_');
         }
 
@@ -4440,7 +4433,10 @@ class Sylk extends Component {
     }
 
     vibrate() {
-        Vibration.vibrate(VIBRATION_PATTERN, true);
+        console.log('Vibrate...');
+        Vibration.vibrate(100);
+        //Vibration.vibrate(VIBRATION_PATTERN, true);
+        
         setTimeout(() => {
              Vibration.cancel();
         }, 1000);
