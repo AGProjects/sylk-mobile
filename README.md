@@ -1,7 +1,7 @@
 # Sylk Mobile
 
 Sylk Mobile is part of Sylk Suite, a set of real-time communications
-applications using IETF SIP protocol and WebRTC specifications.  
+applications using IETF SIP protocol and WebRTC specifications.
 
 Sylk Suite consists of:
 
@@ -21,7 +21,7 @@ Sylk Suite consists of:
 Sylk mobile licensed under GNU General Public License version 3.  A copy of
 the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
 
-Copyright 2022 [AG Projects](https://ag-projects.com)
+Copyright 2019-2026 [AG Projects](https://ag-projects.com)
 
 
 ## Availability
@@ -260,8 +260,4 @@ We utilise the [patch-package](https://www.npmjs.com/package/patch-package) modu
 ### Update sylkrts.js
 
 yarn add -D AGProjects/sylkrtc.js
-
-### Firebase notifications reference
-
-https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages#AndroidNotification
 
