@@ -549,6 +549,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		
 			// Stop the IncomingCallService if running
 			Intent stopIntent = new Intent(this, IncomingCallService.class);
+			stopIntent.setAction("cancel");
 			stopIntent.putExtra("event", "cancel");
 			stopIntent.putExtra("session-id", callId);
 			stopIntent.putExtra("notification-id", notificationId);
