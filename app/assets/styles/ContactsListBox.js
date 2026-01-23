@@ -18,7 +18,9 @@ const styles = StyleSheet.create({
 
   chatPortraitContainer: {
     flex: 1,
-    marginTop: 15,
+    marginTop: 0,
+    borderColor: 'white',
+    borderWidth: 0
   },
 
   landscapeContainer: {
@@ -108,7 +110,7 @@ const styles = StyleSheet.create({
 	  paddingHorizontal: 8,
 	  backgroundColor: '#fff',
 	  borderTopWidth: 1,
-	  borderTopColor: '#ddd',
+	  borderTopColor: '#ddd'
 	},
 
   chatSendArrow: {

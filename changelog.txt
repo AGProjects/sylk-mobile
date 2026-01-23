@@ -1,3 +1,75 @@
+Version 4.2.9
+
+  * Layout improvement and fixes
+  * Fix saving unsent IMDNs
+  * Fix cancel push notify on android
+  * Remove obsolete Splash Activity
+  * Fix select initial chat contact from push on iOS
+  * Fix unpacking journal messages
+  * Wait for loading system AddressBook before loading Sylk contacts
+  * Wait update contacts until they are loaded
+  * Fix incoming conference calls on android
+  * Android push notification fixes
+  * Vibrate on record
+  * Set active chat to avoid notifications inside same chat
+  * Configure chat sounds
+  * Fix stop/start music when playing chat sounds or calls start and end
+  * Added conference button to main bar
+  * Added support for USB headset
+  * Fix initial route at start
+  * Stay in /call if started by push call
+  * Added search contacts icon on main bar
+  * Learn server configuration from DNS
+  * Added unread badge for android
+  * Fix error code 603
+  * Added back latest support webrtc version with DTMF
+  * Added menu to audio calls
+  * Allow DTMF only for numbers
+  * Improve enrollment
+  * Fix cancelling uploads
+  * Send metadata message about consuming audio
+  * Improve audio playback and recording
+  * Added sound level
+  * Improve chat render performance
+  * Implement changing audio devices in conferences
+  * Implement cancel for uploads
+  * Added audio device selection to conferences
+  * Added audio device selection to video calls
+  * Added mobile data detection
+  * Added camera flip in LocalVideo start
+  * Fix starting chat to new contacts
+  * Reload messages when contact has changed
+  * Added DND per contact
+  * Added bypass DND for android
+  * Fix landscape contacts
+  * Added mic background service for android
+  * Added safe thumbnail creator
+  * Get taps with sylk:// url to identiy the chat
+  * Show thumbnails of replied videos and scroll to them
+  * Added video modal
+  * Added progress bar for individual messages with metadata
+  * Added video thumbail library
+  * Sharing improvements
+  * Fix contacts list width in landscape mode
+  * Update main menu
+  * Added full screen image and sending full size images
+  * Implement iOS sharing from external apps
+  * Fix sending files with labels
+  * Added image resizer
+  * Refactor metadata and make it generic (msg/action/value)
+
+Version 3.3.8 
+
+* Follow Android system settings for ring, vibrate and do not disturb
+* Allow Sylk favorites to bypass DND setting
+* Fixes for waking up when Android phone is locked
+* Fixes for concurrent calls
+* Added auto answer on Android for contacts
+* Fix missing microphone recording in chat input bar
+* File sharing fixes
+* Fix minimizing the app when phone is locked
+
+
 Android 3.0.0 Sun Jun 18 22:11:00 -03 2023
 
   * Added end-to-end file transfers
@@ -275,4 +347,3 @@ r54 / Fri Oct  9 11:36:31 -03 2020
  * Stop alert panel if call already rejected
  * Unregister explicitely on logout route
  * Use default domain from account
-

@@ -118,11 +118,27 @@ platform :android do
       track: 'beta',        # 'internal', 'alpha', 'beta', 'production' are also options
       package_name: 'com.agprojects.sylk',
       skip_upload_metadata: true,    # skip metadata editing
-      skip_upload_changelogs: true,  # skip changelogs
+      skip_upload_changelogs: false,  # skip changelogs
       skip_upload_images: true,      # skip screenshots
       skip_upload_screenshots: true  # just in case
     )
   end
+
+  lane :changelog do
+    version_code = File.read("../android/VERSION_CODE").strip.to_i
+    upload_to_play_store(
+      track: 'production',
+      package_name: 'com.agprojects.sylk',
+      version_code: version_code,
+      skip_upload_aab: true,
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
 end
 
 platform :android do
@@ -161,7 +177,7 @@ platform :android do
       track: 'production',   
       package_name: 'com.agprojects.sylk',
       skip_upload_metadata: true,
-      skip_upload_changelogs: true,
+      skip_upload_changelogs: false,
       skip_upload_images: true,
       skip_upload_screenshots: true
     )

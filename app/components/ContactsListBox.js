@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight} from 'react-native';
+import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight, KeyboardAvoidingView} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -189,7 +189,8 @@ class ContactsListBox extends Component {
 		    audioRecordingStatus: {},
 		    callHistoryUrl: this.props.callHistoryUrl,
 		    isAudioRecording: this.props.isAudioRecording,
-		    recordingFile: this.props.recordingFile
+		    recordingFile: this.props.recordingFile,
+		    insets: this.props.insets
         }
 
         this.ended = false;
@@ -478,7 +479,8 @@ class ContactsListBox extends Component {
 					   playRecording: nextProps.playRecording,
 					   callHistoryUrl: nextProps.callHistoryUrl,
 					   isAudioRecording: nextProps.isAudioRecording,
-					   recordingFile: nextProps.recordingFile
+					   recordingFile: nextProps.recordingFile,
+					   insets: nextProps.insets
 					});
 
         if (nextProps.isTyping) {
@@ -712,11 +714,20 @@ class ContactsListBox extends Component {
 	// Custom Input Toolbar
 	customInputToolbar = (props) => {
 	  const { replyingTo } = this.state;
+	  let inputToolbarExtraStyles = {
+      paddingBottom: 0,
+      borderTopWidth: 0,
+    };
+    	  
+	  if (this.state.keyboardVisible && Platform.OS === 'android' && Platform.Version >= 34) {
+		  const bottomInset = this.state.insets?.bottom || 0;
+		  //inputToolbarExtraStyles.marginBottom = -bottomInset;
+	  }
 	
 	  return (
 		<InputToolbar
 		  {...props}
-		  containerStyle={styles.inputToolbar} // full width
+		  containerStyle={[styles.inputToolbar, inputToolbarExtraStyles]} // full width
 		  renderActions={!replyingTo ? this.renderCustomActions : null} // left buttons
 		  renderComposer={(composerProps) => this.renderComposer(composerProps, replyingTo)}
 		/>
@@ -3941,6 +3952,12 @@ scrollToMessage(id) {
 			loadEarlier = false;
         }
         
+        console.log('chatContainer', chatContainer);
+        const topInset = this.state.insets?.top || 0;
+		const bottomInset = this.state.insets?.bottom || 0;
+		const leftInset = this.state.insets?.left || 0;
+		const rightInset = this.state.insets?.right || 0;
+
         const images = chatMessages
 		  .filter(m => !!m.image)   // only messages that contain images
 		  .map(msg => ({
@@ -3949,8 +3966,10 @@ scrollToMessage(id) {
 			title: msg.text || '',
 		  }));
 		  
+		const navigatorBarHeight = 60;
+		  		  
         return (
-            <SafeAreaView style={container}>
+            <SafeAreaView style={[container, {borderColor: 'white', borderWidth: 0}]}>
               {this.state.selectedContact ?
               
               (null)  // this.renderItem(items[0])
@@ -3988,7 +4007,7 @@ scrollToMessage(id) {
 				  </View>
 				)}
   
-             { this.showImageGrid ?
+             {this.showImageGrid ?
 			  <ThumbnailGrid
 				images={images}
 				isLandscape={this.state.isLandscape}
@@ -4004,6 +4023,13 @@ scrollToMessage(id) {
 
              {this.showChat ?
              <View style={[chatContainer, borderClass]}>
+					<KeyboardAvoidingView
+					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
+					  style={chatContainer}
+					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+					  keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : navigatorBarHeight + topInset}
+					>
+
                 <GiftedChat 
 				  listViewProps={{
 					ref: (ref) => { this.flatListRef = ref; },
@@ -4064,6 +4090,7 @@ scrollToMessage(id) {
 				  )}
                   renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
                 />
+				   </KeyboardAvoidingView>
 
 				{this.state.focusedMessages ?
 				this.renderFloatingControls():
@@ -4277,7 +4304,7 @@ ContactsListBox.propTypes = {
     forwardMessageFunc: PropTypes.func,
     messagesCategoryFilter: PropTypes.string,
     startCall: PropTypes.func,
-    sourceContact:   PropTypes.object,
+    sourceContact: PropTypes.object,
     requestCameraPermission: PropTypes.func,
     requestMicPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,
@@ -4305,7 +4332,8 @@ ContactsListBox.propTypes = {
 	updateFileTransferMetadata: PropTypes.func,
 	isAudioRecording: PropTypes.bool,
 	recordingFile: PropTypes.string,
-	sendAudioFile: PropTypes.func
+	sendAudioFile: PropTypes.func,
+	insets: PropTypes.object
 };
 
 

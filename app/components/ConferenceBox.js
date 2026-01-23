@@ -100,6 +100,7 @@ function useLogChanges(label, value) {
   }, [value]);
 }
 
+const conferenceHeaderHeight = 60;
 
   const availableAudioDevicesIconsMap = {
 	BUILTIN_EARPIECE: 'phone',
@@ -1779,6 +1780,7 @@ class ConferenceBox extends Component {
 					StatusBar.setHidden(true, 'fade');   // hide
 					if (Platform.OS === 'android') {
 						Immersive.on();
+						this.props.enableFullScreen();
 					}
 				}
             }, 15000);
@@ -1792,13 +1794,17 @@ class ConferenceBox extends Component {
 			StatusBar.setHidden(true, 'fade');   // hide
 			if (Platform.OS === 'android') {
 				Immersive.on();
+				this.props.enableFullScreen();
 			}
+			
 			this.fullScreenTimer();
 		} else {
 			this.setState({callOverlayVisible: true});
 			StatusBar.setHidden(false, 'fade');   // hide
 			if (Platform.OS === 'android') {
 				Immersive.off();
+				this.props.disableFullScreen();
+
 			}
 		}
     }
@@ -1815,6 +1821,7 @@ class ConferenceBox extends Component {
 		StatusBar.setHidden(false, 'fade');
 		if (Platform.OS === 'android') {
 			Immersive.off();
+			this.props.disableFullScreen();
 		}
     }
 
@@ -2090,6 +2097,22 @@ class ConferenceBox extends Component {
               </View>
             );
 
+        if (this.props.useInCallManger) {
+            floatingButtons.push(
+              <View style={styles.buttonContainer} key='recon'>
+                <TouchableHighlight style={styles.roundshape}>
+                <IconButton
+                    size={this.state.videoEnabled ? 25 : 25}
+                    style={buttonClass}
+                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
+                    onPress={this.props.toggleSpeakerPhone}
+                    key="speakerPhoneButton"
+                />
+                </TouchableHighlight>
+              </View>
+            )
+        } else {
+
             floatingButtons.push(
               <View style={styles.buttonContainer} key="audioDevice">
                 <TouchableHighlight style={styles.roundshape}>
@@ -2104,6 +2127,8 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
+            
+        }
 
        }
 
@@ -2161,7 +2186,7 @@ class ConferenceBox extends Component {
        if (this.state.videoEnabled) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key="mutev">
-                  <TouchableHighlight style={styles.roundshape}>
+                <TouchableHighlight style={styles.roundshape}>
                 <IconButton
                     size={25}
                     style={buttonClass}
@@ -2190,22 +2215,6 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
-        }
-
-        if (!this.state.reconnectingCall && this.props.useInCallManger) {
-            floatingButtons.push(
-              <View style={styles.buttonContainer} key='recon'>
-                <TouchableHighlight style={styles.roundshape}>
-                <IconButton
-                    size={this.state.videoEnabled ? 25 : 25}
-                    style={buttonClass}
-                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                    onPress={this.props.toggleSpeakerPhone}
-                    key="speakerPhoneButton"
-                />
-                </TouchableHighlight>
-              </View>
-            )
         }
 
      if (this.state.videoEnabled) {
@@ -2312,10 +2321,10 @@ class ConferenceBox extends Component {
 		let chatContainer = this.state.isLandscape ? styles.chatContainerLandscape : styles.chatContainer;
 		let conferenceHeader = styles.conferenceHeader;
 
-		const topInset = this.state.insets.top || 0;
-		const bottomInset = this.state.insets.bottom || 0;
-		const leftInset = this.state.insets.left || 0;
-		const rightInset = this.state.insets.right || 0;
+		const topInset = this.state.insets?.top || 0;
+		const bottomInset = this.state.insets?.bottom || 0;
+		const leftInset = this.state.insets?.left || 0;
+		const rightInset = this.state.insets?.right || 0;
 		let debugBorderWidth = 0;
 		
 		if (this.props.audioOnly) {
@@ -2455,6 +2464,7 @@ class ConferenceBox extends Component {
 
 			const marginRight = this.state.isLandscape && Platform.OS === 'android' ? 48 : 0;
 			const marginBottom = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+
 			let audioHeight = this.state.renderMessages.length < 6 ? 300 : 240; 
 			audioHeight = this.state.keyboardVisible ? 150 : audioHeight;
 			const marginTop = Platform.OS === 'ios' ? topInset : 0;
@@ -2464,26 +2474,20 @@ class ConferenceBox extends Component {
 			container = {
 				flex: 1,
 				flexDirection: 'column',
-				marginRight: marginRight,
-				marginTop: Platform.OS === 'ios' ? 0: topInset,
-				marginBottom: marginBottom,
 	            borderWidth: debugBorderWidth,
 			    borderColor: 'white',
-			    width: this.state.isLandscape ? width - rightInset: width
  		    };
 
   		    conferenceHeader = {
-  		      top: 0,
-			  height: 60,
-			  marginTop: 0,
+			  height: conferenceHeaderHeight,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'yellow'
 		    };
 
             if (Platform.OS === 'ios' ) { 
                 if (this.state.isLandscape) {
-					conferenceHeader.width = conferenceHeader.width - rightInset - topInset;
-					container.width = container.width - topInset;
+					conferenceHeader.width = width - rightInset - leftInset;
+					//container.width = width - topInset;
                 }
             }
 
@@ -2492,9 +2496,6 @@ class ConferenceBox extends Component {
 			  flexDirection: this.state.isLandscape ? 'row' : 'column',
 			  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
 			  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
-			  height: '100%',
-			  width: this.state.isLandscape ? width - rightInset: width,
-  			  marginTop: 0,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'blue'
 			};
@@ -2502,7 +2503,6 @@ class ConferenceBox extends Component {
 		    mediaContainer = {
 			  width: this.state.isLandscape ? '50%' : '100%',
 			  height: this.state.isLandscape ? '100%' : audioHeight,
-  			  marginTop: 0,			  
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'green'
 			};
@@ -2511,7 +2511,6 @@ class ConferenceBox extends Component {
 			  flex: this.state.isLandscape ? 0 : 1,
 			  borderColor: 'gray',
 			  width: this.state.isLandscape ? '50%' : '100%',
-			  marginTop: this.state.isLandscape ? 0 : 0,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'gray'
 			};
@@ -2589,6 +2588,7 @@ class ConferenceBox extends Component {
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
 						insets = {this.state.insets}
+						useInCallManger = {this.props.useInCallManger}
 					/>
 				</View>
 
@@ -2612,7 +2612,7 @@ class ConferenceBox extends Component {
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
 					  style={chatContainer}
 					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-					  keyboardVerticalOffset={90} // adjust if you have a header
+					  keyboardVerticalOffset={conferenceHeaderHeight + topInset} // adjust if you have a header
 					>
 					<GiftedChat
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
@@ -2896,26 +2896,20 @@ class ConferenceBox extends Component {
 		container = {
 			flex: 1,
 			flexDirection: 'column',
-			marginRight: marginRight,
-			marginTop: topInset,
-			marginBottom: marginBottom,
 			borderWidth: debugBorderWidth,
-			borderColor: 'red'
+			borderColor: 'red',
 		};
 
 		conferenceHeader = {
-		  top: 0,
-		  height: 60,
-		  width: '100%',
-		  marginTop: 0,
+		  height: conferenceHeaderHeight,
 		  borderWidth: debugBorderWidth,
-		  borderColor: 'white'
+		  borderColor: 'white'		  
 		};
 
 		buttonsContainer = {
 			position: 'absolute',
 			top: conferenceHeader.height,
-			height: 60,
+			height: conferenceHeaderHeight,
 			left: 0,
 			right: 0,
 			flexDirection: 'row',
@@ -2931,22 +2925,25 @@ class ConferenceBox extends Component {
 		  flexDirection: this.state.isLandscape ? 'row' : 'column',
 		  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
 		  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
-		  marginTop: 0,
+		  marginTop: this.fullscreen ? -topInset: 0,
 		  borderColor: 'blue',
 		  borderWidth: debugBorderWidth,
 		  marginBottom: 0,
+//		  height: this.fullScreen ? height + bottomInset + topInset: height,
 		  position: 'relative'
 		};
 					
 		let videoWidth = this.state.chatView ? '50%' : '100%' ;
-					
-		mediaContainer = {
-		  width: this.state.isLandscape ? videoWidth : '100%',
-		  height: this.state.isLandscape ? '100%' : this.state.chatView ? 300 : '100%',
-		  borderColor: 'red',
-		  borderWidth: debugBorderWidth,
-		};
 
+		mediaContainer = {
+		  position: 'absolute',
+		  resizeMode: 'cover',
+		  height:  '100%',
+		  width: '100%',
+		  borderWidth: debugBorderWidth,
+		  borderColor: 'white',
+		};	
+					
 		let top = 0;
 	    //console.log('width', width);
 	    //console.log('height', height);
@@ -2957,7 +2954,7 @@ class ConferenceBox extends Component {
 		  borderColor: 'gray',
 		  width: '100%',
 		};
-	    	
+	    
         if (Platform.OS === 'ios') {
 		    if (this.state.isLandscape) {
 		          if (this.fullScreen) {
@@ -3038,9 +3035,6 @@ class ConferenceBox extends Component {
 				mediaContainer = {
 				  position: 'absolute',
 				  resizeMode: 'cover',
-				  top: 0,
-				  left: 0,
-				  marginTop: 0,
 				  height: this.fullScreen ? height: '100%',
 				  width: width,
 				  borderWidth: debugBorderWidth, 
@@ -3051,46 +3045,28 @@ class ConferenceBox extends Component {
 		} else {
 		    // android
 		    if (this.state.isLandscape) {
+				const aRightInset = Platform.Version < 34 ? rightInset + bottomInset : rightInset;
 		        if (this.fullScreen) {
+		             const aRightInset = Platform.Version < 34 ? 0 : rightInset;
+		             console.log('aRightInset', aRightInset);
 					 corners = {
-						  topLeft: { top: 0, left: 48 },
-						  topRight: { top: 0, right: -48 },
-						  bottomRight: { bottom: 0, right: -48 },
-						  bottomLeft: { bottom: 0, left: 48},
+						  topLeft: { top: 0, left: aRightInset },
+						  topRight: { top: 0, right: -aRightInset },
+						  bottomRight: { bottom: 0, right: -aRightInset },
+						  bottomLeft: { bottom: 0, left: aRightInset},
 						  id: 'android-landscape-fs'
 					};
-
-					container = {
-					    position: 'absolute',
-						flex: 1,
-						flexDirection: 'column',
-						borderWidth: debugBorderWidth,
-					    height:  height,
-					    width: '100%',
-						borderColor: 'red',
-//						transform: this.fullScreen ? [{ translateY: statusBarHeight }] : [],
-					};
-	
-					mediaContainer = {
-					  position: 'absolute',
-					  resizeMode: 'cover',
-					  height:  height,
-					  width: '100%',
-					  borderWidth: debugBorderWidth,
-					  borderColor: 'white',
-					};		
+		
 				} else {
 				    corners = {
-						  topLeft: { top: conferenceHeader.height, left: rightInset },
-						  topRight: { top: conferenceHeader.height, right: -rightInset },
-						  bottomRight: { bottom: 0, right: -rightInset},
-						  bottomLeft: { bottom: 0, left: rightInset},
+						  topLeft: { top: conferenceHeader.height, left: aRightInset },
+						  topRight: { top: conferenceHeader.height, right: -aRightInset },
+						  bottomRight: { bottom: 0, right: -aRightInset},
+						  bottomLeft: { bottom: 0, left: aRightInset},
 						  id: 'android-landscape'
 					};
 				}
 
-
-//			  transform: this.fullScreen ? [{ translateY: -statusBarHeight }] : [],
 			} else {
 			      // android portrait
 		          if (!this.fullScreen) {
@@ -3102,31 +3078,6 @@ class ConferenceBox extends Component {
 						  id: 'android-portrait'
 					  };
 				  }
-			
-				container = {
-				  ...(this.fullScreen ? {} : {flex: 1}),  // adds flex:1 only if fullScreen
-				  top: 0,
-				  left: 0,
-				  flexDirection: 'column',
-				  marginTop: this.fullScreen ? 0 : topInset,
-				  width: width,
-				  height: this.fullScreen ? height : '100%',
-				  marginBottom: marginBottom,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'green',
-				};
-  
-				mediaContainer = {
-				  position: 'absolute',
-				  resizeMode: 'cover',
-				  top: 0,
-				  left: 0,
-				  marginTop: 0,
-				  height: this.fullScreen ? height: '100%',
-				  width: width,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white'
-				};		
 			}
 		}
 		
@@ -3153,6 +3104,7 @@ class ConferenceBox extends Component {
 				  zIndex: 1000,
 				  pointerEvents: 'box-none'
 				};
+
 
 		if (debugBorderWidth) {
 			const values = {
@@ -3237,6 +3189,7 @@ class ConferenceBox extends Component {
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
 						insets = {this.state.insets}
+						useInCallManger = {this.props.useInCallManger}
 					/>
 				</View>
 
@@ -3271,7 +3224,7 @@ class ConferenceBox extends Component {
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
 					  style={chatContainer}
 					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-					  keyboardVerticalOffset={90} // adjust if you have a header
+					  keyboardVerticalOffset={conferenceHeaderHeight + topInset} // adjust if you have a header
 					>
 
 					<GiftedChat
@@ -3372,7 +3325,7 @@ class ConferenceBox extends Component {
 				isLandscape={this.state.isLandscape}
 				title="Room configuration"
 			>
-				<View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - 60}, styles.landscapeDrawer] : styles.container}>
+				<View style={this.state.isLandscape ? [{maxHeight: Dimensions.get('window').height - conferenceHeaderHeight}, styles.landscapeDrawer] : styles.container}>
 					<View style={{flex: this.state.isLandscape ? 1 : 2}}>
 						<ConferenceDrawerSpeakerSelectionWrapper
 							selectSpeaker={this.startSpeakerSelection}
@@ -3449,7 +3402,10 @@ ConferenceBox.propTypes = {
     selectedAudioDevice     : PropTypes.string,
     selectAudioDevice       : PropTypes.func,
     publicUrl               : PropTypes.string,
-    insets                  : PropTypes.object
+    insets                  : PropTypes.object,
+	enableFullScreen        : PropTypes.func,
+	disableFullScreen       : PropTypes.func
+
 };
 
 export default ConferenceBox;

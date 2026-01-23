@@ -358,10 +358,12 @@ class AudioCallBox extends Component {
         
         let userIconSize = this.state.isLandscape ? 75: 150;
         
-        //console.log('this.state.selectedAudioDevice', this.state.selectedAudioDevice);
-
+        let extraStyles = {};
+        let extraButtonContainerClass = {};       
+        let container = styles.container;
+        
         return (
-            <View style={styles.container}>
+            <View style={[styles.container, {borderColor: 'blue', borderWidth: 0}, extraStyles]}>
                 <CallOverlay style={styles.callStatus}
                     show={true}
                     remoteUri={this.state.remoteUri}
@@ -397,7 +399,7 @@ class AudioCallBox extends Component {
 				 {false && (
 				  <View style={styles.confirmContainer}>
 						<Text style={styles.confirm}>Please confirm...</Text>
-                        <View style={buttonContainerClass}>
+                        <View style={[buttonContainerClass, extraButtonContainerClass]}>
 						<View style={styles.buttonContainer}>
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
@@ -437,8 +439,7 @@ class AudioCallBox extends Component {
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
-
-                        <View style={buttonContainerClass}>
+                        <View style={[buttonContainerClass, extraButtonContainerClass]}>
                             {!disablePlus ?
                                 <View style={styles.buttonContainer}>
                                     <TouchableHighlight style={styles.roundshape}>
@@ -521,7 +522,7 @@ class AudioCallBox extends Component {
                         </View></>
                     :
 
-                    <View style={buttonContainerClass}>
+                    <View style={[buttonContainerClass, extraButtonContainerClass]}>
                       <View style={styles.buttonContainer}>
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton

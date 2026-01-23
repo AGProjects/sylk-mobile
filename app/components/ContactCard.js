@@ -243,8 +243,20 @@ render() {
   const uri = contact.uri;
   const unread = contact.unread?.length || 0;
 
+		function capitalizeFirstLetter(str) {
+		  if (!str) return ""; // Handle empty string
+		  return str[0].toUpperCase() + str.slice(1);
+		}
+
+
   // Determine title and subtitle
-  let title = contact.name || uri.split('@')[0];
+  let title = uri.split('@')[0];
+  
+  if (contact.name != uri) {
+	  title = contact.name;
+  }
+
+	title = capitalizeFirstLetter(title);
   let subtitle = contact.uri;
 
   if (uri.indexOf('@guest.') > -1) {
@@ -376,8 +388,8 @@ render() {
 					moment(contact.timestamp).isSame(moment(), 'day')
 					  ? moment(contact.timestamp).format('HH:mm') // Today
 					  : moment().diff(moment(contact.timestamp), 'months') < 12
-					  ? moment(contact.timestamp).format('MMM D HH:mm') // Within last 12 months
-					  : moment(contact.timestamp).format('MMM D YY HH:mm') // Older than 12 months → show year
+					  ? moment(contact.timestamp).format('MMM D') // Within last 12 months
+					  : moment(contact.timestamp).format('MMM D YY') // Older than 12 months → show year
 				  )}
 				</Text>
 

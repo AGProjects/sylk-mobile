@@ -370,7 +370,7 @@ class Conference extends React.Component {
     render() {
         let box = null;
         let messages = [];
-        
+
         if (this.state.localMedia !== null) {
             let media = 'audio'
             if (this.props.proposedMedia && this.props.proposedMedia.video === true) {
@@ -424,6 +424,8 @@ class Conference extends React.Component {
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
 						publicUrl = {this.state.publicUrl}
+						enableFullScreen = {this.props.enableFullScreen}
+						disableFullScreen = {this.props.disableFullScreen}
                    />
                 );
             } else {
@@ -450,7 +452,6 @@ class Conference extends React.Component {
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
                     />
-
                 );
             }
 
@@ -513,7 +514,10 @@ Conference.propTypes = {
     stopRingback            : PropTypes.func,
     iceServers              : PropTypes.array,
     insets                  : PropTypes.object,
-    publicUrl               : PropTypes.string
+    publicUrl               : PropTypes.string,
+	enableFullScreen        : PropTypes.func,
+	disableFullScreen       : PropTypes.func
+
 };
 
 

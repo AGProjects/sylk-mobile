@@ -29,7 +29,8 @@ const EditContactModal = ({
   rejectAnonymous,
   toggleRejectAnonymous,
   chatSounds,
-  toggleChatSounds
+  toggleChatSounds,
+  storageUsage
 }) => {
   const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
@@ -84,6 +85,16 @@ const EditContactModal = ({
 	
 	  setTags(parsed);
 	};
+
+const getTotalPrettyStorage = (entity) => {
+  if (!Array.isArray(storageUsage)) return null;
+
+  const entry = storageUsage.find(
+    item => item.remote_party === entity
+  );
+
+  return entry?.prettySize || null;
+};
 
   const handleSave = () => {
     const contact = {
@@ -177,7 +188,11 @@ const editableTags = {
 };
 
   const as = 50;
-
+  
+  entity = myself ? 'all' : uri;
+  
+  const totalUsage = getTotalPrettyStorage(entity);
+  
   return (
     <Modal
 	  style={containerStyles.container}
@@ -418,9 +433,10 @@ const editableTags = {
                     </View>
                     )}
 
-                    {false && myself && (
+                    {myself && (
                       <View style={{ flexDirection: 'row', marginTop: 4 }}>
                         <Text style={styles.small}>Device Id: {myuuid}</Text>
+                        <Text style={styles.small}> | Storage usage: {totalUsage}</Text>
                       </View>
                     )}
                   </>
@@ -452,7 +468,8 @@ EditContactModal.propTypes = {
   rejectAnonymous: PropTypes.bool,
   toggleRejectAnonymous: PropTypes.func,
   chatSounds: PropTypes.bool,
-  toggleChatSounds: PropTypes.func
+  toggleChatSounds: PropTypes.func,
+  storageUsage: PropTypes.array
 };
 
 export default EditContactModal;

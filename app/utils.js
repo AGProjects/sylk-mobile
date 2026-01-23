@@ -402,6 +402,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
 
         if (item.encrypted === 3) {
             text = text + " - decryption failed";
+            return null;
         }
     }
     

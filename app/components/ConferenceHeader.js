@@ -239,46 +239,63 @@ class ConferenceHeader extends React.Component {
             //callDetail = callDetail + ' - ' + this.state.info;
         }
 
+/*
+				<Appbar.Action color="white" onPress={() => this.handleMenu('invite')} icon="account-plus" />
+				<Appbar.Action color="white" onPress={() => this.handleMenu('share')} icon="share-variant" />
+*/
+
         let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
         
 		const { width, height } = Dimensions.get('window');
 		const topInset = this.state.insets.top || 0;
 		const bottomInset = this.state.insets.bottom || 0;
 		const rightInset = this.state.insets.right || 0;
+		const leftInset = this.state.insets.left || 0;
 
         let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
-
-		const navBarWidth = this.state.isLandscape ? width - rightInset : width;
-		const marginLeft = this.state.isLandscape ? -rightInset : 0;
 		
-/*
-				<Appbar.Action color="white" onPress={() => this.handleMenu('invite')} icon="account-plus" />
-				<Appbar.Action color="white" onPress={() => this.handleMenu('share')} icon="share-variant" />
-*/
+		let appBarContainer = {
+			backgroundColor: 'rgba(34,34,34,.7)',
+			borderWidth : 0,
+			borderColor: 'red',
+			height: 60,
+			marginLeft: this.state.isLandscape ? - rightInset - leftInset: 0,
+			marginTop: -topInset,
+			width: this.state.isLandscape ? width - rightInset - leftInset: width,
+		}
 
-        let barContainer = {
-				backgroundColor: 'rgba(34,34,34,.7)',
-				marginLeft: marginLeft,
-				marginTop: -topInset,
-				width: navBarWidth,
-				borderColor: 'red',
-				borderWidth: 0,
-				height: this.props.height,
+		if (Platform.OS === "ios") {
+			//appBarContainer.marginTop = 0;
+			if (this.state.isLandscape) {
+				appBarContainer.marginLeft = -leftInset;
+				appBarContainer.width = appBarContainer.width;
+			}
+        } else {
+			if (Platform.Version < 34) {
+				appBarContainer.marginTop = 0;
+			}
 		}
         
         return (
 			<Appbar.Header
-			  style={[barContainer]}
+			  style={[appBarContainer]}
 			  dark={true}
 			>
 			  <Appbar.BackAction onPress={this.goBack} color="white" />
 			
 			  {/* Title + Subtitle */}
 			  <View style={{ flexDirection: 'column', justifyContent: 'center', flex: 1 }}>
-				<Text style={{ fontSize: 16, fontWeight: 'bold', color: 'white' }}>
+				<Text style={{ fontSize: 16, fontWeight: 'bold', color: 'white' }}
+				numberOfLines={1}
+				ellipsizeMode="tail"
+				>
+
 				  {displayName}
 				</Text>
-				<Text style={{ fontSize: 14, color: 'white' }}>
+				<Text style={{ fontSize: 14, color: 'white' }}
+				numberOfLines={1}
+				ellipsizeMode="tail"
+				>
 				  {callDetail}
 				</Text>
 			  </View>
@@ -287,7 +304,7 @@ class ConferenceHeader extends React.Component {
 			  <View style={{ flexDirection: 'row', alignItems: 'center'}}>
 				{this.state.isLandscape &&
 				  this.props.buttons.bottom?.map((btn, idx) => (
-					<View key={idx} style={{ marginLeft: 3 }}>
+					<View key={idx} style={{ marginLeft: 2 }}>
 					  {btn}
 					</View>
 				  ))
@@ -299,7 +316,7 @@ class ConferenceHeader extends React.Component {
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
                     anchor={
-                    <View style={{ marginLeft: 50}}>
+                    <View style={{ marginLeft: 30}}>
                         <Appbar.Action
                             ref={this.menuRef}
                             color="white"
@@ -322,7 +339,7 @@ class ConferenceHeader extends React.Component {
 
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
-					<Divider />
+    				<Divider />
 				
 					<Menu
 						visible={this.state.audioMenuVisible}
@@ -344,7 +361,7 @@ class ConferenceHeader extends React.Component {
 									key={device}
 									title={
 										isSelected
-											? `✓ ${deviceTitle}`        // show selected
+											? `✓ ${deviceTitle}`
 											: deviceTitle
 									}
 									onPress={() => {
@@ -365,7 +382,6 @@ class ConferenceHeader extends React.Component {
 			);
 		}
 	}
-
 
 ConferenceHeader.propTypes = {
     visible: PropTypes.bool,

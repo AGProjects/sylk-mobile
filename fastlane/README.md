@@ -52,6 +52,14 @@ Build and upload release version to TestFlight
 
 Push a new beta build to Google Play Store
 
+### android changelog
+
+```sh
+[bundle exec] fastlane android changelog
+```
+
+
+
 ### android release
 
 ```sh

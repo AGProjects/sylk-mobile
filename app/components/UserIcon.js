@@ -13,7 +13,7 @@ const styles = StyleSheet.create({
 
   avatarLabeliOS: {
     marginTop: 0,
-    marginLeft: 3,
+    marginLeft: 0,
   },
 });
 

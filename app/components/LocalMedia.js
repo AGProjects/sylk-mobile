@@ -121,7 +121,7 @@ class LocalMedia extends Component {
                     isLandscape = {this.state.isLandscape}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
-					selectAudioDevice = {this.state.selectAudioDevice}
+					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
 					insets = {this.state.insets}
                 />
@@ -199,8 +199,8 @@ LocalMedia.propTypes = {
     call                : PropTypes.object,
     remoteUri           : PropTypes.string,
     remoteDisplayName   : PropTypes.string,
-    localMedia          : PropTypes.object.isRequired,
-    mediaPlaying        : PropTypes.func.isRequired,
+    localMedia          : PropTypes.object,
+    mediaPlaying        : PropTypes.func,
     hangupCall          : PropTypes.func,
     showSaveDialog      : PropTypes.func,
     saveConference      : PropTypes.func,
@@ -214,9 +214,9 @@ LocalMedia.propTypes = {
     isLandscape         : PropTypes.bool,
     availableAudioDevices : PropTypes.array,
     selectedAudioDevice : PropTypes.string,
-    selectAudioDevice: PropTypes.func,
-    useInCallManger: PropTypes.bool,
-	insets: PropTypes.object
+    selectAudioDevice   : PropTypes.func,
+    useInCallManger     : PropTypes.bool,
+	insets              : PropTypes.object
 };
 
 

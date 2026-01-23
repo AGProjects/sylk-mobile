@@ -46,7 +46,7 @@ const styles = StyleSheet.create({
   landscapeButtonContainer: {
     flexDirection: 'row',
     marginTop: 'auto',
-    bottom: 10,
+    bottom: 30,
     marginBottom: 0,
     justifyContent: 'flex-end',
   },

@@ -47,7 +47,8 @@ class CallOverlay extends React.Component {
             enableMyVideo: this.props.enableMyVideo,
 		    availableAudioDevices: this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
-			insets: this.props.insets
+			insets: this.props.insets,
+			aspectRatio: this.props.aspectRatio
         }
 
         this.duration = null;
@@ -104,6 +105,10 @@ class CallOverlay extends React.Component {
 
         if ('showUsage' in nextProps) {
 			this.setState({showUsage: nextProps.showUsage});
+        }
+
+        if ('aspectRatio' in nextProps) {
+			this.setState({aspectRatio: nextProps.aspectRatio});
         }
 
         this.setState({remoteDisplayName: nextProps.remoteDisplayName,
@@ -163,6 +168,9 @@ class CallOverlay extends React.Component {
                 break;
             case 'swapVideo':
                 this.props.swapVideo();
+                break;
+            case 'aspectRatio':
+                this.props.toggleAspectRatio();
                 break;
             default:
                 break;
@@ -257,24 +265,37 @@ class CallOverlay extends React.Component {
 			const topInset = this.state.insets.top || 0;
 			const bottomInset = this.state.insets.bottom || 0;
 			const rightInset = this.state.insets.right || 0;
+			const leftInset = this.state.insets.left || 0;
 
 			let myVideoTitle = this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror';
 			let myUsageTitle = this.state.showUsage ? 'Hide bandwidth' : 'Show bandwidth';
+			let myAspectRatio = this.state.aspectRatio == 'cover' ? 'Contain': 'Cover';
+			myAspectRatio = 'Toggle aspect ratio';
 			
-			let barContainer = {
+			let appBarContainer = {
 				backgroundColor: 'rgba(34,34,34,.7)',
-				marginLeft: this.state.isLandscape ? - rightInset : 0,
-				marginTop: 0,
-				width: this.state.isLandscape ? width - rightInset: width,
+				borderWidth : 0,
+				borderColor: 'red',
 				height: 60,
+				marginLeft: this.state.isLandscape ? - rightInset - leftInset: 0,
+				marginTop: -topInset,
+				width: this.state.isLandscape ? width - rightInset - leftInset: width,
 			}
-			
-			if (Platform.OS === 'ios') {
-				barContainer.marginTop = -topInset;
+
+			if (Platform.OS === "ios") {
+				//appBarContainer.marginTop = 0;
+				if (this.state.isLandscape) {
+					appBarContainer.marginLeft = -leftInset;
+					//appBarContainer.width = navBarWidth - 200;
+				}
+			} else {
+				if (Platform.Version < 34) {
+					appBarContainer.marginTop = 0;
+				}
 			}
         
 			header = (
-				<Appbar.Header style={[barContainer]}
+				<Appbar.Header style={[appBarContainer]}
 						dark={true}
 						>
 					<Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
@@ -299,6 +320,7 @@ class CallOverlay extends React.Component {
 					{this.state.media === 'video' && this.state.callState == "established" && (
 					<>
                     <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
+                    <Menu.Item onPress={() => this.handleMenu('aspectRatio')} icon="video" title={myAspectRatio} />
                     <Menu.Item onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
                     <Menu.Item onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
 					<Divider />
@@ -376,7 +398,9 @@ CallOverlay.propTypes = {
     selectedAudioDevice : PropTypes.string,
     selectAudioDevice: PropTypes.func,
     useInCallManger: PropTypes.bool,
-    insets: PropTypes.object
+    insets: PropTypes.object,
+    aspectRatio: PropTypes.string,
+    toggleAspectRatio: PropTypes.func
 };
 
 export default CallOverlay;

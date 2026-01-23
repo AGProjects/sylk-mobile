@@ -170,7 +170,7 @@ class ImportPrivateKeyModal extends Component {
                                  To decrypt messages, you need the same private key on all devices.
                             </Text>
                              <Text style={styles.body}>
-                                 To use the private key from another device, choose on that device to menu option 'Export private key'.
+                                 To use the private key from another device, go on that device to menu option 'Export private key'.
                             </Text>
 
                              <Text style={styles.body}>

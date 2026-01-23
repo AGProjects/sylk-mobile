@@ -628,6 +628,8 @@ class Call extends Component {
 							selectAudioDevice = {this.props.selectAudioDevice}
 							useInCallManger = {this.props.useInCallManger}
 							insets = {this.state.insets}
+							enableFullScreen = {this.props.enableFullScreen}
+							disableFullScreen = {this.props.disableFullScreen}
 						/>
                     );
                 } else {
@@ -751,7 +753,9 @@ Call.propTypes = {
     stopRingback            : PropTypes.func,
     useInCallManger         : PropTypes.bool,
     iceServers              : PropTypes.array,
-	insets                  : PropTypes.object
+	insets                  : PropTypes.object,
+	enableFullScreen        : PropTypes.func,
+	disableFullScreen       : PropTypes.func
 };
 
 

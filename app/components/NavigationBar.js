@@ -79,7 +79,8 @@ class NavigationBar extends Component {
 			publicUrl: this.props.publicUrl,
 			insets: this.props.insets,
 			call: this.props.call,
-			deleteContact: false
+			deleteContact: false,
+			storageUsage: this.props.storageUsage
         }
 
         this.menuRef = React.createRef();
@@ -185,7 +186,8 @@ class NavigationBar extends Component {
 			   publicUrl: nextProps.publicUrl,
 			   insets: nextProps.insets,
 			   call: nextProps.call,
-			   deleteContact: nextProps.deleteContact
+			   deleteContact: nextProps.deleteContact,
+			   storageUsage: nextProps.storageUsage
 		   });
 
 		   if (nextProps.menuVisible) {
@@ -229,7 +231,7 @@ class NavigationBar extends Component {
                 this.props.showLogs();
                 break;
             case 'refetchMessages':
-                this.props.refetchMessages(this.state.selectedContact);
+                this.props.refetchMessages(3650);
                 break;
             case 'preview':
                 this.props.preview();
@@ -540,7 +542,7 @@ class NavigationBar extends Component {
 				title = capitalizeFirstLetter(this.state.selectedContact.uri.split('@')[0]);
 				subtitle = 'Conference room';
 			} else {
-			    if (this.state.selectedContact.name) {
+			    if (this.state.selectedContact.name && this.state.selectedContact.name != this.state.selectedContact.uri) {
 					title = this.state.selectedContact.name;
 			    } else {
 					title = capitalizeFirstLetter(this.state.selectedContact.uri.split('@')[0]);
@@ -554,23 +556,6 @@ class NavigationBar extends Component {
 
 		}
 
-		const { width, height } = Dimensions.get('window');
-		const topInset = this.state.insets.top || 0;
-		const bottomInset = this.state.insets.bottom || 0;
-		const leftInset = this.state.insets.left || 0;
-		const rightInset = this.state.insets.right || 0;
-
-		const as = 40; //avatar size
-		let marginLeft = this.state.isLandscape ? - rightInset : 0;
-		let navBarWidth = this.state.isLandscape ? width - rightInset : width;
-		
-		let barStyles = {backgroundColor: 'black', 
-                         marginLeft: marginLeft,
-                         width: navBarWidth,
-                         borderWidth: 0,
-                         borderColor: 'red'
-                 };
-
         let backButtonTitle = 'Back to call';
 
         if (this.showBackToCallButton) {
@@ -581,13 +566,52 @@ class NavigationBar extends Component {
             }
         }
 
+		const as = 40; //avatar size		
+
+		let { width, height } = Dimensions.get('window');
+
+		const topInset = this.state.insets?.top || 0;
+		const bottomInset = this.state.insets?.bottom || 0;
+		const leftInset = this.state.insets?.left || 0;
+		const rightInset = this.state.insets?.right || 0;
+
+        let navBarContainer = { 
+                              borderWidth: 0, 
+                              borderColor: 'red',
+                              height: 60,
+                              };
+
+		let marginLeft = this.state.isLandscape ? - rightInset - leftInset: 0;
+		let navBarWidth = this.state.isLandscape ? width - rightInset - leftInset : width;
+
+		let appBarContainer = {
+		                 backgroundColor: 'black', 
+                         borderWidth: 0,
+                         marginLeft: marginLeft,
+                         //marginRight: marginRight,
+                         marginTop: -topInset,
+						 height: 60,
+						 width: navBarWidth,
+                         borderColor: 'orange'
+                 };
+
+        if (Platform.OS === "ios") {
+			appBarContainer.marginTop = 0;
+			if (this.state.isLandscape) {
+			    appBarContainer.marginLeft = -leftInset;
+			    //appBarContainer.width = navBarWidth - 200;
+			}
+        } else {
+			if (Platform.Version < 34) {
+				appBarContainer.marginTop = 0;
+			}
+        }
+
         return (
-			<View style={{ width: navBarWidth, borderWidth: 0, borderColor: 'red'}}>
-                         
-            <Appbar.Header
-                 style={barStyles} 
+			<View style={navBarContainer}>
+            <Appbar.Header style={appBarContainer}
                  statusBarHeight={Platform.OS === "ios" ? 0 : undefined} 
-                 dark
+               dark
                  >
   
                 {showBackButton ?
@@ -611,10 +635,6 @@ class NavigationBar extends Component {
                     titleStyle={[titleStyle, { marginLeft: 0 }]}
                     subtitleStyle={[subtitleStyle, { marginLeft: 0 }]}
                 />
-
-                {this.props.isTablet?
-                <Text style={subtitleStyle}>{subtitle} </Text>
-                : null}
 
 				{ this.showBackToCallButton ?
 						<Button
@@ -721,10 +741,6 @@ class NavigationBar extends Component {
                         : null
                         }
 
-                        {!this.state.searchMessages && false?
-                        <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> 
-                        : null}
-
                         { !this.state.searchMessages && this.hasFiles && !this.state.inCall && 'paused' in this.state.contentTypes ?
                         <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
                         : null
@@ -789,6 +805,8 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
+                        {  <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>}
+ 
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
                         {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
@@ -899,6 +917,7 @@ class NavigationBar extends Component {
  				    toggleRejectAnonymous={this.props.toggleRejectAnonymous}
 					chatSounds={this.state.chatSounds}
  				    toggleChatSounds={this.props.toggleChatSounds}
+ 				    storageUsage={this.state.storageUsage}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -947,7 +966,7 @@ class NavigationBar extends Component {
                 }
 
             </Appbar.Header>
-</View>
+		</View>
         );
     }
 }
@@ -1034,7 +1053,8 @@ NavigationBar.propTypes = {
     publicUrl: PropTypes.string,
     serverSettingsUrl: PropTypes.string,
 	insets: PropTypes.object,
-	call: PropTypes.object
+	call: PropTypes.object,
+	storageUsage: PropTypes.array
 };
 
 export default NavigationBar;

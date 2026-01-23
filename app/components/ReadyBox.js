@@ -88,7 +88,8 @@ class ReadyBox extends Component {
 			playRecording: false,
 			level: 0,
 			callHistoryUrl: this.props.callHistoryUrl,
-			insets: this.props.insets
+			insets: this.props.insets,
+			storageUsage: this.props.storageUsage
         };
         this.ended = false;
 
@@ -205,7 +206,8 @@ class ReadyBox extends Component {
 					    transferProgress: nextProps.transferProgress,
 					    contactIsSharing: nextProps.contactIsSharing,
 					    callHistoryUrl: nextProps.callHistoryUrl,
-					    insets: nextProps.insets
+					    insets: nextProps.insets,
+					    storageUsage: nextProps.storageUsage
                         });
     }
 
@@ -257,6 +259,11 @@ class ReadyBox extends Component {
             }
       }
 
+      if (prevState.selectedContact !== this.state.selectedContact && !prevState.selectedContact) {
+        if (this.state.searchContacts) {
+			this.props.toggleSearchContacts()
+		}
+      }
     }
 
     filterHistory(filter) {
@@ -471,7 +478,7 @@ class ReadyBox extends Component {
         if (this.state.fullScreen) {
             return false;
         }
-                        
+
         if (this.state.inviteContacts) {
 			return true;
         }
@@ -1363,12 +1370,51 @@ class ReadyBox extends Component {
         } else {
             URIContainerClass = styles.portraitUriInputBox;
         }
+        
+        URIContainerClass = styles.portraitUriInputBox;
 
         const historyContainer = this.props.orientation === 'landscape' ? styles.historyLandscapeContainer : styles.historyPortraitContainer;
         const buttonGroupClass = this.props.orientation === 'landscape' ? styles.buttonGroup : styles.buttonGroup;
         const borderClass = this.state.chat ? null : styles.historyBorder;
         let backButtonTitle = 'Back to call';
 
+		let { width, height } = Dimensions.get('window');
+
+		const topInset = this.state.insets?.top || 0;
+		const bottomInset = this.state.insets?.bottom || 0;
+		const leftInset = this.state.insets?.left || 0;
+		const rightInset = this.state.insets?.right || 0;
+		
+		const marginRight = this.state.isLandscape ? rightInset : 0;
+
+		let containerWidth = width - marginRight;
+		let containerHeight = height;
+		
+		let navigationContainer = {borderWidth: 0,
+						   borderColor: 'blue'
+						   }
+	
+		let containerExtraStyles = {
+//						   width: containerWidth,
+//						   marginRight: marginRight,
+						   borderWidth: 0,
+						   borderColor: 'red'
+						   }
+
+        /*
+		if (Platform.OS === 'ios') {
+			if (this.state.isLandscape) {
+				containerExtraStyles.width = containerWidth - rightInset;
+				containerExtraStyles.marginBottom = -bottomInset;	
+			}
+		} else {
+			if (this.state.isLandscape) {
+				containerExtraStyles.width = containerWidth;
+				containerExtraStyles.marginBottom = -rightInset;
+			}
+		}
+		*/
+                
         //console.log('this.state.call', this.state.call);
         if (this.showBackToCallButton) {
             if (this.state.call.hasOwnProperty('_participants')) {
@@ -1404,47 +1450,12 @@ class ReadyBox extends Component {
             }
         }
 
-        let extraStyles = {paddingBottom: Platform.OS === 'android' ? 0 : 0};
-		const topInset = this.state.insets.top || 0;
-		const bottomInset = this.state.insets.bottom || 0;
-		const leftInset = this.state.insets.left || 0;
-		const rightInset = this.state.insets.right || 0;
-
-		const { width, height } = Dimensions.get('window');
-		const isLandscape = width > height;
-		const marginRight = isLandscape ? rightInset : 0;
-
-		let containerWidth = width;
-		let containerHeight = height;
-
-		let containerExtraStyles = {
-		                   width: containerWidth,
-		                   marginRight: marginRight,
-		                   borderWidth: 0,
-		                   borderColor: 'red'}
-
-		if (Platform.OS === 'ios') {
-			if (isLandscape) {
-				containerExtraStyles.width = containerWidth - rightInset;
-				containerExtraStyles.borderWidth = 0;
-				containerExtraStyles.borderColor = 'red';
-				containerExtraStyles.marginBottom = -bottomInset;
-				
-			}
-		} else {
-			if (isLandscape) {
-				containerExtraStyles.width = containerWidth - rightInset;
-				containerExtraStyles.marginBottom = -rightInset;
-			}
-		}
-		
-		//console.log('containerExtraStyles', containerExtraStyles);
         return (
             <Fragment>
                 <View style={[styles.container, containerExtraStyles]}>
                     <View>
                     {this.showCategoryBar?
-                    <View style={styles.navigationContainer}>
+                    <View style={navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
                             ref={(ref) => { this.navigationRef = ref; }}
@@ -1465,7 +1476,7 @@ class ReadyBox extends Component {
                     : null}
 
                     {false ?
-                    <View style={styles.navigationContainer}>
+                    <View style={navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
                             ref={(ref) => { this.navigationRef = ref; }}
@@ -1485,7 +1496,7 @@ class ReadyBox extends Component {
                     </View>
                     : null}
 
-                        {this.showSearchBar?
+                        {this.showSearchBar ?
                         <View style={URIContainerClass}>
                             <URIInput
                                 defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
@@ -1517,21 +1528,6 @@ class ReadyBox extends Component {
                         {this.showButtonsBar ?
 							<View style={uriGroupClass}>
 	
-							{this.showSearchBar && this.state.isLandscape ?
-	
-							<View style={URIContainerClass}>
-								<URIInput
-									defaultValue={this.state.searchMessages ? "" : this.state.targetUri}
-									onChange={this.handleSearch}
-									onSelect={this.handleTargetSelect}
-									shareToContacts={this.state.shareToContacts}
-									inviteContacts={this.state.inviteContacts}
-									searchMessages={this.state.searchMessages}
-									autoFocus={false}
-								/>
-							</View>
-							: null}
-
                             {this.showBackToCallButton ?
                             <View style={buttonGroupClass}>
                                 <Button
@@ -1861,6 +1857,7 @@ class ReadyBox extends Component {
 						isAudioRecording = {this.state.recording}
 						recordingFile = {this.state.recordingFile}
 						sendAudioFile = {this.sendAudioFile}
+						insets = {this.state.insets}
 					/>
 					}
 
@@ -1869,7 +1866,7 @@ class ReadyBox extends Component {
                     }
 
                     {this.showNavigationBar && !this.state.selectedContact ?
-                    <View style={styles.navigationContainer}>
+                    <View style={navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
                             ref={(ref) => { this.navigationRef = ref; }}
@@ -1895,6 +1892,7 @@ class ReadyBox extends Component {
                         <FooterBox />
                     </View>
                         : null}
+
                 </View>
 
                 <ConferenceModal
@@ -1990,6 +1988,7 @@ ReadyBox.propTypes = {
     requestMicPermission: PropTypes.func,
     postSystemNotification: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
+    toggleSearchContacts: PropTypes.func,
     searchMessages: PropTypes.bool,
     searchContacts: PropTypes.bool,
     defaultConferenceDomain: PropTypes.string,
@@ -2008,7 +2007,8 @@ ReadyBox.propTypes = {
 	selectAudioDevice: PropTypes.func,
 	updateFileTransferMetadata: PropTypes.func,
 	insets: PropTypes.object,
-	vibrate: PropTypes.func
+	vibrate: PropTypes.func,
+	storageUsage: PropTypes.array
 };
 
 export default ReadyBox;

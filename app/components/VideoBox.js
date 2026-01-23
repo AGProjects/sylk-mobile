@@ -73,7 +73,8 @@ class VideoBox extends Component {
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
 			insets: this.props.insets,
-			isLandscape:  this.props.isLandscape
+			isLandscape: this.props.isLandscape,
+			aspectRatio: 'cover'
         };
 
 		this.prevStats = {}; // initialize here
@@ -137,6 +138,10 @@ class VideoBox extends Component {
             });
         }
 
+        if ('aspectRatio' in nextProps) {
+			this.setState({aspectRatio: nextProps.aspectRatio});
+        }
+
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
@@ -157,6 +162,12 @@ class VideoBox extends Component {
                        });
 
     }
+
+	componentDidUpdate(prevProps, prevState) {
+	     if (this.state.aspectRatio != prevState.aspectRatio) {
+			 console.log(' --- aspectRatio did change', this.state.aspectRatio);
+	     }
+	}
 
     callStateChanged(oldState, newState, data) {
         this.forceUpdate();
@@ -188,7 +199,6 @@ class VideoBox extends Component {
 		return this.state.showMyself && !this.state.videoMuted && this.state.enableMyVideo;
 	}
 
-
     handleFullscreen(event) {
         event.preventDefault();
         // this.toggleFullscreen();
@@ -197,6 +207,11 @@ class VideoBox extends Component {
     handleRemoteVideoPlaying() {
         this.setState({remoteVideoShow: true});
     }
+
+	toggleAspectRatio() {
+	    console.log('toggleAspectRatio');
+	    this.setState({aspectRatio: this.state.aspectRatio == 'cover' ? 'contain' : 'cover'});
+	}
     
 	toggleFullScreen() {
 		//console.log(' --toggleFullScreen');
@@ -206,12 +221,14 @@ class VideoBox extends Component {
 			StatusBar.setHidden(true, 'fade');
 			if (Platform.OS === 'android') {
 				Immersive.on();
+				this.props.enableFullScreen();
 			}
 		} else {
 			this.setState({callOverlayVisible: true, fullScreen: false});
 			StatusBar.setHidden(false, 'fade');
 			if (Platform.OS === 'android') {
 				Immersive.off();
+				this.props.disableFullScreen();
 			}
 		}
 	}
@@ -370,7 +387,6 @@ class VideoBox extends Component {
 		info,
 	  }));
 	}
-	
 
     hangupCall() {
         this.props.hangupCall('user_hangup_call');
@@ -500,7 +516,7 @@ class VideoBox extends Component {
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
-        const buttonSize = this.props.isTablet ? 40 : 34;
+        const buttonSize = this.props.isTablet ? 40 : 24;
 
         if (this.props.isTablet) {
             buttonsContainerClass = this.state.isLandscape ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
@@ -525,24 +541,7 @@ class VideoBox extends Component {
         }
 
         const show = this.state.callOverlayVisible || this.state.reconnectingCall;
-		let { width, height } = Dimensions.get('window');
-        
-		const topInset = this.state.insets.top || 0;
-		const bottomInset = this.state.insets.bottom || 0;
-		const leftInset = this.state.insets.left || 0;
-		const rightInset = this.state.insets.right || 0;
 
-	    const cornerOrder = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
-
-		let corners = {
-			  topLeft: { top: 0, left: 0 },
-			  topRight: { top: 0, right: 0 },
-			  bottomRight: { bottom: 0, right: 0 },
-			  bottomLeft: { bottom: 0, left: 0},
-			  id: 'init'
-		};
-
-        const debugBorderWidth = 0;
         const myVideoCorner = this.state.myVideoCorner;
 
         let container = styles.container;
@@ -583,6 +582,15 @@ class VideoBox extends Component {
                     key="toggleVideo"
                 />
 
+                <IconButton
+                    size={buttonSize}
+                    style={[buttonClass]}
+                    title="Toggle Aspect"
+                    onPress={this.toggleAspectRatio}
+                    icon='aspect-ratio'
+                    key="toggleAspectRatio"
+                />
+
 				{ this.props.useInCallManger ?
                 <IconButton
                     size={buttonSize}
@@ -609,8 +617,29 @@ class VideoBox extends Component {
             buttons = (<View style={buttonsContainer}>{content}</View>);
         }
         
+        const debugBorderWidth = 0;
         const headerBarHeight = 60;
+
+		let { width, height } = Dimensions.get('window');
         
+		const topInset = this.state.insets?.top || 0;
+		const bottomInset = this.state.insets?.bottom || 0;
+		const leftInset = this.state.insets?.left || 0;
+		const rightInset = this.state.insets?.right || 0;
+
+	    const cornerOrder = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
+       
+        let bottomExtraInset = this.state.isLandscape ? 0 : 100;
+        let extraRightInset = 0;
+         
+		let corners = {
+			topLeft: { top: this.state.fullScreen ? -topInset : headerBarHeight, left: 0},
+			topRight: { top: this.state.fullScreen ? -topInset : headerBarHeight, right: extraRightInset},
+			bottomRight: { bottom: this.state.fullScreen ? 0 : bottomInset + bottomExtraInset, right: extraRightInset},
+			bottomLeft: { bottom: this.state.fullScreen ? 0: bottomInset + bottomExtraInset, left: 0},
+		    id: 'init'
+		};
+				
         container = {
             flex: 1,
 			borderWidth: debugBorderWidth,
@@ -629,84 +658,47 @@ class VideoBox extends Component {
 
 	    remoteVideoContainer = {
 			position: 'absolute',
-			left: 0,
-			right: 0,
-			top: headerBarHeight + topInset,
-			bottom: 0,
-			width: this.state.isLandscape ? width - bottomInset : width,
-			height: this.state.isLandscape ? height - headerBarHeight - topInset: height - bottomInset - headerBarHeight - topInset,
+			top: this.state.fullScreen ? 0: headerBarHeight,
+			bottom: this.state.fullScreen ? -bottomInset : 0,
 			borderWidth: debugBorderWidth,
-			borderColor: 'red'
+			borderColor: 'red',
+			width: '100%',
+			height: '100%',
+//			width: this.state.fullScreen ? width + rightInset : width,
+//			height: this.state.fullScreen ? height : height - headerBarHeight - bottomInset - topInset
 		};
-		
-		if (this.state.fullScreen) {
-			remoteVideoContainer.height = height;
-			remoteVideoContainer.top = 0;
-			remoteVideoContainer.width = width;
-		}
-		
-		if (Platform.OS === 'android') {
-		      if (this.state.isLandscape) {
-				  corners = {
-					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, left: 0 },
-					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, right: this.state.fullScreen ? 0: rightInset },
-					  bottomRight: { bottom: this.state.fullScreen ? -rightInset - headerBarHeight: -rightInset, right: this.state.fullScreen ? 0: rightInset },
-					  bottomLeft: { bottom: this.state.fullScreen ? -rightInset - headerBarHeight: -rightInset, left: 0},
-					  id: 'android-landscape'
-				  };
 
-				  remoteVideoContainer.width = remoteVideoContainer.width - rightInset;
-
-			  } else {
-				  corners = {
-					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, left: 0 },
-					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight + topInset, right: 0},
-					  bottomRight: { bottom:  this.state.fullScreen ? -bottomInset: 150, right: 0 },
-					  bottomLeft: { bottom: this.state.fullScreen ? -bottomInset: 150, left: 0},
-					  id: 'android-portrait'
-				  };
-			  }
-		} else {
-			// ios
-		      if (this.state.isLandscape) {
-				  corners = {
-					  topLeft: { top: this.state.fullScreen ? 0 : headerBarHeight,  left: this.state.fullScreen ? -rightInset -topInset : 0 },
-					  topRight: { top: this.state.fullScreen ? 0 : headerBarHeight, right: -rightInset},
-					  bottomRight: { bottom: -bottomInset,                          right: -rightInset },
-					  bottomLeft: { bottom: -bottomInset,                           left: this.state.fullScreen ? -rightInset -topInset : 0 },
-					  id: 'ios-landscape'
-				  };
-
-				remoteVideoContainer = {
-					position: 'absolute',
-					left: this.state.fullScreen ? - rightInset : 0,
-					top: this.state.fullScreen ? 0 : headerBarHeight,
-					width: this.state.fullScreen ? width: width -rightInset -topInset,
-					height: this.state.fullScreen ? height : height - topInset ,
-					borderWidth: debugBorderWidth,
-					borderColor: 'red'
-				};
-
-			  } else {
-				  corners = {
-					  topLeft: { top: this.state.fullScreen ? -topInset : topInset, left: 0 },
-					  topRight: { top: this.state.fullScreen ? -topInset : topInset, right: 0},
-					  bottomRight: { bottom:  this.state.fullScreen ? -bottomInset: 120, right: 0 },
-					  bottomLeft: { bottom: this.state.fullScreen ? -bottomInset: 120, left: 0},
-					  id: 'ios-portrait'
-				  };
-
-				remoteVideoContainer = {
-					position: 'absolute',
-					top: this.state.fullScreen ? -topInset : headerBarHeight,
-					width: width,
-					height: this.state.fullScreen ? height : height - topInset -headerBarHeight ,
-					borderWidth: debugBorderWidth,
-					borderColor: 'red'
-				};
-			  }
+		if (this.state.isLandscape) {
+			remoteVideoContainer.width = this.state.fullScreen ? width : width - rightInset - leftInset;
 		}
 
+		if (Platform.OS === 'ios') {
+		    if (this.state.isLandscape) {
+				if (this.state.fullScreen) {
+					corners = {
+						topLeft: { top: 0, left: -leftInset},
+						topRight: { top: 0, right: -rightInset},
+						bottomRight: { bottom: -bottomInset, right: -rightInset},
+						bottomLeft: { bottom: -bottomInset, left: -leftInset},
+						id: 'ios'
+					};
+					remoteVideoContainer.marginLeft = -leftInset;
+					remoteVideoContainer.height = height;
+				} else {
+					corners = {
+						topLeft: { top: headerBarHeight, left: 0},
+						topRight: { top: headerBarHeight, right: extraRightInset},
+						bottomRight: { bottom: -bottomInset, right: extraRightInset},
+						bottomLeft: { bottom: -bottomInset, left: 0},
+						id: 'init'
+					};
+				}
+			} else {
+				remoteVideoContainer.marginTop = -topInset;
+				remoteVideoContainer.height = height;
+			}
+		}
+		
 		let mySurfaceContainer = {
 			flex: 1,
 			width: 120,
@@ -723,21 +715,28 @@ class VideoBox extends Component {
 		
 		let fullScreen = this.state.fullScreen;
 		let insets = this.state.insets;
-
+		let isLandscape = this.state.isLandscape;
   
 		if (debugBorderWidth) {
 			const values = {
-			  insets, 
+//			  insets, 
 			  container,
 			  remoteVideoContainer,
-			  buttonsContainer,
-			  buttonsContainerClass,
+//			  buttonsContainer,
+//			  buttonsContainerClass,
 			  myselfContainer,
-			  video,
-			  corner,
+//			  video,
+//			  corner,
 			  corners,
-			  myVideoCorner,
-			  fullScreen
+//			  myVideoCorner,
+			  fullScreen,
+			  height,
+			  width,
+			  rightInset,
+			  topInset,
+			  bottomInset,
+			  isLandscape
+			  
 			};
 
 			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
@@ -781,12 +780,14 @@ class VideoBox extends Component {
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
 					insets = {this.state.insets}
+					aspectRatio = {this.state.aspectRatio}
+					toggleAspectRatio = {this.toggleAspectRatio}
                 />
 
                 {this.showRemote?
 					<View style={[container, remoteVideoContainer]}>
 					  <RTCView
-						objectFit='cover'
+						objectFit={this.state.aspectRatio}
 						style={styles.video}
 						streamURL={this.remoteStreamUrl}
 					  />
@@ -896,7 +897,10 @@ VideoBox.propTypes = {
     availableAudioDevices   : PropTypes.array,
     selectedAudioDevice     : PropTypes.string,
     selectAudioDevice       : PropTypes.func,
-	insets                  : PropTypes.object
+	insets                  : PropTypes.object,
+	enableFullScreen        : PropTypes.func,
+	disableFullScreen       : PropTypes.func
+
 };
 
 export default VideoBox;
