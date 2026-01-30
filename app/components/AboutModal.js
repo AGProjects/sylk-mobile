@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import { Text, Linking, Platform } from 'react-native';
 import PropTypes from 'prop-types';
 import { Dialog, Portal } from 'react-native-paper';
@@ -35,6 +35,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
   },
+  devMode: {
+    color: '#d32f2f', // red-ish, tweak if you want
+    fontWeight: '600',
+  },
 });
 
 function handleLink() {
@@ -49,7 +53,33 @@ function handleUpdate() {
   }
 }
 
+const REQUIRED_TAPS = 5;
+const TAP_TIMEOUT = 2000;
+
 const AboutModal = (props) => {
+  const [tapCount, setTapCount] = useState(0);
+  const resetTimer = useRef(null);
+
+  const onBuildPress = () => {
+    if (!props.toggleDevMode) return;
+
+    clearTimeout(resetTimer.current);
+
+    setTapCount(prev => {
+      const next = prev + 1;
+      if (next === REQUIRED_TAPS) {
+        props.toggleDevMode();
+        return 0;
+      }
+
+      return next;
+    });
+
+    resetTimer.current = setTimeout(() => {
+      setTapCount(0);
+    }, TAP_TIMEOUT);
+  };
+
   return (
     <Portal>
       <DialogType visible={props.show} onDismiss={props.close}>
@@ -58,15 +88,36 @@ const AboutModal = (props) => {
           <Text style={styles.body}>
             Sylk is part of Sylk Suite, a set of real-time communications applications using IETF SIP protocol and WebRTC specifications
           </Text>
-          <Text style={styles.version}>Version {props.currentVersion}</Text>
-          <Text style={styles.version}>Build Id {props.buildId}</Text>
+
+          {/* 👇 Dev mode toggle + visual indicator */}
+          <Text
+            style={[
+              styles.version,
+              props.devMode && styles.devMode,
+            ]}
+            onPress={onBuildPress}
+          >
+            Version {props.currentVersion}
+            {props.devMode ? ' (dev mode)' : ''}
+          </Text>
+
           {props.appStoreVersion && props.appStoreVersion.version > props.currentVersion ? (
-            <Text onPress={handleUpdate} style={styles.link}>Update Sylk...</Text>
+            <Text onPress={handleUpdate} style={styles.link}>
+              Update Sylk...
+            </Text>
           ) : (
-            <Text onPress={handleUpdate} style={styles.link}>Check App Store for update...</Text>
+            <Text onPress={handleUpdate} style={styles.link}>
+              Check App Store for update...
+            </Text>
           )}
-          <Text style={styles.love}>For family, friends and customers, with love.</Text>
-          <Text onPress={handleLink} style={styles.link}>Copyright &copy; AG Projects</Text>
+
+          <Text style={styles.love}>
+            For family, friends and customers, with love.
+          </Text>
+
+          <Text onPress={handleLink} style={styles.link}>
+            Copyright &copy; AG Projects
+          </Text>
         </Dialog.Content>
       </DialogType>
     </Portal>
@@ -79,6 +130,8 @@ AboutModal.propTypes = {
   currentVersion: PropTypes.string,
   appStoreVersion: PropTypes.object,
   buildId: PropTypes.string,
+  toggleDevMode: PropTypes.func,
+  devMode: PropTypes.bool,
 };
 
 export default AboutModal;

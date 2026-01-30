@@ -24,6 +24,7 @@ import {openSettings} from 'react-native-permissions';
 import SylkAppbarContent from './SylkAppbarContent';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
+import * as Progress from 'react-native-progress';
 
 import styles from '../assets/styles/NavigationBar';
 
@@ -34,7 +35,8 @@ class NavigationBar extends Component {
 
         let displayName = this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName;
         let organization = this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization;
-
+        this.refetchMessagesForDays = 30;
+        
         this.state = {
             syncConversations: this.props.syncConversations,
             inCall: this.props.inCall,
@@ -80,7 +82,9 @@ class NavigationBar extends Component {
 			insets: this.props.insets,
 			call: this.props.call,
 			deleteContact: false,
-			storageUsage: this.props.storageUsage
+			storageUsage: this.props.storageUsage,
+			syncPercentage: this.props.syncPercentage,
+			devMode: this.props.devMode
         }
 
         this.menuRef = React.createRef();
@@ -187,7 +191,9 @@ class NavigationBar extends Component {
 			   insets: nextProps.insets,
 			   call: nextProps.call,
 			   deleteContact: nextProps.deleteContact,
-			   storageUsage: nextProps.storageUsage
+			   storageUsage: nextProps.storageUsage,
+			   syncPercentage: nextProps.syncPercentage,
+			   devMode: nextProps.devMode
 		   });
 
 		   if (nextProps.menuVisible) {
@@ -231,7 +237,7 @@ class NavigationBar extends Component {
                 this.props.showLogs();
                 break;
             case 'refetchMessages':
-                this.props.refetchMessages(3650);
+                this.props.refetchMessages(this.refetchMessagesForDays, this.state.selectedContact?.uri);
                 break;
             case 'preview':
                 this.props.preview();
@@ -440,7 +446,7 @@ class NavigationBar extends Component {
         }
 
         if (this.state.call) {
-            console.log('this.state.call.state', this.state.call.state);
+            //console.log('this.state.call.state', this.state.call.state);
             if (this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated') {
 				return true;
 			}
@@ -502,7 +508,9 @@ class NavigationBar extends Component {
             isConference = this.state.selectedContact.conference || tags.indexOf('conference') > -1;
         }
 
-        let favoriteTitle = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'Unfavorite' : 'Favorite';
+		const isFavorite = this.state.selectedContact && tags && tags.indexOf('favorite') > -1;
+		
+        let favoriteTitle = isFavorite ? 'Unfavorite' : 'Favorite';
         let autoanswerTitle = (this.state.selectedContact && tags && tags.indexOf('autoanswer') > -1) ? 'No autoanswer' : 'Auto answer';
         let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
 
@@ -525,7 +533,7 @@ class NavigationBar extends Component {
         }
         
         let editTitle = isConference ? "Configure..." : "Edit contact...";
-        let deleteTitle = isConference ? "Remove" : "Delete contact...";
+        let deleteTitle = isConference ? "Remove conference" : "Delete contact...";
         let searchTitle = this.state.searchMessages ? 'End search': 'Search messages...';
         
         let subtitle = this.state.accountId;
@@ -636,7 +644,31 @@ class NavigationBar extends Component {
                     subtitleStyle={[subtitleStyle, { marginLeft: 0 }]}
                 />
 
-				{ this.showBackToCallButton ?
+               { this.props.isTablet && this.state.syncPercentage != 100 ?
+				<View style={{ flexDirection: 'column', flexShrink: 1, alignItems: 'center'}}>
+				  <Progress.Bar
+					progress={this.state.syncPercentage / 100 }
+					width={150}         // smaller width for inline look
+					height={6}
+					borderRadius={3}
+					borderWidth={0}
+					color={"blue"}
+					unfilledColor="white"
+					style={{ marginRight: 10, marginTop: 10 }}  // small gap from label
+				  />
+				  <Text
+					style={{
+					  fontSize: 12,
+					  color: 'orange',
+					  marginTop: 2,
+					}}
+				  >
+					Replay journal: {Math.round(this.state.syncPercentage)}%
+				  </Text>
+				</View>
+				   : null }
+
+ 				{ this.showBackToCallButton ?
 						<Button
 							mode="contained"
 						    labelStyle={{ fontSize: 14 }}
@@ -750,6 +782,8 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
+                        { this.state.devMode ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>: null}
+
                         {!isConference && !this.state.searchMessages && this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
@@ -770,11 +804,11 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && tags.indexOf('test') === -1 ?
+                        {!this.state.inCall && tags.indexOf('test') === -1 && !isFavorite?
                         <Divider />
                         : null}
 
-                        {!this.state.inCall && tags.indexOf('test') === -1 ?
+                        {!this.myself && !this.state.inCall && tags.indexOf('test') === -1 && !isFavorite?
                         <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
                         : null}
                         
@@ -805,7 +839,7 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        {  <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>}
+                        { this.refetchMessagesForDays ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
  
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
@@ -854,7 +888,8 @@ class NavigationBar extends Component {
                     currentVersion={VersionNumber.appVersion}
                     appStoreVersion={this.state.appStoreVersion}
                     buildId={this.props.buildId}
-
+                    toggleDevMode={this.props.toggleDevMode}
+                    devMode={this.state.devMode}
                 />
 
                 <CallMeMaybeModal
@@ -1054,7 +1089,10 @@ NavigationBar.propTypes = {
     serverSettingsUrl: PropTypes.string,
 	insets: PropTypes.object,
 	call: PropTypes.object,
-	storageUsage: PropTypes.array
+	storageUsage: PropTypes.array,
+	syncPercentage: PropTypes.number,
+	toggleDevMode: PropTypes.func,
+	devMode: PropTypes.bool
 };
 
 export default NavigationBar;

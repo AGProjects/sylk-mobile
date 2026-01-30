@@ -248,6 +248,16 @@ class ReadyBox extends Component {
                            messagesCategoryFilter: null
                            });
       }
+      
+      if (prevState.searchContacts !== this.state.searchContacts && this.state.searchContacts) {
+		  this.setState({messagesCategoryFilter: null, historyPeriodFilter: null});
+		  this.props.filterHistoryFunc(null);
+      }
+
+      if (prevState.historyFilter !== this.state.historyFilter) {
+		  console.log('historyFilter has changed', this.state.historyFilter);
+      }
+
 
       if (prevState.orderBy !== this.state.orderBy) {
             if (this.state.orderBy == 'size') {
@@ -277,6 +287,7 @@ class ReadyBox extends Component {
            if (!filter && this.state.pinned) {
                this.props.togglePinned(this.state.selectedContact.uri);
            }
+
            if (filter === 'pinned') {
                this.props.togglePinned(this.state.selectedContact.uri);
                return;
@@ -307,11 +318,15 @@ class ReadyBox extends Component {
 			   */
            }
            this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
-       } else if (filter === 'today' || filter === 'yesterday') {
+       } else if (filter === 'recent') {
            filter = this.state.historyPeriodFilter === filter ? null : filter;
            this.setState({'historyPeriodFilter': filter});
        } else {
-           this.setState({'historyCategoryFilter': filter});
+           if (filter == this.state.historyCategoryFilter) {
+			   this.setState({historyCategoryFilter: null});
+           } else {
+			   this.setState({'historyCategoryFilter': filter});
+           }
        }
 
        this.handleSearch('');
@@ -411,7 +426,7 @@ class ReadyBox extends Component {
     }
 
     get showCallButtons() {
-        if (this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.state.shareToContacts) {
+        if (this.state.call || this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.state.shareToContacts) {
             return false;
         }
         return true;
@@ -441,6 +456,10 @@ class ReadyBox extends Component {
 
     get showAudioRecordButton() {
         if (!this.state.selectedContact) {
+            return false;
+        }
+
+        if (this.state.call) {
             return false;
         }
 
@@ -1001,12 +1020,10 @@ class ReadyBox extends Component {
         }
 
         return [
-              {key: null, title: 'All', enabled: true, selected: false},
+              {key: 'recent', title: 'Recent', enabled: this.state.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
+              {key: 'calls', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'calls'},
               {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
-              {key: 'history', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'history'},
-              {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
-              {key: 'today', title: 'Today', enabled: this.state.navigationItems['today'], selected: this.state.historyPeriodFilter === 'today'},
-              {key: 'yesterday', title: 'Yesterday', enabled: this.state.navigationItems['yesterday'], selected: this.state.historyPeriodFilter === 'yesterday'},
+//              {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
               {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
               {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
@@ -1541,7 +1558,7 @@ class ReadyBox extends Component {
                             </View>
                             :
 
-                            <View style={buttonGroupClass}>
+                            <View style={[buttonGroupClass, {borderWidth: 0, borderColor: 'white'}]}>
                                   {!this.state.selectedContact && !this.state.shareToContacts?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
@@ -1849,7 +1866,6 @@ class ReadyBox extends Component {
 						totalMessageExceeded = {this.state.totalMessageExceeded}
 						requestDndPermission = {this.props.requestDndPermission}
 						gettingSharedAsset = {this.state.gettingSharedAsset}
-						selectAudioDevice = {this.props.selectAudioDevice}
 						startAudioPlayerFunc = {this.startAudioPlayer}
 						stopAudioPlayerFunc = {this.stopAudioPlayer}
 						playRecording = {this.state.playRecording}

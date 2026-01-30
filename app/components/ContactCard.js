@@ -252,7 +252,7 @@ render() {
   // Determine title and subtitle
   let title = uri.split('@')[0];
   
-  if (contact.name != uri) {
+  if (contact.name != uri && contact.name) {
 	  title = contact.name;
   }
 

@@ -87,10 +87,23 @@ class ShareViewController: SLComposeServiceViewController {
 
     // MARK: - Process loaded item
     private func processLoadedItem(data: NSSecureCoding?, typeIdentifier: String) {
-        var fileData: Data?
-        var fileName: String
 
-        if let url = data as? URL {
+        // 1️⃣ Web links FIRST
+        if typeIdentifier == "public.url", let url = data as? URL {
+            let fileName = "share-\(UUID().uuidString).weblink"
+            let fileData = url.absoluteString.data(using: .utf8)
+
+            if let fileData = fileData {
+                saveSharedFile(fileData, fileName: fileName)
+                NSLog("[sylk_app] Saved web link: \(url.absoluteString)")
+            }
+
+            fileProcessingCompleted()
+            return
+        }
+
+        // 2️⃣ File URLs (photos, videos, etc.)
+        if let url = data as? URL, url.isFileURL {
 
             let ext = url.pathExtension.lowercased()
 
@@ -100,49 +113,37 @@ class ShareViewController: SLComposeServiceViewController {
                 return
             }
 
-            fileName = "share-\(UUID().uuidString).\(ext)"
+            let fileName = "share-\(UUID().uuidString).\(ext)"
 
             do {
-                NSLog("[sylk_app] Streaming copy for file: \(fileName)")
                 try streamCopyItem(from: url, fileName: fileName)
             } catch {
                 NSLog("[sylk_app] Streaming copy failed: \(error)")
+            }
+
+            fileProcessingCompleted()
+            return
+        }
+
+        // 3️⃣ Text
+        if let text = data as? String {
+            let fileName = "share-\(UUID().uuidString).txt"
+            if let fileData = text.data(using: .utf8) {
+                saveSharedFile(fileData, fileName: fileName)
             }
             fileProcessingCompleted()
             return
         }
 
-        else if let text = data as? String {
-            fileName = "share-\(UUID().uuidString).txt"
-            fileData = text.data(using: .utf8)
-            NSLog("[sylk_app] Saving text file: \(fileName)")
-        }
-
-        else if let raw = data as? Data {
-            let ext = ((typeIdentifier as NSString).pathExtension.isEmpty ? "bin" : (typeIdentifier as NSString).pathExtension)
-            fileName = "share-\(UUID().uuidString).\(ext)"
-            fileData = raw
-            NSLog("[sylk_app] Saving raw data file: \(fileName)")
-        }
-
-        else {
-            fileName = "share-\(UUID().uuidString).bin"
-            NSLog("[sylk_app] Unknown type, saving as: \(fileName)")
-        }
-
-        if typeIdentifier == "public.url", let url = data as? URL {
-            fileName = "share-\(UUID().uuidString).weblink"
-            fileData = url.absoluteString.data(using: .utf8)
-            NSLog("[sylk_app] Saving URL as weblink: \(fileName)")
-        }
-
-        guard let fileData = fileData else {
-            NSLog("[sylk_app] No data to save for file: \(fileName)")
+        // 4️⃣ Raw data
+        if let raw = data as? Data {
+            let ext = (typeIdentifier as NSString).pathExtension.isEmpty ? "bin" : (typeIdentifier as NSString).pathExtension
+            let fileName = "share-\(UUID().uuidString).\(ext)"
+            saveSharedFile(raw, fileName: fileName)
             fileProcessingCompleted()
             return
         }
 
-        saveSharedFile(fileData, fileName: fileName)
         fileProcessingCompleted()
     }
 

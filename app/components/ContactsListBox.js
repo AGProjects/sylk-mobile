@@ -1408,6 +1408,11 @@ class ContactsListBox extends Component {
 		const mId = uuid.v4();
 		const timestamp = new Date();
 
+		if (message.rotation == this.state.rotation) {
+		    console.log('Rotation not changed');
+			return;
+		}
+
 		const metadataContent = {messageId: message._id, 
 							     metadataId: mId, 
 							     action: 'rotation',
@@ -3743,6 +3748,7 @@ scrollToMessage(id) {
 
         items.forEach((item) => {
             item.showActions = false;
+            //console.log('item', item.uri, item.tags);
 
             if (item.uri.indexOf('@videoconference.') === -1) {
                 item.conference = false;
@@ -3762,25 +3768,19 @@ scrollToMessage(id) {
         var todayStart = new Date();
         todayStart.setHours(0,0,0,0);
 
-        var yesterdayStart = new Date();
-        yesterdayStart.setDate(todayStart.getDate() - 2);
-        yesterdayStart.setHours(0,0,0,0);
+        var recentStart = new Date();
+        recentStart.setDate(todayStart.getDate() - 3);
+        recentStart.setHours(0,0,0,0);
 
         items.forEach((item) => {
             const fromDomain = '@' + item.uri.split('@')[1];
-
-            if (this.state.periodFilter === 'today') {
-                if(item.timestamp < todayStart) {
-                    return;
-                }
-            }
 
             if (item.uri === 'anonymous@anonymous.invalid' && this.state.filter !== 'blocked') {
                 return;
             }
 
-            if (this.state.periodFilter === 'yesterday') {
-                if(item.timestamp < yesterdayStart || item.timestamp > todayStart) {
+            if (this.state.periodFilter === 'recent') {
+                if(item.timestamp < recentStart ) {
                     return;
                 }
             }
@@ -3952,7 +3952,7 @@ scrollToMessage(id) {
 			loadEarlier = false;
         }
         
-        console.log('chatContainer', chatContainer);
+        //console.log('chatContainer', chatContainer);
         const topInset = this.state.insets?.top || 0;
 		const bottomInset = this.state.insets?.bottom || 0;
 		const leftInset = this.state.insets?.left || 0;
@@ -4325,7 +4325,6 @@ ContactsListBox.propTypes = {
     transferProgress: PropTypes.object,
     totalMessageExceeded: PropTypes.bool,
     gettingSharedAsset: PropTypes.bool,
-    selectAudioDevice: PropTypes.func,
 	startAudioPlayerFunc: PropTypes.func,
 	stopAudioPlayerFunc: PropTypes.func,
 	playRecording: PropTypes.bool,

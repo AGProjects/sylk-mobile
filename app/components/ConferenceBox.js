@@ -2957,8 +2957,8 @@ class ConferenceBox extends Component {
 	    
         if (Platform.OS === 'ios') {
 		    if (this.state.isLandscape) {
-		          if (this.fullScreen) {
-					 corners = {
+		        if (this.fullScreen) {
+				    corners = {
 						  topLeft: { top: 0, left: 0 },
 						  topRight: { top: 0, right: 0 },
 						  bottomRight: { bottom: 0, right: 0 },
@@ -2975,17 +2975,17 @@ class ConferenceBox extends Component {
 						borderColor: 'blue'
 					};
 
-		          } else {
-						corners = {
+		        } else {
+				    corners = {
 						  topLeft: { top: conferenceHeader.height, left: 0 },
 						  topRight: { top: conferenceHeader.height, right: 0 },
-						  bottomRight: { bottom: 0, right:  0 },
+						  bottomRight: { bottom: 0, right: 0 },
 						  bottomLeft: { bottom: 0, left: 0},
 						  id: 'ios-landscape'
 						};
 
 					container = {
-						width: width - topInset - rightInset,
+						width: width - rightInset,
 						height: height,
 						marginBottom: marginBottom,
 						borderWidth: debugBorderWidth,
@@ -2997,14 +2997,14 @@ class ConferenceBox extends Component {
 					  alignContent: 'flex-start',
 					  justifyContent: 'flex-start',
 					  height: height - conferenceHeader.height,
-					  width: width - rightInset - topInset,
+					  width: width - rightInset,
 					  borderColor: 'green',
 					  borderWidth: debugBorderWidth,
 					};
 
 					mediaContainer = {
 					  width: this.state.isLandscape ? videoWidth : '100%',
-					  height: height - rightInset - topInset + 30,
+					  height: height - topInset + 30,
 					  borderColor: 'red',
 					  borderWidth: debugBorderWidth,
 					};
@@ -3024,7 +3024,7 @@ class ConferenceBox extends Component {
 				  top: 0,
 				  left: 0,
 				  flexDirection: 'column',
-				  marginTop: this.fullScreen ? -topInset : 0,
+				  //marginTop: this.fullScreen ? 0: -topInset,
 				  width: width,
 				  height: this.fullScreen ? height: '100%',
 				  marginBottom: marginBottom,
@@ -3041,7 +3041,6 @@ class ConferenceBox extends Component {
 				  borderColor: 'white'
 				};		
 			}
-
 		} else {
 		    // android
 		    if (this.state.isLandscape) {

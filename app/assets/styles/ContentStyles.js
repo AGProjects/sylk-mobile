@@ -45,13 +45,6 @@ const styles = StyleSheet.create({
 	borderRadius: 12,
   },
 
-  checkBoxRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start', // 'left' → 'flex-start' in RN
-    alignItems: 'center',
-    marginBottom: 5,
-  },
-
   buttonRow: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -62,7 +55,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-start',
     alignItems: 'center',
-    marginBottom: 5,
   },
 
 // Conference Modal

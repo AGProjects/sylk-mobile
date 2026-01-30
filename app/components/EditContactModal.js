@@ -416,9 +416,9 @@ const editableTags = {
                     {myself ? (
                       <Text
                         onPress={() => Linking.openURL('http://delete.sylk.link')}
-                        style={[styles.link, { padding: 20 }]}
+                        style={[styles.link, { paddingBottom: 10 }]}
                       >
-                        Deletion account on server...
+                        Delete account on server...
                       </Text>
                     ) : (
                       selectedContact?.prettyStorage && !keyboardVisible && (
@@ -426,14 +426,14 @@ const editableTags = {
                       )
                     )}
 
-                    {!myself && !keyboardVisible && (
+                    {!myself && false && !keyboardVisible && (
                     <View style={{ flexDirection: 'row', marginTop: 8 }}>
                       <Icon style={styles.lock} name="lock" />
                       <Text style={styles.small}>Messages are encrypted end-to-end</Text>
                     </View>
                     )}
 
-                    {myself && (
+                    {myself && false && (
                       <View style={{ flexDirection: 'row', marginTop: 4 }}>
                         <Text style={styles.small}>Device Id: {myuuid}</Text>
                         <Text style={styles.small}> | Storage usage: {totalUsage}</Text>
