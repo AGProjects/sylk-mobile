@@ -5429,7 +5429,7 @@ class Sylk extends Component {
     async generateKeysIfNecessary() {
         let keyStatus = this.state.keyStatus;
         const account = this.state.account;
-        console.log('-- generate PGP keys if necessary ...', keyStatus);
+        //console.log('-- generate PGP keys if necessary ...', keyStatus);
         
 		await this.waitForContactsLoaded();
 
@@ -10650,11 +10650,15 @@ class Sylk extends Component {
 
 		if (realMessages.length == 1) {
 			label = 'One new message on server';
-			this._notificationCenter.postSystemNotification(label);
+			if (!this.state.selectedContact) {
+				this._notificationCenter.postSystemNotification(label);
+			}
 			this.setState({syncPercentage: 0});
 		} else if (realMessages.length > 1) {
 			label = messages.length + ' new messages on server';
-			this._notificationCenter.postSystemNotification(label);
+			if (!this.state.selectedContact) {
+				this._notificationCenter.postSystemNotification(label);
+			}
 			this.setState({syncPercentage: 0});
 		}
 
@@ -10760,7 +10764,7 @@ class Sylk extends Component {
 				await RNFS.unlink(jFile);
 				utils.timestampedLog('Journal processed:', path.basename(jFile), i, 'out of', cachedJournals.length);
 				let jlabel = "Journal applied";
-				if (cachedJournals.length > 1) {
+				if (cachedJournals.length > 1 && !this.state.selectedContact) {
 					jlabel = 'Apply ' + i +  ' out of ' + cachedJournals.length + ' journals';
 					this._notificationCenter.postSystemNotification(jlabel);
 				}
@@ -10769,7 +10773,7 @@ class Sylk extends Component {
 				}
 			} catch (e) {
 				utils.timestampedLog('Error applying journal file', path.basename(jFile), ':', e);
-				this._notificationCenter.postSystemNotification('Journal error ' + e);
+				//this._notificationCenter.postSystemNotification('Journal error ' + e);
 				try {
 					await RNFS.unlink(jFile);
 				} catch (e) {
@@ -11283,7 +11287,7 @@ class Sylk extends Component {
 		uri = metadataContent.uri || uri;
 
         if (!this.state.selectedContact || this.state.selectedContact.uri != uri) {
-			console.log("No selected contact or wrong contact Ñ skipping live metadata update.");
+			console.log("No selected contact or wrong contact â€” skipping live metadata update.");
 			return;
         }
 
@@ -12098,7 +12102,7 @@ class Sylk extends Component {
 	
 		let newMessages = existingMessages.map((msg) => {
 			if (msg._id !== id) {
-				// unchanged messageâ keep original reference
+				// unchanged messageâ€š keep original reference
 				return msg;
 			}
 	
