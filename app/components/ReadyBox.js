@@ -256,8 +256,14 @@ class ReadyBox extends Component {
 
       if (prevState.historyFilter !== this.state.historyFilter) {
 		  console.log('historyFilter has changed', this.state.historyFilter);
-      }
+		  if (this.state.historyFilter == 'calls' || this.state.historyFilter == 'conference') {
+			  this.setState({historyPeriodFilter: 'recent'});
+		  }
 
+		  if (this.state.historyFilter == 'favorite' || this.state.historyFilter == 'test') {
+			  this.setState({historyPeriodFilter: null});
+		  }
+      }
 
       if (prevState.orderBy !== this.state.orderBy) {
             if (this.state.orderBy == 'size') {

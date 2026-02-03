@@ -3789,6 +3789,10 @@ scrollToMessage(id) {
                 return;
             }
 
+            if (item.uri.indexOf('@videoconference.') > -1 && this.state.filter == 'calls') {
+                return;
+            }
+
             if (item.uri === this.state.accountId && !item.direction) {
                 return;
             }
@@ -3957,7 +3961,6 @@ scrollToMessage(id) {
 		const bottomInset = this.state.insets?.bottom || 0;
 		const leftInset = this.state.insets?.left || 0;
 		const rightInset = this.state.insets?.right || 0;
-
         const images = chatMessages
 		  .filter(m => !!m.image)   // only messages that contain images
 		  .map(msg => ({
@@ -3968,6 +3971,10 @@ scrollToMessage(id) {
 		  
 		const navigatorBarHeight = 60;
 		  		  
+		const KeyboardWrapper = Platform.OS === 'ios'
+			  ? View
+			  : KeyboardAvoidingView;
+
         return (
             <SafeAreaView style={[container, {borderColor: 'white', borderWidth: 0}]}>
               {this.state.selectedContact ?
@@ -4023,11 +4030,15 @@ scrollToMessage(id) {
 
              {this.showChat ?
              <View style={[chatContainer, borderClass]}>
-					<KeyboardAvoidingView
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
+				<KeyboardWrapper
+					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
 					  style={chatContainer}
-					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-					  keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : navigatorBarHeight + topInset}
+					  {...(Platform.OS === 'android'
+						? {
+							behavior: 'height',
+							keyboardVerticalOffset: navigatorBarHeight + topInset,
+						  }
+						: {})}
 					>
 
                 <GiftedChat 
@@ -4036,6 +4047,8 @@ scrollToMessage(id) {
 					onViewableItemsChanged: this.onViewableItemsChanged,
 					viewabilityConfig: this.viewabilityConfig,
 				  }}
+				  
+				  bottomOffset={Platform.OS === 'ios' ? bottomInset : 0}
                   innerRef={this.chatListRef}
                   messages={chatMessages}
                   onSend={this.onSendMessage}
@@ -4071,6 +4084,7 @@ scrollToMessage(id) {
                   keyboardShouldPersistTaps={"handled"}
                   keyboardDismissMode={"interactive"}
 				  text={this.state.text}
+				  
                   onInputTextChanged={text => this.chatInputChanged(text)}
 					isScrollToBottomVisible={() => {
 					  return true;
@@ -4090,7 +4104,7 @@ scrollToMessage(id) {
 				  )}
                   renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
                 />
-				   </KeyboardAvoidingView>
+				   </KeyboardWrapper>
 
 				{this.state.focusedMessages ?
 				this.renderFloatingControls():

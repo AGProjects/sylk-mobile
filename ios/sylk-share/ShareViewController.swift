@@ -223,8 +223,18 @@ class ShareViewController: SLComposeServiceViewController {
 
         if remainingFilesToProcess <= 0 && !didPostNotification {
             didPostNotification = true
+
+            DispatchQueue.main.async {
+                self.openHostApp()
+                self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+            }
+        }
+        /*
+        if remainingFilesToProcess <= 0 && !didPostNotification {
+            didPostNotification = true
             postWakeUpNotification()
         }
+         */
     }
 
     private func postWakeUpNotification() {
