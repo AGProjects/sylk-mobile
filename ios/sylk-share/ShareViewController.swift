@@ -247,5 +247,28 @@ class ShareViewController: SLComposeServiceViewController {
             self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
         }
     }
+    
+    @objc private func openURL(_ url: URL) -> Bool {
+        var responder: UIResponder? = self
+        while responder != nil {
+            if let application = responder as? UIApplication {
+                application.open(url)
+                return true
+            }
+            responder = responder?.next
+        }
+        return false
+    }
+
+    private func openHostApp() {
+        let urlString = "sylk://share?source=extension"
+        guard let url = URL(string: urlString) else {
+            NSLog("[sylk_app] Invalid URL: \(urlString)")
+            return
+        }
+
+        _ = openURL(url)
+    }
+    
 }
 

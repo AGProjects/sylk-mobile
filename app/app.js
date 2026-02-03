@@ -274,6 +274,11 @@ async function fixDirectoryStructure(suffix = 'sufix') {
   }
 }
 
+function guessExtension(mime) {
+  if (!mime) return '';
+  return '.' + mime.split('/')[1];
+}
+
 function unwrapMessage(msg: any) {
     // If the message is wrapped in _j (Reanimated / proxy object), return that
     if (msg && typeof msg === "object" && "_j" in msg) {
@@ -651,6 +656,12 @@ class Sylk extends Component {
 			this.boundWiredHeadsetDetect = this._wiredHeadsetDetect.bind(this);
 			DeviceEventEmitter.addListener('WiredHeadset', this.boundWiredHeadsetDetect);
 
+			DeviceEventEmitter.addListener('ShareIntentReceived',
+				payload => {
+					this.handleAndroidShare(payload)
+				  // route to contacts, parse link, etc
+				}
+			  );
         }
         		
 		DarkModeManager.addListener((isDark) => {
@@ -662,15 +673,20 @@ class Sylk extends Component {
 
 	 async purgeSharedFiles() {
 		 for (const file of this.sharedAndroidFiles) {
+		    console.log('purgeSharedFiles', file);
 			try {
 				if (await RNFS.exists(file.filePath)) {
 					await RNFS.unlink(file.filePath);
 					console.log('Deleted', file.filePath);
 				}
 			} catch (err) {
-				console.warn('Error purgeSharedFiles file', err);
+				//console.warn('Error purgeSharedFiles file', file, err);
 			}
 		}
+
+        if (Platform.OS === "android") {
+            ReceiveSharingIntent.clearReceivedFiles();
+        }
 	
 	  if (Platform.OS === 'ios') {
 		  try {
@@ -681,7 +697,6 @@ class Sylk extends Component {
 		  }
 	  }
 
-
 	}
 
 	async fetchSharedItemsiOS() {
@@ -689,7 +704,7 @@ class Sylk extends Component {
 			return;
 		} 
 
-	    //console.log('---fetchSharedItemsiOS');
+	    console.log('---fetchSharedItemsiOS');
 	    //this.purgeSharedFiles();
 
 		  // 1. Get the App Group container path
@@ -706,7 +721,7 @@ class Sylk extends Component {
 		      file.filePath = file.path; 
 		      file.fileName = file.name;
 		      file.mimeType = mime.lookup(file.name); 
-		      console.log(file);
+		      //console.log(file);
 		  });
 
  		    console.log('Share', sharedFiles.length, 'items');
@@ -2017,7 +2032,7 @@ class Sylk extends Component {
             this.refreshNavigationItems();
 
             setTimeout(() => {
-                this.fetchSharedItemsAndroid('start_up');
+                this.fetchSharedItemsAndroidAtStart();
 				this.fetchSharedItemsiOS();
                 if (this.initialChatContact) {
                     //console.log('Starting chat with', this.initialChatContact);
@@ -4001,7 +4016,7 @@ class Sylk extends Component {
         if (nextAppState === 'active') {
             this.respawnConnection(nextAppState);
 
-            this.fetchSharedItemsAndroid('app_active');
+            //this.fetchSharedItemsAndroidAtStart('app_active');
             this.fetchSharedItemsiOS();
             this.checkPendingActions();
 
@@ -6482,7 +6497,7 @@ class Sylk extends Component {
                 }
             } else if (event === 'shared_content') {
                 console.log('Media Link: ', url_parts[2]);
-                this.fetchSharedItemsAndroid('Linking');
+                //this.fetchSharedItemsAndroidAtStart('Linking');
             } else if (event === 'message') {
 				 from = url_parts[4];
                  this.selectChatContact(from);
@@ -7686,7 +7701,7 @@ class Sylk extends Component {
 		}
 
         console.log('uploadFile', file_transfer.transfer_id);
-		console.log('file', JSON.stringify(file_transfer, null, 2));
+		//console.log('file', JSON.stringify(file_transfer, null, 2));
 
         let encrypted_file;
         let outputFile;
@@ -13050,9 +13065,92 @@ class Sylk extends Component {
     contactStopShare() {
 		 this.setState({contactIsSharing: false});    
     }
-    
-    fetchSharedItemsAndroid(source) {
-        //console.log('Fetch shared items', source);
+
+	async handleAndroidShare(payload) {
+
+      if (this.state.shareToContacts) {
+		  return;
+      }
+
+	  console.log('--handleAndroidShare', payload);
+	
+	  let files = [];
+	
+	  // 1️⃣ Multiple files (SEND_MULTIPLE)
+	  if (Array.isArray(payload.items) && payload.items.length > 0) {
+		for (const item of payload.items) {
+		  const resolved = await this.resolveSharedFile(item);
+		  if (resolved) {
+			files.push({
+			  kind: 'file',
+			  ...resolved,
+			});
+		  }
+		}
+	  }
+	  // 2️⃣ Web link / plain text
+	  else if (payload.type === 'text/plain' && payload.text) {
+		files.push({
+		  kind: 'link',
+		  filePath: null,
+		  weblink: payload.text,
+		  mimeType: payload.type,
+		  text: payload.subject || null,
+		});
+	  }
+	  // 3️⃣ Single file
+	  else if (payload.uri) {
+		const resolved = await this.resolveSharedFile(payload);
+		if (resolved) {
+		  files.push({
+			kind: 'file',
+			...resolved,
+		  });
+		}
+	  }
+	  // 4️⃣ Unknown
+	  else {
+		console.log('Unknown Android share payload', payload);
+		return;
+	  }
+	
+	  console.log('Derived share(s)', files);
+	
+	  if (files.length === 0) return;
+	
+	  this.sharedAndroidFiles = files;
+	  this.setState({
+		shareToContacts: true,
+		shareContent: files,
+		selectedContact: null,
+	  });
+	}
+	
+	async resolveSharedFile({ uri, type }) {
+	  if (!uri) return null;
+	
+	  try {
+		const ext = guessExtension(type);
+		const fileName = `shared_${Date.now()}${ext}`;
+		const destPath = `${RNFS.CachesDirectoryPath}/${fileName}`;
+	
+		await RNFS.copyFile(uri, destPath);
+	
+		return {
+		  contentUri: uri,
+		  filePath: destPath,
+		  fileName,
+		  mimeType: type,
+		};
+	  } catch (e) {
+		console.log('resolveSharedFile error', e);
+		return null;
+	  }
+	}
+
+    fetchSharedItemsAndroidAtStart() {
+        console.log('fetchSharedItemsAndroidAtStart');
+        
         ReceiveSharingIntent.getReceivedFiles(files => {
             // files returns as JSON Array example
             //[{ filePath: null, text: null, weblink: null, mimeType: null, contentUri: null, fileName: null, extension: null }]
@@ -13065,6 +13163,7 @@ class Sylk extends Component {
                                    selectedContact: null});
 
                     let item = files[0];
+                    
                     let what = 'Share text with contacts';
 
                     if (item.weblink) {
@@ -13074,10 +13173,12 @@ class Sylk extends Component {
                     if (item.filePath) {
                         what = 'Share file with contacts';
                     }
+                    
+                    console.log(what);
 
-                    this._notificationCenter.postSystemNotification(what);
+                    //this._notificationCenter.postSystemNotification(what);
                 } else {
-                    //console.log('Nothing to share');
+                    console.log('Nothing to share');
                 }
             }, (error) => {
                 //console.log('Error receiving sharing intent', error.message);
@@ -13091,7 +13192,7 @@ class Sylk extends Component {
     }
 
     async shareContent() {
-
+        console.log('shareContent');
         let shareContent = this.state.shareContent;
         let selectedContacts = this.state.selectedContacts;
         let message = this.state.forwardContent;
@@ -13163,11 +13264,12 @@ class Sylk extends Component {
             }
 
         } else {
-            console.log('Sharing content...');
-
             if (shareContent.length === 0) {
+                console.log('No sharing content...');
                 return;
             }
+
+            console.log('Sharing content...', shareContent.length, 'items');
 
             if (selectedContacts.length === 0) {
                 this._notificationCenter.postSystemNotification('Sharing canceled');
@@ -13184,7 +13286,8 @@ class Sylk extends Component {
                 item = shareContent[j];
                 j++;
 
-                //console.log('Sharing item', item);
+                console.log('Sharing item', item);
+				contentType = 'text/plain';
 
                 if (item.subject) {
                     content = content + '\n\n' + item.subject;
@@ -13194,13 +13297,16 @@ class Sylk extends Component {
                     content = content + '\n\n' + item.text;
                 }
 
+                if (item.weblink) {
+                    // android only
+                    content = content + '\n\n' + item.weblink;
+                }
+
                 if (item.filePath) {
                     if (item.fileName.endsWith('.weblink')) {
+                        // ios only
 						const link = await RNFS.readFile(item.filePath, 'utf8');
-				
 						content = content ? content + '\n\n' + link.trim() : link.trim();
-						contentType = 'text/plain';
-						
 						console.log('Sharing web link:', content);
 
                     } else {
@@ -13288,10 +13394,10 @@ class Sylk extends Component {
     }
 
     endShareContent() {
-        console.log('endShareContent');
+        console.log('--endShareContent');
         let newSelectedContact = this.state.sourceContact;
 
-        if (this.state.selectedContacts.length === 1 && ! newSelectedContact) {
+        if (this.state.selectedContacts.length === 1 && !newSelectedContact) {
             let uri = this.state.selectedContacts[0];
             if (uri in this.state.myContacts) {
                 newSelectedContact = this.state.myContacts[uri];
@@ -13306,9 +13412,6 @@ class Sylk extends Component {
                        sourceContact: null,
                        shareToContacts: false});
 
-        if (Platform.OS === "android") {
-            //ReceiveSharingIntent.clearReceivedFiles();
-        }
     }
 
     filterHistory(filter) {

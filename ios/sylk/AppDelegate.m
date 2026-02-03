@@ -399,8 +399,28 @@
             openURL:(NSURL *)url
             options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
 {
-  NSLog(@"[sylk_share] openURL called: %@", url);
-  return [RCTLinkingManager application:application openURL:url options:options];
+    NSLog(@"[sylk_share] openURL called: %@", url.absoluteString);
+
+    if ([url.scheme isEqualToString:@"sylk"] &&
+        [url.host isEqualToString:@"share"]) {
+
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        NSString *source = nil;
+
+        for (NSURLQueryItem *item in components.queryItems) {
+            if ([item.name isEqualToString:@"source"]) {
+                source = item.value;
+                break;
+            }
+        }
+
+        if ([source isEqualToString:@"extension"]) {
+            NSLog(@"[sylk_share] Launched from Share Extension");
+            return YES;
+        }
+    }
+
+    return [RCTLinkingManager application:application openURL:url options:options];
 }
 
 #pragma mark - Foreground notification handling
