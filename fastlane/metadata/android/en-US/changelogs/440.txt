@@ -1,0 +1,6 @@
+Improve chat performance
+Improve landcsape support
+Added audio device selection
+Speed up initial server sync
+Allow changing SylkServer domain
+Bug fixes

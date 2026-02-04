@@ -1,0 +1,5 @@
+ * Added audio device selection
+ * Fixes for file transfers
+ * Fixes for audio calls
+
+

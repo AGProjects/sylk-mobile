@@ -1,0 +1,6 @@
+Added metadata for all file transfer types
+Added photo preview in full screen with zoom and gestures
+Added full screen video preview
+Added progres bars for upload/download
+Allow sending photos in full size
+Bug fixes in conferencing
