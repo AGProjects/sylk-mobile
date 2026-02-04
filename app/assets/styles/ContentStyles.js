@@ -8,7 +8,7 @@ const styles = StyleSheet.create({
   },
 
   subtitle: {
-    padding: 10,
+    padding: 4,
     fontSize: 18,
     textAlign: 'center',
   },

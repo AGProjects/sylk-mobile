@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
 import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions} from 'react-native';
-import { IconButton, Title, Button, Colors, Text, ActivityIndicator  } from 'react-native-paper';
+import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox } from 'react-native-paper';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import SoundLevel from "react-native-sound-level";
 
@@ -89,7 +89,9 @@ class ReadyBox extends Component {
 			level: 0,
 			callHistoryUrl: this.props.callHistoryUrl,
 			insets: this.props.insets,
-			storageUsage: this.props.storageUsage
+			storageUsage: this.props.storageUsage,
+			resizeContent: this.props.resizeContent,
+			sharedContent: this.props.sharedContent
         };
         this.ended = false;
 
@@ -207,7 +209,9 @@ class ReadyBox extends Component {
 					    contactIsSharing: nextProps.contactIsSharing,
 					    callHistoryUrl: nextProps.callHistoryUrl,
 					    insets: nextProps.insets,
-					    storageUsage: nextProps.storageUsage
+					    storageUsage: nextProps.storageUsage,
+					    resizeContent: nextProps.resizeContent,
+					    sharedContent: nextProps.sharedContent
                         });
     }
 
@@ -1454,6 +1458,12 @@ class ReadyBox extends Component {
         let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
         let recordIcon               = this.state.recording ? 'pause' : 'microphone';
         let activityTitle            = this.state.recording ? "Recording audio" : "Audio recording ready";
+        
+        const sharedContent = this.state.sharedContent || [];
+        
+		const hasImages = sharedContent.some(
+		  file => typeof file.mimeType === 'string' && file.mimeType.startsWith('image/')
+		);
 
         let fileTransfersDisabled = false;
 
@@ -1737,6 +1747,30 @@ class ReadyBox extends Component {
                         : null}
 
                     </View>
+
+					  { (this.state.shareToContacts && hasImages) ?
+					  <View style={{borderColor: 'white', 
+					        borderWidth: 1, 
+					        flexDirection: 'row',
+							justifyContent: 'center',
+							padding: 5,
+							alignItems: 'center'}}>
+								{Platform.OS === 'ios' ? (
+								  <Switch
+									value={!this.state.resizeContent}
+									onValueChange={() => this.props.toggleResizeContent()}
+								  />
+								) : (
+								  <Checkbox
+									status={!this.state.resizeContent ? 'checked' : 'unchecked'}
+									onPress={() => this.props.toggleResizeContent()}
+								  />
+								)}
+
+							<Text style={styles.resize}>Full size</Text>
+					  </View>
+					  :  null}
+
 
                     { this.state.recording  ?
                         <View style={styles.recordingContainer}>
@@ -2030,7 +2064,10 @@ ReadyBox.propTypes = {
 	updateFileTransferMetadata: PropTypes.func,
 	insets: PropTypes.object,
 	vibrate: PropTypes.func,
-	storageUsage: PropTypes.array
+	storageUsage: PropTypes.array,
+	toggleResizeContent: PropTypes.func,
+	resizeContent: PropTypes.bool,
+	sharedContent: PropTypes.array
 };
 
 export default ReadyBox;

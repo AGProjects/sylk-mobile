@@ -190,7 +190,8 @@ class ContactsListBox extends Component {
 		    callHistoryUrl: this.props.callHistoryUrl,
 		    isAudioRecording: this.props.isAudioRecording,
 		    recordingFile: this.props.recordingFile,
-		    insets: this.props.insets
+		    insets: this.props.insets,
+		    composerHeight: 48
         }
 
         this.ended = false;
@@ -243,6 +244,10 @@ class ContactsListBox extends Component {
 			 //console.log('CL messagesMetadata', nextProps.messagesMetadata);
         }
         
+        if ('composerHeight' in nextProps) {
+			 this.setState({composerHeight: nextProps.composerHeight});
+	    }
+
 		if (nextProps.selectedContact !== this.state.selectedContact) {
 		    if (!nextProps.selectedContact && nextProps.selectedContact) {
 				console.log('Selected contact changed to', nextProps.selectedContact.uri);
@@ -751,6 +756,10 @@ class ContactsListBox extends Component {
 		name = capitalizeFirstLetter(name.split('@')[0]);
 	  }
 	
+	  const LINE_HEIGHT = 20;
+      const MAX_LINES = 5;
+      const VERTICAL_PADDING = Platform.OS === 'ios' ? 24 : 20;
+
 	  return (
 		<View style={{ flex: 1}}>
 	
@@ -828,6 +837,7 @@ class ContactsListBox extends Component {
 	
 		  {/* Real TextInput */}
 		  <View
+			onLayout={this.onComposerLayout}
 			style={{
 			  justifyContent: 'center',
 			  alignSelf: 'stretch', // make it fill horizontally
@@ -839,24 +849,33 @@ class ContactsListBox extends Component {
 			  style={{
 				fontSize: 16,
 				borderWidth: 0,
-				borderColor: 'red',
 				paddingVertical: Platform.OS === 'ios' ? 12 : 10,
 				paddingHorizontal: 8,
 				lineHeight: 20,
 				minHeight: 36,
-				maxHeight: 100,
+				maxHeight: 20 * 5 + (Platform.OS === 'ios' ? 24 : 20),
 				textAlignVertical: 'center',
 				color: '#000',
 			  }}
 			  placeholder={replyingTo ? 'Reply with...' : this.state.placeholder}
 			  placeholderTextColor="#999"
 			  multiline
+			  scrollEnabled
 			  onChangeText={composerProps.onTextChanged}
 			  value={composerProps.text}
+			  textAlignVertical="top"
 			/>
 		  </View>
 		</View>
 	  );
+	};
+
+	onComposerLayout = (e) => {
+	  const { height } = e.nativeEvent.layout;
+	
+	  if (height !== this.state.composerHeight) {
+		this.setState({ composerHeight: height });
+	  }
 	};
 
     async handleShare(message, email=false) {
@@ -4032,7 +4051,8 @@ scrollToMessage(id) {
              <View style={[chatContainer, borderClass]}>
 				<KeyboardWrapper
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  style={chatContainer}
+					  style={[chatContainer, {marginBottom: Platform.OS === 'ios' ? this.state.composerHeight - bottomInset: 0}]}
+					  
 					  {...(Platform.OS === 'android'
 						? {
 							behavior: 'height',

@@ -27,6 +27,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  resize: {
+    fontSize: 14,
+    color: 'white',
+    textAlign: 'center',
+    paddingLeft: 10,
+    paddingRight: 10
+  },
+
   historyLandscapeContainer: {
     width: '100%',
     flex: 1,

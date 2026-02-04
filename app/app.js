@@ -403,7 +403,7 @@ class Sylk extends Component {
             privateKeyImportSuccess: false,
             inviteContacts: false,
             shareToContacts: false,
-            shareContent: [],
+            sharedContent: [],
             selectedContacts: [],
             pinned: false,
             callContact: null,
@@ -468,7 +468,8 @@ class Sylk extends Component {
             storageUsage: [],
             syncPercentage: 100,
             refetchMessagesForUri: null,
-            devMode: false
+            devMode: false,
+            resizeContent: false
         };
 
         this.buildId = "2025122801";
@@ -725,8 +726,9 @@ class Sylk extends Component {
 		  });
 
  		    console.log('Share', sharedFiles.length, 'items');
+
 			this.setState({shareToContacts: true,
-						   shareContent: sharedFiles,
+						   sharedContent: sharedFiles,
 						   selectedContact: null});
 
 			let what = 'Share text with contacts';
@@ -738,6 +740,7 @@ class Sylk extends Component {
 			if (item.path) {
 				what = 'Share file with contacts';
 			}
+			
 
 			this._notificationCenter.postSystemNotification(what);
 		  
@@ -954,6 +957,11 @@ class Sylk extends Component {
 
 		this.setState({devMode: !this.state.devMode});
 	}
+
+	toggleResizeContent() {
+		this.setState({resizeContent: !this.state.resizeContent});
+	}
+
 
 	async lookupSylkServer(domain, checkOnly = false) {
 		console.log(' --- lookupSylkServer', domain, checkOnly);
@@ -2068,6 +2076,8 @@ class Sylk extends Component {
 			 //console.log(' --- orientation did change', this.state.orientation, this.state.insets);
 	     }
 
+
+
 	     if (this.state.syncConversations != prevState.syncConversations) {
 			 console.log(this.cdu_counter, 'CDU --- syncConversations did change', this.state.syncConversations);
 			 this.cdu_counter = this.cdu_counter + 1;
@@ -2075,6 +2085,10 @@ class Sylk extends Component {
 
 	     if (this.state.lastSyncId != prevState.lastSyncId) {
 			 console.log(' --- lastSyncId did change', this.state.lastSyncId);
+	     }
+
+	     if (this.state.resizeContent != prevState.resizeContent) {
+			 console.log(' --- resizeContent did change', this.state.resizeContent);
 	     }
 
 	     if (this.state.refetchMessagesForUri != prevState.refetchMessagesForUri) {
@@ -3003,7 +3017,7 @@ class Sylk extends Component {
     }
 
     get sharingAction() {
-        return !!this.state.forwardContent || (this.state.shareContent && this.state.shareContent.length > 0);
+        return !!this.state.forwardContent || (this.state.sharedContent && this.state.sharedContent.length > 0);
     }
 
     async initConfiguration(configurationJson, origin=null) {
@@ -7667,15 +7681,15 @@ class Sylk extends Component {
         return true;
     }
 
-		async resizeBeforeUpload(localUrl, size=600) {
-		  //console.log('Image to resize', localUrl); 
+		async resizeBeforeUpload(localUrl, size=1200) {
+		  console.log('Image to resize', localUrl); 
 		  try {
 			const resized = await ImageResizer.createResizedImage(
 			  localUrl,          // image URI
 			  size,               // width
 			  size,               // height
 			  'JPEG',            // format
-			  100,                // quality
+			  85,                // quality
 			  0,                 // rotation
 			  undefined,         // outputPath
 			  false,             // keepMeta (false = strip EXIF)
@@ -7701,7 +7715,7 @@ class Sylk extends Component {
 		}
 
         console.log('uploadFile', file_transfer.transfer_id);
-		//console.log('file', JSON.stringify(file_transfer, null, 2));
+		console.log('-- file', JSON.stringify(file_transfer, null, 2));
 
         let encrypted_file;
         let outputFile;
@@ -8146,7 +8160,7 @@ class Sylk extends Component {
             }
         }
 
-        utils.timestampedLog('Message', id, 'IMDN state changed to', state);
+        //utils.timestampedLog('Message', id, 'IMDN state changed to', state);
         let query;
 
         const failed_states = ['failed', 'error', 'forbidden'];
@@ -8576,7 +8590,7 @@ class Sylk extends Component {
 	
 		if (!(uri in this.state.messages)) return;
 
- 	    console.log('updateRenderMessageState', id, state);
+ 	    //console.log('updateRenderMessageState', id, state);
 	
 		// Create a shallow clone of the messages object (immutable update)
 		const prevMessages = this.state.messages;
@@ -13125,7 +13139,7 @@ class Sylk extends Component {
 	  this.sharedAndroidFiles = files;
 	  this.setState({
 		shareToContacts: true,
-		shareContent: files,
+		sharedContent: files,
 		selectedContact: null,
 	  });
 	}
@@ -13163,7 +13177,7 @@ class Sylk extends Component {
                     console.log('Android share', files.length, 'items');
 
                     this.setState({shareToContacts: true,
-                                   shareContent: files,
+                                   sharedContent: files,
                                    selectedContact: null});
 
                     let item = files[0];
@@ -13197,7 +13211,7 @@ class Sylk extends Component {
 
     async shareContent() {
         console.log('shareContent');
-        let shareContent = this.state.shareContent;
+        let sharedContent = this.state.sharedContent;
         let selectedContacts = this.state.selectedContacts;
         let message = this.state.forwardContent;
 
@@ -13268,17 +13282,18 @@ class Sylk extends Component {
             }
 
         } else {
-            if (shareContent.length === 0) {
+            if (sharedContent.length === 0) {
                 console.log('No sharing content...');
                 return;
             }
 
-            console.log('Sharing content...', shareContent.length, 'items');
-
             if (selectedContacts.length === 0) {
+                console.log('No selected contacts...');
                 this._notificationCenter.postSystemNotification('Sharing canceled');
                 return;
             }
+
+            console.log('Sharing content...', sharedContent.length, 'items to', selectedContacts.length, 'contacts');
 
             let item;
             let basename;
@@ -13286,11 +13301,11 @@ class Sylk extends Component {
             let dirname;
             let file_transfer;
 
-            while (j < shareContent.length) {
-                item = shareContent[j];
+            while (j < sharedContent.length) {
+                item = sharedContent[j];
                 j++;
 
-                console.log('Sharing item', item);
+                //console.log('Sharing item', item);
 				contentType = 'text/plain';
 
                 if (item.subject) {
@@ -13320,11 +13335,12 @@ class Sylk extends Component {
 										  'filetype' : item.mimeType,
 										  'sender': {'uri': this.state.accountId},
 										  'receiver': {'uri': null},
-										  'direction': 'outgoing'
+										  'direction': 'outgoing',
+										  'fullSize': !this.state.resizeContent
 										  };
-	
+
 						msg.metadata = file_transfer;
-	
+
 						if (utils.isImage(item.fileName, file_transfer.filetype)) {
 							msg.image = Platform.OS === "android" ? 'file://'+ item.filePath : item.filePath;
 						} else if (utils.isAudio(item.fileName)) {
@@ -13409,7 +13425,7 @@ class Sylk extends Component {
         }
 
         //console.log('Switch to contact', newSelectedContact);
-        this.setState({shareContent: [],
+        this.setState({sharedContent: [],
                        selectedContacts: [],
                        selectedContact: newSelectedContact,
                        forwardContent: null,
@@ -14098,6 +14114,9 @@ return (
 					insets = {this._insets}
 					vibrate = {this.vibrate}
 					storageUsage = {this.state.storageUsage}
+					toggleResizeContent = {this.toggleResizeContent}
+					resizeContent = {this.state.resizeContent}
+					sharedContent = {this.state.sharedContent}
                 />
 
                 <ImportPrivateKeyModal

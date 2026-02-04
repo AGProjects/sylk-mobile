@@ -323,7 +323,7 @@ if ((prevThumb ?? null) !== (nextThumb ?? null)) {
 	  const oldVal = p[f] ?? null;  // convert undefined to null
 	  const newVal = n[f] ?? null;  // convert undefined to null
 	  if (oldVal !== newVal) {
-		console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
+		//console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
 		return false;
 	  }
 	}
@@ -369,7 +369,7 @@ if ((prevThumb ?? null) !== (nextThumb ?? null)) {
 		//console.log(`[Bubble ${id}] RERENDER → status '${f}' : ${oldValue} -> ${newValue}`);
 		
 		if (oldValue !== newValue) {
-			console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
+			//console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
 			return false;
 		}
 	}

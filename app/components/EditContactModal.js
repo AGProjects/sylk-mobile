@@ -331,7 +331,7 @@ const editableTags = {
 							const isSelected = tags.includes(tagKey);
 						
 							return (
-							  <View key={tagKey} style={styles.checkBoxRow}>
+							  <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
 								{Platform.OS === 'ios' ? (
 								  <Switch
 									value={isSelected}
@@ -361,7 +361,7 @@ const editableTags = {
                     )}
 
                     {myself && (
-                      <View style={styles.checkBoxRow}>
+                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
                         {Platform.OS === 'ios' ? (
                           <Switch value={rejectNonContacts} onValueChange={toggleRejectNonContacts} />
                         ) : (
@@ -372,7 +372,7 @@ const editableTags = {
                     )}
 
                     {myself && !rejectNonContacts && (
-                      <View style={styles.checkBoxRow}>
+                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
                         {Platform.OS === 'ios' ? (
                           <Switch value={rejectAnonymous} onValueChange={toggleRejectAnonymous} />
                         ) : (
@@ -383,7 +383,7 @@ const editableTags = {
                     )}
 
                     {myself && (
-                      <View style={styles.checkBoxRow}>
+                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 0: 0}]}>
                         {Platform.OS === 'ios' ? (
                           <Switch value={chatSounds} onValueChange={toggleChatSounds} />
                         ) : (
