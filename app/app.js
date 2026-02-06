@@ -642,7 +642,7 @@ class Sylk extends Component {
         }
 
         this.sqlTableVersions = {'messages': 13,
-                                 'contacts': 7,
+                                 'contacts': 8,
                                  'keys': 3,
                                  'accounts': 6
                                  }
@@ -1931,7 +1931,7 @@ class Sylk extends Component {
 					this.sql_contacts_keys.push(contact.uri);
                     myContacts[contact.uri] = contact;
 
-                    //console.log('Load contact', contact.uri);
+                    console.log('Load contact', contact.uri, contact.tags, contact.properties);
                 }
 
                 storage.get('cachedHistory').then((history) => {
@@ -2478,6 +2478,7 @@ class Sylk extends Component {
                                     'last_call_media' TEXT, \
                                     'last_call_duration' INTEGER default 0, \
                                     'last_call_id' TEXT, \
+                                    'properties' TEXT, \
                                     'conference' INTEGER default 0, \
                                     PRIMARY KEY (account, uri)) \
                                     ";
@@ -2577,7 +2578,8 @@ class Sylk extends Component {
                                                     ],
                                                 5: [{query: 'alter table contacts add column email TEXT', params: []}],
                                                 6: [{query: 'alter table contacts add column photo BLOB', params: []}],
-                                                7: [{query: 'alter table contacts add column email TEXT', params: []}]
+                                                7: [{query: 'alter table contacts add column email TEXT', params: []}],
+                                                8: [{query: 'alter table contacts add column properties TEXT', params: []}]
                                                 },
                                    'keys': {2: [{query: 'alter table keys add column last_sync_id TEXT', params: []}],
                                             3: [{query: 'alter table keys add column my_uuid TEXT', params: []}]
@@ -2618,7 +2620,7 @@ class Sylk extends Component {
                     //console.log('Table', key, 'has version', value);
                     if (this.sqlTableVersions[key] > currentVersions[key]) {
                         console.log('SQL Table', key, 'must have version', value, 'and it has', currentVersions[key]);
-                        console.log('update_queries', updateSQLTables);
+                        //console.log('update_queries', updateSQLTables);
                         update_queries = updateSQLTables[key];
                         if (!update_queries) {
 							console.log('upgradeSQLTables updateSQLTables is empty', key);
@@ -5421,7 +5423,7 @@ class Sylk extends Component {
                 account.on('incomingCall', this.incomingCallFromWebSocket);
                 account.on('incomingMessage', this.incomingMessageFromWebSocket);
                 account.on('syncConversations', this.syncConversations);
-                account.on('readConversation', this.readConversation);
+                account.on('readConversation', this.readConversation); // used for my own devices
                 account.on('removeConversation', this.removeConversation);
                 account.on('removeMessage', this.removeMessage);
                 account.on('outgoingMessage', this.outgoingMessage);
@@ -7060,9 +7062,10 @@ class Sylk extends Component {
         let media = contact.lastCallMedia.toString();
         let participants = contact.participants.toString();
         let unixTime = Math.floor(contact.timestamp / 1000);
+        let properties = contact.properties ? JSON.stringify(contact.properties) : {};
 
-        let params = [this.state.accountId, contact.email, contact.photo, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags.toString() || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
-        await this.ExecuteQuery("INSERT INTO contacts (account, email, photo, timestamp, uri, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let params = [this.state.accountId, contact.email, contact.photo, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags.toString() || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties];
+        await this.ExecuteQuery("INSERT INTO contacts (account, email, photo, timestamp, uri, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, properties) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             if (result.rowsAffected === 1) {
                 console.log('SQL inserted contact', contact.uri, 'by', origin);
 				if (origin == 'editContact') {
@@ -7136,9 +7139,11 @@ class Sylk extends Component {
 		tags = tags.join(', ');
         let conference = contact.conference ? 1: 0;
         let participants = contact.participants.toString();
-        let params = [contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, contact.uri, this.state.accountId];
+        let properties = contact.properties ? JSON.stringify(contact.properties) : {};
 
-        await this.ExecuteQuery("UPDATE contacts set photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ? where uri = ? and account = ?", params).then((result) => {
+        let params = [contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties, contact.uri, this.state.accountId];
+
+        await this.ExecuteQuery("UPDATE contacts set photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ? where uri = ? and account = ?", params).then((result) => {
             if (result.rowsAffected === 1) {
                 console.log('SQL updated contact', contact.uri, 'by', origin);
                 if (origin == 'editContact') {
@@ -7715,7 +7720,7 @@ class Sylk extends Component {
 		}
 
         console.log('uploadFile', file_transfer.transfer_id);
-		console.log('-- file', JSON.stringify(file_transfer, null, 2));
+		//console.log('-- file', JSON.stringify(file_transfer, null, 2));
 
         let encrypted_file;
         let outputFile;
@@ -10400,7 +10405,7 @@ class Sylk extends Component {
     }
 
     playMessageSound(direction='incoming') {
-        console.log('---- playMessageSound', direction);
+        console.log('--- playMessageSound', direction);
 
         if (!this.state.chatSounds) {
 			console.log('---- playMessageSound disabled');
@@ -10550,7 +10555,8 @@ class Sylk extends Component {
 
     async readConversation(uri) {
         console.log('readConversation', uri);
-        this.resetUnreadCount(uri)
+        // meant for another device of mine, don't resend IMDNs?
+        this.resetUnreadCount(uri);
     }
 
     removeContact(uri) {
@@ -12480,7 +12486,8 @@ class Sylk extends Component {
                           lastCallMedia: [],
                           participants: [],
                           messagesMetadata: {},
-                          timestamp: current_datetime
+                          timestamp: current_datetime,
+                          properties: {}
                           }
 
         if (data.sqlItem) {
@@ -12500,6 +12507,17 @@ class Sylk extends Component {
 			contact.messagesMetadata = {}
 			contact.lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
 			contact.lastMessage = item.last_message === '' ? null : item.last_message;
+			contact.messagesMetadata = {}
+			let properties = {}
+			if (item.properties) {
+				try {
+					properties = JSON.parse(item.properties);
+				} catch (e) {
+					console.log('Error decoding json contact properties', item.properties);
+				}
+			}
+
+			contact.properties = properties;
         }
 
         contact = this.sanitizeContact(uri, contact);
@@ -12517,7 +12535,8 @@ class Sylk extends Component {
                           tags: ['synthetic'],
                           lastCallMedia: [],
                           participants: [],
-                          timestamp: new Date()
+                          timestamp: new Date(),
+                          properties: {}
                           }
         return contact;
     }

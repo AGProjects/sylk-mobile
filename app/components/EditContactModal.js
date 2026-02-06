@@ -161,31 +161,35 @@ const getTotalPrettyStorage = (entity) => {
   }
   
   const isTagVisible = (tagKey) => {
-  const rule = editableTags[tagKey];
+	  const rule = editableTags[tagKey];
+	
+	  if (!rule) return true;
+	
+	  const hiddenBecause = rule.invisibleIfTags || [];
+	
+	  // If selected tags include any forbidden tag → hide this option
+	  return !hiddenBecause.some(t => tags.includes(t));
+	};
 
-  if (!rule) return true;
+	let editableTags = {
+	  bypassdnd: {          // <── lowercase key
+		description: 'Bypass Do Not Disturb',
+		invisibleIfTags: ['muted', 'blocked'],
+		removeTags: ['muted']
+	  },
+	  muted: {
+		description: 'Mute notifications',
+		invisibleIfTags: ['blocked', 'bypassdnd'],
+		removeTags: ['bypassdnd']
+	  },
+	  noread: {
+		description: 'No read receipts'
+	  }
+	};
 
-  const hiddenBecause = rule.invisibleIfTags || [];
-
-  // If selected tags include any forbidden tag → hide this option
-  return !hiddenBecause.some(t => tags.includes(t));
-};
-
-const editableTags = {
-  bypassdnd: {          // <── lowercase key
-    description: 'Bypass Do Not Disturb',
-    invisibleIfTags: ['muted', 'blocked'],
-    removeTags: ['muted']
-  },
-  muted: {
-    description: 'Mute notifications',
-    invisibleIfTags: ['blocked', 'bypassdnd'],
-    removeTags: ['bypassdnd']
-  },
-  noread: {
-    description: 'No read receipts'
-  }
-};
+	if (selectedContact && selectedContact.tags.indexOf('test') > -1) {
+		editableTags = {};
+	}
 
   const as = 50;
   

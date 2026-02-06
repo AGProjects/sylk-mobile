@@ -723,7 +723,7 @@ class ContactsListBox extends Component {
       paddingBottom: 0,
       borderTopWidth: 0,
     };
-    	  
+        	  
 	  if (this.state.keyboardVisible && Platform.OS === 'android' && Platform.Version >= 34) {
 		  const bottomInset = this.state.insets?.bottom || 0;
 		  //inputToolbarExtraStyles.marginBottom = -bottomInset;
@@ -875,6 +875,117 @@ class ContactsListBox extends Component {
 	
 	  if (height !== this.state.composerHeight) {
 		this.setState({ composerHeight: height });
+	  }
+	};
+
+	renderSend = (props) => {
+	  let chatActionContainer = styles.chatActionContainer;
+	  
+	  const disableAttachments = this.state.selectedContact.tags.indexOf('test') > -1;
+	  
+	  if (this.state.sharingAsset) {
+		return (
+		  <Send
+			{...props}
+			containerStyle={{
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			  padding: 0,
+			}}
+		  >
+	
+			<View style={styles.chatRightActionsContainer}>
+			  <TouchableOpacity onPress={this.sendPhoto}>
+				<Icon
+				  type="font-awesome"
+				  name="send"
+				  style={styles.chatSendArrow}
+				  size={20}
+				  color='gray'
+				/>
+			  </TouchableOpacity>
+			</View>
+		  </Send>
+		);
+	  } else if (this.state.recordingFile) {
+		return (
+		  <Send
+			{...props}
+			containerStyle={{
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			  padding: 0,
+			}}
+		  >
+	
+			<View style={styles.chatRightActionsContainer}>
+			  <TouchableOpacity onPress={this.props.sendAudioFile}>
+				<Icon
+				  type="font-awesome"
+				  name="send"
+				  style={styles.chatSendArrow}
+				  size={20}
+				  color='gray'
+				/>
+			  </TouchableOpacity>
+			</View>
+		  </Send>
+		);
+	  } else {
+
+		if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.uri.indexOf('3333') > -1)) {	
+		  return <View />;
+		}
+	
+		let showButtons = !this.state.texting && !this.state.replyingTo && !this.state.isAudioRecording && !this.state.recordingFile;
+		
+		return (
+		  <Send
+			{...props}
+			containerStyle={{
+			  justifyContent: 'center',
+			  alignItems: 'center',
+			  padding: 0,
+			}}
+		  >
+			<View style={styles.chatRightActionsContainer}>
+			  {showButtons && !disableAttachments && (
+				<TouchableOpacity onPress={this.aquireFromCamera}>
+				  <Icon
+					style={chatActionContainer}
+					type="font-awesome"
+					name="camera"
+					size={20}
+					color='gray'
+				  />
+				</TouchableOpacity>
+			  )}
+	
+			  {showButtons && !disableAttachments && (
+				<TouchableOpacity onPress={this.launchImageLibrary} onLongPress={this._pickDocument}>
+				  <Icon
+					style={chatActionContainer}
+					type="font-awesome"
+					name="paperclip"
+					size={20}
+					color='gray'
+				  />
+				</TouchableOpacity>
+			  )}
+
+              {!this.state.isAudioRecording && (
+			  <Icon
+				type="font-awesome"
+				name="send"
+				style={styles.chatSendArrow}
+				size={20}
+				color='gray'
+			  />
+			  )}
+			  
+			</View>
+		  </Send>
+		);
 	  }
 	};
 
@@ -1064,115 +1175,6 @@ class ContactsListBox extends Component {
 
 		this.setState({audioRecordingStatus: {}});
 	}
-
-	renderSend = (props) => {
-	  let chatActionContainer = styles.chatActionContainer;
-	
-	  if (this.state.sharingAsset) {
-		return (
-		  <Send
-			{...props}
-			containerStyle={{
-			  justifyContent: 'center',
-			  alignItems: 'center',
-			  padding: 0,
-			}}
-		  >
-	
-			<View style={styles.chatRightActionsContainer}>
-			  <TouchableOpacity onPress={this.sendPhoto}>
-				<Icon
-				  type="font-awesome"
-				  name="send"
-				  style={styles.chatSendArrow}
-				  size={20}
-				  color='gray'
-				/>
-			  </TouchableOpacity>
-			</View>
-		  </Send>
-		);
-	  } else if (this.state.recordingFile) {
-		return (
-		  <Send
-			{...props}
-			containerStyle={{
-			  justifyContent: 'center',
-			  alignItems: 'center',
-			  padding: 0,
-			}}
-		  >
-	
-			<View style={styles.chatRightActionsContainer}>
-			  <TouchableOpacity onPress={this.props.sendAudioFile}>
-				<Icon
-				  type="font-awesome"
-				  name="send"
-				  style={styles.chatSendArrow}
-				  size={20}
-				  color='gray'
-				/>
-			  </TouchableOpacity>
-			</View>
-		  </Send>
-		);
-	  } else {
-	
-		if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.tags.indexOf('test') > -1)) {
-		  return <View />;
-		}
-	
-		let showButtons = !this.state.texting && !this.state.replyingTo && !this.state.isAudioRecording && !this.state.recordingFile;
-		
-		return (
-		  <Send
-			{...props}
-			containerStyle={{
-			  justifyContent: 'center',
-			  alignItems: 'center',
-			  padding: 0,
-			}}
-		  >
-			<View style={styles.chatRightActionsContainer}>
-			  {showButtons && (
-				<TouchableOpacity onPress={this.aquireFromCamera}>
-				  <Icon
-					style={chatActionContainer}
-					type="font-awesome"
-					name="camera"
-					size={20}
-					color='gray'
-				  />
-				</TouchableOpacity>
-			  )}
-	
-			  {showButtons && (
-				<TouchableOpacity onPress={this.launchImageLibrary} onLongPress={this._pickDocument}>
-				  <Icon
-					style={chatActionContainer}
-					type="font-awesome"
-					name="paperclip"
-					size={20}
-					color='gray'
-				  />
-				</TouchableOpacity>
-			  )}
-
-              {!this.state.isAudioRecording && (
-			  <Icon
-				type="font-awesome"
-				name="send"
-				style={styles.chatSendArrow}
-				size={20}
-				color='gray'
-			  />
-			  )}
-			  
-			</View>
-		  </Send>
-		);
-	  }
-	};
 
     setTargetUri(uri, contact) {
         //console.log('Set target uri uri in history list', uri);
@@ -1940,7 +1942,7 @@ class ContactsListBox extends Component {
 		this.props.contactStopShare();
         msg.metadata.preview = false;
 	    msg.metadata.fullSize = this.state.fullSize;
-	    console.log('uploadFile msg', msg);
+	    //console.log('uploadFile msg', msg);
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
     }
 
@@ -3008,11 +3010,11 @@ class ContactsListBox extends Component {
             const fontColor = !isIncoming ? "black": "white";
 
             if (currentMessage.metadata.preview) {
-                console.log('this.state.fullSize', this.state.fullSize);
 					return (
 						<View style={[{flexDirection: 'row', alignItems: 'flex-start',
 							justifyContent: 'space-between', // distribute items evenly
-							paddingHorizontal: 8}, styles.photoMenuContainer, extraStyles]}>
+							paddingHorizontal: 10,
+							paddingTop: 12}, styles.photoMenuContainer, extraStyles]}>
 		
 		
 						<View style={{flexDirection: 'row', alignItems: 'center',  borderWidth: 0, borderColor: 'red'}}>
@@ -3041,7 +3043,7 @@ class ContactsListBox extends Component {
 							/>
 						 </View> 
 						 }
-						  <Text style={styles.checkboxLabel}>Full size of {formatFileSize(currentMessage.metadata?.filesize)}</Text>
+						  <Text style={[styles.checkboxLabel, {marginTop: 0}]}>Full size of {formatFileSize(currentMessage.metadata?.filesize)}</Text>
 						  </View>
 			  
 						  <IconButton
@@ -3689,8 +3691,13 @@ scrollToMessage(id) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                chatInputClass = this.noChatInputToolbar;
            }
-           if (this.state.selectedContact.tags.indexOf('test') > -1) {
+
+           if (this.state.selectedContact.uri.indexOf('3333') > -1) {
                chatInputClass = this.noChatInputToolbar;
+           }
+
+           if (this.state.selectedContact.uri.indexOf('4444') > -1) {
+               //chatInputClass = this.noChatInputToolbar;
            }
 
            if (this.state.searchMessages) {

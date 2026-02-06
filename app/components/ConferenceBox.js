@@ -2891,7 +2891,7 @@ class ConferenceBox extends Component {
 
         const videoGridContainer = styles.videoGridContainer;
 
-		debugBorderWidth = 0;
+		debugBorderWidth = 1;
 
 		container = {
 			flex: 1,

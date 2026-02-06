@@ -102,6 +102,10 @@ const styles = StyleSheet.create({
   photoMenuText: {
     paddingTop: 7,
   },
+  
+  deleteButton: {
+    marginTop: 0,
+  },  
 
 	inputToolbar: {
 	  flexDirection: 'row',        // children arranged horizontally

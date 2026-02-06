@@ -357,7 +357,7 @@ class ReadyBox extends Component {
         }
 
         if (uri.indexOf('4444@') > -1) {
-            return true;
+            //return true;
         }
 
         return false;
@@ -532,6 +532,7 @@ class ReadyBox extends Component {
             return false;
         }        
 
+
         if (this.state.searchMessages) {
             return false;
         }        
@@ -549,13 +550,13 @@ class ReadyBox extends Component {
         }
 
         if (!this.state.targetUri) {
+
             return false;
         }
 
         if (this.state.isLandscape) {
             return false;
         }
-
 
         /*
         if (this.state.selectedContact) {
@@ -746,6 +747,10 @@ class ReadyBox extends Component {
     get chatButtonDisabled() {
         let uri = this.state.targetUri.trim();
 
+        if (!uri) {
+            return true;
+        }
+
         if (this.state.selectedContact) {
             return true;
         }
@@ -754,12 +759,9 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1 || uri.indexOf('@videoconference') > -1) {
-            return true;
-        }
-
         let username = uri.split('@')[0];
         let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+
         if (isPhoneNumber) {
             return true;
         }
@@ -1750,7 +1752,7 @@ class ReadyBox extends Component {
 
 					  { (this.state.shareToContacts && hasImages) ?
 					  <View style={{borderColor: 'white', 
-					        borderWidth: 1, 
+					        borderWidth: 0.25, 
 					        flexDirection: 'row',
 							justifyContent: 'center',
 							padding: 5,
