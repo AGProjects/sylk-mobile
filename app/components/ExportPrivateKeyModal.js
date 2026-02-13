@@ -38,10 +38,10 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
   const title = propBackup ? 'Backup private key' : 'Export private key';
   const buttonTitle = propBackup ? 'Backup' : 'Export';
   const bodyText1 = propBackup
-    ? 'Backup your key so you can restore it at a later time.' // <-- edit this
+    ? 'You can restore the private key' 
     : 'To read messages using Sylk on other devices, you need the same private key on all of them.';
   const bodyText2 = propBackup
-    ? 'Note down the code to use it when restoring the key'
+    ? 'by using this code:'
     : 'Start Sylk on another device and enter this code when prompted:';
 
   return (
@@ -73,13 +73,15 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
 
                   <Text style={styles.pincode}>{password}</Text>
 
-                  {!propBackup && !sent && (
+                  {propBackup && !sent && (
                     <View style={[styles.checkBoxRow, { justifyContent: 'center', alignItems: 'center', marginVertical: 12 }]}>
+{/*
                       <Checkbox
                         status={backupToEmail ? 'checked' : 'unchecked'}
                         onPress={() => setBackupToEmail(!backupToEmail)}
                       />
-                      <Text style={{ marginLeft: 8 }}>Backup key to an email address</Text>
+*/}
+                      <Text style={{ marginLeft: 8 }}>Send backup by email</Text>
                     </View>
                   )}
 
