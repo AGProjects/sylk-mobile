@@ -650,7 +650,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 13,
+        this.sqlTableVersions = {'messages': 14,
                                  'contacts': 8,
                                  'keys': 3,
                                  'accounts': 6
@@ -2455,7 +2455,7 @@ class Sylk extends Component {
         this.ExecuteQuery("DROP TABLE 'accounts';");
     }
 
-    createTables() {
+    async createTables() {
         //console.log(' -- Create SQL tables...')
         let create_versions_table = "CREATE TABLE IF NOT EXISTS 'versions' ( \
                                     'id' INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -2498,6 +2498,7 @@ class Sylk extends Component {
                                     'encrypted' INTEGER default 0, \
                                     'direction' TEXT, \
                                     'state' TEXT, \
+                                    'disposition_notification' TEXT, \
                                     PRIMARY KEY (account, msg_id)) \
                                     ";
 
@@ -2588,6 +2589,55 @@ class Sylk extends Component {
 			}
 		*/
 
+		formatCreateTable = (sql) => {
+		  if (!sql) return '';
+		
+		  // Normalize spaces
+		  sql = sql.replace(/\s+/g, ' ').trim();
+		
+		  // Extract table name
+		  const tableMatch = sql.match(/CREATE TABLE\s+['"`]?(\w+)['"`]?\s*\(/i);
+		  const tableName = tableMatch ? tableMatch[1] : 'unknown';
+		
+		  // Extract column section
+		  const columnsPart = sql.substring(
+			sql.indexOf('(') + 1,
+			sql.lastIndexOf(')')
+		  );
+		
+		  // Split by commas (safe here since no nested commas in your schema)
+		  const columns = columnsPart.split(',').map(col => col.trim());
+		
+		  // Rebuild nicely formatted SQL
+		  const formatted = `CREATE TABLE ${tableName} (\n  ${columns.join(',\n  ')}\n);`;
+		
+		  return formatted;
+		};
+		
+        let showShemas = false;
+        if (showShemas) { 
+			const tableNames = Object.keys(this.sqlTableVersions);
+			for (const tableName of tableNames) {
+				try {
+				  const result = await this.ExecuteQuery(
+					"SELECT sql FROM sqlite_master WHERE type='table' AND name=?;",
+					[tableName] // replace with your table name
+				  );
+				
+				  if (result.rows.length > 0) {
+					console.log("Schema:");
+					const rawSql = result.rows.item(0).sql;
+					const prettySql = formatCreateTable(rawSql);
+					console.log(prettySql);
+				  } else {
+					console.log("Table not found");
+				  }
+				
+				} catch (err) {
+				  console.log("Error reading schema:", err);
+				}
+			}
+		}
 
         this.upgradeSQLTables();
     }
@@ -2611,6 +2661,7 @@ class Sylk extends Component {
                                                 11: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
                                                 12: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
                                                 13: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
+                                                14: [{query: 'alter table messages add column disposition_notification' , params: []}],
                                                 },
                                    'contacts': {2: [{query: 'alter table contacts add column participants TEXT', params: []}],
                                                 3: [{query: 'alter table contacts add column direction TEXT', params: []},
@@ -2644,9 +2695,10 @@ class Sylk extends Component {
         this.ExecuteQuery("ALTER TABLE 'messages' add column sent_timestamp TEXT after sent");
         */
 
-       //query = "update versions set version = \"4\" where \"table\" = 'messages'";
-       // this.ExecuteQuery(query);
-
+        /*
+        query = "update versions set version = \"13\" where \"table\" = 'messages'";
+        this.ExecuteQuery(query);
+        */
 
         query = "SELECT * FROM versions";
         let currentVersions = {};
@@ -2682,9 +2734,13 @@ class Sylk extends Component {
                             }
                             update_sub_queries = update_queries[version];
                             update_sub_queries.forEach((query_objects) => {
-
                                 console.log('Run SQL query for table', key, 'version', version, ':', query_objects.query);
-                                this.ExecuteQuery(query_objects.query, query_objects.params);
+ 
+                                this.ExecuteQuery(query_objects.query, query_objects.params).then((results) => {
+								}).catch((error) => {
+									console.log('upgradeSQLTables error:', error);
+								});
+                                
                             });
                         });
 
@@ -3806,6 +3862,7 @@ class Sylk extends Component {
 			} else {
 				this._notificationCenter.postSystemNotification('New message from ' + from);
             }
+
         } else {
 			if (this.state.selectedContact.uri !== from) {
 				if (Platform.OS === 'ios') {
@@ -8920,6 +8977,14 @@ class Sylk extends Component {
                 if (!this.messagesConfirmedRead.has(item.msg_id)) {
 					//console.log('item.msg_id', item.msg_id, item.encrypted);
 					this.messagesConfirmedRead.add(item.msg_id);
+					const dispositionNotification = item.disposition_notification ? item.disposition_notification.split(",") : [];
+					//console.log('dispositionNotification', dispositionNotification);
+					if (dispositionNotification.indexOf('display') === -1) {
+						item.save_only = true;
+					} else {
+						item.save_only = false;
+					}
+					
 					if (item.encrypted === 3) {
 						console.log('Message could not be decrypted', item.msg_id, item.content_type);
 						this.sendDispositionNotification(item, 'error', true);
@@ -8973,7 +9038,9 @@ class Sylk extends Component {
 
         if (changes) {
             this.saveSylkContact(uri, myContacts[uri], 'resetUnreadCount');
-			this.addJournal(uri, 'readConversation');
+			if (myContacts[uri].tags.indexOf('test') === -1) {
+				this.addJournal(uri, 'readConversation');
+			}
         }
 
         this.setState({missedCalls: missedCalls});
@@ -8983,14 +9050,13 @@ class Sylk extends Component {
         let contentType = message.content_type || message.contentType;
 
         let id = message.msg_id || message.id || message.transfer_id || message._id;
-	    //console.log('sendDispositionNotification', id, state);
         let uri =  message.sender ? message.sender.uri : message.from_uri;
         let timestamp = message.timestamp;
 
-        if (contentType == 'application/sylk-message-metadata') {
+        if (contentType == 'application/sylk-message-metadata' || message.save_only) {
 			let query = "UPDATE messages set received = 2 where msg_id = ? and account = ?";
 			this.ExecuteQuery(query, [id, this.state.accountId]).then((results) => {
-				//utils.timestampedLog('IMDN', id, state, uri, 'SQL just saved');
+				utils.timestampedLog('IMDN', id, state, uri, 'SQL saved only');
 			}).catch((error) => {
 				utils.timestampedLog('IMDN', id, state, uri, 'error:', error.message);
 			});
@@ -8998,6 +9064,8 @@ class Sylk extends Component {
 			//utils.timestampedLog('IMDN', id, state, uri, 'skipped for metadata');
 			return;
         }
+
+	    console.log('sendDispositionNotification', id, state);
         
         if (uri in this.state.myContacts) {
 			const tags = this.state.myContacts[uri].tags;
@@ -10818,7 +10886,7 @@ class Sylk extends Component {
 		
 		let i = 0;
 		if (cachedJournals.length == 0) {
-			console.log('No cached journals found');		
+			//console.log('No cached journals found');		
 			this.setState({syncPercentage: 100});
 		} else {
 			this.setState({syncPercentage: 0});
@@ -11280,7 +11348,9 @@ class Sylk extends Component {
         if (is_encrypted) {
             if (!this.state.keys || !this.state.keys.private) {
                 console.log('Missing private key, cannot decrypt message');
-                this.sendDispositionNotification(message, 'error', true);
+                if (message.dispositionNotification) {
+					this.sendDispositionNotification(message, 'error', true);
+                }
                 this.saveSystemMessage(message.sender.uri, 'Cannot decrypt message, no private key', 'incoming');
             } else {
                 await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
@@ -11289,7 +11359,9 @@ class Sylk extends Component {
                 }).catch((error) => {
                     console.log('Failed to decrypt message', message.id, error);
                     this.saveSystemMessage(message.sender.uri, 'Received message encrypted with wrong key', 'incoming');
-                    this.sendDispositionNotification(message, 'error', true);
+					if (message.dispositionNotification) {
+						this.sendDispositionNotification(message, 'error', true);
+                    }
                     this.sendPublicKeyToUri(message.sender.uri);
                 });
             }
@@ -11454,24 +11526,20 @@ class Sylk extends Component {
 			return;
 		}
 
-        if (message.content.indexOf('?OTRv3') > -1) {
-            
+        if (message.content.indexOf('?OTRv3') > -1) {           
             return;
         }
 
         if (message.contentType === 'text/pgp-public-key') {
-            
             this.savePublicKeySync(message.sender.uri, message.content);
             return;
         }
 
         if (message.contentType === 'text/pgp-public-key-imported') {
-            
             return;
         }
 
-        if (message.contentType === 'text/pgp-private-key') {
-            
+        if (message.contentType === 'text/pgp-private-key') {            
             return;
         }
 
@@ -12009,9 +12077,10 @@ class Sylk extends Component {
             received = 0;
         }
 
+        let disposition_notification = '';
 		const ts = typeof message.timestamp === 'number' ? message.timestamp: new Date(message.timestamp).getTime();
 		const unix_timestamp = Math.floor(ts / 1000);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state];
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification];
         this.pendingNewSQLMessages.push(params);
 
         if (this.pendingNewSQLMessages.length > 49) {
@@ -12027,7 +12096,7 @@ class Sylk extends Component {
 			return;
         }
 
-        let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state) VALUES ";
+        let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state, disposition_notification) VALUES ";
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
         this.pendingNewSQLMessages = [];
@@ -12337,8 +12406,10 @@ class Sylk extends Component {
             }
         }
 
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id];
-        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+		let disposition_notification = message.dispositionNotification ? message.dispositionNotification.join(",") : '';
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id, disposition_notification];
+
+        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 			//console.log('saveIncomingMessage SQL OK');
 
             if (!myContacts[uri].name && message.sender.displayName) {
@@ -12415,6 +12486,9 @@ class Sylk extends Component {
 			delete incomingMessage[message.sender.uri];
 			this.setState({incomingMessage: incomingMessage});
         }
+        
+        //console.log('message.dispositionNotification', message.dispositionNotification);
+        // displayed, delivered or 
 
         if (message.dispositionNotification.indexOf('display') === -1) {
             //console.log('Incoming message', message.id, 'was already read');
@@ -12437,8 +12511,11 @@ class Sylk extends Component {
 		const ts = typeof message.timestamp === 'number' ? message.timestamp: new Date(message.timestamp).getTime();
 		const unix_timestamp = Math.floor(ts / 1000);
         let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : '';
+        let disposition_notification = message.dispositionNotification ? message.dispositionNotification.join(",") : '';
+
         //console.log('Sync metadata', message.id, message.contentType, metadata, typeof(message.content));
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", pending, sent, received, message.state];
+
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", pending, sent, received, message.state, disposition_notification];
 
         this.pendingNewSQLMessages.push(params);
         
@@ -13602,7 +13679,7 @@ class Sylk extends Component {
 	onInsetsChange = (insets) => {
 	  
 	  if (this.areInsetsValid(insets)) {
-		console.log('Insets:', insets);
+		//console.log('Insets:', insets);
 		this._insets = { ...insets };
 	  }
 	};
@@ -14183,7 +14260,6 @@ return (
 					fullScreen = {this.state.fullScreen}
 					setFullScreen = {this.setFullScreen}
 					transferProgress = {this.state.transferProgress}
-					sendDispositionNotification = {this.sendDispositionNotification}
 					totalMessageExceeded = {this.state.totalMessageExceeded}
 					createChatContact = {this.createChatContact}
 					selectAudioDevice = {this.selectAudioDevice}

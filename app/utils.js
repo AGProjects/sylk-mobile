@@ -412,6 +412,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
     const consumed = metadata.consumed || 0;
     const position = metadata.position || 0;
     const playing = metadata.playing || false;
+    const dispositionNotification = item.disposition_notification ? item.disposition_notification.split(",") : [];
 
     // -------------------------
     // Construct final message
@@ -420,6 +421,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
         _id: item.msg_id,
         key: item.msg_id,
         direction: item.direction,
+        dispositionNotification,
         audio,
         image,
         video,

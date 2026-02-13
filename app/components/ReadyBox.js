@@ -1920,7 +1920,6 @@ class ReadyBox extends Component {
 						setFullScreen = {this.props.setFullScreen}
 						fullScreen = {this.state.fullScreen}
 						transferProgress = {this.state.transferProgress}
-						sendDispositionNotification = {this.props.sendDispositionNotification}
 						totalMessageExceeded = {this.state.totalMessageExceeded}
 						requestDndPermission = {this.props.requestDndPermission}
 						gettingSharedAsset = {this.state.gettingSharedAsset}
@@ -2075,7 +2074,6 @@ ReadyBox.propTypes = {
     setFullScreen: PropTypes.func,
     fullScreen: PropTypes.bool,
     transferProgress: PropTypes.object,
-    sendDispositionNotification: PropTypes.func,
     totalMessageExceeded: PropTypes.bool,
     createChatContact: PropTypes.func,
 	selectAudioDevice: PropTypes.func,
