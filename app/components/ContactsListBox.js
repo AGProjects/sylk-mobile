@@ -899,7 +899,7 @@ class ContactsListBox extends Component {
 	renderSend = (props) => {
 	  let chatActionContainer = styles.chatActionContainer;
 	  
-	  const disableAttachments = this.state.selectedContact.tags.indexOf('test') > -1;
+	  let disableAttachments = this.state.selectedContact.tags.indexOf('test') > -1;
 	  
 	  if (this.state.sharingAsset) {
 		return (
@@ -951,7 +951,7 @@ class ContactsListBox extends Component {
 		);
 	  } else {
 
-		if (this.state.playing || (this.state.selectedContact && this.state.selectedContact.uri.indexOf('3333') > -1)) {	
+		if (this.state.playing) {	
 		  return <View />;
 		}
 	
@@ -1518,7 +1518,7 @@ class ContactsListBox extends Component {
         getServerCallHistory.loggingOn = false;
         getServerCallHistory.request((data) => {
             if (data.success !== undefined && data.success === false) {
-                console.log('Error getting call history from server', data.error_message);
+                console.log('Error getting call history from server', data.error_message, this.state.callHistoryUrl);
                 return;
             }
 
@@ -3708,14 +3708,6 @@ scrollToMessage(id) {
         if (this.state.selectedContact) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                chatInputClass = this.noChatInputToolbar;
-           }
-
-           if (this.state.selectedContact.uri.indexOf('3333') > -1) {
-               chatInputClass = this.noChatInputToolbar;
-           }
-
-           if (this.state.selectedContact.uri.indexOf('4444') > -1) {
-               //chatInputClass = this.noChatInputToolbar;
            }
 
            if (this.state.searchMessages) {
