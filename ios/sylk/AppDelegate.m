@@ -30,6 +30,7 @@
 #import <AVFoundation/AVFoundation.h>
 
 @interface AppDelegate () <UNUserNotificationCenterDelegate>
+@property (nonatomic, strong) NSMutableDictionary<NSString *, dispatch_source_t> *autoAnswerTimers;
 - (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)userInfo;
 @end
 
@@ -46,7 +47,18 @@
 {
     UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
     center.delegate = self;
-    
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onCallAnswered:)
+                                                 name:@"RNCallKeepCallAnswered"
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onCallEnded:)
+                                                 name:@"RNCallKeepCallEnded"
+                                               object:nil];
+
+    self.autoAnswerTimers = [NSMutableDictionary new];
+
     AVAudioSession *session = [AVAudioSession sharedInstance]; [session setCategory:AVAudioSessionCategoryAmbient withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
     
     self.moduleName = @"Sylk";
@@ -97,7 +109,10 @@
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-  NSLog(@"[sylk_app] Application ready");
+    NSLog(@"[sylk_app] Application ready");
+    for (NSString *uuid in self.autoAnswerTimers.allKeys) {
+        [self cancelAutoAnswerForUUID:uuid];
+    }
 }
 
 - (void)registerNotificationCategories
@@ -260,6 +275,17 @@
 
     for (NSString *tag in contactTags) {
         if (tag && [tag caseInsensitiveCompare:@"blocked"] == NSOrderedSame) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)shouldAutoAnswer:(NSArray<NSString *> * _Nullable)contactTags {
+    if (!contactTags) return NO;
+
+    for (NSString *tag in contactTags) {
+        if (tag && [tag caseInsensitiveCompare:@"autoanswer"] == NSOrderedSame) {
             return YES;
         }
     }
@@ -455,7 +481,7 @@
        BOOL allow = [self shouldDisplayMessageFromPayload:data];
 
        if (!allow) {
-           NSLog(@"[sylk_app] Foreground notification suppressed");
+           //NSLog(@"[sylk_app] Foreground notification suppressed");
            completionHandler(UNNotificationPresentationOptionNone);
            return;
        }
@@ -557,6 +583,7 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
         if (active) {
             [RNCallKeep endCallWithUUID:calluuid reason:2];
         }
+        [self cancelAutoAnswerForUUID:calluuid];
         return completionHandler(UIBackgroundFetchResultNoData);
     }
 
@@ -635,7 +662,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSLog(@"[sylk_app] toUri = %@", toUri);
     NSLog(@"[sylk_app] account = %@", account);
     */
-    NSLog(@"[sylk_app] Received %@ from %@ to %@", event, fromUri, toUri);
+    NSLog(@"[sylk_app] Received push %@ from %@ to %@", event, fromUri, toUri);
 
     // --- only handle incoming_session or incoming_conference_request ---
     if (!([event isEqualToString:@"incoming_session"] || [event isEqualToString:@"incoming_conference_request"])) {
@@ -649,36 +676,68 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     if (!allow) {
         NSLog(@"[sylk_app] Notification suppressed");
         if (completion) completion();
+        return;
     }
 
+    BOOL autoAnswer = NO;
+
+    // ---- Load contact tags ----
+    NSArray<NSString *> *tags = nil;
+    @try {
+        NSString *lookupAccount =
+            [event isEqualToString:@"incoming_conference_request"] ? account : toUri;
+        tags = [self getTagsForContact:lookupAccount uri:fromUri];
+    } @catch (...) {
+        tags = nil;
+    }
+
+    if (tags) {
+        NSLog(@"[sylk_app] Contact tags for %@: %@",
+              fromUri,
+              tags.count ? [tags componentsJoinedByString:@", "] : @"<none>");
+    } else {
+        NSLog(@"[sylk_app] Contact %@ not found in contacts (tags=nil)", fromUri);
+    }
+
+    autoAnswer = [self shouldAutoAnswer:tags];
+    
+    BOOL shouldScheduleAutoAnswer = autoAnswer && [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
+    
+    if (autoAnswer && [UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+        NSLog(@"[sylk_app] Cannot auto-answer if the app is not active");
+    }
+    
     // --- pass payload to RN side ---
     [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
 
     // --- report to CallKit only if app is not active ---
-    if ([[UIApplication sharedApplication] applicationState] != UIApplicationStateActive) {
-        [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
+    [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
 
-        @try {
-            [RNCallKeep reportNewIncomingCall: calluuid
-                                       handle: fromUri
-                                   handleType: @"generic"
-                                     hasVideo: [mediaType isEqualToString:@"video"]
-                          localizedCallerName: callerName
-                              supportsHolding: NO
-                                 supportsDTMF: YES
-                             supportsGrouping: YES
-                           supportsUngrouping: YES
-                                  fromPushKit: YES
-                                      payload: payload.dictionaryPayload
-                        withCompletionHandler:^(void){
-                            // completion handled by RNVoipPushNotificationManager
-                        }];
-        } @catch (NSException *ex) {
-            NSLog(@"[sylk_app] Exception reporting CallKit call: %@ - %@", ex.name, ex.reason);
-            if (completion) completion();
+    @try {
+        [RNCallKeep reportNewIncomingCall: calluuid
+                                   handle: fromUri
+                               handleType: @"generic"
+                                 hasVideo: [mediaType isEqualToString:@"video"]
+                      localizedCallerName: callerName
+                          supportsHolding: NO
+                             supportsDTMF: YES
+                         supportsGrouping: YES
+                       supportsUngrouping: YES
+                              fromPushKit: YES
+                                  payload: payload.dictionaryPayload
+                    withCompletionHandler:^(void){
+                        // completion handled by RNVoipPushNotificationManager
+                    }];
+
+        // >>> AUTO-ANSWER: schedule delayed answer
+        if (shouldScheduleAutoAnswer) {
+            [self scheduleAutoAnswerForUUID:calluuid delay:15];
+        } else {
+            NSLog(@"[sylk_app] Auto-answer is disabled");
         }
-    } else {
-        // app active: let RN/UI handle it, call completion immediately
+        
+    } @catch (NSException *ex) {
+        NSLog(@"[sylk_app] Exception reporting CallKit call: %@ - %@", ex.name, ex.reason);
         if (completion) completion();
     }
 }
@@ -712,7 +771,6 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
 	// ---- Determine lookupAccount ----
 	NSString *lookupAccount = nil;
-
 
     NSString *toUri = coerceString(data[@"to_uri"]);
     toUri = [[toUri stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
@@ -778,7 +836,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 	} @catch (...) {
 		tags = nil;
 	}
-
+    
 	if (![self isAccountActive:lookupAccount fromUri:fromUri contactTags:tags]) {
 		NSLog(@"[sylk_app] Request rejected by account rules");
 		return NO;
@@ -797,6 +855,111 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 	}
 
     return YES;
+}
+
+- (void)answerCallWithUUID:(NSString *)uuidString
+{
+    NSLog(@"[sylk_app] Auto-answer now for call UUID %@", uuidString);
+
+    NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+    if (!uuid) return;
+
+    CXAnswerCallAction *answerAction =
+        [[CXAnswerCallAction alloc] initWithCallUUID:uuid];
+
+    CXTransaction *transaction =
+        [[CXTransaction alloc] initWithAction:answerAction];
+
+    CXCallController *controller = [[CXCallController alloc] init];
+
+    [controller requestTransaction:transaction completion:^(NSError * _Nullable error) {
+        if (error) {
+            NSLog(@"[sylk_app] Auto-answer failed: %@", error);
+        } else {
+            NSLog(@"[sylk_app] Auto-answer succeeded for %@", uuidString);
+        }
+    }];
+}
+
+- (void)cancelAutoAnswerForUUID:(NSString *)uuid
+{
+    NSString *key = [self normalizedUUID:uuid];
+    //NSLog(@"[sylk_app] cancelAutoAnswerForUUID %@", key);
+    
+    dispatch_source_t timer = self.autoAnswerTimers[key];
+    if (timer) {
+        dispatch_source_cancel(timer);
+        [self.autoAnswerTimers removeObjectForKey:key];
+        NSLog(@"[sylk_app] Auto-answer cancelled for %@", key);
+    } else {
+        //NSLog(@"[sylk_app] Auto-answer timer not found %@", key);
+    }
+}
+
+- (void)scheduleAutoAnswerForUUID:(NSString *)uuid delay:(NSTimeInterval)delay
+{
+    dispatch_queue_t queue = dispatch_get_main_queue();
+
+    dispatch_source_t timer =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+
+    dispatch_source_set_timer(
+        timer,
+        dispatch_time(DISPATCH_TIME_NOW, delay * NSEC_PER_SEC),
+        DISPATCH_TIME_FOREVER,
+        0
+    );
+
+    __weak typeof(self) weakSelf = self;
+
+    NSString *key = [self normalizedUUID:uuid];
+    
+    dispatch_source_set_event_handler(timer, ^{
+        //NSLog(@"[sylk_app] Auto-answer firing for %@", key);
+        [weakSelf answerCallWithUUID:key];
+        [weakSelf cancelAutoAnswerForUUID:key];
+    });
+
+    dispatch_resume(timer);
+    self.autoAnswerTimers[key] = timer;
+
+    NSLog(@"[sylk_app] Auto-answer scheduled in %.0fs for %@", delay, uuid);
+}
+
+- (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAction *)action
+{
+    NSString *uuid = action.callUUID.UUIDString;
+    [self cancelAutoAnswerForUUID:uuid];
+    [action fulfill];
+}
+
+- (void)onCallAnswered:(NSNotification *)notification
+{
+    NSString *uuid = notification.userInfo[@"callUUID"]
+                  ?: notification.userInfo[@"uuid"];
+
+    if (!uuid) return;
+
+    NSLog(@"[sylk_app] RNCallKeep Call answered by user %@", uuid);
+
+    [self cancelAutoAnswerForUUID:uuid];
+}
+
+- (void)onCallEnded:(NSNotification *)notification
+{
+    NSString *uuid = notification.userInfo[@"callUUID"]
+                  ?: notification.userInfo[@"uuid"];
+
+    if (!uuid) return;
+
+    NSLog(@"[sylk_app] RNCallKeep Call ended by user %@", uuid);
+
+    [self cancelAutoAnswerForUUID:uuid];
+}
+
+- (NSString *)normalizedUUID:(NSString *)uuid
+{
+    return uuid.lowercaseString;
 }
 
 

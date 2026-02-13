@@ -21,6 +21,7 @@
 		1F31872026495CFF0096C518 /* message_received.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871A26495CFF0096C518 /* message_received.wav */; };
 		1F31872126495CFF0096C518 /* message_sent.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871B26495CFF0096C518 /* message_sent.wav */; };
 		1F31872226495CFF0096C518 /* participant_left.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871C26495CFF0096C518 /* participant_left.wav */; };
+		1F4596162F38E17F00ED15D1 /* IdleTimerModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F4596152F38E17F00ED15D1 /* IdleTimerModule.m */; };
 		1F4C5AC62ED6108100860BA5 /* AudioRouteModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F4C5AC52ED6108100860BA5 /* AudioRouteModule.m */; };
 		1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */; };
 		1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */; };
@@ -117,6 +118,8 @@
 		1F31871A26495CFF0096C518 /* message_received.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = message_received.wav; path = ../app/assets/sounds/message_received.wav; sourceTree = "<group>"; };
 		1F31871B26495CFF0096C518 /* message_sent.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = message_sent.wav; path = ../app/assets/sounds/message_sent.wav; sourceTree = "<group>"; };
 		1F31871C26495CFF0096C518 /* participant_left.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_left.wav; path = ../app/assets/sounds/participant_left.wav; sourceTree = "<group>"; };
+		1F4596142F38E17F00ED15D1 /* IdleTimerModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = IdleTimerModule.h; path = sylk/IdleTimerModule.h; sourceTree = "<group>"; };
+		1F4596152F38E17F00ED15D1 /* IdleTimerModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = IdleTimerModule.m; path = sylk/IdleTimerModule.m; sourceTree = "<group>"; };
 		1F4C5AC42ED6108100860BA5 /* AudioRouteModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = AudioRouteModule.h; path = sylk/AudioRouteModule.h; sourceTree = "<group>"; };
 		1F4C5AC52ED6108100860BA5 /* AudioRouteModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = AudioRouteModule.m; path = sylk/AudioRouteModule.m; sourceTree = "<group>"; };
 		1F5DAB96285FA8CE001F479D /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ios; sourceTree = "<group>"; };
@@ -234,6 +237,8 @@
 		13B07FAE1A68108700A75B9A /* sylk */ = {
 			isa = PBXGroup;
 			children = (
+				1F4596142F38E17F00ED15D1 /* IdleTimerModule.h */,
+				1F4596152F38E17F00ED15D1 /* IdleTimerModule.m */,
 				1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
 				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
@@ -920,6 +925,7 @@
 				1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */,
 				13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */,
 				1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */,
+				1F4596162F38E17F00ED15D1 /* IdleTimerModule.m in Sources */,
 				13B07FC11A68108700A75B9A /* main.m in Sources */,
 				1F4C5AC62ED6108100860BA5 /* AudioRouteModule.m in Sources */,
 			);
