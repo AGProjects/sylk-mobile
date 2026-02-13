@@ -84,7 +84,9 @@ class NavigationBar extends Component {
 			deleteContact: false,
 			storageUsage: this.props.storageUsage,
 			syncPercentage: this.props.syncPercentage,
-			devMode: this.props.devMode
+			devMode: this.props.devMode,
+			autoAnswerMode: this.props.autoAnswerMode,
+			hasAutoAnswerContacts: this.props.hasAutoAnswerContacts
         }
 
         this.menuRef = React.createRef();
@@ -193,7 +195,9 @@ class NavigationBar extends Component {
 			   deleteContact: nextProps.deleteContact,
 			   storageUsage: nextProps.storageUsage,
 			   syncPercentage: nextProps.syncPercentage,
-			   devMode: nextProps.devMode
+			   devMode: nextProps.devMode,
+			   autoAnswerMode: nextProps.autoAnswerMode,
+			   hasAutoAnswerContacts: nextProps.hasAutoAnswerContacts
 		   });
 
 		   if (nextProps.menuVisible) {
@@ -254,6 +258,9 @@ class NavigationBar extends Component {
             case 'conference':
                 this.conferenceCall();
                 break;
+            case 'toggleAutoAnswerMode':
+                this.props.toggleAutoAnswerMode();
+                break;
             case 'appSettings':
                 openSettings();
                 break;
@@ -285,8 +292,8 @@ class NavigationBar extends Component {
             case 'toggleFavorite':
                 this.props.toggleFavorite(this.state.selectedContact.uri);
                 break;
-            case 'toggleAutoanswer':
-                this.props.toggleAutoanswer(this.state.selectedContact.uri);
+            case 'toggleAutoAnswer':
+                this.props.toggleAutoAnswer(this.state.selectedContact.uri);
                 break;
             case 'toggleBlocked':
                 this.props.toggleBlocked(this.state.selectedContact.uri);
@@ -462,7 +469,7 @@ class NavigationBar extends Component {
         if (this.state.menuVisible && !this.state.appStoreVersion) {
             //this.props.checkVersionFunc()
         }
-
+        
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
 
@@ -511,9 +518,10 @@ class NavigationBar extends Component {
 		const isFavorite = this.state.selectedContact && tags && tags.indexOf('favorite') > -1;
 		
         let favoriteTitle = isFavorite ? 'Unfavorite' : 'Favorite';
-        let autoanswerTitle = (this.state.selectedContact && tags && tags.indexOf('autoanswer') > -1) ? 'No autoanswer' : 'Auto answer';
         let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
-
+        let autoAnswerTitle = (this.state.selectedContact && tags && tags.indexOf('autoanswer') > -1) ? 'No auto answer' : 'Auto answer';
+		let autoAnswerModeTitle = this.state.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
+  
         let extraMenu = false;
         let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
 
@@ -793,7 +801,7 @@ class NavigationBar extends Component {
                         : null}
 
                         {!isConference && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleAutoanswer')} title={autoanswerTitle}/>
+                        <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
                         : null}
  
                         {!this.myself && !this.state.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 ?
@@ -839,7 +847,7 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        { this.refetchMessagesForDays ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
+                        { (this.state.devMode && this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
  
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
                         {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
@@ -869,6 +877,10 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
  
+                      {(!this.state.syncConversations && !this.state.inCall && Platform.OS === "ios" && this.state.hasAutoAnswerContacts) ?
+                        <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
+                        : null}
+
                         {!this.state.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
                          : null }
@@ -1037,7 +1049,7 @@ NavigationBar.propTypes = {
     deleteFiles        : PropTypes.func,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
-    toggleAutoanswer   : PropTypes.func,
+    toggleAutoAnswer   : PropTypes.func,
     saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,
     favoriteUris       : PropTypes.array,
@@ -1092,7 +1104,10 @@ NavigationBar.propTypes = {
 	storageUsage: PropTypes.array,
 	syncPercentage: PropTypes.number,
 	toggleDevMode: PropTypes.func,
-	devMode: PropTypes.bool
+	devMode: PropTypes.bool,
+	toggleAutoAnswerMode: PropTypes.func,
+	autoAnswerMode: PropTypes.bool,
+	hasAutoAnswerContacts: PropTypes.bool
 };
 
 export default NavigationBar;

@@ -44,7 +44,7 @@ class ReadyBox extends Component {
             sticky: false,
             favoriteUris: this.props.favoriteUris,
             blockedUris: this.props.blockedUris,
-            historyCategoryFilter: null,
+            contactsFilter: null,
             messagesCategoryFilter: null,
             historyPeriodFilter: null,
             missedCalls: this.props.missedCalls,
@@ -91,8 +91,11 @@ class ReadyBox extends Component {
 			insets: this.props.insets,
 			storageUsage: this.props.storageUsage,
 			resizeContent: this.props.resizeContent,
-			sharedContent: this.props.sharedContent
+			sharedContent: this.props.sharedContent,
+			autoAnswerMode: this.props.autoAnswerMode,
+			hasAutoAnswerContacts: this.props.hasAutoAnswerContacts
         };
+
         this.ended = false;
 
     }
@@ -139,16 +142,16 @@ class ReadyBox extends Component {
             this.filterHistory(null);
         }
 
-        if (nextProps.missedCalls.length === 0 && this.state.historyCategoryFilter === 'missed') {
-            this.setState({'historyCategoryFilter': null});
+        if (nextProps.missedCalls.length === 0 && this.state.contactsFilter === 'missed') {
+            this.setState({'contactsFilter': null});
         }
 
-        if (nextProps.blockedUris.length === 0 && this.state.historyCategoryFilter === 'blocked') {
-            this.setState({'historyCategoryFilter': null});
+        if (nextProps.blockedUris.length === 0 && this.state.contactsFilter === 'blocked') {
+            this.setState({'contactsFilter': null});
         }
 
-        if (nextProps.favoriteUris.length === 0 && this.state.historyCategoryFilter === 'favorite') {
-            this.setState({'historyCategoryFilter': null});
+        if (nextProps.favoriteUris.length === 0 && this.state.contactsFilter === 'favorite') {
+            this.setState({'contactsFilter': null});
         }
 
         if (Object.keys(this.state.myContacts).length === 0 && nextProps.myContacts && Object.keys(nextProps.myContacts).length > 0) {
@@ -211,7 +214,9 @@ class ReadyBox extends Component {
 					    insets: nextProps.insets,
 					    storageUsage: nextProps.storageUsage,
 					    resizeContent: nextProps.resizeContent,
-					    sharedContent: nextProps.sharedContent
+					    sharedContent: nextProps.sharedContent,
+					    autoAnswerMode: nextProps.autoAnswerMode,
+					    hasAutoAnswerContacts: nextProps.hasAutoAnswerContacts
                         });
     }
 
@@ -327,15 +332,15 @@ class ReadyBox extends Component {
 			   this.setState({'orderBy': orderBy});
 			   */
            }
-           this.setState({'historyPeriodFilter': null, historyCategoryFilter: null});
+           this.setState({historyPeriodFilter: null, contactsFilter: null});
        } else if (filter === 'recent') {
            filter = this.state.historyPeriodFilter === filter ? null : filter;
            this.setState({'historyPeriodFilter': filter});
        } else {
-           if (filter == this.state.historyCategoryFilter) {
-			   this.setState({historyCategoryFilter: null});
+           if (filter == this.state.contactsFilter) {
+			   this.setState({contactsFilter: null});
            } else {
-			   this.setState({'historyCategoryFilter': filter});
+			   this.setState({'contactsFilter': filter});
            }
        }
 
@@ -520,7 +525,7 @@ class ReadyBox extends Component {
 			return false;
         }
 
-        if (this.state.historyCategoryFilter === 'blocked') {
+        if (this.state.contactsFilter === 'blocked') {
             return false;
         }
 
@@ -1033,13 +1038,13 @@ class ReadyBox extends Component {
 
         return [
               {key: 'recent', title: 'Recent', enabled: this.state.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
-              {key: 'calls', title: 'Calls', enabled: true, selected: this.state.historyCategoryFilter === 'calls'},
-              {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.historyCategoryFilter === 'favorite'},
-//              {key: 'chat', title: 'Chat', enabled: true, selected: this.state.historyCategoryFilter === 'chat'},
-              {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.historyCategoryFilter === 'missed'},
-              {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.historyCategoryFilter === 'blocked'},
-              {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.historyCategoryFilter === 'conference'},
-              {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.historyCategoryFilter === 'test'},
+              {key: 'calls', title: 'Calls', enabled: true, selected: this.state.contactsFilter === 'calls'},
+              {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
+              {key: 'autoanswer', title: 'Caregivers', enabled: this.state.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
+              {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
+              {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
+              {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.contactsFilter === 'conference'},
+              {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.contactsFilter === 'test'},
               ];
     }
 
@@ -1750,6 +1755,17 @@ class ReadyBox extends Component {
 
                     </View>
 
+					  {(this.state.autoAnswerMode && !this.state.selectedContact) ?
+					  <View style={{borderColor: 'white', 
+					        borderWidth: 0.25, 
+					        flexDirection: 'row',
+							justifyContent: 'center',
+							padding: 5,
+							alignItems: 'center'}}>
+							<Text style={styles.autoAnswer}>Hands-Free Caregiver Calls</Text>
+					  </View>
+					  :  null}
+
 					  { (this.state.shareToContacts && hasImages) ?
 					  <View style={{borderColor: 'white', 
 					        borderWidth: 0.25, 
@@ -1848,7 +1864,7 @@ class ReadyBox extends Component {
 						myInvitedParties = {this.state.myInvitedParties}
 						favoriteUris={this.props.favoriteUris}
 						blockedUris={this.props.blockedUris}
-						filter={this.state.historyCategoryFilter}
+						contactsFilter={this.state.contactsFilter}
 						periodFilter={this.state.historyPeriodFilter}
 						defaultDomain={this.props.defaultDomain}
 						saveContact={this.props.saveContact}
@@ -2069,7 +2085,9 @@ ReadyBox.propTypes = {
 	storageUsage: PropTypes.array,
 	toggleResizeContent: PropTypes.func,
 	resizeContent: PropTypes.bool,
-	sharedContent: PropTypes.array
+	sharedContent: PropTypes.array,
+	autoAnswerMode: PropTypes.bool,
+	hasAutoAnswerContacts: PropTypes.bool
 };
 
 export default ReadyBox;

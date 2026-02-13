@@ -92,7 +92,8 @@ const { AudioRouteModule } = NativeModules;
 const { UnreadModule } = NativeModules;
 const { SylkBridge } = NativeModules;
 const { CallEventModule } = NativeModules;
-
+const IdleTimerModule = Platform.OS === 'ios' ? NativeModules.IdleTimerModule : null;
+  
 //debug.enable('sylkrtc*');
   
 //import { registerForegroundListener } from '../firebase-messaging';
@@ -469,7 +470,9 @@ class Sylk extends Component {
             syncPercentage: 100,
             refetchMessagesForUri: null,
             devMode: false,
-            resizeContent: false
+            resizeContent: false,
+            autoAnswerMode: false,
+            hasAutoAnswerContacts: false
         };
 
         this.buildId = "2025122801";
@@ -622,6 +625,12 @@ class Sylk extends Component {
             if (devMode) {
                 console.log('Developer mode enabled');
                 this.devMode = true;
+            }
+        });
+
+        storage.get('autoAnswerMode').then((autoAnswerMode) => {
+            if (autoAnswerMode) {
+                this.setState({autoAnswerMode: true});
             }
         });
 
@@ -944,6 +953,25 @@ class Sylk extends Component {
 	  } finally {
 		clearTimeout(id);
 	  }
+	}
+
+   toggleAutoAnswerMode() {
+		// Enable babysitter mode
+		if (Platform.OS !== 'ios') {
+			return;
+		}
+		
+		if (!this.state.autoAnswerMode) {
+	        storage.set('autoAnswerMode', 1);
+	        console.log('Enable auto-answer mode');
+			//this._notificationCenter.postSystemNotification("For unattended monitoring, enable Guided Access in Settings");
+		} else {
+			storage.remove('autoAnswerMode');
+	        console.log('Disable auto-answer mode');
+		}
+
+		IdleTimerModule.setIdleTimerDisabled(!this.state.autoAnswerMode);
+        this.setState({autoAnswerMode: !this.state.autoAnswerMode});   
 	}
 	
 	toggleDevMode() {
@@ -2076,11 +2104,16 @@ class Sylk extends Component {
 			 //console.log(' --- orientation did change', this.state.orientation, this.state.insets);
 	     }
 
-
-
 	     if (this.state.syncConversations != prevState.syncConversations) {
 			 console.log(this.cdu_counter, 'CDU --- syncConversations did change', this.state.syncConversations);
 			 this.cdu_counter = this.cdu_counter + 1;
+	     }
+
+	     if (this.state.hasAutoAnswerContacts != prevState.hasAutoAnswerContacts) {
+			 console.log(' --- hasAutoAnswerContacts did change', this.state.hasAutoAnswerContacts);
+			 if (!this.state.hasAutoAnswerContacts && this.state.autoAnswerMode) {
+				 this.toggleAutoAnswerMode();
+			 }
 	     }
 
 	     if (this.state.lastSyncId != prevState.lastSyncId) {
@@ -2126,6 +2159,7 @@ class Sylk extends Component {
 				 console.log(this.cdu_counter, 'CDU --- Sylk contacts loaded', Object.keys(this.state.myContacts).length);
 				 this.cdu_counter = this.cdu_counter + 1;
 			 }
+			 this.anyContactHasAutoAnswer(); 
 		 }
 
 	     if (this.state.contactsLoaded != prevState.contactsLoaded) {
@@ -2267,6 +2301,20 @@ class Sylk extends Component {
 					}
 			  }
 		});
+	}
+
+	async anyContactHasAutoAnswer() {
+	  const myContacts = this.state.myContacts;
+	  if (!myContacts || typeof myContacts !== 'object') return false;
+	
+	  const hasAutoAnswer = Object.values(myContacts).some(contact =>
+		Array.isArray(contact?.tags) &&
+		contact.tags.some(
+		  tag => typeof tag === 'string' && tag.toLowerCase() === 'autoanswer'
+		)
+	  );
+	  
+	  this.setState({hasAutoAnswerContacts: hasAutoAnswer});
 	}
 
     get useInCallManger() {
@@ -4031,12 +4079,19 @@ class Sylk extends Component {
         
         if (nextAppState === 'active') {
             this.respawnConnection(nextAppState);
+            if (Platform.OS === 'ios') {
+				IdleTimerModule.setIdleTimerDisabled(this.state.autoAnswerMode);
+            }
 
             //this.fetchSharedItemsAndroidAtStart('app_active');
             this.fetchSharedItemsiOS();
             this.checkPendingActions();
 
         } else {
+            if (Platform.OS === 'ios') {
+				IdleTimerModule.setIdleTimerDisabled(false);
+            }
+
             if (oldState == 'active') {
                 //this.endShareContent();
                 this.setFullScreen(false);
@@ -12896,8 +12951,8 @@ class Sylk extends Component {
         this.setState({favoriteUris: favoriteUris});
     }
 
-    toggleAutoanswer(uri) {
-        console.log('toggleAutoanswer', uri);
+    toggleAutoAnswer(uri) {
+        console.log('toggleAutoAnswer', uri);
         let autoanswerUris = this.state.autoanswerUris;
         let myContacts = this.state.myContacts;
         let selectedContact;
@@ -12919,7 +12974,7 @@ class Sylk extends Component {
 
         myContacts[uri].timestamp = new Date();
 
-        this.saveSylkContact(uri, myContacts[uri], 'toggleAutoanswer');
+        this.saveSylkContact(uri, myContacts[uri], 'toggleAutoAnswer');
 
         let idx = autoanswerUris.indexOf(uri);
         if (idx === -1 && autoanswer) {
@@ -13971,7 +14026,7 @@ return (
                     deleteMessages = {this.deleteMessages}
                     deleteFiles = {this.deleteFiles}
                     toggleFavorite = {this.toggleFavorite}
-                    toggleAutoanswer = {this.toggleAutoanswer}
+                    toggleAutoAnswer = {this.toggleAutoAnswer}
                     toggleBlocked = {this.toggleBlocked}
                     saveConference={this.saveConference}
                     defaultDomain = {this.state.defaultDomain}
@@ -14028,6 +14083,9 @@ return (
 					syncPercentage = {this.state.syncPercentage}
 					toggleDevMode = {this.toggleDevMode}
 					devMode = {this.state.devMode}
+					toggleAutoAnswerMode = {this.toggleAutoAnswerMode}
+ 					autoAnswerMode = {this.state.autoAnswerMode}
+ 					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
                 />
                 : null}
 
@@ -14136,6 +14194,8 @@ return (
 					toggleResizeContent = {this.toggleResizeContent}
 					resizeContent = {this.state.resizeContent}
 					sharedContent = {this.state.sharedContent}
+					autoAnswerMode = {this.state.autoAnswerMode}
+ 					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
                 />
 
                 <ImportPrivateKeyModal

@@ -35,6 +35,14 @@ const styles = StyleSheet.create({
     paddingRight: 10
   },
 
+  autoAnswer: {
+    fontSize: 22,
+    color: 'red',
+    textAlign: 'center',
+    paddingLeft: 10,
+    paddingRight: 10
+  },
+
   historyLandscapeContainer: {
     width: '100%',
     flex: 1,
