@@ -367,11 +367,13 @@ async function sql2GiftedChat(item, content, filter = {}) {
         if (metadata.local_url && !metadata.error) {
             let local_url = Platform.OS === "android" ? "file://" + metadata.local_url : metadata.local_url;
 
+			/*
 			const fixed_local_url = fixLocalUrl(local_url);
 			if (fixed_local_url != local_url) {
 				local_url = fixed_local_url;
 				//console.log('Local URL was fixed', fixed_local_url);
 			}
+			*/
 			
 			if (local_url) {
 				if (isImg) {
