@@ -191,7 +191,8 @@ class ContactsListBox extends Component {
 		    isAudioRecording: this.props.isAudioRecording,
 		    recordingFile: this.props.recordingFile,
 		    insets: this.props.insets,
-		    composerHeight: 48
+		    composerHeight: 48,
+		    replyContainerHeight: 0
         }
 
         this.ended = false;
@@ -246,6 +247,11 @@ class ContactsListBox extends Component {
         
         if ('composerHeight' in nextProps) {
 			 this.setState({composerHeight: nextProps.composerHeight});
+	    }
+
+        if ('replyContainerHeight' in nextProps) {
+			 this.setState({replyContainerHeight: nextProps.replyContainerHeight});
+			 console.log('replyContainerHeight', replyContainerHeight);
 	    }
 
 		if (nextProps.selectedContact !== this.state.selectedContact) {
@@ -765,7 +771,10 @@ class ContactsListBox extends Component {
 	
 		  {/* Full-width Reply Preview */}
 		  {replyingTo && (
-			<View style={[styles.replyPreviewContainer, 
+			<View 
+			onLayout={this.onReplyContainerLayout}
+			style={[styles.replyPreviewContainer, 
+			
 			    {
 				  borderWidth: 0,
 				  marginBottom: 5,           // spacing below
@@ -778,6 +787,7 @@ class ContactsListBox extends Component {
 				  borderRadius: 8,           // optional rounded corners
 				  backgroundColor: '#f9f9f9' // optional background for better visual separation
 				},
+
 			]}>
 	
 			  {/* Vertical orange Line */}
@@ -868,6 +878,14 @@ class ContactsListBox extends Component {
 		  </View>
 		</View>
 	  );
+	};
+
+	onReplyContainerLayout = (e) => {
+	  const { height } = e.nativeEvent.layout;
+	
+	  if (height !== this.state.onReplyContainerLayout) {
+		this.setState({ replyContainerHeight: height });
+	  }
 	};
 
 	onComposerLayout = (e) => {
@@ -4058,7 +4076,7 @@ scrollToMessage(id) {
              <View style={[chatContainer, borderClass]}>
 				<KeyboardWrapper
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  style={[chatContainer, {marginBottom: Platform.OS === 'ios' ? this.state.composerHeight - bottomInset: 0}]}
+					  style={[chatContainer, {marginBottom: Platform.OS === 'ios' ? this.state.composerHeight - bottomInset + this.state.replyContainerHeight: 0}]}
 					  
 					  {...(Platform.OS === 'android'
 						? {

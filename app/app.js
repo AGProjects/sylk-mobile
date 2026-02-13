@@ -1959,7 +1959,7 @@ class Sylk extends Component {
 					this.sql_contacts_keys.push(contact.uri);
                     myContacts[contact.uri] = contact;
 
-                    console.log('Load contact', contact.uri, contact.tags, contact.properties);
+                    //console.log('Load contact', contact.uri, contact.tags, contact.properties);
                 }
 
                 storage.get('cachedHistory').then((history) => {
