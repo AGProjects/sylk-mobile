@@ -289,11 +289,6 @@ public class IncomingCallService extends Service {
 		Log.w(LOG_TAG, "action " + action);
 		Log.w(LOG_TAG, "event " + event);
 
-        if (callId == null || event == null) {
-            Log.w(LOG_TAG, "Missing callId or event");
-            return START_NOT_STICKY;
-        }
-
         if (handledCalls.contains(callId)) {
 			Log.d(LOG_TAG, "Call " + callId + " already handled, skipping");
             return START_NOT_STICKY;
@@ -317,6 +312,11 @@ public class IncomingCallService extends Service {
             cancelNotification(notificationId);
 			Log.d(LOG_TAG, "Stop " + callId);
             stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        if (callId == null || event == null) {
+            Log.w(LOG_TAG, "Missing callId or event");
             return START_NOT_STICKY;
         }
            
@@ -606,7 +606,7 @@ public class IncomingCallService extends Service {
 				NotificationCompat.Builder builder = new NotificationCompat.Builder(
 						IncomingCallService.this, CHANNEL_ID
 				)
-						.setContentTitle("Incoming Sylk Call")
+						.setContentTitle(from_uri + " calling in " + remaining + "s")
 						.setContentText(from_uri + " is calling")
 						.setSmallIcon(R.drawable.ic_notification)
 						.setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -619,11 +619,13 @@ public class IncomingCallService extends Service {
 						.setProgress(seconds, progress, false)
 						.setStyle(
 							new NotificationCompat.BigTextStyle()
-								.bigText(String.format("Auto accept call in %d seconds", remaining))
+								.bigText(String.format("Auto accept call in %d s", remaining))
 						)
 						.addAction(0, "Reject", rejectIntent)
-						.addAction(0, "Auto accept in " + remaining + "s", acceptIntent);
-	
+//						.addAction(0, "Accept in " + remaining + "s", acceptIntent);
+						.addAction(0, "Accept now", acceptIntent);
+
+
 				NotificationManagerCompat.from(IncomingCallService.this)
 						.notify(notificationId, builder.build());
 	
