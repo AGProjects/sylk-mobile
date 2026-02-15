@@ -201,6 +201,8 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation("com.facebook.react:flipper-integration")
 
+    implementation "androidx.core:core:1.12.0"
+
     // Lifecycle for ProcessLifecycleOwner
     implementation "androidx.lifecycle:lifecycle-process:2.6.1"
 

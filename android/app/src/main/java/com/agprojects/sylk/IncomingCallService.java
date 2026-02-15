@@ -21,6 +21,8 @@ import java.util.HashMap;
 import java.io.File;
 
 import androidx.annotation.Nullable;
+import androidx.core.app.Person;
+import androidx.core.content.ContextCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import android.app.Notification;
@@ -181,7 +183,7 @@ public class IncomingCallService extends Service {
 			ringtonePlayer.setVolume(1.0f, 1.0f);
 			ringtonePlayer.prepare();
 			ringtonePlayer.start();
-			Log.d(LOG_TAG, "Ringtone started");
+			//Log.d(LOG_TAG, "Ringtone started");
 	
 			if (vibrator != null && vibrator.hasVibrator() && ringerMode == AudioManager.RINGER_MODE_VIBRATE) {
 				long[] pattern = {0, 1000, 3000}; // wait, vibrate, pause
@@ -190,7 +192,7 @@ public class IncomingCallService extends Service {
 				} else {
 					vibrator.vibrate(pattern, 0); // deprecated but works on older devices
 				}
-				Log.d(LOG_TAG, "Vibration started");
+				//Log.d(LOG_TAG, "Vibration started");
 			} else {
 				//Log.d(LOG_TAG, "Not vibrating (ringer mode not VIBRATE or vibrator missing)");
 			}
@@ -209,14 +211,14 @@ public class IncomingCallService extends Service {
 			}
 			ringtonePlayer.release();
 			ringtonePlayer = null;
-			Log.d(LOG_TAG, "Ringtone stopped");
+			//Log.d(LOG_TAG, "Ringtone stopped");
 		}
 	
 		// Stop vibration
 		try {
 			if (vibrator != null) {
 				vibrator.cancel();
-				Log.d(LOG_TAG, "Vibration stopped");
+				//Log.d(LOG_TAG, "Vibration stopped");
 			}
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Error stopping vibration", e);
@@ -225,39 +227,35 @@ public class IncomingCallService extends Service {
 		vibrator = null;
 	}
 
+	private void createCallNotificationChannel() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			NotificationManager nm = getSystemService(NotificationManager.class);
+	
+			NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID);
+			if (existing != null) {
+				nm.deleteNotificationChannel(CHANNEL_ID);
+			}
+	
+			NotificationChannel channel = new NotificationChannel(
+					CHANNEL_ID,
+					"Incoming Calls",
+					NotificationManager.IMPORTANCE_HIGH
+			);
+	
+			channel.setDescription("Incoming Sylk call notifications");
+			channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+			channel.setBypassDnd(true);
+			channel.enableVibration(true);
+			channel.setSound(null, null);
+	
+			nm.createNotificationChannel(channel);
+		}
+	}
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         contactsByTag = getContactsByTag();
-
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			NotificationManager nm = getSystemService(NotificationManager.class);
-		
-			// Check if channel exists
-			NotificationChannel channel = nm.getNotificationChannel(CHANNEL_ID);
-		
-			// If channel exists but cannot bypass DND, delete and recreate
-			if (channel == null) {
-				if (channel != null) {
-					nm.deleteNotificationChannel(CHANNEL_ID);
-				}
-		
-				channel = new NotificationChannel(
-						CHANNEL_ID,
-						"Incoming Sylk Calls",
-						NotificationManager.IMPORTANCE_HIGH
-				);
-				channel.setDescription("Sylk incoming call notifications");
-				channel.setBypassDnd(true);
-				channel.setSound(null, null);
-				channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-		
-				nm.createNotificationChannel(channel);
-				Log.d(LOG_TAG, "Notification channel created with bypass DND");
-			} else {
-				//Log.d(LOG_TAG, "Channel exists, bypass DND: " + channel.canBypassDnd());
-			}
-		}
-
+        
         if (intent == null || intent.getExtras() == null) {
             Log.w(LOG_TAG, "Started with null intent, stop now");
             return START_NOT_STICKY;
@@ -266,11 +264,9 @@ public class IncomingCallService extends Service {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				//Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
-
-        // IncomingCallService → PendingIntent → BroadcastReceiver, from_uri is not being passed.
 
         String action = intent.getAction();
         String event = intent.getStringExtra("event");
@@ -278,16 +274,20 @@ public class IncomingCallService extends Service {
         String from_uri = intent.getStringExtra("from_uri");
         String to_uri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
+        String displayName = intent.getStringExtra("from_display_name");
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
-        String title = "Sylk Incoming Call";
-        String subtitle = from_uri + " is calling";
 		int notificationId = Math.abs(callId.hashCode());
 
-		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId + " from " + from_uri);
-		Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
-		Log.w(LOG_TAG, "action " + action);
-		Log.w(LOG_TAG, "event " + event);
+        if (callId == null) {
+            Log.w(LOG_TAG, "Missing callId");
+            return START_NOT_STICKY;
+        }
+
+		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId + " from " + from_uri + " " + displayName);
+		//Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
+		//Log.w(LOG_TAG, "action " + action);
+		//Log.w(LOG_TAG, "displayName " + displayName);
 
         if (handledCalls.contains(callId)) {
 			Log.d(LOG_TAG, "Call " + callId + " already handled, skipping");
@@ -315,8 +315,8 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (callId == null || event == null) {
-            Log.w(LOG_TAG, "Missing callId or event");
+        if (event == null) {
+            Log.w(LOG_TAG, "Missing event");
             return START_NOT_STICKY;
         }
            
@@ -330,150 +330,16 @@ public class IncomingCallService extends Service {
 
 		// Handle incoming session
 		if ("incoming_session".equals(event) || "incoming_conference_request".equals(event)) {
+
+			createCallNotificationChannel();
             startRingtone(from_uri);
             
-            if ("incoming_conference_request".equals(event)) {
-				title = "Sylk Conference Call";
-				String room = to_uri.split("@")[0];
-				String caller = from_uri;
-				
-				if (caller.contains("anonymous")) {
-					caller = "Somebody";
-				}
-
-				if (caller.contains("@guest.")) {
-					caller = "Somebody";
-				}
-
-				subtitle = caller + " is inviting you to the conference room " + room;
-				Log.d(LOG_TAG, subtitle);
-            }
-
-			if (isAutoAnswer(from_uri)) {
-    			startAutoAnswerCountdownWithProgress(callId, from_uri, to_uri, mediaType, notificationId, 20, phoneLocked, event);
+			if ("incoming_session".equals(event) && isAutoAnswer(from_uri)) {
+    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, notificationId, 20);
 			}
 
-            // Variant 1. This launches the main app when incoming call arrives (make sure RN app shows the alert panel)
+			showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, "");
 
-            /*
-			Intent fullScreenIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-			if (fullScreenIntent != null) {
-				fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-			}
-			
-			PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
-					this, notificationId, fullScreenIntent,
-					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-			);
-			*/
-
-            // Variant 2. This launches the fullscreen layout when incoming call arrives
-
-  			Intent fullScreenIntent = new Intent(this, IncomingCallActivity.class);
-			fullScreenIntent.putExtras(intent);
-			fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-			
-			PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
-				this, notificationId, fullScreenIntent,
-				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-			);
-			
-            // Variant 3. This launches the notifications bubble when incoming call arrives
-            /*
-			Intent fullScreenIntent = new Intent(this, IncomingCallFullScreenActivity.class);
-			fullScreenIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-			
-			PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
-					this, notificationId, fullScreenIntent,
-					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-			);
-			*/
-
-			// Reject button
-			PendingIntent rejectPendingIntent = PendingIntent.getBroadcast(
-					this, notificationId + 100,
-					new Intent(this, IncomingCallActionReceiver.class)
-							.setAction("ACTION_REJECT_CALL")
-							.putExtra("session-id", callId)
-							.putExtra("from_uri", from_uri)
-							.putExtra("to_uri", to_uri)
-							.putExtra("event", event)
-							.putExtra("phoneLocked", phoneLocked)
-							.putExtra("notification-id", notificationId),
-					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-			);
-		
-			// Accept Audio button
-			PendingIntent acceptAudioPendingIntent = PendingIntent.getBroadcast(
-					this, notificationId + 200,
-					new Intent(this, IncomingCallActionReceiver.class)
-							.setAction("ACTION_ACCEPT_AUDIO")
-							.putExtra("session-id", callId)
-							.putExtra("from_uri", from_uri) 
-							.putExtra("to_uri", to_uri)
-							.putExtra("event", event)
-							.putExtra("phoneLocked", phoneLocked)
-							.putExtra("notification-id", notificationId),
-					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-			);
-		
-			// Accept Video button
-			PendingIntent acceptVideoPendingIntent = PendingIntent.getBroadcast(
-					this, notificationId + 300,
-					new Intent(this, IncomingCallActionReceiver.class)
-							.setAction("ACTION_ACCEPT_VIDEO")
-							.putExtra("session-id", callId)
-							.putExtra("from_uri", from_uri) 
-							.putExtra("to_uri", to_uri)
-							.putExtra("event", event)
-							.putExtra("phoneLocked", phoneLocked)
-							.putExtra("notification-id", notificationId),
-					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-			);
-		
-			// Build notification
-			NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-					.setContentTitle(title)
-					.setContentText(subtitle)
-					.setSmallIcon(R.drawable.ic_notification)
-					.setPriority(NotificationCompat.PRIORITY_HIGH)
-					.setCategory(NotificationCompat.CATEGORY_CALL)
-					.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-					.setOngoing(true)
-					.setSound(null)
-					.setFullScreenIntent(fullScreenPendingIntent, true)
-					.setDefaults(0)
-					.addAction(0, "Reject", rejectPendingIntent);
-	
-			builder.setStyle(new NotificationCompat.BigTextStyle()
-				.bigText(subtitle));
-
-            /*
-			if (phoneLocked) { $
-				builder.setFullScreenIntent(fullScreenPendingIntent, true); $
-			} else {
-				// Just a heads-up notification
-				builder.setContentIntent(fullScreenPendingIntent);
-			}
-			*/
-
-			builder.setGroup(null);
-
-			if ("video".equalsIgnoreCase(mediaType)) {
-				builder.addAction(0, "Audio only", acceptAudioPendingIntent);
-				builder.addAction(0, "Video", acceptVideoPendingIntent);
-			} else {
-				builder.addAction(0, "Accept", acceptAudioPendingIntent);
-			}
-		
-			builder.setGroup("call_" + callId);
-			builder.setGroupSummary(false);
-			Notification fullNotification = builder.build();
-		
-			// Show notification
-			Log.d(LOG_TAG, "Show notification " + notificationId + " for " + callId);
-			startForeground(notificationId, fullNotification);
-		
 			// Auto-cancel fallback after 60s
 			autoCancelHandler = new Handler(Looper.getMainLooper());
 			autoCancelRunnable = () -> {
@@ -488,6 +354,168 @@ public class IncomingCallService extends Service {
 
 		return START_STICKY;
     }
+
+	private void showIncomingCallNotification(
+			String event,
+			String callId,
+			String from_uri,
+			String displayName,
+			String to_uri,
+			String mediaType,
+			boolean phoneLocked,
+			String countdownTitle
+	) {
+
+		String callerName = from_uri;
+        String title = mediaType + " call from ";
+		
+		if (displayName != null) {
+			callerName = displayName;
+		}
+
+		title = title + callerName;
+		
+		String acceptAction = "ACTION_ACCEPT_AUDIO";
+		
+		if ("video".equalsIgnoreCase(mediaType)) {
+			acceptAction = "ACTION_ACCEPT_VIDEO";
+		}
+
+		//Log.d(LOG_TAG, "acceptAction = " + acceptAction);
+		
+		if ("incoming_conference_request".equals(event)) {
+			if (callerName != null && callerName.toLowerCase().contains("anonymous")) {
+				callerName = "Somebody";
+			}
+
+			if (callerName != null && callerName.toLowerCase().contains("@guest.")) {
+				callerName = "Somebody";
+			}
+
+			String room = "";
+			if (to_uri != null && to_uri.contains("@")) {
+				room = to_uri.split("@")[0];
+			}
+			
+			title = mediaType + " conference " + room;
+		}
+
+		title = title.substring(0, 1).toUpperCase() + title.substring(1);
+		
+		if (countdownTitle != null && !countdownTitle.isEmpty()) {
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+				title = countdownTitle;
+			} else {
+				title = callerName + " - " + countdownTitle;
+			}
+		}
+
+		Log.d(LOG_TAG, title);
+	
+		int notificationId = Math.abs(callId.hashCode());
+	
+		// Fullscreen Intent (opens RN call screen)
+		Intent fullScreenIntent = new Intent(this, IncomingCallActivity.class);
+		fullScreenIntent.putExtra("session-id", callId);
+		fullScreenIntent.putExtra("from_uri", from_uri);
+		fullScreenIntent.putExtra("to_uri", to_uri);
+		fullScreenIntent.putExtra("event", event);
+	
+		fullScreenIntent.setFlags(
+				Intent.FLAG_ACTIVITY_NEW_TASK |
+				Intent.FLAG_ACTIVITY_CLEAR_TOP
+		);
+	
+		PendingIntent fullScreenPendingIntent =
+				PendingIntent.getActivity(
+						this, notificationId,
+						fullScreenIntent,
+						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+				);
+	
+		// Reject
+		PendingIntent rejectIntent =
+				PendingIntent.getBroadcast(
+						this, notificationId + 100,
+						new Intent(this, IncomingCallActionReceiver.class)
+							.setAction("ACTION_REJECT_CALL")
+							.putExtra("session-id", callId)
+							.putExtra("from_uri", from_uri)
+							.putExtra("to_uri", to_uri)
+							.putExtra("event", event)
+							.putExtra("phoneLocked", phoneLocked)
+							.putExtra("notification-id", notificationId),
+							PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+				);
+	
+		// Accept
+		PendingIntent acceptIntent =
+				PendingIntent.getBroadcast(
+						this, notificationId + 200,
+						new Intent(this, IncomingCallActionReceiver.class)
+							.setAction(acceptAction)
+							.putExtra("session-id", callId)
+							.putExtra("from_uri", from_uri) 
+							.putExtra("to_uri", to_uri)
+							.putExtra("event", event)
+							.putExtra("phoneLocked", phoneLocked)
+							.putExtra("notification-id", notificationId),
+							PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+				);
+	
+				NotificationCompat.Builder builder =
+						new NotificationCompat.Builder(this, CHANNEL_ID)
+								.setSmallIcon(R.drawable.ic_notification)
+								.setCategory(NotificationCompat.CATEGORY_CALL)
+								.setPriority(NotificationCompat.PRIORITY_HIGH)
+								.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+								.setOngoing(true)
+								.setContentText(title)
+								.setAutoCancel(false)
+								.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
+		
+		builder.setFullScreenIntent(fullScreenPendingIntent, true);
+
+		// ---- Version-Specific Style ----
+		/*
+		Android Version	API Level	Constant
+		Android 10	29	Q
+		Android 11	30	R
+		Android 12	31	S
+		Android 13	33	TIRAMISU
+		Android 14	34	UPSIDE_DOWN_CAKE
+		Android 15	35	VANILLA_ICE_CREAM
+		*/
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+			if (Build.VERSION.SDK_INT == Build.VERSION_CODES.R) {
+				callerName = title;
+			}
+
+			Person caller = new Person.Builder()
+					.setName(callerName)
+					.setImportant(true)
+					.build();
+	
+			builder.setStyle(
+					NotificationCompat.CallStyle.forIncomingCall(
+							caller,
+							rejectIntent,
+							acceptIntent
+					)
+			);
+	
+		} else {
+			builder
+				.addAction(0, "Decline", rejectIntent)
+				.addAction(0, "Answer", acceptIntent)
+				.setStyle(new NotificationCompat.BigTextStyle().bigText(title));
+		}
+    		
+		Notification notification = builder.build();
+		
+		startForeground(notificationId, notification);
+	}
 
 	private void handleAcceptCall(String callId, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
 		stopRingtone();
@@ -556,93 +584,67 @@ public class IncomingCallService extends Service {
 		}
 	}
 
-	private void startAutoAnswerCountdownWithProgress(String callId, String from_uri, String to_uri, String mediaType, int notificationId, int seconds, boolean phoneLocked, String event) {
+	private void startAutoAnswerCountdownWithProgress(
+			String event,
+			String callId,
+			String from_uri,
+			String displayName,
+			String to_uri,
+			String mediaType,
+			boolean phoneLocked,
+			int notificationId,
+			int seconds
+	) {
+	
 		final Handler handler = new Handler(Looper.getMainLooper());
 		final long endTime = System.currentTimeMillis() + seconds * 1000L;
 	
 		Runnable countdownRunnable = new Runnable() {
 			@Override
 			public void run() {
-				// STOP if the call has been handled externally
+	
+				// Stop if handled externally
 				if (handledCalls.contains(callId)) {
-					Log.d(LOG_TAG, "Countdown stopped because call " + callId + " is already handled");
+					Log.d(LOG_TAG, "Countdown stopped for handled call " + callId);
 					autoAnswerRunnables.remove(callId);
 					return;
 				}
-
+	
 				long remaining = (endTime - System.currentTimeMillis()) / 1000;
 				if (remaining < 0) remaining = 0;
-	
-				//Log.d(LOG_TAG, "Auto-answer countdown for call " + callId + ": " + remaining + "s remaining");
-	
-				// Accept / Reject PendingIntents
-				PendingIntent acceptIntent = PendingIntent.getBroadcast(
-						IncomingCallService.this, notificationId + 200,
-						new Intent(IncomingCallService.this, IncomingCallActionReceiver.class)
-								.setAction("ACTION_ACCEPT_AUDIO")
-								.putExtra("session-id", callId)
-								.putExtra("from_uri", from_uri)
-								.putExtra("to_uri", to_uri)
-								.putExtra("event", event)
-								.putExtra("phoneLocked", phoneLocked)
-								.putExtra("notification-id", notificationId),
-						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-				);
-	
-				PendingIntent rejectIntent = PendingIntent.getBroadcast(
-						IncomingCallService.this, notificationId + 100,
-						new Intent(IncomingCallService.this, IncomingCallActionReceiver.class)
-								.setAction("ACTION_REJECT_CALL")
-								.putExtra("session-id", callId)
-								.putExtra("from_uri", from_uri)
-								.putExtra("to_uri", to_uri)
-								.putExtra("phoneLocked", phoneLocked)
-								.putExtra("notification-id", notificationId),
-						PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-				);
-	
-				int progress = (int) (seconds - remaining);
-	
-				NotificationCompat.Builder builder = new NotificationCompat.Builder(
-						IncomingCallService.this, CHANNEL_ID
-				)
-						.setContentTitle(from_uri + " calling in " + remaining + "s")
-						.setContentText(from_uri + " is calling")
-						.setSmallIcon(R.drawable.ic_notification)
-						.setPriority(NotificationCompat.PRIORITY_HIGH)
-						.setCategory(NotificationCompat.CATEGORY_CALL)
-						.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-						.setOngoing(true)
-						.setSound(null)
-						.setDefaults(0)
-						.setFullScreenIntent(null, true)
-						.setProgress(seconds, progress, false)
-						.setStyle(
-							new NotificationCompat.BigTextStyle()
-								.bigText(String.format("Auto accept call in %d s", remaining))
-						)
-						.addAction(0, "Reject", rejectIntent)
-//						.addAction(0, "Accept in " + remaining + "s", acceptIntent);
-						.addAction(0, "Accept now", acceptIntent);
 
-
-				NotificationManagerCompat.from(IncomingCallService.this)
-						.notify(notificationId, builder.build());
+	            String countdownTitle = "Auto answering in " + remaining + "s";
 	
+				showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, countdownTitle);
+		
 				if (remaining > 0) {
-					handler.postDelayed(this, 1000); // update every second
+					handler.postDelayed(this, 1000);
 				} else {
 					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callId);
-					handleAcceptCall(callId, from_uri, to_uri,  mediaType, notificationId, phoneLocked, event);
+	
+					handledCalls.add(callId);
+					autoAnswerRunnables.remove(callId);
+	
+					handleAcceptCall(
+							callId,
+							from_uri,
+							to_uri,
+							mediaType,
+							notificationId,
+							phoneLocked,
+							event
+					);
 				}
 			}
 		};
 	
 		autoAnswerRunnables.put(callId, countdownRunnable);
-		Log.d(LOG_TAG, "Scheduled auto-answer countdown for call " + callId + " (" + seconds + "s)");
+	
+		Log.d(LOG_TAG, "Scheduled auto-answer countdown for call "
+				+ callId + " (" + seconds + "s)");
+	
 		handler.post(countdownRunnable);
 	}
-
 	
     private void cancelNotification(int notificationId) {
         if (autoCancelHandler != null && autoCancelRunnable != null) {
@@ -653,7 +655,7 @@ public class IncomingCallService extends Service {
         }
         NotificationManagerCompat.from(this).cancel(notificationId);
         stopForeground(true);
-        Log.d(LOG_TAG, "Notification canceled: " + notificationId);
+        //Log.d(LOG_TAG, "Notification canceled: " + notificationId);
     }
 
     @Override
@@ -662,7 +664,7 @@ public class IncomingCallService extends Service {
             autoCancelHandler.removeCallbacks(autoCancelRunnable);
         }
         //Log.d(LOG_TAG, "Destroyed");
-        //stopForeground(true);
+        stopForeground(true);
         super.onDestroy();
     }
 

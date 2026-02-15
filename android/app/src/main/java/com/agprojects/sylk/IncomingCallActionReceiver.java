@@ -32,7 +32,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				//Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 
@@ -47,8 +47,8 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
-            Log.d(LOG_TAG, "Local user action: " + action + " for call: " + callUUID);
-            Log.d(LOG_TAG, "event " + event);
+            Log.d(LOG_TAG, "User action: " + action + " for call: " + callUUID);
+            //Log.d(LOG_TAG, "event " + event);
 
             // Cancel notification immediately
             if (notificationId != -1) {
@@ -57,8 +57,9 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
             }
 
 			//Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
-
-            ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, to_uri, phoneLocked,  event, (ReactApplication) context.getApplicationContext());
+			if (action.startsWith("ACTION_ACCEPT")) {
+				ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, to_uri, phoneLocked,  event, (ReactApplication) context.getApplicationContext());
+            }
 
 			// 2. Close the IncomingCallActivity layout
 			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");

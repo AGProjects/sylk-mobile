@@ -13635,8 +13635,17 @@ class Sylk extends Component {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
         }
 
-        if (uri in myContacts) {
-        } else {
+		if (uri.indexOf('anonymous') > -1) {
+			console.log('skip history entry from anonymous address', uri);                
+			return;
+		}
+
+		if (uri.indexOf('@guest') > -1) {
+			console.log('skip history entry from quest address', uri);                
+			return;
+		}
+
+        if (!(uri in myContacts)) {
             myContacts[uri] = this.newContact(uri);
         }
 

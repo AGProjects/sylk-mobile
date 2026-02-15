@@ -15,6 +15,7 @@ import android.app.PendingIntent;
 import androidx.core.app.Person;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.graphics.drawable.IconCompat;
 import android.content.pm.PackageManager;
 import android.content.pm.ShortcutInfo;
@@ -525,12 +526,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             
             serviceIntent.putExtra("phoneLocked", phoneLocked);
 			Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
-            } else {
-                startService(serviceIntent);
-            }
+			
+			ContextCompat.startForegroundService(this, serviceIntent);
 
         } else if (event.equals("cancel")) {
 

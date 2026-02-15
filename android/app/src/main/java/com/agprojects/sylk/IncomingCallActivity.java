@@ -50,7 +50,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 			Bundle extras = intent.getExtras();
 			if (extras != null) {
 				for (String key : extras.keySet()) {
-					Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+					//Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 				}
 			}
 
@@ -172,7 +172,6 @@ public class IncomingCallActivity extends AppCompatActivity {
 
 	private void sendAcceptIntent(String action) {
 		Log.d(LOG_TAG, "Accept pressed for call: " + callId + ", action: " + action);
-	
 		Intent intent = new Intent(this, IncomingCallActionReceiver.class)
 				.setAction(action)
 				.putExtra("session-id", callId)
