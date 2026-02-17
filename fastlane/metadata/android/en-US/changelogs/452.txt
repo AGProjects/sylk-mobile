@@ -1,0 +1,2 @@
+Auto-answer works only on the last device where it was set
+Bug fixes
