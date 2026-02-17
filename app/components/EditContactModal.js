@@ -335,7 +335,7 @@ const getTotalPrettyStorage = (entity) => {
 							const isSelected = tags.includes(tagKey);
 						
 							return (
-							  <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
+							  <View key={tagKey} style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
 								{Platform.OS === 'ios' ? (
 								  <Switch
 									value={isSelected}

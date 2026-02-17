@@ -162,7 +162,6 @@ const URL_SCHEMES = [
 const VIBRATION_PATTERN = [0, 1000, 4000];
 
 let bundleId = `${getBundleId()}`;
-const deviceId = getUniqueId();
 
 const version = '1.0.0';
 const MAX_LOG_LINES = 500;
@@ -322,6 +321,8 @@ class Sylk extends Component {
         this.cdu_counter = 1;
         this.lastServerJournalId = null;
         this.pushTokenSent = false;
+
+		this.deviceId = getUniqueId();
 
         this._initialState = {
             appState: null,
@@ -644,18 +645,15 @@ class Sylk extends Component {
             console.log('Proximity sensor disabled');
         }
 
-        this.loadPeople();
-
         for (let scheme of URL_SCHEMES) {
             DeepLinking.addScheme(scheme);
         }
 
         this.sqlTableVersions = {'messages': 14,
-                                 'contacts': 8,
+                                 'contacts': 9,
                                  'keys': 3,
                                  'accounts': 6
                                  }
-
                                    
         this.db = null;
         this.initSQL();
@@ -1853,7 +1851,7 @@ class Sylk extends Component {
             let idx;
             let formatted_date;
             let updated;
-            console.log(rows.length, 'SQL contacts rows');
+            //console.log(rows.length, 'SQL contacts rows');
             if (rows.length > 0) {
                 for (let i = 0; i < rows.length; i++) {
                     var item = rows.item(i);
@@ -1946,14 +1944,14 @@ class Sylk extends Component {
                         favoriteUris.push(contact.uri);
                     }
 
-                    if (contact.tags.indexOf('autoanswer') > -1) {
-                        autoanswerUris.push(contact.uri);
-                    }
-
 					//console.log(' -- Loaded contact', item.uri, contact.photo);
 
                     if (updated) {
                         this.saveSylkContact(contact.uri, contact, 'AddressBook');
+                    }
+
+                    if (contact.autoanswer) {
+                        autoanswerUris.push(contact.uri);
                     }
 
 					this.sql_contacts_keys.push(contact.uri);
@@ -1961,70 +1959,6 @@ class Sylk extends Component {
 
                     //console.log('Load contact', contact.uri, contact.tags, contact.properties);
                 }
-
-                storage.get('cachedHistory').then((history) => {
-                    if (history) {
-                        //this.cachedHistory = history;
-                        history.forEach((item) => {
-                            //console.log(item);
-                            if (item.remoteParty in myContacts) {
-                            } else {
-                                myContacts[item.remoteParty] = this.newContact(item.remoteParty, item.remoteParty, {src: 'cachedHistory'});
-                            }
-
-                            if (item.timezone && item.timezone !== undefined) {
-                                localTime = momenttz.tz(item.startTime, item.timezone).toDate();
-                                if (localTime > myContacts[item.remoteParty].timestamp) {
-                                    myContacts[item.remoteParty].timestamp = localTime;
-                                }
-                            }
-
-                            myContacts[item.remoteParty].name = item.displayName;
-                            myContacts[item.remoteParty].direction = item.direction === 'received' ? 'incoming' : 'outgoing';
-                            myContacts[item.remoteParty].lastCallId = item.sessionId;
-                            myContacts[item.remoteParty].lastCallDuration = item.duration;
-                            myContacts[item.remoteParty].lastCallMedia = item.media;
-                            myContacts[item.remoteParty].conference = item.conference;
-                            myContacts[item.remoteParty].tags.push('history');
-
-                            this.saveSylkContact(item.remoteParty, this.state.myContacts[item.remoteParty], 'init');
-
-                        });
-                        console.log('Migrated', history.length, 'server history entries');
-                        storage.remove('cachedHistory');
-                    }
-                });
-
-                storage.get('history').then((history) => {
-                    if (history) {
-                        console.log('Loaded', history.length, 'local history entries');
-                        history.forEach((item) => {
-                            if (item.remoteParty in myContacts) {
-                            } else {
-                                myContacts[item.remoteParty] = this.newContact(item.remoteParty, item.remoteParty, {src: 'history'});
-                            }
-
-                            if (item.timezone && item.timezone !== undefined) {
-                                localTime = momenttz.tz(item.startTime, item.timezone).toDate();
-                                if (localTime > myContacts[item.remoteParty].timestamp) {
-                                    myContacts[item.remoteParty].timestamp = localTime;
-                                }
-                            }
-
-                            myContacts[item.remoteParty].name = item.displayName;
-                            myContacts[item.remoteParty].direction = item.direction === 'received' ? 'incoming' : 'outgoing';
-                            myContacts[item.remoteParty].lastCallId = item.sessionId;
-                            myContacts[item.remoteParty].lastCallDuration = item.duration;
-                            myContacts[item.remoteParty].lastCallMedia = item.media;
-                            myContacts[item.remoteParty].conference = item.conference;
-                            myContacts[item.remoteParty].tags.push('history');
-
-                            this.saveSylkContact(item.remoteParty, this.state.myContacts[item.remoteParty], 'init');
-                        });
-                        console.log('Migrated', history.length, 'local history entries');
-                        storage.remove('history');
-                    }
-                });
 
                 utils.timestampedLog('SQL loaded', rows.length, 'contacts for account', this.state.accountId);
                 //console.log(' --- pending incomingMessage', this.state.incomingMessage);
@@ -2307,14 +2241,23 @@ class Sylk extends Component {
 	  const myContacts = this.state.myContacts;
 	  if (!myContacts || typeof myContacts !== 'object') return false;
 	
-	  const hasAutoAnswer = Object.values(myContacts).some(contact =>
-		Array.isArray(contact?.tags) &&
-		contact.tags.some(
-		  tag => typeof tag === 'string' && tag.toLowerCase() === 'autoanswer'
-		)
-	  );
-	  
-	  this.setState({hasAutoAnswerContacts: hasAutoAnswer});
+	  const hasAutoAnswer = Object.values(myContacts).some(contact => {
+
+        /*	
+		const hasTag =
+		  Array.isArray(contact?.tags) &&
+		  contact.tags.some(
+			tag => typeof tag === 'string' && tag.toLowerCase() === 'autoanswer'
+		  );
+		*/
+	
+		const hasAutoAnswerProperty =
+		  contact?.localProperties?.autoanswer === true;
+	
+		return hasAutoAnswerProperty;
+	  });
+	
+	  this.setState({ hasAutoAnswerContacts: hasAutoAnswer });
 	}
 
     get useInCallManger() {
@@ -2349,82 +2292,6 @@ class Sylk extends Component {
                     myContacts[item.uri].name = item.name;
                     this.saveSylkContact(item.uri, myContacts[item.uri], 'init name');
                 }
-            }
-        });
-    }
-
-    loadPeople() {
-        let myContacts = {};
-        let blockedUris = [];
-        let favoriteUris = [];
-        let autoanswerUris = [];
-        let displayName = null;
-
-        storage.get('contactStorage').then((contactStorage) => {
-            if (contactStorage !== 'sql') {
-                storage.get('myContacts').then((myContacts) => {
-                    let myContactsObjects = {};
-                    if (myContacts) {
-                        Object.keys(myContacts).forEach((key) => {
-
-                            if (!Array.isArray(myContacts[key]['unread'])) {
-                                myContacts[key]['unread'] = [];
-                            }
-
-                            if(typeof(myContacts[key]) == 'string') {
-                                console.log('Convert display name object');
-                                myContactsObjects[key] = {'name': myContacts[key]}
-                            } else {
-                                myContactsObjects[key] = myContacts[key];
-                            }
-
-                        });
-                        myContacts = myContactsObjects;
-                    } else {
-                        myContacts = {};
-                    }
-
-                    this.setState({myContacts: myContacts});
-
-                    storage.get('favoriteUris').then((favoriteUris) => {
-                        favoriteUris = favoriteUris.filter(item => item !== null);
-                        console.log('My favorites:', favoriteUris);
-                        this.setState({favoriteUris: favoriteUris});
-                        storage.remove('favoriteUris');
-
-                    }).catch((error) => {
-                        //console.log('get favoriteUris error:', error);
-                        let uris = Object.keys(myContacts);
-                        uris.forEach((uri) => {
-                            if (myContacts[uri].favorite) {
-                                favoriteUris.push(uri);
-                            }
-                        });
-
-                        this.setState({favoriteUris: favoriteUris});
-                    });
-
-                    storage.get('blockedUris').then((blockedUris) => {
-                        blockedUris = blockedUris.filter(item => item !== null);
-                        this.setState({blockedUris: blockedUris});
-                        storage.remove('blockedUris');
-
-                    }).catch((error) => {
-                        //console.log('get blockedUris error:', error);
-                        let uris = Object.keys(myContacts);
-                        uris.forEach((uri) => {
-                            if (myContacts[uri].blocked) {
-                                blockedUris.push(uri);
-                            }
-                        });
-
-                        this.setState({blockedUris: blockedUris});
-                    });
-
-                }).catch((error) => {
-                    console.log('get myContacts error:', error);
-                });
-
             }
         });
     }
@@ -2528,6 +2395,7 @@ class Sylk extends Component {
                                     'last_call_duration' INTEGER default 0, \
                                     'last_call_id' TEXT, \
                                     'properties' TEXT, \
+                                    'local_properties' TEXT, \
                                     'conference' INTEGER default 0, \
                                     PRIMARY KEY (account, uri)) \
                                     ";
@@ -2678,7 +2546,8 @@ class Sylk extends Component {
                                                 5: [{query: 'alter table contacts add column email TEXT', params: []}],
                                                 6: [{query: 'alter table contacts add column photo BLOB', params: []}],
                                                 7: [{query: 'alter table contacts add column email TEXT', params: []}],
-                                                8: [{query: 'alter table contacts add column properties TEXT', params: []}]
+                                                8: [{query: 'alter table contacts add column properties TEXT', params: []}],
+                                                9: [{query: 'alter table contacts add column local_properties TEXT', params: []}]
                                                 },
                                    'keys': {2: [{query: 'alter table keys add column last_sync_id TEXT', params: []}],
                                             3: [{query: 'alter table keys add column my_uuid TEXT', params: []}]
@@ -4068,7 +3937,7 @@ class Sylk extends Component {
         }
 
         utils.timestampedLog('Push token', token, 'for app', bundleId, 'sent');
-        this.state.account.setDeviceToken(token, Platform.OS, deviceId, false, bundleId);
+        this.state.account.setDeviceToken(token, Platform.OS, this.deviceId, false, bundleId);
         this.pushTokenSent = true;
     }
 
@@ -7138,6 +7007,7 @@ class Sylk extends Component {
 		contact.tags = tags;
 		
 	    let selectedContact = this.state.selectedContact;
+
         if (selectedContact && selectedContact.uri === uri) {
             this.setState({selectedContact: contact});
         }
@@ -7174,10 +7044,12 @@ class Sylk extends Component {
         let media = contact.lastCallMedia.toString();
         let participants = contact.participants.toString();
         let unixTime = Math.floor(contact.timestamp / 1000);
-        let properties = contact.properties ? JSON.stringify(contact.properties) : {};
 
-        let params = [this.state.accountId, contact.email, contact.photo, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags.toString() || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties];
-        await this.ExecuteQuery("INSERT INTO contacts (account, email, photo, timestamp, uri, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, properties) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        let properties = contact.properties ? JSON.stringify(contact.properties) : {};
+        let localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : {};
+
+        let params = [this.state.accountId, contact.email, contact.photo, unixTime, uri, contact.name || '', contact.organization || '', unread_messages || '', tags.toString() || '', participants || '', contact.publicKey || '', contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties, localProperties];
+        await this.ExecuteQuery("INSERT INTO contacts (account, email, photo, timestamp, uri, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, properties, local_properties) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             if (result.rowsAffected === 1) {
                 console.log('SQL inserted contact', contact.uri, 'by', origin);
 				if (origin == 'editContact') {
@@ -7232,7 +7104,7 @@ class Sylk extends Component {
     async updateSylkContact(uri, contact, origin=null) {
 		await this.waitForContactsLoaded();
     
-        console.log('updateSylkContact', contact?.timestamp, uri, 'origin', origin);
+        //console.log('updateSylkContact', contact?.timestamp, uri, 'origin', origin);
 
         let unixTime = Math.floor(contact.timestamp / 1000);
         let unread_messages = contact.unread.toString();
@@ -7251,13 +7123,15 @@ class Sylk extends Component {
 		tags = tags.join(', ');
         let conference = contact.conference ? 1: 0;
         let participants = contact.participants.toString();
+
         let properties = contact.properties ? JSON.stringify(contact.properties) : {};
+        let localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : {};
 
-        let params = [contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties, contact.uri, this.state.accountId];
+        let params = [contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties, localProperties, contact.uri, this.state.accountId];
 
-        await this.ExecuteQuery("UPDATE contacts set photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ? where uri = ? and account = ?", params).then((result) => {
+        await this.ExecuteQuery("UPDATE contacts set photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ? , participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ?, local_properties = ? where uri = ? and account = ?", params).then((result) => {
             if (result.rowsAffected === 1) {
-                console.log('SQL updated contact', contact.uri, 'by', origin);
+                console.log('updateSylkContact SQL updated', contact.uri, 'by', origin);
                 if (origin == 'editContact') {
 					this.replicateContact(contact);
                 }
@@ -7688,7 +7562,7 @@ class Sylk extends Component {
 		let myContacts = this.state.myContacts;
 		
 		if (contentType === 'application/sylk-message-metadata') {
-			if (message.metadata.action != 'consumed') {
+			if (message.metadata.action != 'consumed' && message.metadata.action != 'autoanswer') {
 			    this.handleMessageMetadata(uri, message.content);
 				this.saveOutgoingMessage(uri, message, 0, contentType);
 			}
@@ -8168,7 +8042,6 @@ class Sylk extends Component {
 			if (content_type == 'application/sylk-message-metadata') {
 				related_msg_id = message.metadata.messageId;
 				related_action = message.metadata.action;
-				console.log('')
 			}
 			
 			let ts =  message.createdAt;
@@ -10823,8 +10696,8 @@ class Sylk extends Component {
 		let  lastMessage = messages.length > 0 ? messages[messages.length - 1] : undefined;
 
 		if (lastMessage) {
-			console.log('firstMessage', firstMessage.timestamp);
-			console.log('lastMessage', lastMessage.timestamp);
+			//console.log('firstMessage', firstMessage.timestamp);
+			//console.log('lastMessage', lastMessage.timestamp);
 
 		  if (!this.state.lastSyncId) {
 			try {
@@ -11121,6 +10994,7 @@ class Sylk extends Component {
 				} else {
 					if (message.sender.uri === this.state.account.id) {
 						 if (message.contentType === 'application/sylk-message-metadata') {
+						     this.handleMessageMetadata(this.state.account.id, message.content);
 						 } else {
 							if (message.contentType !== 'application/sylk-contact-update') {
 								if (myContact.tags.indexOf('blocked') > -1) {
@@ -11138,7 +11012,7 @@ class Sylk extends Component {
 									myContact.timestamp = message.timestamp;
 								}
 							}
-						 }
+						}
 	
 						stats.outgoing = stats.outgoing + 1;
 						await this.outgoingMessageFromJournal(message, {idx: i, total: messages.length});
@@ -11178,6 +11052,10 @@ class Sylk extends Component {
 									myContact.unread.push(message.id);
 								}
 							}
+						} else {
+							 if (message.contentType === 'application/sylk-message-metadata') {
+								 console.log('My own incoming metadata');
+						     }
 						}
 	
 						stats.incoming = stats.incoming + 1;
@@ -11190,8 +11068,7 @@ class Sylk extends Component {
 					'sync processing failed', message && message.id,
 					'error:', e && e.message,
 				);
-			}
-    				
+			}	
         };
 
         this.setState({messages: {...renderMessages},
@@ -11423,6 +11300,7 @@ class Sylk extends Component {
 	    //console.log('handleMessageMetadata', uri, content);
 
 	    let metadataContent;
+
 		try {
 			metadataContent = JSON.parse(content);
 		} catch (error) {
@@ -11430,13 +11308,26 @@ class Sylk extends Component {
 			return;
 		}
 		
-		metadataContent.author = author || this.state.accountId;
+		if (metadataContent.action == 'autoanswer') {
+		    // disable autoanswer on other device, because it can be active only in one place 
+		    if (metadataContent.value && metadataContent.device && metadataContent.device != this.deviceId) {
+				let myContacts = this.state.myContacts;
+				if (metadataContent.uri in myContacts && myContacts[metadataContent.uri].localProperties.autoanswer) {
+					console.log('Disable autoanswer on my device', this.deviceId);
+					this.toggleAutoAnswer(metadataContent.uri, false);
+				}
+		    }
+			return;
+		}
+
 		uri = metadataContent.uri || uri;
 
         if (!this.state.selectedContact || this.state.selectedContact.uri != uri) {
-			console.log("No selected contact or wrong contact — skipping live metadata update.");
+			console.log(uri,  "is not selected contact, skip live metadata update.");
 			return;
         }
+
+		metadataContent.author = author || this.state.accountId;
 
 		// Determine messageId
 		const mId = metadataContent.messageId;
@@ -11497,8 +11388,6 @@ class Sylk extends Component {
 		  return { myContacts: newMyContacts, 
 		           messagesMetadata: newMessagesMetadataForUri};
 		});
-		
-
 	}
 
     buildLastMessage(message, content=null) {
@@ -11656,10 +11545,11 @@ class Sylk extends Component {
                 return;
             });
         } else {
-            if (message.contentType === 'application/sylk-contact-update') {
+			if (message.contentType === 'application/sylk-message-metadata') {
+				this.handleMessageMetadata(this.state.accountId, content);
+			} else if (message.contentType === 'application/sylk-contact-update') {
                 this.handleReplicateContact(content);
             } else {
-
                 this.saveOutgoingMessageSql(message);
 
                 let myContacts = this.state.myContacts;
@@ -11700,7 +11590,7 @@ class Sylk extends Component {
                     }
                 }
 
-                this.saveSylkContact(uri, myContacts[uri], 'outgoingMessage');
+				this.saveSylkContact(uri, myContacts[uri], 'outgoingMessage');
             }
         }
     }
@@ -11755,7 +11645,8 @@ class Sylk extends Component {
         } else {
             if (message.contentType === 'application/sylk-contact-update') {
                 //this.handleReplicateContactSync(content, message.id, message.timestamp);
-                
+
+				// TODO handle outgoing metadata                
             } else {
 				info.is_encrypted = false;
                 await this.saveOutgoingMessageSqlBatch(message, info);
@@ -11764,7 +11655,6 @@ class Sylk extends Component {
     }
 
     saveOutgoingMessageSql(message, decryptedBody=null, is_encrypted=false) {
-        console.log('saveOutgoingMessageSql', message.contentType);
 
         let pending = 0;
         let sent = null;
@@ -11776,9 +11666,15 @@ class Sylk extends Component {
         let related_action;
 
 		if (message.content_type == 'application/sylk-message-metadata') {
-			related_msg_id = metadataContent.messageId;
 			related_action = metadataContent.action;
+			if (related_action == 'autoanswer') {
+			console.log('saveOutgoingMessageSql skipped saving', message.contentType);
+				return;
+			}
+			related_msg_id = metadataContent.messageId;
 		}
+
+        console.log('saveOutgoingMessageSql', message.contentType);
 
         if (message.contentType === 'application/sylk-file-transfer') {
              message.metadata = content;
@@ -12050,6 +11946,22 @@ class Sylk extends Component {
         } else {
             message.metadata = '';
         }
+
+		if (message.contentType == 'application/sylk-message-metadata') {
+			let metadataContent;
+	
+			try {
+				metadataContent = JSON.parse(content);
+			} catch (error) {
+				console.log('handleMessageMetadata cannot parse payload', error);
+				return;
+			}
+			
+			if (metadataContent.action == 'autoanswer') {
+			    //console.log('saveOutgoingMessageSqlBatch skipped');
+				return;
+			}
+		}
 
         if (info?.decryptedBody) {
             encrypted = 2;
@@ -12640,7 +12552,9 @@ class Sylk extends Component {
 			contact.lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
 			contact.lastMessage = item.last_message === '' ? null : item.last_message;
 			contact.messagesMetadata = {}
+
 			let properties = {}
+
 			if (item.properties) {
 				try {
 					properties = JSON.parse(item.properties);
@@ -12650,6 +12564,32 @@ class Sylk extends Component {
 			}
 
 			contact.properties = properties;
+
+			let localProperties = {autoanswer: false}
+
+			if (item.local_properties) {
+				try {
+					localProperties = JSON.parse(item.local_properties);
+				} catch (e) {
+					console.log('Error decoding json contact properties', item.local_properties);
+				}
+			}
+
+			if (item.local_properties) {
+			  try {
+				const _localProperties = JSON.parse(item.local_properties);
+			
+				localProperties = {
+				  ...localProperties,      // keep existing defaults
+				  ..._localProperties      // overwrite only provided keys
+				};
+			
+			  } catch (e) {
+				console.log('Error decoding json contact properties', item.local_properties);
+			  }
+			}
+
+			contact.localProperties = localProperties;
         }
 
         contact = this.sanitizeContact(uri, contact);
@@ -12668,7 +12608,8 @@ class Sylk extends Component {
                           lastCallMedia: [],
                           participants: [],
                           timestamp: new Date(),
-                          properties: {}
+                          properties: {},
+                          localProperties: {}
                           }
         return contact;
     }
@@ -12696,13 +12637,13 @@ class Sylk extends Component {
      }
 
      saveContact(contactObject) {
-	 console.log('saveContact', contactObject);
-    
-     let uri = contactObject.uri;
-     let displayName = contactObject.displayName;
-     let organization = contactObject.organization;
-     let email = contactObject.email;
-     let tags = contactObject.tags || [];
+		 console.log('saveContact', contactObject);
+		
+		 let uri = contactObject.uri;
+		 let displayName = contactObject.displayName;
+		 let organization = contactObject.organization;
+		 let email = contactObject.email;
+		 let tags = contactObject.tags || [];
 
         let contact;
 
@@ -13028,41 +12969,66 @@ class Sylk extends Component {
         this.setState({favoriteUris: favoriteUris});
     }
 
-    toggleAutoAnswer(uri) {
+    toggleAutoAnswer(uri, replicate=true) {
         console.log('toggleAutoAnswer', uri);
+
         let autoanswerUris = this.state.autoanswerUris;
         let myContacts = this.state.myContacts;
-        let selectedContact;
-        let autoanswer;
+        let contact;
 
-        if (uri in myContacts) {
+        if (!(uri in myContacts)) {
+            contact = this.newContact(uri);
         } else {
-            myContacts[uri] = this.newContact(uri);
+			contact = myContacts[uri];
         }
 
-        idx = myContacts[uri].tags.indexOf('autoanswer');
+		contact.localProperties.autoanswer = !contact.localProperties.autoanswer;
+		
+		const autoanswer = contact.localProperties.autoanswer;
+
+        idx = contact.tags.indexOf('autoanswer');
         if (idx > -1) {
-            myContacts[uri].tags.splice(idx, 1);
-            autoanswer = false;
+            if (!autoanswer) {
+				contact.tags.splice(idx, 1);
+            }
         } else {
-            myContacts[uri].tags.push('autoanswer');
-            autoanswer = true;
+            if (autoanswer) {
+				contact.tags.push('autoanswer');
+			}
         }
-
-        myContacts[uri].timestamp = new Date();
-
-        this.saveSylkContact(uri, myContacts[uri], 'toggleAutoAnswer');
+        
+        this.saveSylkContact(uri, contact, 'toggleAutoAnswer');
 
         let idx = autoanswerUris.indexOf(uri);
         if (idx === -1 && autoanswer) {
             autoanswerUris.push(uri);
-            console.log(uri, 'is favorite');
         } else if (idx > -1 && !autoanswer) {
             autoanswerUris.splice(idx, 1);
-            console.log(uri, 'is not autoanswer');
         }
 
-        this.setState({autoanswerUris: autoanswerUris});        
+        this.setState({autoanswerUris: autoanswerUris});
+
+		if (autoanswer && replicate) {
+			const mId = uuid.v4();
+			const timestamp = new Date();
+	
+			const metadataContent = {
+									 action: 'autoanswer',
+									 value: autoanswer,
+									 timestamp: timestamp,
+									 uri: uri,
+									 device: this.deviceId
+									 };
+		
+			const metadataMessage = {_id: mId,
+								   key: mId,
+								   createdAt: timestamp,
+								   metadata: metadataContent,
+								   text: JSON.stringify(metadataContent),
+								   };
+	
+			this.sendMessage(this.state.accountId, metadataMessage, 'application/sylk-message-metadata');
+		}
     }
 
     toggleBlocked(uri) {
@@ -13318,7 +13284,7 @@ class Sylk extends Component {
 	}
 
     fetchSharedItemsAndroidAtStart() {
-        console.log('fetchSharedItemsAndroidAtStart');
+        //console.log('fetchSharedItemsAndroidAtStart');
         
         ReceiveSharingIntent.getReceivedFiles(files => {
             // files returns as JSON Array example
@@ -14669,7 +14635,7 @@ return (
         if (!this.signOut && this.state.registrationState !== null && this.state.connection && this.state.connection.state === 'ready') {
             // remove token from server
             console.log('Remove push token');
-            this.state.account.setDeviceToken('None', Platform.OS, deviceId, this.state.dnd, bundleId);
+            this.state.account.setDeviceToken('None', Platform.OS, this.deviceId, this.state.dnd, bundleId);
             console.log('Unregister');
             this.state.account.register();
             return;

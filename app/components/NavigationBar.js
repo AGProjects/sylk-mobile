@@ -516,10 +516,10 @@ class NavigationBar extends Component {
         }
 
 		const isFavorite = this.state.selectedContact && tags && tags.indexOf('favorite') > -1;
-		
+				
         let favoriteTitle = isFavorite ? 'Unfavorite' : 'Favorite';
         let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
-        let autoAnswerTitle = (this.state.selectedContact && tags && tags.indexOf('autoanswer') > -1) ? 'No auto answer' : 'Auto answer';
+        let autoAnswerTitle = this.state.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
 		let autoAnswerModeTitle = this.state.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
   
         let extraMenu = false;
