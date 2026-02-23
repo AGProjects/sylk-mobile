@@ -1260,7 +1260,6 @@ class ContactsListBox extends Component {
     }
 
     sendEditedMessage(message, text) {
-
         if (!this.state.selectedContact) {
 			return;
         } 
@@ -2394,7 +2393,7 @@ class ContactsListBox extends Component {
 		}
 
 		if (prevState.replyMessages !== this.state.replyMessages) {
-			//console.log('new replyMessages', JSON.stringify(this.state.replyMessages, null, 2));
+			console.log('new replyMessages', JSON.stringify(this.state.replyMessages, null, 2));
 		}
 
 		if (prevState.renderMessages !== this.state.renderMessages) {
@@ -3548,7 +3547,7 @@ scrollToMessage(id) {
 }
 
 	scrollToBottom() {
-	  console.log('scrollToBottom called');
+	  //console.log('scrollToBottom called');
 	  this.exitFocusMode();	  
 	  if (this.flatListRef?.scrollToOffset) {
 		try {
@@ -3655,7 +3654,7 @@ scrollToMessage(id) {
         //console.log('----');
                 
         //console.log('--- Render contacts with filter', this.state.filter);
-        //console.log('--- Render contacts', this.state.selectedContact);
+        //console.log('--- CL selectedContact', this.state.selectedContact?.messagesMetadata);
 
        let chatInputClass = this.customInputToolbar;
 
@@ -3889,8 +3888,8 @@ scrollToMessage(id) {
 		if (debug) {
 			const values = {
  			replyMessages,
- 			mediaLabels,
-			messagesMetadata,
+// 			mediaLabels,
+//			messagesMetadata,
 			};
 		
 			//console.log(transferProgress);

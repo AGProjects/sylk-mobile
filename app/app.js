@@ -2032,12 +2032,8 @@ class Sylk extends Component {
 				this.fetchSharedItemsiOS();
                 if (this.initialChatUri) {
                     //console.log('Starting chat with', this.initialChatUri);
-                    const chatContact = this.lookupContact(this.initialChatUri);
-                    if (chatContact) {
-                        this.selectContact(chatContact);
-                    } else {
-                        this.initialChatUri = null;
-                    }
+                    const chatContact = this.lookupContact(this.initialChatUri, true, true);
+					this.initialChatUri = null;
                 }
             }, 100);
 
@@ -2183,17 +2179,20 @@ class Sylk extends Component {
 	     }
 		
 	     if (this.state.selectedContact != prevState.selectedContact) {
-			 console.log('selectedContact changed', this.state.selectedContact?.id);
 	         if (this.state.selectedContact) {
 	             if (prevState.selectedContact && prevState.selectedContact.uri == this.state.selectedContact.uri) {
+					 console.log('selectedContact is the same', this.state.selectedContact?.id);
 	                 // no change
 	             } else {
+					 console.log('selectedContact changed', this.state.selectedContact?.id);
+
 					 if (Platform.OS === 'android') {
 						 SylkBridge.setActiveChat(this.state.selectedContact.uri);
 						 UnreadModule.resetUnreadForContact(this.state.selectedContact.uri);
 					 } else {
 						 NativeModules.SharedDataModule.setActiveChat(this.state.selectedContact.uri); 
 					 }
+
 					 this.messagesConfirmedRead.clear();
 					 this.getMessages(this.state.selectedContact, {origin: 'componentDidUpdate'});
 				 }
@@ -2213,7 +2212,7 @@ class Sylk extends Component {
 												}, 2000);
 				 AudioRouteModule.setActiveDevice(this.state.userSelectedDevice);
 			 }
-		 }	 
+		 }
 
 		if (this.state.proximityEnabled && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			if (this.state.proximityNear) {
@@ -3899,13 +3898,9 @@ class Sylk extends Component {
   
     selectChatContact(uri) {
         console.log('-- selectChatContact', uri);
-        const chatContact = this.lookupContact(uri);
-        if (chatContact) {
-			this.selectContact(chatContact);
-        } else {
-            console.log('set initialChatUri', uri);
-            this.initialChatUri = uri;
-        }
+        const chatContact = this.lookupContact(uri, true, true);
+		this.selectContact(chatContact);
+		this.initialChatUri = uri;
     }
 
     cancelIncomingCall(callUUID) {
@@ -4164,13 +4159,7 @@ class Sylk extends Component {
 			uri = uri + '@' + this.state.defaultDomain;
 		}
   
-		let chatContact = this.lookupContact(uri);
-		
-		if (!chatContact) {
-		    chatContact = this.newContact(uri, uri, {src: 'chat'});
-			await this.saveSylkContact(uri, chatContact, 'chat');
-		}
-
+		let chatContact = this.lookupContact(uri, true, true);
 		this.setState({selectedContact: chatContact});
 	}
 
@@ -4626,18 +4615,7 @@ class Sylk extends Component {
             return;
         }
         
-        contact = this.lookupContact(from);
-
-        if (!contact) {
-            let contacts = this.lookupABContacts(from);
-            if (contacts.length > 0) {
-                contact = this.newContact(from, contacts[0].name);
-            }
-        }
-
-        if (!contact) {
-            contact = this.newContact(from, displayName);
-        }
+        contact = this.lookupContact(from, true, true);
 
         if (!callId) {
             console.log('Missing callId for Alert panel');
@@ -7458,7 +7436,6 @@ class Sylk extends Component {
             return;
         }
     
-
         if (this.state.rejectNonContacts) {
             const contact = this.lookupContact(uri); 
             if (!contact) {
@@ -8695,11 +8672,7 @@ class Sylk extends Component {
         let query;
         let content = message.text;
 
-        let contact = this.lookupContact(uri);
-
-        if (!contact) {
-            contact = this.newContact(uri);
-        }
+        let contact = this.lookupContact(uri, true);
 
         //console.log('saveOutgoingChatUri', uri, contact.uri);
 
@@ -9668,25 +9641,13 @@ class Sylk extends Component {
     async getMessages(obj, filter={pinned: false, category: null, text:null, contentType: null}) {
 
         let uri = obj.id ? obj.uri : obj;
-        let contact;
+        let contact = obj;
         await this.waitForContactsLoaded();
         
-        if (obj.id) {
-			contact = obj;
-        } else {
-            const origContact = this.lookupContact(uri);
-            if (!origContact) {
-				contact = this.newContact(uri);
-            } else {
-				contact = origContact;
-            }
-        }
-        
-        if (!contact) {
-			console.log('No contact for messages');
-			return;
-        }
-        
+        if (!obj.id) {
+            contact = this.lookupContact(uri, true);
+        } 
+               
         console.log('-- Get messages', uri, filter);
         let pinned = filter && 'pinned' in filter ? filter['pinned'] : false;
         let category = filter && 'category' in filter ? filter['category'] : null;
@@ -11346,6 +11307,8 @@ class Sylk extends Component {
 			console.log('handleMessageMetadata cannot parse payload', error);
 			return;
 		}
+
+	    //console.log('-- handleMessageMetadata', metadataContent.action);
 	
 		if (metadataContent.action === 'autoanswer') {
 			if (
@@ -11374,7 +11337,7 @@ class Sylk extends Component {
 		const mId = metadataContent.messageId;
 		if (!mId) return;
 	
-		this.updateFileTransferMetadataFromRemote(
+		this.updateMetadataFromRemote(
 			mId,
 			metadataContent.action,
 			metadataContent.value
@@ -11384,10 +11347,9 @@ class Sylk extends Component {
 			const contactIndex = prev.allContacts.findIndex(c => c.uri === uri);
 			if (contactIndex === -1) return null;
 	
-			const oldContact = prev.allContacts[contactIndex];
-	
-			const oldMetaByMessage =
-				oldContact.messagesMetadata?.[mId] || [];
+			const oldContact = prev.allContacts[contactIndex];	
+
+			const oldMetaByMessage = oldContact.messagesMetadata?.[mId] || [];
 	
 			const previousForAction = oldMetaByMessage.find(
 				ev => ev.action === metadataContent.action
@@ -11416,17 +11378,24 @@ class Sylk extends Component {
 				...oldContact.messagesMetadata,
 				[mId]: newArray
 			};
-	
+			
 			const updatedContact = {
 				...oldContact,
 				messagesMetadata: newMessagesMetadataForUri
 			};
-	
+				
 			const newAllContacts = [...prev.allContacts];
 			newAllContacts[contactIndex] = updatedContact;
+			
+			let selectedContact = this.state.selectedContact;
+
+			if (this.state.selectedContact.id && updatedContact.id && this.state.selectedContact.id == updatedContact.id) {
+				selectedContact = updatedContact;
+			}
 	
 			return {
-				allContacts: newAllContacts
+				allContacts: newAllContacts,
+				selectedContact: selectedContact
 			};
 		});
 	}
@@ -11926,8 +11895,8 @@ class Sylk extends Component {
 		}
     }
 
-    async updateFileTransferMetadataFromRemote(id, attribute, value) {
-        console.log('-- updateFileTransferMetadataFromRemote', id, attribute, value);
+    async updateMetadataFromRemote(id, attribute, value) {
+        console.log('-- updateMetadataFromRemote', id, attribute, value);
         let query = "SELECT * from messages where msg_id = ? and account = ? ";
         await this.ExecuteQuery(query, [id, this.state.accountId]).then((results) => {
             let rows = results.rows;
@@ -11944,20 +11913,20 @@ class Sylk extends Component {
                 }
 
                 const newMetadata = JSON.stringify(metadata);
-                //console.log('new metadata', newMetadata);
+                console.log('new metadata', newMetadata);
 
                 let params = [newMetadata, id];
                 query = "update messages set metadata = ? where msg_id = ?";
                 this.ExecuteQuery(query, params).then((results) => {
 					this.updateFileTransferBubble(metadata);
-                    //console.log('updateFileTransferMetadataFromRemote OK', metadata);
+                    console.log('updateMetadataFromRemote OK', metadata);
                 }).catch((error) => {
-                    console.log('updateFileTransferMetadataFromRemote SQL error:', error);
+                    console.log('updateMetadataFromRemote SQL error:', error);
                 });
             }
 
         }).catch((error) => {
-            console.log('updateFileTransferMetadataFromRemote SQL error:', error);
+            console.log('updateMetadataFromRemote SQL error:', error);
         });
     }
 
@@ -12323,7 +12292,7 @@ class Sylk extends Component {
 				related_value = metadataContent.value;
 				related_msg_id = metadataContent.messageId;
 				//console.log('saveIncomingMessage', related_action, related_msg_id, related_value);
-				this.updateFileTransferMetadataFromRemote(related_msg_id, related_action, related_value);
+				this.updateMetadataFromRemote(related_msg_id, related_action, related_value);
 			} catch (error) {
 				console.log('saveIncomingMessage cannot parse payload', error);
 				return;
@@ -12398,11 +12367,12 @@ class Sylk extends Component {
             }
 
 			if (message.contentType !== 'application/sylk-message-metadata') {
-				if (this.state.selectedContact && this.state.selectedContact.id === contact.id) {
-					this.confirmRead(uri, 'incoming_message');
-				}
 				for (const contact of contacts) {
 					this.saveSylkContact(uri, contact, 'saveIncomingMessage');
+
+					if (this.state.selectedContact && this.state.selectedContact.id === contact.id) {
+						this.confirmRead(uri, 'incoming_message');
+					}
 				}
 				this.requestDndPermission();
             }
@@ -12591,9 +12561,26 @@ class Sylk extends Component {
 	  this.contactsIndexes = multiIndex;
 	};
 
-	lookupContact = (uriString) => {
+	lookupContact = (uriString, create = false, save = false) => {
 	  // returns only one contact
-	  return this.contactIndex?.[uriString] || null;
+	  const match = this.contactIndex?.[uriString] || null;
+
+	  if (match) {
+		  return match;
+	  } 
+
+	  if (create) {
+	      const newContact = this.newContact(uriString);
+
+		  if (save) {
+			  this.saveSylkContact(uriString, newContact, 'lookup');
+	      }
+	      
+	      return newContact;
+	  }	  
+	  
+	  return null;
+
 	};
 
 	lookupContacts = (uriString) => {
@@ -12986,11 +12973,7 @@ class Sylk extends Component {
         let favoriteUris = this.state.favoriteUris;
         let favorite;
         
-        let contact = this.lookupContact(uri);
-
-        if (!contact) {
-            contact = this.newContact(uri);
-        }
+        let contact = this.lookupContact(uri, true);
 
         idx = contact.tags.indexOf('favorite');
         if (idx > -1) {
@@ -13021,11 +13004,7 @@ class Sylk extends Component {
         console.log('toggleAutoAnswer', uri);
 
         let autoanswerUris = this.state.autoanswerUris;
-        let contact = this.lookupContact(uri);
-
-        if (!contact) {
-            contact = this.newContact(uri);
-        }
+        let contact = this.lookupContact(uri, true);
 
 		contact.localProperties.autoanswer = !contact.localProperties.autoanswer;
 		
@@ -13080,11 +13059,7 @@ class Sylk extends Component {
         let blockedUris = this.state.blockedUris;
         let blocked = false;
 
-		let contact = this.lookupContact(uri);
-
-        if (!contact) {
-            contact = this.newContact(uri);
-        }
+		let contact = this.lookupContact(uri, true);
 
         idx = contact.tags.indexOf('blocked');
         if (idx > -1) {
@@ -13606,11 +13581,7 @@ class Sylk extends Component {
         let uri = room;
         console.log('Save conference', room, 'with display name', displayName, 'and participants', participants);
 
-        let contact = this.lookupContact(uri);
-
-        if (!contact) {
-            contact = this.newContact(uri);
-        }
+        let contact = this.lookupContact(uri, true);
 
         contact.timestamp = new Date();
         contact.name = displayName;
