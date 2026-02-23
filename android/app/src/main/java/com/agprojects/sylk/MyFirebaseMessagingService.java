@@ -225,62 +225,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	
 		return contact;
 	}
-
-	private List<String> getTagsForContact(String account, String uri) {
-		List<String> tagsList = null; // null means "contact not found"
-	
-		try {
-			File dbFile = getApplicationContext().getDatabasePath("sylk.db");
-			if (!dbFile.exists()) {
-				Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
-				return null;
-			}
-	
-			SQLiteDatabase db = SQLiteDatabase.openDatabase(
-					dbFile.getPath(),
-					null,
-					SQLiteDatabase.OPEN_READONLY
-			);
-	
-			Cursor cursor = db.rawQuery(
-					"SELECT tags FROM contacts WHERE account = ? AND uri = ?",
-					new String[]{ account, uri }
-			);
-	
-			if (cursor != null) {
-				if (cursor.moveToFirst()) {
-					String tags = cursor.getString(cursor.getColumnIndexOrThrow("tags"));
-	
-					if (tags != null && !tags.trim().isEmpty()) {
-						// Split and trim tags
-						String[] raw = tags.split(",");
-						tagsList = new ArrayList<>();
-						for (String t : raw) {
-							String clean = t.trim().toLowerCase();
-							if (!clean.isEmpty()) {
-								tagsList.add(clean);
-							}
-						}
-					} else {
-						// Contact exists but has no tags
-						tagsList = new ArrayList<>();
-					}
-				}
-				cursor.close();
-			}
-	
-			db.close();
-	
-		} catch (Exception e) {
-			Log.e(LOG_TAG, "Failed to get tags for contact", e);
-		}
-
-		Log.d(LOG_TAG, "Tags for " + uri + ": " + tagsList);
-
-		return tagsList;  
-		// null → no contact found
-		// empty list → contact exists but no tags
-	}
 	
 	private boolean isAccountActive(String account, String fromUri, List<String> contactTags) {
 		if (account == null) return false;
@@ -667,9 +611,22 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				return;
 			}
 
+			List<String> tags = new ArrayList<>();
+            Contact contact = getContact(toUri, fromUri);
+			String displayName = fromUri;
+
 			Log.w(LOG_TAG, event + " " + messageId + " from " + fromUri);
 
-            List<String> tags = getTagsForContact(toUri, fromUri);
+			if (contact != null) {
+				displayName = contact.getDisplayName();
+                tags = contact.getTags();
+			
+				Log.d(LOG_TAG, "Display name: " + displayName);
+				Log.d(LOG_TAG, "Tags: " + tags);
+						
+			} else {
+				Log.d(LOG_TAG, "Unknown contact");
+			}
 
 			if (isBlocked(tags)) {
 				Log.w(LOG_TAG, "Message from " + fromUri + " is blocked");
@@ -747,7 +704,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			
 			// ----- PERSON -----
 			Person person = new Person.Builder()
-					.setName(fromUri)
+					.setName(displayName)
 					.build();
 			
 			// ----- SHORTCUT -----
@@ -778,13 +735,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				ShortcutManagerCompat.pushDynamicShortcut(this, shortcut);
 			}
 
-			
 			// ----- MESSAGING STYLE -----
 			NotificationCompat.MessagingStyle style =
 				new NotificationCompat.MessagingStyle(person)
                 .setConversationTitle("") // keeps first line clean
                 .setGroupConversation(false)
-                .addMessage("Message from " + fromUri, System.currentTimeMillis(), fromUri);
+                .addMessage("Message from " + fromUri, System.currentTimeMillis(), displayName);
 
 			
 			// ----- BUBBLE METADATA -----
@@ -805,7 +761,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					new NotificationCompat.Builder(this, channelId)
 							.setSmallIcon(R.drawable.ic_notification)
 							.setContentTitle("New message") // header
-							.setContentText("Message from " + fromUri) // second line
+							.setContentText("Message from " + displayName) // second line
 							.setAutoCancel(true)
 							.setNumber(unreadCount)
 							.setPriority(NotificationCompat.PRIORITY_HIGH)
