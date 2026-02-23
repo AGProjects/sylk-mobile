@@ -122,7 +122,6 @@ class ContactsListBox extends Component {
             myInvitedParties: this.props.myInvitedParties,
             refreshHistory: this.props.refreshHistory,
             selectedContact: this.props.selectedContact,
-            myContacts: this.props.myContacts,
             messages: this.props.messages,
             renderMessages: [],
             filteredMessages: [],
@@ -192,7 +191,9 @@ class ContactsListBox extends Component {
 		    recordingFile: this.props.recordingFile,
 		    insets: this.props.insets,
 		    composerHeight: 48,
-		    replyContainerHeight: 0
+		    replyContainerHeight: 0,
+		    appState: this.props.appState,
+		    allContacts: this.props.allContacts
         }
 
         this.ended = false;
@@ -400,10 +401,6 @@ class ContactsListBox extends Component {
             this.setState({contacts: nextProps.contacts});
         }
         
-        if (nextProps.myContacts !== this.state.myContacts) {
-            this.setState({myContacts: nextProps.myContacts});
-        }
-
         if (nextProps.orderBy !== this.state.orderBy) {
             this.setState({orderBy: nextProps.orderBy});
         }
@@ -491,7 +488,9 @@ class ContactsListBox extends Component {
 					   callHistoryUrl: nextProps.callHistoryUrl,
 					   isAudioRecording: nextProps.isAudioRecording,
 					   recordingFile: nextProps.recordingFile,
-					   insets: nextProps.insets
+					   insets: nextProps.insets,
+					   appState: nextProps.appState,
+					   allContacts: nextProps.allContacts
 					});
 
         if (nextProps.isTyping) {
@@ -702,16 +701,19 @@ class ContactsListBox extends Component {
 		/>
 	  );
 	}
+
+   exitFullScreen() {
+		this.props.setFullScreen(false);
+		this.setState({ expandedImage: null});
+   }
 	
 	onImagePress = (message) => {
 	  const { expandedImage } = this.state;
 	  console.log('onImagePress', 'fullScreen', this.state.fullScreen);
 
 	  if (expandedImage) {
-		this.props.setFullScreen(false);
 		this.saveRotation(expandedImage);
-		this.setState({ expandedImage: null});
-		
+		this.exitFullScreen();
 	  } else {
 	    let rotation = 0;
 		this.props.setFullScreen(true);
@@ -1207,27 +1209,8 @@ class ContactsListBox extends Component {
         return this.props.setBlockedUri(uri);
     }
 
-    renderItem(object) {
+    renderContactItem(object) {
         let item = object.item || object;
-        let invitedParties = [];
-        let uri = item.uri;
-        let myDisplayName;
-
-        let username = uri.split('@')[0];
-
-        if (this.state.myContacts && this.state.myContacts.hasOwnProperty(uri)) {
-            myDisplayName = this.state.myContacts[uri].name;
-        }
-
-        if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(username)) {
-            invitedParties = this.state.myInvitedParties[username];
-        }
-
-        if (myDisplayName) {
-            if (item.name === item.uri || item.name !== myDisplayName) {
-                item.name = myDisplayName;
-            }
-        }
 
         return(
             <ContactCard
@@ -2133,7 +2116,8 @@ class ContactsListBox extends Component {
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
-                    if (showResend && !this.hideItem) {
+                    //if (showResend && !this.hideItem) {
+                    if (!this.hideItem) {
                         options.push('Resend')
                         icons.push(<Icon name="send" size={20} />);
                     }
@@ -2339,37 +2323,12 @@ class ContactsListBox extends Component {
 	
 	componentDidUpdate(prevProps, prevState) {
 	               
-	/*
-	  if (prevState.myContacts !== this.state.myContacts) {
-	
-		const oldContacts = prevState.myContacts;
-		const newContacts = this.state.myContacts;
-	
-		const changed = [];
-		const added   = [];
-		const removed = [];
-	
-		// Check updated + added
-		Object.keys(newContacts).forEach(uri => {
-		  if (!oldContacts[uri]) {
-			added.push(uri);
-		  } else if (oldContacts[uri] !== newContacts[uri]) {
-			changed.push(uri);
+      if (prevState.appState !== this.state.appState) {
+          console.log('appState', this.state.appState);
+          if (this.state.appState !== 'active') {
+			  this.exitFullScreen();
 		  }
-		});
-	
-		// Check removed
-		Object.keys(oldContacts).forEach(uri => {
-		  if (!newContacts[uri]) {
-			removed.push(uri);
-		  }
-		});
-		console.log("[SYLK] Contacts changed:");
-		if (changed.length) console.log("  updated:", changed);
-		if (added.length)   console.log("  added:", added);
-		if (removed.length) console.log("  removed:", removed);
-	  }
-	  */
+      }
 	  
       if (prevState.isAudioRecording !== this.state.isAudioRecording) {
           if (this.state.isAudioRecording) {
@@ -3692,18 +3651,13 @@ scrollToMessage(id) {
         let searchExtraItems = [];
         let items = [];
         let matchedContacts = [];
-        let contacts = [];
+        let contacts = this.state.allContacts;
         //console.log('----');
                 
         //console.log('--- Render contacts with filter', this.state.filter);
         //console.log('--- Render contacts', this.state.selectedContact);
-        //console.log(this.state.renderMessages);
 
-		Object.keys(this.state.myContacts).forEach((uri) => {
-			contacts.push(this.state.myContacts[uri]);
-		});
-
-        let chatInputClass = this.customInputToolbar;
+       let chatInputClass = this.customInputToolbar;
 
         if (this.state.selectedContact) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
@@ -4025,7 +3979,7 @@ scrollToMessage(id) {
                 refreshing={this.state.isRefreshing}
                 data={items}
                 extraData={items}
-                renderItem={this.renderItem}
+                renderItem={this.renderContactItem}
                 listKey={item => item.id}
                 key={this.props.orientation}
                 loadEarlier={false}
@@ -4327,8 +4281,7 @@ ContactsListBox.propTypes = {
     contactsFilter  : PropTypes.string,
     periodFilter    : PropTypes.string,
     defaultDomain   : PropTypes.string,
-    saveContact     : PropTypes.func,
-    myContacts      : PropTypes.object,
+    allContacts      : PropTypes.array,
     messages        : PropTypes.object,
     getMessages     : PropTypes.func,
     sendMessage     : PropTypes.func,
@@ -4383,7 +4336,8 @@ ContactsListBox.propTypes = {
 	isAudioRecording: PropTypes.bool,
 	recordingFile: PropTypes.string,
 	sendAudioFile: PropTypes.func,
-	insets: PropTypes.object
+	insets: PropTypes.object,
+	appState: PropTypes.string
 };
 
 

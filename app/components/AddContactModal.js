@@ -9,7 +9,7 @@ import styles from '../assets/styles/ContentStyles';
 const AddContactModal = ({
   show,
   close,
-  saveContact,
+  saveContactByUser,
   defaultDomain,
   displayName: propDisplayName,
   uri: propUri,
@@ -26,14 +26,14 @@ const AddContactModal = ({
   }, [propUri, propDisplayName, propOrg, show]);
 
   const handleSave = () => {
-    const contact = {uri: uri, 
+    const contact = {uri: uri,
                      displayName: displayName,
                      organization: organization,
                      email: ''
                      }
     console.log('Add contact', contact);
   
-    saveContact(contact);
+    saveContactByUser(contact);
     close();
   };
 
@@ -124,7 +124,7 @@ const AddContactModal = ({
 AddContactModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
-  saveContact: PropTypes.func,
+  saveContactByUser: PropTypes.func,
   defaultDomain: PropTypes.string,
   displayName: PropTypes.string,
   uri: PropTypes.string,

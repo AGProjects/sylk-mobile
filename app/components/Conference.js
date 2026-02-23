@@ -407,8 +407,8 @@ class Conference extends React.Component {
                         reconnectingCall={this.state.reconnectingCall}
                         initialParticipants={this.props.participantsToInvite}
                         terminated={this.userHangup}
-                        myContacts = {this.props.myContacts}
-                        lookupContacts = {this.props.lookupContacts}
+                        allContacts = {this.props.allContacts}
+                        lookupContact = {this.props.lookupContact}
                         goBackFunc={this.props.goBackFunc}
                         inviteToConferenceFunc={this.props.inviteToConferenceFunc}
                         selectedContacts={this.props.selectedContacts}
@@ -494,8 +494,8 @@ Conference.propTypes = {
     saveConference          : PropTypes.func,
     reconnectingCall        : PropTypes.bool,
     favoriteUris            : PropTypes.array,
-    myContacts              : PropTypes.object,
-    lookupContacts          : PropTypes.func,
+    allContacts             : PropTypes.array,
+    lookupContact           : PropTypes.func,
     goBackFunc              : PropTypes.func,
     inviteToConferenceFunc  : PropTypes.func,
     selectedContacts        : PropTypes.array,

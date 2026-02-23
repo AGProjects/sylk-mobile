@@ -1276,36 +1276,19 @@ class ConferenceBox extends Component {
 
     lookupContact(uri, displayName) {
         let photo;
-        let username =  uri.split('@')[0];
+        let username = uri.split('@')[0];
+        
+        if (!displayName) {        
+			displayName = username;
+		}
 
-        if (this.props.myContacts.hasOwnProperty(uri) && this.props.myContacts[uri].name) {
-            displayName = this.props.myContacts[uri].name;
-        } else if (this.props.contacts) {
-            let username = uri.split('@')[0];
-            let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
-
-            if (isPhoneNumber) {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', username);
-            } else {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', uri);
-            }
-
-            if (contact_obj) {
-                displayName = contact_obj.displayName;
-                photo = contact_obj.photo;
-                if (isPhoneNumber) {
-                    uri = username;
-                }
-            } else {
-                if (isPhoneNumber) {
-                    uri = username;
-                    displayName = toTitleCase(username);
-                }
-            }
+        let contact = this.props.lookupContact(uri);
+        if (contact) {
+			displayName = contact.name;
         }
 
-        const c = {photo: photo, displayName: displayName || toTitleCase(username)};
-        this.foundContacts.set(uri, c)
+        const c = {photo: photo, displayName: toTitleCase(displayName)};
+        this.foundContacts.set(uri, c);
     }
 
      onParticipantJoined(p) {
@@ -3383,8 +3366,8 @@ ConferenceBox.propTypes = {
     audioOnly           : PropTypes.bool,
     initialParticipants : PropTypes.array,
     terminated          : PropTypes.bool,
-    myContacts          : PropTypes.object,
-    lookupContacts      : PropTypes.func,
+    allContacts         : PropTypes.array,
+    lookupContact       : PropTypes.func,
     goBackFunc          : PropTypes.func,
     inviteToConferenceFunc: PropTypes.func,
     selectedContacts    : PropTypes.array,

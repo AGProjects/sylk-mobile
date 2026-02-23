@@ -917,7 +917,6 @@ class NavigationBar extends Component {
                     uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
                     displayName={this.state.displayName}
                     hasMessages={this.hasMessages}
-                    deleteContactFunc={this.props.removeContact}
                     deleteMessages={this.props.deleteMessages}
                     filteredMessageIds={this.state.filteredMessageIds}
                     selectedContact={this.state.selectedContact}
@@ -941,7 +940,7 @@ class NavigationBar extends Component {
                 <AddContactModal
                     show={this.state.showAddContactModal}
                     close={this.toggleAddContactModal}
-                    saveContact={this.props.saveContact}
+                    saveContactByUser={this.props.saveContactByUser}
                     defaultDomain={this.props.defaultDomain}
                 />
 
@@ -954,7 +953,7 @@ class NavigationBar extends Component {
                     organization={this.state.organization}
                     email={this.state.selectedContact ? this.state.selectedContact.email : this.state.email}
                     myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
-                    saveContact={this.props.saveContact}
+                    saveContactByUser={this.props.saveContactByUser}
                     deletePublicKey={this.props.deletePublicKey}
                     publicKey={this.state.showPublicKey ? this.state.publicKey: null}
                     myuuid={this.state.myuuid}
@@ -1055,9 +1054,8 @@ NavigationBar.propTypes = {
     favoriteUris       : PropTypes.array,
     startCall          : PropTypes.func,
     startConference    : PropTypes.func,
-    saveContact        : PropTypes.func,
+    saveContactByUser        : PropTypes.func,
     addContact         : PropTypes.func,
-    removeContact      : PropTypes.func,
     deletePublicKey    : PropTypes.func,
     sendPublicKey      : PropTypes.func,
     messages           : PropTypes.object,

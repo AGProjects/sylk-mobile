@@ -38,7 +38,6 @@ class ReadyBox extends Component {
 
         this.state = {
             targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
-            contacts: this.props.contacts,
             selectedContact: this.props.selectedContact,
             showConferenceModal: this.props.showConferenceModal,
             sticky: false,
@@ -65,7 +64,7 @@ class ReadyBox extends Component {
             fontScale: this.props.fontScale,
             historyFilter: this.props.historyFilter,
             isTablet: this.props.isTablet,
-            myContacts: this.props.myContacts,
+            allContacts: this.props.allContacts,
             showQRCodeScanner: this.props.showQRCodeScanner,
             keys: this.props.keys,
             isTexting: this.props.isTexting,
@@ -93,7 +92,8 @@ class ReadyBox extends Component {
 			resizeContent: this.props.resizeContent,
 			sharedContent: this.props.sharedContent,
 			autoAnswerMode: this.props.autoAnswerMode,
-			hasAutoAnswerContacts: this.props.hasAutoAnswerContacts
+			hasAutoAnswerContacts: this.props.hasAutoAnswerContacts,
+			appState: this.props.appState
         };
 
         this.ended = false;
@@ -154,7 +154,7 @@ class ReadyBox extends Component {
             this.setState({'contactsFilter': null});
         }
 
-        if (Object.keys(this.state.myContacts).length === 0 && nextProps.myContacts && Object.keys(nextProps.myContacts).length > 0) {
+        if (this.state.allContacts.length === 0 && nextProps.allContacts && nextProps.allContacts.length > 0) {
             this.bounceNavigation();
         }
         
@@ -176,7 +176,7 @@ class ReadyBox extends Component {
         }
 
         this.setState({myInvitedParties: nextProps.myInvitedParties,
-                        myContacts: nextProps.myContacts,
+                        allContacts: nextProps.allContacts,
                         messages: nextProps.messages,
                         historyFilter: nextProps.historyFilter,
                         myDisplayName: nextProps.myDisplayName,
@@ -187,7 +187,6 @@ class ReadyBox extends Component {
                         isTyping: nextProps.isTyping,
                         navigationItems: nextProps.navigationItems,
                         messageZoomFactor: nextProps.messageZoomFactor,
-                        contacts: nextProps.contacts,
                         inviteContacts: nextProps.inviteContacts,
                         shareToContacts: nextProps.shareToContacts,
                         selectedContacts: nextProps.selectedContacts,
@@ -216,7 +215,8 @@ class ReadyBox extends Component {
 					    resizeContent: nextProps.resizeContent,
 					    sharedContent: nextProps.sharedContent,
 					    autoAnswerMode: nextProps.autoAnswerMode,
-					    hasAutoAnswerContacts: nextProps.hasAutoAnswerContacts
+					    hasAutoAnswerContacts: nextProps.hasAutoAnswerContacts,
+					    appState: nextProps.appState
                         });
     }
 
@@ -417,11 +417,10 @@ class ReadyBox extends Component {
     }
 
    get showCategoryBar() {
-   
 	   if (this.state.selectedContact) {
 		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
 	   } else {
-		   return this.state.searchContacts && this.state.myContacts && Object.keys(this.state.myContacts).length > 10;
+		   return this.state.searchContacts && this.state.allContacts.length > 10;
 	   }
    }
 
@@ -1842,7 +1841,7 @@ class ReadyBox extends Component {
                      />
                       :
 					<ContactsListBox
-						contacts={this.state.contacts}
+						allContacts={this.state.allContacts}
 						targetUri={this.state.targetUri}
 						fontScale = {this.state.fontScale}
 						orientation={this.props.orientation}
@@ -1867,8 +1866,7 @@ class ReadyBox extends Component {
 						contactsFilter={this.state.contactsFilter}
 						periodFilter={this.state.historyPeriodFilter}
 						defaultDomain={this.props.defaultDomain}
-						saveContact={this.props.saveContact}
-						myContacts = {this.state.myContacts}
+						allContacts = {this.state.allContacts}
 						messages = {this.state.messages}
 						sendMessage = {this.props.sendMessage}
 						reSendMessage = {this.props.reSendMessage}
@@ -1931,6 +1929,7 @@ class ReadyBox extends Component {
 						recordingFile = {this.state.recordingFile}
 						sendAudioFile = {this.sendAudioFile}
 						insets = {this.state.insets}
+						appState = {this.state.appState}
 					/>
 					}
 
@@ -1990,7 +1989,6 @@ ReadyBox.propTypes = {
     callHistoryUrl  : PropTypes.string,
     startCall       : PropTypes.func.isRequired,
     startConference : PropTypes.func.isRequired,
-    contacts        : PropTypes.array,
     orientation     : PropTypes.string,
     isTablet        : PropTypes.bool,
     isLandscape     : PropTypes.bool,
@@ -2007,7 +2005,6 @@ ReadyBox.propTypes = {
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     defaultDomain   : PropTypes.string,
-    saveContact     : PropTypes.func,
     selectContact   : PropTypes.func,
     lookupContacts  : PropTypes.func,
     call            : PropTypes.object,
@@ -2043,7 +2040,7 @@ ReadyBox.propTypes = {
     fontScale: PropTypes.number,
     inviteToConferenceFunc: PropTypes.func,
     toggleQRCodeScannerFunc: PropTypes.func,
-    myContacts: PropTypes.object,
+    allContacts: PropTypes.array,
     keys            : PropTypes.object,
     downloadFile    : PropTypes.func,
     uploadFile: PropTypes.func,
@@ -2085,7 +2082,8 @@ ReadyBox.propTypes = {
 	resizeContent: PropTypes.bool,
 	sharedContent: PropTypes.array,
 	autoAnswerMode: PropTypes.bool,
-	hasAutoAnswerContacts: PropTypes.bool
+	hasAutoAnswerContacts: PropTypes.bool,
+	appState: PropTypes.string
 };
 
 export default ReadyBox;

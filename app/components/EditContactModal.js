@@ -14,7 +14,7 @@ import styles from '../assets/styles/ContentStyles';
 const EditContactModal = ({
   show,
   close,
-  saveContact,
+  saveContactByUser,
   uri: propUri,
   displayName: propDisplayName,
   email: propEmail,
@@ -104,7 +104,7 @@ const getTotalPrettyStorage = (entity) => {
       email: email.toLowerCase(),
       tags
     };
-    saveContact(contact);
+    saveContactByUser(contact, selectedContact);
     close();
   };
 
@@ -457,7 +457,7 @@ const getTotalPrettyStorage = (entity) => {
 EditContactModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
-  saveContact: PropTypes.func,
+  saveContactByUser: PropTypes.func,
   uri: PropTypes.string,
   displayName: PropTypes.string,
   email: PropTypes.string,

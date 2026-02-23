@@ -55,12 +55,12 @@ class Call extends Component {
             this.props.call.on('incomingMessage', this.incomingMessage);
             remoteUri = this.props.call.remoteIdentity.uri;
             callState = this.props.call.state;
-            remoteDisplayName = this.props.call.remoteIdentity.displayName || this.props.call.remoteIdentity.uri;
+            remoteDisplayName = this.props.callContact?.name || this.props.call?.remoteIdentity?.displayName || this.props.call?.remoteIdentity.uri;
             direction = this.props.call.direction;
             callUUID = this.props.call.id;
         } else {
             remoteUri = this.props.targetUri;
-            remoteDisplayName = this.props.targetUri;
+            remoteDisplayName = this.props.callContact?.name || this.props.targetUri;
             callUUID = this.props.callUUID;
             direction = callUUID ? 'outgoing' : 'incoming';
         }
@@ -137,6 +137,21 @@ class Call extends Component {
         console.log('Session message', message.id, message.contentType, 'received');
     }
 
+	componentDidUpdate(prevProps, prevState) {
+	  if (prevState.callContact !== this.state.callContact) {
+            this.lookupContact();
+      }
+
+	  if (prevState.call !== this.state.call) {
+            this.lookupContact();
+      }
+
+	  if (prevState.remoteDisplayName !== this.state.remoteDisplayName) {
+	        console.log('remoteDisplayName has changed', this.state.remoteDisplayName);
+      }
+
+    }
+
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
         // Needed for switching to incoming call while in a call
@@ -165,7 +180,6 @@ class Call extends Component {
                            remoteDisplayName: nextProps.call.remoteIdentity.displayName
                            });
 
-            this.lookupContact();
         } else {
             if (nextProps.callUUID !== null && this.state.callUUID !== nextProps.callUUID) {
                 this.setState({'callUUID': nextProps.callUUID,
@@ -251,29 +265,26 @@ class Call extends Component {
     }
 
     lookupContact() {
-        // TODO this must lookup in myContacts
-        let photo = null;
-        let remoteUri = this.state.remoteUri || '';
-        let remoteDisplayName = this.state.remoteDisplayName || '';
-
-        if (!remoteUri) {
+        if (!this.state.remoteUri) {
             return;
         }
 
-        if (remoteUri.indexOf('3333@') > -1) {
-            remoteDisplayName = 'Video Test';
-        } else if (remoteUri.indexOf('4444@') > -1) {
-            remoteDisplayName = 'Echo Test';
-        } else if (this.props.myContacts.hasOwnProperty(remoteUri) && this.props.myContacts[remoteUri].name) {
-            remoteDisplayName = this.props.myContacts[remoteUri].name;
-        } else if (this.props.contacts) {
+        let photo = null;
+        let remoteUri = this.state.remoteUri;
+        let remoteDisplayName = this.state.remoteDisplayName || '';
+
+        if (this.props.callContact && this.props.callContact.name != this.state.remoteUri) {
+            // Sylk contacts
+            remoteDisplayName = this.props.callContact.name;
+        } else if (this.props.ABContacts) {
+            // AB contacts
             let username = remoteUri.split('@')[0];
             let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
 
             if (isPhoneNumber) {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', username);
+                var contact_obj = this.findObjectByKey(this.props.ABContacts, 'uri', username);
             } else {
-                var contact_obj = this.findObjectByKey(this.props.contacts, 'uri', remoteUri);
+                var contact_obj = this.findObjectByKey(this.props.ABContacts, 'uri', remoteUri);
             }
 
             if (contact_obj) {
@@ -720,13 +731,12 @@ Call.propTypes = {
     toggleSpeakerPhone      : PropTypes.func,
     speakerPhoneEnabled     : PropTypes.bool,
     callUUID                : PropTypes.string,
-    contacts                : PropTypes.array,
+    ABContacts              : PropTypes.array,
     intercomDtmfTone        : PropTypes.string,
     isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
-    myContacts              : PropTypes.object,
     showLogs                : PropTypes.func,
     goBackFunc              : PropTypes.func,
     callState               : PropTypes.object,

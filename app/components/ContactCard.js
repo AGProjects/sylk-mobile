@@ -134,18 +134,16 @@ const styles = StyleSheet.create({
   },
 
   badgeContainer: {
-    marginRight: 4,
+    marginRight: 10,
     alignItems: 'center',
     minWidth: 20,
   },
 
-  badgeTextStyle: { fontSize: 10 },
-
+  badgeTextStyle: { fontSize: 9},
   selectedContact: { marginTop: 15 },
   participants: { marginTop: 10 },
   participant: { fontSize: 14 },
   participantView: { marginBottom: 3 },
-
   recordingLabel: { marginTop: 7 },
 });
 
@@ -166,7 +164,7 @@ const darkStyles = StyleSheet.create({
     color: '#999999',
   },
   badgeContainer: {
-    backgroundColor: '#333333',
+    backgroundColor: '#333333',    
   },
 });
 

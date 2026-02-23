@@ -157,10 +157,12 @@ class DeleteHistoryModal extends Component {
                 outgoing: this.state.outgoing,
                 deleteContact: this.state.deleteContact,
                 simulate: this.state.simulate,
-                wipe: this.state.myself && !this.state.selectedContact
+                wipe: this.state.myself && !this.state.selectedContact,
+                selectedContact: this.state.selectedContact
             };
     
             this.props.deleteMessages(this.state.uri, this.state.remoteDelete, filter);
+            
             this.setState({ confirm: false, remoteDelete: false, deleteContact: false });
             this.props.close();
         } else if (this.state.confirm) {
@@ -178,7 +180,8 @@ class DeleteHistoryModal extends Component {
 
             const filter = {
                 deleteContact: true,
-                simulate: this.state.simulate
+                simulate: this.state.simulate,
+                selectedContact: this.state.selectedContact
             };
 
             this.props.deleteMessages(this.state.uri, true, filter);
@@ -455,7 +458,6 @@ DeleteHistoryModal.propTypes = {
     displayName: PropTypes.string,
     deleteMessages: PropTypes.func,
     deleteContact: PropTypes.bool,
-    deleteContactFunc: PropTypes.func,
     hasMessages: PropTypes.bool,
     myself: PropTypes.bool,
     selectedContact: PropTypes.object,
