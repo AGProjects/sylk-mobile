@@ -264,18 +264,31 @@ public class IncomingCallService extends Service {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				//Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 
         String action = intent.getAction();
         String event = intent.getStringExtra("event");
         String callId = intent.getStringExtra("session-id");
-        String from_uri = intent.getStringExtra("from_uri");
         String to_uri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
-        String displayName = intent.getStringExtra("from_display_name");
+        String from_uri = intent.getStringExtra("from_uri");
+        String remoteDisplayName = intent.getStringExtra("from_display_name");
+        String displayName = intent.getStringExtra("displayName");
+
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
+
+		// Determine the caller name
+		String callerName;
+		
+		if (displayName != null && !displayName.equalsIgnoreCase(from_uri)) {
+			displayName = displayName;
+		} else if (remoteDisplayName != null && !remoteDisplayName.equalsIgnoreCase(from_uri)) {
+			displayName = remoteDisplayName;
+		} else {
+			displayName = from_uri;
+		}
 
 		int notificationId = Math.abs(callId.hashCode());
 
@@ -324,7 +337,7 @@ public class IncomingCallService extends Service {
 			Log.d(LOG_TAG, "Starting app for accepted call " + callId + " from " + from_uri);
 			stopRingtone();
 			String acceptedMediaType = "ACTION_ACCEPT_AUDIO".equals(action) ? "audio" : "video";
-			handleAcceptCall(callId, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
+			handleAcceptCall(callId, displayName, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
 			return START_NOT_STICKY;
 		}
 
@@ -367,13 +380,11 @@ public class IncomingCallService extends Service {
 	) {
 
 		String callerName = from_uri;
-        String title = mediaType + " call from ";
+        String title = mediaType + " call from " + from_uri;
 		
 		if (displayName != null) {
 			callerName = displayName;
 		}
-
-		title = title + callerName;
 		
 		String acceptAction = "ACTION_ACCEPT_AUDIO";
 		
@@ -517,7 +528,7 @@ public class IncomingCallService extends Service {
 		startForeground(notificationId, notification);
 	}
 
-	private void handleAcceptCall(String callId, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
+	private void handleAcceptCall(String callId, String displayName, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
 		stopRingtone();
 
 		if (callId == null) return;
@@ -525,6 +536,7 @@ public class IncomingCallService extends Service {
 		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked + " event " + event );
 		Log.d(LOG_TAG, "handleAcceptCall from_uri: " + from_uri);
 		Log.d(LOG_TAG, "handleAcceptCall to_uri: " + to_uri);
+		Log.d(LOG_TAG, "handleAcceptCall displayName: " + displayName);
 		Log.d(LOG_TAG, "handleAcceptCall mediaType: " + mediaType);
 		
 		String action = "ACTION_ACCEPT_AUDIO";
@@ -552,6 +564,7 @@ public class IncomingCallService extends Service {
 			launchIntent.putExtra("to_uri", to_uri);
 			launchIntent.putExtra("media-type", mediaType);
 			launchIntent.putExtra("event", event);
+			launchIntent.putExtra("displayName", displayName);
 			launchIntent.putExtra("phoneLocked", phoneLocked);
 			startActivity(launchIntent);
 			Log.d(LOG_TAG, "RN app launched for call: " + callId);
@@ -627,6 +640,7 @@ public class IncomingCallService extends Service {
 	
 					handleAcceptCall(
 							callId,
+							displayName,
 							from_uri,
 							to_uri,
 							mediaType,

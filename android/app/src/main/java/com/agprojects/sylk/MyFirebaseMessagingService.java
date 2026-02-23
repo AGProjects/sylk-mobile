@@ -44,6 +44,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Collections;
 
+import com.agprojects.sylk.Contact;
 
 public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
@@ -144,6 +145,85 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	
 		NotificationManagerCompat manager = NotificationManagerCompat.from(this);
 		manager.notify((int) System.currentTimeMillis(), builder.build()); // unique ID
+	}
+
+	private Contact getContact(String account, String uri) {
+	
+		Contact contact = null;
+	
+		try {
+			File dbFile = getApplicationContext().getDatabasePath("sylk.db");
+			if (!dbFile.exists()) {
+				Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
+				return null;
+			}
+	
+			SQLiteDatabase db = SQLiteDatabase.openDatabase(
+					dbFile.getPath(),
+					null,
+					SQLiteDatabase.OPEN_READONLY
+			);
+	
+			String sql =
+					"SELECT name, tags FROM contacts " +
+					"WHERE account = ? AND (" +
+					"uri = ? OR " +
+					"uris = ? OR " +
+					"uris LIKE ? OR " +
+					"uris LIKE ? OR " +
+					"uris LIKE ?" +
+					")";
+	
+			String likeStart = uri + ",%";
+			String likeMiddle = "%," + uri + ",%";
+			String likeEnd = "%," + uri;
+	
+			Cursor cursor = db.rawQuery(
+					sql,
+					new String[]{
+							account,
+							uri,
+							uri,
+							likeStart,
+							likeMiddle,
+							likeEnd
+					}
+			);
+	
+			if (cursor != null && cursor.moveToFirst()) {
+	
+				String name = cursor.getString(
+						cursor.getColumnIndexOrThrow("name")
+				);
+	
+				String tagsRaw = cursor.getString(
+						cursor.getColumnIndexOrThrow("tags")
+				);
+	
+				List<String> tagsList = new ArrayList<>();
+	
+				if (tagsRaw != null && !tagsRaw.trim().isEmpty()) {
+					String[] raw = tagsRaw.split(",");
+					for (String t : raw) {
+						String clean = t.trim().toLowerCase();
+						if (!clean.isEmpty()) {
+							tagsList.add(clean);
+						}
+					}
+				}
+	
+				contact = new Contact(name, tagsList);
+	
+				cursor.close();
+			}
+	
+			db.close();
+	
+		} catch (Exception e) {
+			Log.e(LOG_TAG, "Failed to get contact", e);
+		}
+	
+		return contact;
 	}
 
 	private List<String> getTagsForContact(String account, String uri) {
@@ -366,11 +446,21 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		return prefs.getInt("unread_chat_" + uri, 0);
 	}
 
-    public static void resetUnreadForContact(Context context, String uri) {
-        SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+	public static void resetUnreadForContact(Context context, String uri) {
+		SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
 		Log.d("[SYLK]", "resetUnreadForContact " + uri);
-        prefs.edit().putInt("unread_chat_" + uri, 0).apply();
-    }
+	
+		// Reset unread counter
+		prefs.edit().putInt("unread_chat_" + uri, 0).apply();
+	
+		// Cancel notification
+		int notificationId = uri.hashCode();
+		NotificationManagerCompat.from(context).cancel(notificationId);
+	
+		// Remove dynamic shortcut
+		String shortcutId = "chat_" + uri.replaceAll("[^a-zA-Z0-9_]", "_");
+		ShortcutManagerCompat.removeDynamicShortcuts(context, Collections.singletonList(shortcutId));
+	}
 	
 	private int getTotalUnreadCount() {
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
@@ -486,7 +576,20 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			Log.d(LOG_TAG, event + " " + callId + " from " + fromUri + " to " + lookupAccount);
 
-            List<String> tags = getTagsForContact(lookupAccount, fromUri);
+			List<String> tags = new ArrayList<>();
+            Contact contact = getContact(lookupAccount, fromUri);
+			String displayName = fromUri;
+
+			if (contact != null) {
+				displayName = contact.getDisplayName();
+                tags = contact.getTags();
+			
+				Log.d(LOG_TAG, "Display name: " + displayName);
+				Log.d(LOG_TAG, "Tags: " + tags);
+						
+			} else {
+				Log.d(LOG_TAG, "Unknown contact");
+			}
 
 			if (isBlocked(tags)) {
 				IncomingCallService.handledCalls.add(callId);
@@ -524,6 +627,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
                 serviceIntent.putExtra(entry.getKey(), entry.getValue());
             }
             
+            serviceIntent.putExtra("displayName", displayName);
             serviceIntent.putExtra("phoneLocked", phoneLocked);
 			Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
 			
@@ -713,7 +817,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 							.setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
 			
 			// ----- SEND -----
-			int nid = (int) System.currentTimeMillis();
+			int nid = fromUri.hashCode();
 			NotificationManagerCompat.from(this).notify(nid, builder.build());
 
         } else {
