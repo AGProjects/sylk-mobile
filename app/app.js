@@ -420,7 +420,6 @@ class Sylk extends Component {
             refreshFavorites: false,
             myPhoneNumber: '',
             favoriteUris: [],
-            autoanswerUris: [],
             blockedUris: [],
             missedCalls: [],
             initialUrl: null,
@@ -1850,7 +1849,6 @@ class Sylk extends Component {
 
         let blockedUris = [];
         let favoriteUris = [];
-        let autoanswerUris = [];
         let missedCalls = [];
         let myInvitedParties = {};
         let localTime;
@@ -1981,10 +1979,6 @@ class Sylk extends Component {
                         this.saveSylkContact(contact.uri, contact, 'AddressBook');
                     }
 
-                    if (contact.autoanswer) {
-                        autoanswerUris.push(contact.uri);
-                    }
-
                     allContacts.push(contact);
 
                     //console.log('Load contact', contact.uri, contact.tags, contact.properties);
@@ -2017,7 +2011,6 @@ class Sylk extends Component {
                 this.setState({allContacts: allContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
-                               autoanswerUris: autoanswerUris,
                                myInvitedParties: myInvitedParties,
                                blockedUris: blockedUris
                                });
@@ -2180,11 +2173,15 @@ class Sylk extends Component {
 		
 	     if (this.state.selectedContact != prevState.selectedContact) {
 	         if (this.state.selectedContact) {
+
 	             if (prevState.selectedContact && prevState.selectedContact.uri == this.state.selectedContact.uri) {
 					 console.log('selectedContact is the same', this.state.selectedContact?.id);
+				 console.log(' -- tags', this.state.selectedContact.tags);
+
 	                 // no change
 	             } else {
-					 console.log('selectedContact changed', this.state.selectedContact?.id);
+					 //console.log('selectedContact changed', this.state.selectedContact?.id);
+				     //console.log(' -- tags', this.state.selectedContact.tags);
 
 					 if (Platform.OS === 'android') {
 						 SylkBridge.setActiveChat(this.state.selectedContact.uri);
@@ -3758,33 +3755,43 @@ class Sylk extends Component {
     }
 
     notifyIncomingMessage(message) {
+        // when app is active, message was received from websocket
         const from = message.sender.uri;
+
 		if (this.state.blockedUris.indexOf(from) > -1) { 
 			utils.timestampedLog('Reject message from blocked URI', from);
 			return;
 		}
+		
+		const contact = this.lookupContact(from);
+		const display_name = contact.name || from;
 
-        const userInfo = {'from_uri': from,
-                          'to_uri': this.state.accountId,       
-                          'event': 'message',
-                          'id': message.id
-                          };
+        const userInfo = {'data': 
+							  {
+								  'event': 'message',
+								  'from_uri': from,
+								  'display_name': contact.name || from,
+								  'to_uri': this.state.accountId,       
+								  'message_id': message.id,
+								  'origin': 'reactNative'
+							  }
+                         };
                
         console.log('notifyIncomingMessage', from);
 
         if (!this.state.selectedContact) {
 			if (Platform.OS === 'ios') {
-				this.sendLocalNotification('New message', 'From ' + from, userInfo);
+				this.sendLocalNotification('New message', 'From ' + display_name, userInfo);
 			} else {
-				this._notificationCenter.postSystemNotification('New message from ' + from);
+				this._notificationCenter.postSystemNotification('New message from ' + display_name);
             }
 
         } else {
 			if (this.state.selectedContact.uri !== from) {
 				if (Platform.OS === 'ios') {
-					this.sendLocalNotification('New message', 'From ' + from, userInfo);
+					this.sendLocalNotification('New message', 'From ' + display_name, userInfo);
 				} else {
-					this._notificationCenter.postSystemNotification('New message from ' + from);
+					this._notificationCenter.postSystemNotification('New message from ' + display_name);
 				}
 			} else {
 				this.playMessageSound('incoming');
@@ -3809,20 +3816,27 @@ class Sylk extends Component {
 		}
 
 		const eventType = data.event;
-		console.log('iOS remote notification', eventType);
 	
 		if (eventType !== 'message') {
+			console.log('Unsupported remote notification', eventType);
 			return;
 		}
 
 		const content = data.content;
 		const from = data.from_uri;
 		const to = data.to_uri;
+		
+		const contact = this.lookupContact(from);
+		
+		const displayName = contact.name || from;
+		data.display_name = displayName;
+
+		console.log('Remote notification message', displayName);
 
 		const now = Date.now();
 		this.outgoingNotifications[from] = { timestamp: now };
 	
-		console.log('Received push', eventType, 'from', from, 'to', to);
+		console.log('Received push message', 'from', displayName, 'to', to);
 			
         if (this.state.appState != 'active') {
 			try {
@@ -3834,20 +3848,21 @@ class Sylk extends Component {
 		} else {
 		    if (this.state.selectedContact) {
 		        if (this.state.selectedContact.uri != from) {
-					this.sendLocalNotification('New message', 'From ' + from, data);
+					this.sendLocalNotification('New message', 'From ' + displayName, data);
 				} else {
 	                console.log('Nothing to do');
    				}
 	        } else {
-				this.sendLocalNotification('New message', 'From ' + from, data);
+				this.sendLocalNotification('New message', 'From ' + displayName, data);
 	        }
 		}
     };
 
 	sendLocalNotification(title, body, userInfo) {
-		console.log('sendLocalNotification');
+		console.log('sendLocalNotification', userInfo);
 	
 		const from = userInfo.from_uri;
+
 		if (!from) {
 			return;
 		}
@@ -3869,16 +3884,33 @@ class Sylk extends Component {
 		// Update timestamp for this sender
 		this.outgoingNotifications[from] = { timestamp: now };
 	
-		// Deliver local notification
+		// Deliver local notification when app is active, but in the background
 		PushNotificationIOS.presentLocalNotification({
 			alertTitle: title,
 			alertBody: body,
 			userInfo: userInfo,
-			soundName: ''
+			soundName: 'default'
 		});
 	}
 
+    updateTotalUread() {
+       let total_unread = 0;
+
+	   for (const contact of this.state.allContacts) {		
+            total_unread = total_unread + contact.unread.length;
+       };
+
+       console.log('Total unread messages', total_unread)
+
+       if (Platform.OS === 'ios') {
+           PushNotification.setApplicationIconBadgeNumber(total_unread);
+       } else {
+            ShortcutBadge.setCount(total_unread);
+       }
+    }
+    
     onLocalNotification(notification) {
+        // when touch push notification in iOS
 		const notification_data = notification.getData(); 
 		const data = notification_data.data ? notification_data.data : notification_data;
         console.log('onLocalNotification', data);
@@ -4325,9 +4357,6 @@ class Sylk extends Component {
                 clearTimeout(this.registrationFailureTimer);
                 this.registrationFailureTimer = null;
             }
-
-			this._sendPushToken();
-
 
             /*
             setTimeout(() => {
@@ -5464,6 +5493,7 @@ class Sylk extends Component {
                 //utils.timestampedLog('Web socket account', account.id, 'is ready, registering...');
 
                 this.setState({account: account});
+				this._sendPushToken();
                 account.register();
 
             } else {
@@ -6298,9 +6328,15 @@ class Sylk extends Component {
         const callUUID = notificationContent['session-id'];
         const to = notificationContent['to_uri'];
         const from = notificationContent['from_uri'];
-        const displayName = notificationContent['from_display_name'];
+        let displayName = notificationContent['from_display_name'];
         const outgoingMedia = {audio: true, video: notificationContent['media-type'] === 'video'};
         const mediaType = notificationContent['media-type'] || 'audio';
+        
+        const contact = this.lookupContact(from);
+ 
+        if (contact) {
+			displayName = contact.name;
+        }
 
           /*
            * Local Notification Payload
@@ -7025,7 +7061,8 @@ class Sylk extends Component {
     async saveSylkContact(uri, contact, origin=null) {
         await this.waitForContactsLoaded();
     
-        console.log('saveSylkContact', contact?.timestamp, uri, 'by', origin);
+        console.log('saveSylkContact', contact?.id, uri, 'by', origin);
+        //console.log('saveSylkContact', contact);
 
         if (!uri) {
             console.error('No uri given');
@@ -7059,10 +7096,13 @@ class Sylk extends Component {
 		
 		contact.tags = tags;
 		
+		//console.log('contact', contact);
+		//console.log('contact localProperties', localProperties);
+		
 	    let selectedContact = this.state.selectedContact;
 
         if (selectedContact && selectedContact.id === contact.id) {
-            this.setState({selectedContact: contact});
+			this.setState({selectedContact: contact});
         }
 
 		let unreadCount = contact?.unread?.length;
@@ -7081,10 +7121,8 @@ class Sylk extends Component {
 			UnreadModule.setUnreadForContact(uri, unreadCount);
 		}
 
-        let savedContact = this.lookupContact(contact.id);
-
-        if (savedContact) {
-            //console.log('This contact already exists', contact.id);
+        if (contact.id) {
+            console.log('This contact already exists', contact.id);
             this.updateSylkContact(contact, origin);
             return;
         }
@@ -7127,6 +7165,7 @@ class Sylk extends Component {
         await this.ExecuteQuery("INSERT INTO contacts (contact_id, account, uri, uris, email, photo, timestamp, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, properties, local_properties) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             if (result.rowsAffected === 1) {
                 console.log('SQL inserted contact', contact.id, 'by', origin);
+
 				if (origin == 'editContact') {
 					this.replicateContact(contact);
 				}
@@ -11295,7 +11334,6 @@ class Sylk extends Component {
 				messages: renderMessages
 			});
 		}
-
     }
 
 	handleMessageMetadata(uri, content, author) {
@@ -11319,7 +11357,7 @@ class Sylk extends Component {
 				const contact = this.lookupContact(metadataContent.uri);
 				if (contact?.localProperties?.autoanswer) {
 					console.log('Disable autoanswer on my device', this.deviceId);
-					this.toggleAutoAnswer(metadataContent.uri, false);
+					this.toggleAutoAnswer(contact, false);
 				}
 			}
 			return;
@@ -12968,12 +13006,11 @@ class Sylk extends Component {
 
     }
 
-    toggleFavorite(uri) {
-        //console.log('toggleFavorite', uri);
+    toggleFavorite(contact) {
+        //console.log('toggleFavorite', contact.id);
         let favoriteUris = this.state.favoriteUris;
         let favorite;
-        
-        let contact = this.lookupContact(uri, true);
+        let uri = contact.uri;
 
         idx = contact.tags.indexOf('favorite');
         if (idx > -1) {
@@ -13000,14 +13037,9 @@ class Sylk extends Component {
         this.setState({favoriteUris: favoriteUris});
     }
 
-    toggleAutoAnswer(uri, replicate=true) {
-        console.log('toggleAutoAnswer', uri);
-
-        let autoanswerUris = this.state.autoanswerUris;
-        let contact = this.lookupContact(uri, true);
-
+    toggleAutoAnswer(contact, replicate=true) {
+        //console.log('-- ToggleAutoAnswer', contact.id);
 		contact.localProperties.autoanswer = !contact.localProperties.autoanswer;
-		
 		const autoanswer = contact.localProperties.autoanswer;
 
         idx = contact.tags.indexOf('autoanswer');
@@ -13021,26 +13053,17 @@ class Sylk extends Component {
 			}
         }
         
-        this.saveSylkContact(uri, contact, 'toggleAutoAnswer');
-
-        let idx = autoanswerUris.indexOf(uri);
-        if (idx === -1 && autoanswer) {
-            autoanswerUris.push(uri);
-        } else if (idx > -1 && !autoanswer) {
-            autoanswerUris.splice(idx, 1);
-        }
-
-        this.setState({autoanswerUris: autoanswerUris});
+        this.saveSylkContact(contact.uri, contact, 'toggleAutoAnswer');
 
 		if (autoanswer && replicate) {
 			const mId = uuid.v4();
 			const timestamp = new Date();
-	
+			
 			const metadataContent = {
 									 action: 'autoanswer',
 									 value: autoanswer,
 									 timestamp: timestamp,
-									 uri: uri,
+									 uri: contact.uri,
 									 device: this.deviceId
 									 };
 		
@@ -13055,11 +13078,10 @@ class Sylk extends Component {
 		}
     }
 
-    toggleBlocked(uri) {
+    toggleBlocked(contact) {
         let blockedUris = this.state.blockedUris;
         let blocked = false;
-
-		let contact = this.lookupContact(uri, true);
+        let uri = contact.uri;
 
         idx = contact.tags.indexOf('blocked');
         if (idx > -1) {

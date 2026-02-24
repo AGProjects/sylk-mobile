@@ -2393,7 +2393,7 @@ class ContactsListBox extends Component {
 		}
 
 		if (prevState.replyMessages !== this.state.replyMessages) {
-			console.log('new replyMessages', JSON.stringify(this.state.replyMessages, null, 2));
+			//console.log('new replyMessages', JSON.stringify(this.state.replyMessages, null, 2));
 		}
 
 		if (prevState.renderMessages !== this.state.renderMessages) {

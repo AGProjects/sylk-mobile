@@ -290,13 +290,13 @@ class NavigationBar extends Component {
                 this.setState({showGenerateKeysModal: true});
                 break;
             case 'toggleFavorite':
-                this.props.toggleFavorite(this.state.selectedContact.uri);
+                this.props.toggleFavorite(this.state.selectedContact);
                 break;
             case 'toggleAutoAnswer':
-                this.props.toggleAutoAnswer(this.state.selectedContact.uri);
+                this.props.toggleAutoAnswer(this.state.selectedContact);
                 break;
             case 'toggleBlocked':
-                this.props.toggleBlocked(this.state.selectedContact.uri);
+                this.props.toggleBlocked(this.state.selectedContact);
                 break;
             case 'sendPublicKey':
                 this.props.sendPublicKey(this.state.selectedContact.uri);
@@ -340,6 +340,10 @@ class NavigationBar extends Component {
 	    if (prevState.menuVisible !== this.state.menuVisible && this.state.menuVisible) {
 		    Keyboard.dismiss();
 		}
+
+	    if (prevState.selectedContact !== this.state.selectedContact) {
+			//console.log('NB selectedContact changed', this.state.selectedContact);
+		}			
 	}
 
     toggleMute() {
@@ -517,7 +521,7 @@ class NavigationBar extends Component {
 
 		const isFavorite = this.state.selectedContact && tags && tags.indexOf('favorite') > -1;
 				
-        let favoriteTitle = isFavorite ? 'Unfavorite' : 'Favorite';
+        let favoriteTitle = isFavorite ? '✓ Favorite' : 'Favorite';
         let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
         let autoAnswerTitle = this.state.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
 		let autoAnswerModeTitle = this.state.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';

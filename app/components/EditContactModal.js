@@ -155,7 +155,7 @@ const getTotalPrettyStorage = (entity) => {
 
   if (!show) return null;
   let title = myself ? "My account" : 'Edit Contact';
-
+  
   if (publicKey) {
 	  title = 'Public key';
   }
