@@ -28,6 +28,7 @@
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTRootView.h>
 #import <AVFoundation/AVFoundation.h>
+#import "Contact.h"
 
 @interface AppDelegate () <UNUserNotificationCenterDelegate>
 @property (nonatomic, strong) NSMutableDictionary<NSString *, dispatch_source_t> *autoAnswerTimers;
@@ -163,7 +164,7 @@
         while ((file = [enumerator nextObject])) {
             if ([[file lastPathComponent] isEqualToString:dbName]) {
                 NSString *fullPath = [dir stringByAppendingPathComponent:file];
-                //NSLog(@"[DB Debug] Found sylk.db at: %@", fullPath);
+                NSLog(@"[DB Debug] Found sylk.db at: %@", fullPath);
                 found = YES;
                 break; // stop at first match
             }
@@ -202,8 +203,9 @@
     return nil;
 }
 
-- (NSArray<NSString *> * _Nullable)getTagsForContact:(NSString *)account uri:(NSString *)uri {
-    NSArray<NSString *> *tagsList = nil; // nil → contact not found
+- (Contact * _Nullable)getContact:(NSString *)account uri:(NSString *)uri {
+
+    Contact *contact = nil; // nil → contact not found
 
     @try {
         NSString *dbPath = [self sylkDatabasePath];
@@ -219,55 +221,75 @@
         }
 
         sqlite3_stmt *stmt = NULL;
-        const char *sql = "SELECT tags FROM contacts WHERE account = ? AND uri = ?";
+        const char *sql = "SELECT name, tags FROM contacts WHERE account = ? AND uri = ?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+
             sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, [uri UTF8String], -1, SQLITE_TRANSIENT);
 
             if (sqlite3_step(stmt) == SQLITE_ROW) {
-                const char *cTags = (const char *)sqlite3_column_text(stmt, 0);
+
+                // ---- NAME ----
+                NSString *displayName = nil;
+                const char *cName = (const char *)sqlite3_column_text(stmt, 0);
+                if (cName) {
+                    displayName = [NSString stringWithUTF8String:cName];
+                    displayName = [displayName stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+                    if (displayName.length == 0) {
+                        displayName = nil;
+                    }
+                }
+
+                // ---- TAGS ----
+                NSMutableArray *cleanTags = [NSMutableArray array];
+
+                const char *cTags = (const char *)sqlite3_column_text(stmt, 1);
                 if (cTags) {
                     NSString *tags = [NSString stringWithUTF8String:cTags];
-                    tags = [tags stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                    
+                    tags = [tags stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
                     if (tags.length > 0) {
                         NSArray *rawTags = [tags componentsSeparatedByString:@","];
-                        NSMutableArray *cleanTags = [NSMutableArray array];
                         for (NSString *t in rawTags) {
-                            NSString *clean = [[t stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
+                            NSString *clean =
+                                [[t stringByTrimmingCharactersInSet:
+                                  [NSCharacterSet whitespaceCharacterSet]] lowercaseString];
+
                             if (clean.length > 0) {
                                 [cleanTags addObject:clean];
                             }
                         }
-                        tagsList = cleanTags;
-                    } else {
-                        // Contact exists but has no tags
-                        tagsList = @[];
                     }
-                } else {
-                    // Contact exists but tags column is NULL
-                    tagsList = @[];
                 }
+
+                contact = [[Contact alloc] initWithDisplayName:displayName
+                                                          tags:cleanTags];
             }
 
             sqlite3_finalize(stmt);
         } else {
-            NSLog(@"[sylk_app] Failed to prepare statement for getTagsForContact");
+            NSLog(@"[sylk_app] Failed to prepare statement for getContact");
         }
 
         sqlite3_close(db);
 
     } @catch (NSException *exception) {
-        NSLog(@"[sylk_app] Exception in getTagsForContact: %@ - %@", exception.name, exception.reason);
+        NSLog(@"[sylk_app] Exception in getContact: %@ - %@", exception.name, exception.reason);
     }
 
-	NSString *joined = (tagsList.count > 0)
-		? [tagsList componentsJoinedByString:@","]
-		: @"<none>";
-	
-	NSLog(@"[sylk_app] Tags for %@: %@", uri, joined);
-    return tagsList;
+    if (contact) {
+        NSString *joined = (contact.tags.count > 0)
+            ? [contact.tags componentsJoinedByString:@","]
+            : @"<none>";
+
+        NSLog(@"[sylk_app] Contact found: %@ | tags: %@", contact.displayName, joined);
+    }
+
+    return contact;
 }
 
 - (BOOL)isBlocked:(NSArray<NSString *> * _Nullable)contactTags {
@@ -449,6 +471,7 @@
     return [RCTLinkingManager application:application openURL:url options:options];
 }
 
+
 #pragma mark - Foreground notification handling
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
        willPresentNotification:(UNNotification *)notification
@@ -456,6 +479,7 @@
 {
     // Full APNS payload
        NSDictionary *userInfo = notification.request.content.userInfo;
+       NSLog(@"[sylk_app] willPresentNotification userInfo: %@", userInfo);
 
        // Your custom payload (the inner "data" dict)
        NSDictionary *data = userInfo[@"data"];
@@ -463,30 +487,31 @@
            data = @{}; // prevent crash
        }
 
-       // Example usage:
        NSString *event = [data[@"event"] lowercaseString];
        NSString *fromUri = [[data[@"from_uri"] lowercaseString] copy];
        NSString *toUri   = [[data[@"to_uri"] lowercaseString] copy];
 
        NSString *activeChat = [[NSUserDefaults standardUserDefaults] stringForKey:@"activeChatJID"];
        if (activeChat != nil && [fromUri isEqualToString:[activeChat lowercaseString]]) {
-           NSLog(@"[sylk_app] Suppressing foreground notification for %@", fromUri);
+           NSLog(@"[sylk_app] Skip notification for active chat with %@", fromUri);
            completionHandler(UNNotificationPresentationOptionNone); // do not show banner/sound
            return;
        }
-
-       NSLog(@"[sylk_app] willPresentNotification event=%@ from=%@ to=%@", event, fromUri, toUri);
 
        // If you want to apply filtering:
        BOOL allow = [self shouldDisplayMessageFromPayload:data];
 
        if (!allow) {
-           //NSLog(@"[sylk_app] Foreground notification suppressed");
+           NSLog(@"[sylk_app] Skip notification");
            completionHandler(UNNotificationPresentationOptionNone);
            return;
        }
-    
-  completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
+
+        NSLog(@"[sylk_app] willPresentNotification event=%@ from=%@ to=%@", event, fromUri, toUri);
+
+  completionHandler(UNNotificationPresentationOptionAlert |
+                    UNNotificationPresentationOptionSound |
+                    UNNotificationPresentationOptionBadge);
 }
 
 #pragma mark - Continue user activity (e.g., CallKeep)
@@ -539,7 +564,7 @@ continueUserActivity:(NSUserActivity *)userActivity
     NSLog(@"[sylk_app] Device token: %@", hexToken);
 
     // Send token to RN via APNSTokenModule
-    APNSTokenModule *module = [self.bridge moduleForClass:[APNSTokenModule class]];
+    // APNSTokenModule *module = [self.bridge moduleForClass:[APNSTokenModule class]];
  
     self.cachedAPNSToken = hexToken;
     // Send to JS if bridge is ready
@@ -556,7 +581,6 @@ continueUserActivity:(NSUserActivity *)userActivity
   NSLog(@"[sylk_app] Failed to register for remote notifications: %@", error);
   [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
 }
-
 
 - (void)application:(UIApplication *)application
 didReceiveRemoteNotification:(NSDictionary *)userInfo
@@ -587,7 +611,7 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
         return completionHandler(UIBackgroundFetchResultNoData);
     }
 
-    // --- Handle 'message' event (NEW LOGIC) ---
+    // --- Handle 'message' event  ---
     if ([event isEqualToString:@"message"]) {
         //NSLog(@"[sylk_app] Incoming message payload: %@", userInfo);
 
@@ -635,7 +659,6 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     withCompletionHandler:(void (^)(void))completion
 {
     NSDictionary *userInfo = payload.dictionaryPayload ?: @{};
-    //NSLog(@"[sylk_app]Raw Payload: %@", userInfo);
 
     // --- nil-safe extraction ---
     NSString *(^coerceString)(id) = ^NSString *(id obj) {
@@ -648,21 +671,21 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSString *calluuid = coerceString(userInfo[@"session-id"]);
     NSString *callId = coerceString(userInfo[@"call-id"]);
     NSString *mediaType = coerceString(userInfo[@"media-type"]);
-    NSString *callerName = coerceString(userInfo[@"from_display_name"]);
     NSString *fromUri = [[coerceString(userInfo[@"from_uri"]) lowercaseString] copy];
     NSString *toUri = [[coerceString(userInfo[@"to_uri"]) lowercaseString] copy];
     NSString *account = [[coerceString(userInfo[@"account"]) lowercaseString] copy];
+    NSString *remoteDisplayName = coerceString(userInfo[@"from_display_name"]);
 
-    /*
     NSLog(@"[sylk_app] calluuid = %@", calluuid);
     NSLog(@"[sylk_app] callId = %@", callId);
     NSLog(@"[sylk_app] mediaType = %@", mediaType);
-    NSLog(@"[sylk_app] callerName = %@", callerName);
+    NSLog(@"[sylk_app] remoteDisplayName = %@", remoteDisplayName);
     NSLog(@"[sylk_app] fromUri = %@", fromUri);
     NSLog(@"[sylk_app] toUri = %@", toUri);
     NSLog(@"[sylk_app] account = %@", account);
-    */
     NSLog(@"[sylk_app] Received push %@ from %@ to %@", event, fromUri, toUri);
+
+    NSString *callerName = fromUri; // default fallback
 
     // --- only handle incoming_session or incoming_conference_request ---
     if (!([event isEqualToString:@"incoming_session"] || [event isEqualToString:@"incoming_conference_request"])) {
@@ -670,6 +693,8 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         if (completion) completion();
         return;
     }
+
+    NSLog(@"[sylk_app] Raw Payload: %@", userInfo);
 
     BOOL allow = [self shouldDisplayMessageFromPayload:userInfo];
     
@@ -681,15 +706,36 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     BOOL autoAnswer = NO;
 
-    // ---- Load contact tags ----
-    NSArray<NSString *> *tags = nil;
+    NSString *lookupAccount = [event isEqualToString:@"incoming_conference_request"] ? account : toUri;
+    Contact *contact = nil;
+
     @try {
-        NSString *lookupAccount =
-            [event isEqualToString:@"incoming_conference_request"] ? account : toUri;
-        tags = [self getTagsForContact:lookupAccount uri:fromUri];
+        contact = [self getContact:lookupAccount uri:fromUri];
     } @catch (...) {
-        tags = nil;
+        contact = nil;
     }
+    
+    NSArray<NSString *> *tags = contact ? contact.tags : @[];
+    NSString *displayName = contact.displayName;
+    
+    if (!displayName || displayName.length == 0) {
+        displayName = fromUri;
+    }
+    
+    // Prefer contact display name
+    if (contact.displayName.length > 0 &&
+        ![contact.displayName isEqualToString:fromUri]) {
+
+        callerName = contact.displayName;
+
+    // Otherwise try remote display name from push
+    } else if (remoteDisplayName.length > 0 &&
+               ![remoteDisplayName isEqualToString:fromUri]) {
+
+        callerName = remoteDisplayName;
+    }
+
+    NSLog(@"[sylk_app] displayName = %@", displayName);
 
     if (tags) {
         NSLog(@"[sylk_app] Contact tags for %@: %@",
@@ -700,7 +746,10 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     }
 
     autoAnswer = [self shouldAutoAnswer:tags];
-    
+    if (autoAnswer) {
+        NSLog(@"[sylk_app] must autoAnswer");
+    }
+
     BOOL shouldScheduleAutoAnswer = autoAnswer && [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
     
     if (autoAnswer && [UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
@@ -712,10 +761,12 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     // --- report to CallKit only if app is not active ---
     [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
+    
+    NSLog(@"[sylk_app] REPORTING CALL WITH NAME: %@", callerName);
 
     @try {
         [RNCallKeep reportNewIncomingCall: calluuid
-                                   handle: fromUri
+                                   handle: callerName
                                handleType: @"generic"
                                  hasVideo: [mediaType isEqualToString:@"video"]
                       localizedCallerName: callerName
@@ -744,18 +795,21 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
 - (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)data
 {
+
     NSString *(^coerceString)(id) = ^NSString *(id obj) {
         if ([obj isKindOfClass:[NSString class]]) return obj;
         if ([obj isKindOfClass:[NSNumber class]]) return [obj stringValue];
         return @"";
     };
 
+    NSLog(@"[sylk_app] -- shouldDisplayMessageFromPayload: %@", data);
+
     // ---- 1. Read and validate event ----
     NSString *event = [[coerceString(data[@"event"]) stringByTrimmingCharactersInSet:
                         [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
 
     if (event.length == 0) {
-        //NSLog(@"[sylk_app] Missing event");
+        NSLog(@"[sylk_app] Missing event");
         return NO;
     }
 
@@ -766,7 +820,8 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 	BOOL isMessage         = [event isEqualToString:@"message"];
 
 	if (!isIncomingSession && !isIncomingConf && !isCancel && !isMessage) {
-		return NO;   // other events → deny
+        NSLog(@"[sylk_app] Unsupported event");
+		return NO;
 	}
 
 	// ---- Determine lookupAccount ----
@@ -797,7 +852,19 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 			NSLog(@"[sylk_app] Message error: missing messageId");
 			return NO;
 		}
-		NSLog(@"[sylk_app] %@ %@ from %@ to %@", event, messageId, fromUri, lookupAccount);
+
+        UIApplicationState state = [UIApplication sharedApplication].applicationState;
+        if (state == UIApplicationStateActive) {
+            NSLog(@"[sylk_app] App is foreground and active");
+        } else if (state == UIApplicationStateInactive) {
+            NSLog(@"[sylk_app] App is foreground but inactive");
+        } else if (state == UIApplicationStateBackground) {
+            NSLog(@"[sylk_app] App is in the background");
+        }
+
+        NSLog(@"[sylk_app] Message %@ from %@ to %@", messageId, fromUri, lookupAccount);
+
+        return YES;
 	}
 
     if (isIncomingConf || isIncomingSession || isCancel) {
@@ -830,13 +897,16 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 		NSLog(@"[sylk_app] %@ %@ from %@ to %@", event, callId, fromUri, lookupAccount);
 	}
 
-	NSArray<NSString *> *tags = nil;
-	@try {
-		tags = [self getTagsForContact:lookupAccount uri:fromUri];
-	} @catch (...) {
-		tags = nil;
-	}
-    
+    Contact *contact = nil;
+
+    @try {
+        contact = [self getContact:lookupAccount uri:fromUri];
+    } @catch (...) {
+        contact = nil;
+    }
+
+    NSArray<NSString *> *tags = contact ? contact.tags : @[];
+
 	if (![self isAccountActive:lookupAccount fromUri:fromUri contactTags:tags]) {
 		NSLog(@"[sylk_app] Request rejected by account rules");
 		return NO;
@@ -854,6 +924,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 		return NO;
 	}
 
+    
     return YES;
 }
 

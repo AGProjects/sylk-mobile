@@ -285,7 +285,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
             [outputs addObject:outputOnlyDevice];
             NSLog(@"[sylk_app][AudioRouteModule] added selected device to outputs: %@", outputOnlyDevice);
         } else {
-            NSLog(@"[sylk_app][AudioRouteModule] selected device already exists in outputs");
+            //NSLog(@"[sylk_app][AudioRouteModule] selected device already exists in outputs");
         }
 
         if (selected[@"type"]) {

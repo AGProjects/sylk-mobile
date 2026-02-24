@@ -15,6 +15,7 @@
 		1D982DC3776DB0154A2B2742 /* libPods-sylkTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = DD4040789F46C8B7BE33CF37 /* libPods-sylkTests.a */; };
 		1F207F1527F35DF9000C83CA /* beluga_in.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F207F1327F35DF9000C83CA /* beluga_in.wav */; };
 		1F207F1627F35DF9000C83CA /* beluga_out.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F207F1427F35DF9000C83CA /* beluga_out.wav */; };
+		1F2BEF3C2F4DC14200E88D66 /* Contact.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F2BEF3B2F4DC14200E88D66 /* Contact.m */; };
 		1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871726495CFF0096C518 /* hangup_tone.wav */; };
 		1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871826495CFF0096C518 /* outbound_ringtone.wav */; };
 		1F31871F26495CFF0096C518 /* participant_joined.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871926495CFF0096C518 /* participant_joined.wav */; };
@@ -112,6 +113,8 @@
 		1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "sylk-Bridging-Header.h"; sourceTree = "<group>"; };
 		1F207F1327F35DF9000C83CA /* beluga_in.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_in.wav; path = ../app/assets/sounds/beluga_in.wav; sourceTree = "<group>"; };
 		1F207F1427F35DF9000C83CA /* beluga_out.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_out.wav; path = ../app/assets/sounds/beluga_out.wav; sourceTree = "<group>"; };
+		1F2BEF3A2F4DC14200E88D66 /* Contact.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Contact.h; path = sylk/Contact.h; sourceTree = "<group>"; };
+		1F2BEF3B2F4DC14200E88D66 /* Contact.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = Contact.m; path = sylk/Contact.m; sourceTree = "<group>"; };
 		1F31871726495CFF0096C518 /* hangup_tone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = hangup_tone.wav; path = ../app/assets/sounds/hangup_tone.wav; sourceTree = "<group>"; };
 		1F31871826495CFF0096C518 /* outbound_ringtone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = outbound_ringtone.wav; path = ../app/assets/sounds/outbound_ringtone.wav; sourceTree = "<group>"; };
 		1F31871926495CFF0096C518 /* participant_joined.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_joined.wav; path = ../app/assets/sounds/participant_joined.wav; sourceTree = "<group>"; };
@@ -241,6 +244,8 @@
 				1F4596152F38E17F00ED15D1 /* IdleTimerModule.m */,
 				1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */,
 				64E96AF423C4CAEC004F2E23 /* sylk.entitlements */,
+				1F2BEF3A2F4DC14200E88D66 /* Contact.h */,
+				1F2BEF3B2F4DC14200E88D66 /* Contact.m */,
 				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
 				642006F924364F8D00F214A5 /* GoogleService-Info.plist */,
 				1F4C5AC42ED6108100860BA5 /* AudioRouteModule.h */,
@@ -926,6 +931,7 @@
 				13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */,
 				1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */,
 				1F4596162F38E17F00ED15D1 /* IdleTimerModule.m in Sources */,
+				1F2BEF3C2F4DC14200E88D66 /* Contact.m in Sources */,
 				13B07FC11A68108700A75B9A /* main.m in Sources */,
 				1F4C5AC62ED6108100860BA5 /* AudioRouteModule.m in Sources */,
 			);
