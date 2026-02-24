@@ -1,0 +1,4 @@
+Fixed registering push token
+Use display name for incoming push bubbles
+Contacts refactoring
+Bug fixes
