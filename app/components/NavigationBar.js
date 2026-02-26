@@ -73,11 +73,11 @@ class NavigationBar extends Component {
 		//console.log('NB state', state);
 		
 		let keys = Object.keys(this.state);
-		 for (const key of keys) {		
+		for (const key of keys) {		
 			if (this.state[key] != prevState[key]) {
 			    //console.log('Navigation bar', key, 'has changed:', this.state[key]);
 			}
-		 }
+		}
 	}
 
     handleMenu(event) {

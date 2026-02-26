@@ -12836,11 +12836,11 @@ class Sylk extends Component {
         this.saveSylkContact(uri, contact, action);
 
         if (uri === this.state.accountId) {
-            this.setState({displayName: displayName, email: email});
-            this.signup[this.state.accountId] = email;
+            this.setState({displayName: contact.name, email: contact.email});
+            this.signup[this.state.accountId] = contact.email;
             storage.set('signup', this.signup);
-            if (this.state.account && displayName !== this.state.account.displayName) {
-                this.processRegistration(this.state.accountId, this.state.password, displayName);
+            if (this.state.account && contact.name !== this.state.account.displayName) {
+                this.processRegistration(this.state.accountId, this.state.password, contact.name);
             }
         }
     }
