@@ -157,19 +157,26 @@ class ReadyBox extends Component {
                            messagesCategoryFilter: null
                            });
       }
+
+		let keys = Object.keys(this.state);
+		for (const key of keys) {		
+			if (this.state[key] != prevState[key]) {
+			    //console.log(' --- RB', key, 'has changed:', this.state[key]);
+			}
+		}
+      
       
       if (prevState.searchContacts !== this.state.searchContacts && this.state.searchContacts) {
 		  this.setState({messagesCategoryFilter: null, historyPeriodFilter: null});
 		  this.props.filterHistoryFunc(null);
       }
 
-      if (prevState.historyFilter !== this.props.historyFilter) {
-		  console.log('historyFilter has changed', this.props.historyFilter);
-		  if (this.props.historyFilter == 'calls' || this.props.historyFilter == 'conference') {
+      if (this.state.historyFilter !== prevState.historyFilter) {
+		  if (this.state.historyFilter == 'calls' || this.state.historyFilter == 'conference') {
 			  this.setState({historyPeriodFilter: 'recent'});
 		  }
 
-		  if (this.props.historyFilter == 'favorite' || this.props.historyFilter == 'test') {
+		  if (this.state.historyFilter == 'favorite' || this.state.historyFilter == 'test') {
 			  this.setState({historyPeriodFilter: null});
 		  }
       }
@@ -184,7 +191,7 @@ class ReadyBox extends Component {
             }
       }
 
-      if (prevState.selectedContact !== this.props.selectedContact && !prevState.selectedContact) {
+      if (prevState.selectedContact !== this.state.selectedContact && !prevState.selectedContact) {
         if (this.state.searchContacts) {
 			this.props.toggleSearchContacts()
 		}

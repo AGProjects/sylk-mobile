@@ -1675,7 +1675,7 @@ class Sylk extends Component {
     }
 
     async toggleSearchContacts () {
-        //console.log('toggle search contacts', !this.state.searchContacts);
+        //console.log(' -- toggle search contacts', !this.state.searchContacts);
         this.setState({searchContacts: !this.state.searchContacts});
     }
 
