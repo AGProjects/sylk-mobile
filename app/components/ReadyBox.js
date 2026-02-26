@@ -34,70 +34,32 @@ class ReadyBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
         this.recordingStopTimer = null;
 
         this.state = {
             targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
-            selectedContact: this.props.selectedContact,
-            showConferenceModal: this.props.showConferenceModal,
             sticky: false,
-            favoriteUris: this.props.favoriteUris,
-            blockedUris: this.props.blockedUris,
             contactsFilter: null,
             messagesCategoryFilter: null,
             historyPeriodFilter: null,
-            missedCalls: this.props.missedCalls,
-            isLandscape: this.props.isLandscape,
             participants: null,
-            myInvitedParties: this.props.myInvitedParties,
-            messages: this.props.messages,
-            myDisplayName: this.props.myDisplayName,
             chat: (this.props.selectedContact !== null) && (this.props.call !== null),
-            call: this.props.call,
-            inviteContacts: this.props.inviteContacts,
-            shareToContacts: this.props.shareToContacts,
-            selectedContacts: this.props.selectedContacts,
-            pinned: this.props.pinned,
-            messageZoomFactor: this.props.messageZoomFactor,
             isTyping: this.props.isTyping,
             navigationItems: this.props.navigationItems,
-            fontScale: this.props.fontScale,
-            historyFilter: this.props.historyFilter,
-            isTablet: this.props.isTablet,
-            allContacts: this.props.allContacts,
-            showQRCodeScanner: this.props.showQRCodeScanner,
             keys: this.props.keys,
-            isTexting: this.props.isTexting,
-            contentTypes: this.props.contentTypes,
-            sourceContact: this.props.sourceContact,
-			keyboardVisible: false,
 			searchMessages: this.props.searchMessages,
 			searchContacts: this.props.searchContacts,
 			searchString: '',
 			recordingDuration: 0,
-			dark: this.props.dark,
-			messagesMetadata: this.props.messagesMetadata,
-			fullScreen: this.props.fullScreen,
-			transferProgress: this.props.transferProgress,
-			contactIsSharing: this.props.contactIsSharing,
-			totalMessageExceeded: this.props.totalMessageExceeded,
 			sortOrder: 'desc',
 			orderBy: 'timestamp',
 			showOrderBar: false,
 			playRecording: false,
 			level: 0,
-			callHistoryUrl: this.props.callHistoryUrl,
-			insets: this.props.insets,
-			storageUsage: this.props.storageUsage,
-			resizeContent: this.props.resizeContent,
-			sharedContent: this.props.sharedContent,
-			autoAnswerMode: this.props.autoAnswerMode,
-			hasAutoAnswerContacts: this.props.hasAutoAnswerContacts,
-			appState: this.props.appState
         };
 
         this.ended = false;
-
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -105,40 +67,36 @@ class ReadyBox extends Component {
             return;
         }
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
             this.setState({targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : '', chat: false});
         }
 
-        if (!this.state.inviteContacts && nextProps.inviteContacts) {
+        if (!this.props.inviteContacts && nextProps.inviteContacts) {
             this.handleSearch('');
             this.setState({chat: false});
         }
 
-        if (this.state.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
+        if (this.props.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
             this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
             this.setState({playRecording: false});
         }
 
-        if (this.state.selectedContact !== nextProps.selectedContact ) {
+        if (this.props.selectedContact !== nextProps.selectedContact ) {
             this.setState({gettingSharedAsset: false});
         }
 
-        if (nextProps.hasOwnProperty('keyboardVisible')) {
-            this.setState({keyboardVisible: nextProps.keyboardVisible});
-        }
-
-        if (nextProps.selectedContact !== this.state.selectedContact) {
+        if (nextProps.selectedContact !== this.props.selectedContact) {
            this.resetContact()
            this.setState({'messagesCategoryFilter': null});
-           if (this.navigationRef && !this.state.selectedContact) {
+           if (this.navigationRef && !this.props.selectedContact) {
                this.navigationRef.scrollToIndex({animated: true, index: 0});
            }
-           if (this.state.selectedContact && this.state.pinned) {
-               this.props.togglePinned(this.state.selectedContact.uri);
+           if (this.props.selectedContact && this.props.pinned) {
+               this.props.togglePinned(this.props.selectedContact.uri);
            }
         }
 
-        if (!nextProps.historyFilter && this.state.historyFilter) {
+        if (!nextProps.historyFilter && this.props.historyFilter) {
             this.filterHistory(null);
         }
 
@@ -154,14 +112,10 @@ class ReadyBox extends Component {
             this.setState({'contactsFilter': null});
         }
 
-        if (this.state.allContacts.length === 0 && nextProps.allContacts && nextProps.allContacts.length > 0) {
+        if (this.props.allContacts.length === 0 && nextProps.allContacts && nextProps.allContacts.length > 0) {
             this.bounceNavigation();
         }
-        
-        if ('totalMessageExceeded' in nextProps) {
-            this.setState({totalMessageExceeded: nextProps.totalMessageExceeded});
-        }        
-        
+                
         if (nextProps.searchString) {
             this.setState({'searchString': nextProps.searchString});
         }
@@ -175,48 +129,12 @@ class ReadyBox extends Component {
             this.setState({recordingDuration: nextProps.recordingDuration});
         }
 
-        this.setState({myInvitedParties: nextProps.myInvitedParties,
-                        allContacts: nextProps.allContacts,
-                        messages: nextProps.messages,
-                        historyFilter: nextProps.historyFilter,
-                        myDisplayName: nextProps.myDisplayName,
-                        call: nextProps.call,
+        this.setState({
                         searchMessages: nextProps.searchMessages,
                         searchContacts: nextProps.searchContacts,
-                        showConferenceModal: nextProps.showConferenceModal,
                         isTyping: nextProps.isTyping,
                         navigationItems: nextProps.navigationItems,
-                        messageZoomFactor: nextProps.messageZoomFactor,
-                        inviteContacts: nextProps.inviteContacts,
-                        shareToContacts: nextProps.shareToContacts,
-                        selectedContacts: nextProps.selectedContacts,
-                        selectedContact: nextProps.selectedContact,
-                        pinned: nextProps.pinned,
-                        favoriteUris: nextProps.favoriteUris,
-                        blockedUris: nextProps.blockedUris,
-                        missedCalls: nextProps.missedCalls,
-                        fontScale: nextProps.fontScale,
-                        isTablet: nextProps.isTablet,
-                        showQRCodeScanner: nextProps.showQRCodeScanner,
-                        isLandscape: nextProps.isLandscape,
-                        keys: nextProps.keys,
-                        isTexting: nextProps.isTexting,
-                        keyboardVisible: nextProps.keyboardVisible,
-                        contentTypes: nextProps.contentTypes,
-                        sourceContact: nextProps.sourceContact,
-                        dark: nextProps.dark,
-                        messagesMetadata: nextProps.messagesMetadata,
-                        fullScreen: nextProps.fullScreen,
-					    transferProgress: nextProps.transferProgress,
-					    contactIsSharing: nextProps.contactIsSharing,
-					    callHistoryUrl: nextProps.callHistoryUrl,
-					    insets: nextProps.insets,
-					    storageUsage: nextProps.storageUsage,
-					    resizeContent: nextProps.resizeContent,
-					    sharedContent: nextProps.sharedContent,
-					    autoAnswerMode: nextProps.autoAnswerMode,
-					    hasAutoAnswerContacts: nextProps.hasAutoAnswerContacts,
-					    appState: nextProps.appState
+                        keys: nextProps.keys
                         });
     }
 
@@ -225,29 +143,11 @@ class ReadyBox extends Component {
     }
 
     async componentDidMount() {
-        this.keyboardDidShowListener = Keyboard.addListener(
-              'keyboardDidShow',
-              this._keyboardDidShow
-            );
-        this.keyboardDidHideListener = Keyboard.addListener(
-              'keyboardDidHide',
-              this._keyboardDidHide
-            );
         this.ended = false;
     }
 
     componentWillUnmount() {
-        this.keyboardDidShowListener.remove();
-        this.keyboardDidHideListener.remove();
         this.ended = true;
-    }
-
-    _keyboardDidShow(e) {
-       this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
-    }
-
-    _keyboardDidHide() {
-        this.setState({keyboardVisible: false, keyboardHeight: 0});
     }
     
 	componentDidUpdate(prevProps, prevState) {
@@ -263,13 +163,13 @@ class ReadyBox extends Component {
 		  this.props.filterHistoryFunc(null);
       }
 
-      if (prevState.historyFilter !== this.state.historyFilter) {
-		  console.log('historyFilter has changed', this.state.historyFilter);
-		  if (this.state.historyFilter == 'calls' || this.state.historyFilter == 'conference') {
+      if (prevState.historyFilter !== this.props.historyFilter) {
+		  console.log('historyFilter has changed', this.props.historyFilter);
+		  if (this.props.historyFilter == 'calls' || this.props.historyFilter == 'conference') {
 			  this.setState({historyPeriodFilter: 'recent'});
 		  }
 
-		  if (this.state.historyFilter == 'favorite' || this.state.historyFilter == 'test') {
+		  if (this.props.historyFilter == 'favorite' || this.props.historyFilter == 'test') {
 			  this.setState({historyPeriodFilter: null});
 		  }
       }
@@ -284,7 +184,7 @@ class ReadyBox extends Component {
             }
       }
 
-      if (prevState.selectedContact !== this.state.selectedContact && !prevState.selectedContact) {
+      if (prevState.selectedContact !== this.props.selectedContact && !prevState.selectedContact) {
         if (this.state.searchContacts) {
 			this.props.toggleSearchContacts()
 		}
@@ -298,13 +198,13 @@ class ReadyBox extends Component {
 
        //console.log('filterHistory', filter);
 
-       if (this.state.selectedContact) {
-           if (!filter && this.state.pinned) {
-               this.props.togglePinned(this.state.selectedContact.uri);
+       if (this.props.selectedContact) {
+           if (!filter && this.props.pinned) {
+               this.props.togglePinned(this.props.selectedContact.uri);
            }
 
            if (filter === 'pinned') {
-               this.props.togglePinned(this.state.selectedContact.uri);
+               this.props.togglePinned(this.props.selectedContact.uri);
                return;
            }
 
@@ -369,11 +269,11 @@ class ReadyBox extends Component {
     }
 
     get showNavigationBar() {
-        if (this.state.keyboardVisible) {
+        if (this.props.keyboardVisible) {
             return;
         }
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
             //return false;
         }
 
@@ -393,22 +293,22 @@ class ReadyBox extends Component {
 			return false;
 		}
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
             if (!this.state.searchMessages) {
 				return false;
             }
         }
 
-        if (this.state.showQRCodeScanner) {
+        if (this.props.showQRCodeScanner) {
             return false;
         }
 
-        if (this.state.isTablet || (!this.state.isLandscape && this.state.selectedContact)) {
+        if (this.props.isTablet || (!this.props.isLandscape && this.props.selectedContact)) {
             return true;
         }
 
         /*
-        if (this.state.call && this.state.call.state !== 'incoming' && !this.state.inviteContacts) {
+        if (this.props.call && this.props.call.state !== 'incoming' && !this.props.inviteContacts) {
             return false;
         }
         */
@@ -417,15 +317,15 @@ class ReadyBox extends Component {
     }
 
    get showCategoryBar() {
-	   if (this.state.selectedContact) {
+	   if (this.props.selectedContact) {
 		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
 	   } else {
-		   return this.state.searchContacts && this.state.allContacts.length > 10;
+		   return this.state.searchContacts && this.props.allContacts.length > 10;
 	   }
    }
 
     get showConferenceButton() {
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
             return false;
         }
         
@@ -433,21 +333,21 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
             return false;
         }
         return true;
     }
 
     get showCallButtons() {
-        if (this.state.call || this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.state.shareToContacts) {
+        if (this.props.call || this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.props.shareToContacts) {
             return false;
         }
         return true;
     }
 
     get showAudioSendButton() {
-        if (!this.state.selectedContact) {
+        if (!this.props.selectedContact) {
             return false;
         }
 
@@ -469,24 +369,24 @@ class ReadyBox extends Component {
     }
 
     get showAudioRecordButton() {
-        if (!this.state.selectedContact) {
+        if (!this.props.selectedContact) {
             return false;
         }
 
-        if (this.state.call) {
+        if (this.props.call) {
             return false;
         }
 
-	    if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+	    if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
             return false;
         }
 
-	    if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@guest') > -1) {
+	    if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@guest') > -1) {
             return false;
         }
         
-        if (this.state.selectedContact) {
-			const els = this.state.selectedContact.uri.split('@');
+        if (this.props.selectedContact) {
+			const els = this.props.selectedContact.uri.split('@');
 			const username = els[0];
 			const isNumber = utils.isPhoneNumber(username);
 			
@@ -508,19 +408,19 @@ class ReadyBox extends Component {
     }
 
     get showButtonsBar() {
-        if (this.state.fullScreen) {
+        if (this.props.fullScreen) {
             return false;
         }
 
-        if (this.state.inviteContacts) {
+        if (this.props.inviteContacts) {
 			return true;
         }
                         
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
 			return true;
         }
 
-        if (this.state.contactIsSharing) {
+        if (this.props.contactIsSharing) {
 			return false;
         }
 
@@ -528,11 +428,11 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.keyboardVisible && this.state.selectedContact) {
+        if (this.props.keyboardVisible && this.props.selectedContact) {
             return false;
         }        
 
-        if (this.state.orderBy === 'size' && this.state.selectedContact) {
+        if (this.state.orderBy === 'size' && this.props.selectedContact) {
             return false;
         }        
 
@@ -541,15 +441,15 @@ class ReadyBox extends Component {
             return false;
         }        
 
-        if (this.state.showQRCodeScanner) {
+        if (this.props.showQRCodeScanner) {
             return false;
         }
 
-        if (this.state.isTablet) {
+        if (this.props.isTablet) {
             return true;
         }
 
-        if (this.state.call) {
+        if (this.props.call) {
             return false;
         }
 
@@ -558,13 +458,13 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.isLandscape) {
+        if (this.props.isLandscape) {
             return false;
         }
 
         /*
-        if (this.state.selectedContact) {
-            if (this.state.isLandscape && !this.state.isTablet) {
+        if (this.props.selectedContact) {
+            if (this.props.isLandscape && !this.props.isTablet) {
                 return false;
             }
             return false;
@@ -588,13 +488,13 @@ class ReadyBox extends Component {
 
         //console.log('handleSearch contact =', contact);
 
-        if ((this.state.inviteContacts || this.state.shareToContacts) && contact) {
+        if ((this.props.inviteContacts || this.props.shareToContacts) && contact) {
              const uri = contact.uri;
              this.props.updateSelection(uri);
              return;
         }
 
-        if (this.state.selectedContact === contact) {
+        if (this.props.selectedContact === contact) {
             if (this.state.chat) {
                 this.setState({chat: false});
             }
@@ -650,8 +550,8 @@ class ReadyBox extends Component {
 
         if (uri.indexOf('@videoconference.') > -1) {
             let participants;
-            if (this.state.myInvitedParties && this.state.myInvitedParties.hasOwnProperty(uri)) {
-                participants = this.state.myInvitedParties[uri];
+            if (this.props.myInvitedParties && this.props.myInvitedParties.hasOwnProperty(uri)) {
+                participants = this.props.myInvitedParties[uri];
             }
             this.props.startConference(uri, {audio: true, video: true, participants: this.state.participants});
         } else {
@@ -687,8 +587,8 @@ class ReadyBox extends Component {
     handleAudioCall(event) {
         let uri;
 
-        if (this.state.selectedContact) {
-            uri = this.state.selectedContact.uri;
+        if (this.props.selectedContact) {
+            uri = this.props.selectedContact.uri;
         } else {
             event.preventDefault();
             Keyboard.dismiss();
@@ -716,8 +616,8 @@ class ReadyBox extends Component {
         //console.log('handleVideoCall')
         let uri;
 
-        if (this.state.selectedContact) {
-            uri = this.state.selectedContact.uri;
+        if (this.props.selectedContact) {
+            uri = this.props.selectedContact.uri;
         } else {
             event.preventDefault();
             Keyboard.dismiss();
@@ -755,11 +655,11 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
             return true;
         }
 
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
             return true;
         }
 
@@ -791,7 +691,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
             return true;
         }
 
@@ -832,7 +732,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
             return true;
         }
 
@@ -865,7 +765,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
             return true;
         }
 
@@ -955,7 +855,7 @@ class ReadyBox extends Component {
            if (this.ended) {
                 return;
            }
-            if (this.navigationRef && !this.state.selectedContact) {
+            if (this.navigationRef && !this.props.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: Math.floor(this.navigationItems.length / 2)});
             }
         }, 3000);
@@ -964,7 +864,7 @@ class ReadyBox extends Component {
            if (this.ended) {
                 return;
            }
-            if (this.navigationRef && !this.state.selectedContact) {
+            if (this.navigationRef && !this.props.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
             }
         }, 4500);
@@ -973,7 +873,7 @@ class ReadyBox extends Component {
            if (this.ended) {
                 return;
            }
-            if (this.navigationRef && !this.state.selectedContact) {
+            if (this.navigationRef && !this.props.selectedContact) {
                 this.navigationRef.scrollToIndex({animated: true, index: 0});
             }
         }, 6000);
@@ -982,7 +882,7 @@ class ReadyBox extends Component {
     get categoryItems() {
  		let content_items = [];
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
              
             if (this.state.orderBy !== 'size') {
 				content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
@@ -992,8 +892,8 @@ class ReadyBox extends Component {
 			content_items.push({key: 'video', title: 'Video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
 			content_items.push({key: 'other', title: 'Other', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
 
-            if ('pinned' in this.state.contentTypes) {
-                content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.state.pinned});
+            if ('pinned' in this.props.contentTypes) {
+                content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.props.pinned});
             }
 			content_items.push({key: 'orderByTime', title: 'By Time', enabled: this.state.orderBy === 'timestamp', selected: false});
 			content_items.push({key: 'orderBySize', title: 'By Size', enabled:  this.state.orderBy === 'size', selected: false});
@@ -1016,8 +916,8 @@ class ReadyBox extends Component {
     }
 
     get navigationItems() {
-        let conferenceEnabled = Object.keys(this.state.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
-        if (this.state.inviteContacts) {
+        let conferenceEnabled = Object.keys(this.props.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
+        if (this.props.inviteContacts) {
             conferenceEnabled = false;
         }
 
@@ -1029,7 +929,7 @@ class ReadyBox extends Component {
               ];
         }
 
-        if (this.state.showQRCodeScanner) {
+        if (this.props.showQRCodeScanner) {
             return [
               {key: "hideQRCodeScanner", title: 'Cancel', enabled: true, selected: false}
               ];
@@ -1038,12 +938,12 @@ class ReadyBox extends Component {
         return [
               {key: 'recent', title: 'Recent', enabled: this.state.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
               {key: 'calls', title: 'Calls', enabled: true, selected: this.state.contactsFilter === 'calls'},
-              {key: 'favorite', title: 'Favorites', enabled: this.state.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
-              {key: 'autoanswer', title: 'Caregivers', enabled: this.state.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
-              {key: 'missed', title: 'Missed', enabled: this.state.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
-              {key: 'blocked', title: 'Blocked', enabled: this.state.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
+              {key: 'favorite', title: 'Favorites', enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
+              {key: 'autoanswer', title: 'Caregivers', enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
+              {key: 'missed', title: 'Missed', enabled: this.props.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
+              {key: 'blocked', title: 'Blocked', enabled: this.props.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.contactsFilter === 'conference'},
-              {key: 'test', title: 'Test', enabled: !this.state.shareToContacts && !this.state.inviteContacts, selected: this.state.contactsFilter === 'test'},
+              {key: 'test', title: 'Test', enabled: !this.props.shareToContacts && !this.props.inviteContacts, selected: this.state.contactsFilter === 'test'},
               ];
     }
 
@@ -1163,12 +1063,12 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
             return false;
         }
 
         let uri = this.state.targetUri.toLowerCase();
-        return uri.length === 0 && !this.state.shareToContacts && !this.state.inviteContacts;
+        return uri.length === 0 && !this.props.shareToContacts && !this.props.inviteContacts;
     }
 
     async recordAudio() {
@@ -1247,8 +1147,8 @@ class ReadyBox extends Component {
                        recording: false, 
                        previewRecording: false});
 
-        if (this.state.selectedContact) {
-			this.props.getMessages(this.state.selectedContact.uri);
+        if (this.props.selectedContact) {
+			this.props.getMessages(this.props.selectedContact.uri);
 		}
     }
 
@@ -1325,8 +1225,7 @@ class ReadyBox extends Component {
             recordingFile: null,
             recordingDuration: 0,
             audioSendFinished: false,
-            searchString: '',
-            totalMessageExceeded: false
+            searchString: ''
         });
     }
 
@@ -1350,16 +1249,16 @@ class ReadyBox extends Component {
     }
     
     get showBackToCallButton() {
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
 			return false;
         }
 
-        if (this.state.isLandscape) {
+        if (this.props.isLandscape) {
 			return false;
         }
         
-        if (this.state.call) {
-            if (this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated') {
+        if (this.props.call) {
+            if (this.props.call.state !== 'incoming' && this.props.call.state !== 'terminated') {
 				return true;
 			}
         }
@@ -1386,19 +1285,19 @@ class ReadyBox extends Component {
             }
         }
 
-        if (this.state.isTablet) {
+        if (this.props.isTablet) {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTabletTitle : styles.portraitTabletTitle;
         } else {
              titleClass = this.props.orientation === 'landscape' ? styles.landscapeTitle : styles.portraitTitle;
         }
 
-        if (this.state.isTablet) {
+        if (this.props.isTablet) {
              uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriButtonGroup : styles.portraitTabletUriButtonGroup;
         } else {
              uriGroupClass = this.props.orientation === 'landscape' ? styles.landscapeUriButtonGroup : styles.portraitUriButtonGroup;
         }
 
-        if (this.state.isTablet) {
+        if (this.props.isTablet) {
             URIContainerClass = this.props.orientation === 'landscape' ? styles.landscapeTabletUriInputBox : styles.portraitTabletUriInputBox;
         } else {
             URIContainerClass = styles.portraitUriInputBox;
@@ -1413,12 +1312,12 @@ class ReadyBox extends Component {
 
 		let { width, height } = Dimensions.get('window');
 
-		const topInset = this.state.insets?.top || 0;
-		const bottomInset = this.state.insets?.bottom || 0;
-		const leftInset = this.state.insets?.left || 0;
-		const rightInset = this.state.insets?.right || 0;
+		const topInset = this.props.insets?.top || 0;
+		const bottomInset = this.props.insets?.bottom || 0;
+		const leftInset = this.props.insets?.left || 0;
+		const rightInset = this.props.insets?.right || 0;
 		
-		const marginRight = this.state.isLandscape ? rightInset : 0;
+		const marginRight = this.props.isLandscape ? rightInset : 0;
 
 		let containerWidth = width - marginRight;
 		let containerHeight = height;
@@ -1436,24 +1335,24 @@ class ReadyBox extends Component {
 
         /*
 		if (Platform.OS === 'ios') {
-			if (this.state.isLandscape) {
+			if (this.props.isLandscape) {
 				containerExtraStyles.width = containerWidth - rightInset;
 				containerExtraStyles.marginBottom = -bottomInset;	
 			}
 		} else {
-			if (this.state.isLandscape) {
+			if (this.props.isLandscape) {
 				containerExtraStyles.width = containerWidth;
 				containerExtraStyles.marginBottom = -rightInset;
 			}
 		}
 		*/
                 
-        //console.log('this.state.call', this.state.call);
+        //console.log('this.props.call', this.props.call);
         if (this.showBackToCallButton) {
-            if (this.state.call.hasOwnProperty('_participants')) {
-                backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
+            if (this.props.call.hasOwnProperty('_participants')) {
+                backButtonTitle = this.props.selectedContacts.length > 0 ? 'Invite people' : 'Back to conference';
             } else {
-                backButtonTitle = this.state.selectedContacts.length > 0 ? 'Invite people' : 'Back to call';
+                backButtonTitle = this.props.selectedContacts.length > 0 ? 'Invite people' : 'Back to call';
             }
         }
 
@@ -1465,7 +1364,7 @@ class ReadyBox extends Component {
         let recordIcon               = this.state.recording ? 'pause' : 'microphone';
         let activityTitle            = this.state.recording ? "Recording audio" : "Audio recording ready";
         
-        const sharedContent = this.state.sharedContent || [];
+        const sharedContent = this.props.sharedContent || [];
         
 		const hasImages = sharedContent.some(
 		  file => typeof file.mimeType === 'string' && file.mimeType.startsWith('image/')
@@ -1473,18 +1372,18 @@ class ReadyBox extends Component {
 
         let fileTransfersDisabled = false;
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
             fileTransfersDisabled = false;
 
-            if (this.state.selectedContact.tags.indexOf('test') > -1) {
+            if (this.props.selectedContact.tags.indexOf('test') > -1) {
                 fileTransfersDisabled = true;
             }
 
-            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+            if (this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
                 fileTransfersDisabled = true;
             }
 
-            if (this.state.selectedContact.uri.indexOf('@conference') > -1) {
+            if (this.props.selectedContact.uri.indexOf('@conference') > -1) {
                 fileTransfersDisabled = true;
             }
         }
@@ -1501,7 +1400,7 @@ class ReadyBox extends Component {
                               onScrollToIndexFailed={info => {
                                 const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
-                                  if (!this.state.selectedContact) {
+                                  if (!this.props.selectedContact) {
                                       this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
                                   }
                                 });
@@ -1522,7 +1421,7 @@ class ReadyBox extends Component {
                               onScrollToIndexFailed={info => {
                                 const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
-                                  if (!this.state.selectedContact) {
+                                  if (!this.props.selectedContact) {
                                       this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
                                   }
                                 });
@@ -1541,12 +1440,12 @@ class ReadyBox extends Component {
                                 defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
                                 onChange={this.handleSearch}
                                 onSelect={this.handleTargetSelect}
-                                shareToContacts={this.state.shareToContacts}
-                                inviteContacts={this.state.inviteContacts}
+                                shareToContacts={this.props.shareToContacts}
+                                inviteContacts={this.props.inviteContacts}
                                 searchMessages={this.state.searchMessages}
                                 //autoFocus={this.state.searchMessages}
                                 autoFocus={false}
-                                dark={this.state.dark}
+                                dark={this.props.dark}
                             />
                         </View>
                         : null}
@@ -1581,7 +1480,7 @@ class ReadyBox extends Component {
                             :
 
                             <View style={[buttonGroupClass, {borderWidth: 0, borderColor: 'white'}]}>
-                                  {!this.state.selectedContact && !this.state.shareToContacts?
+                                  {!this.props.selectedContact && !this.props.shareToContacts?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1679,7 +1578,7 @@ class ReadyBox extends Component {
                                   : null }
 
                                   
-                                  { this.state.shareToContacts ?
+                                  { this.props.shareToContacts ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1720,11 +1619,11 @@ class ReadyBox extends Component {
                                   </View>
                                   : null }
 
-                                  { this.state.shareToContacts ?
+                                  { this.props.shareToContacts ?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
-                                            style={!this.state.shareToContacts ? disabledBlueButtonClass : blueButtonClass}
+                                            style={!this.props.shareToContacts ? disabledBlueButtonClass : blueButtonClass}
                                             size={32}
                                             onPress={this.shareContent}
                                             icon="share"
@@ -1754,7 +1653,7 @@ class ReadyBox extends Component {
 
                     </View>
 
-					  {(this.state.autoAnswerMode && !this.state.selectedContact) ?
+					  {(this.props.autoAnswerMode && !this.props.selectedContact) ?
 					  <View style={{borderColor: 'white', 
 					        borderWidth: 0.25, 
 					        flexDirection: 'row',
@@ -1765,7 +1664,7 @@ class ReadyBox extends Component {
 					  </View>
 					  :  null}
 
-					  { (this.state.shareToContacts && hasImages) ?
+					  { (this.props.shareToContacts && hasImages) ?
 					  <View style={{borderColor: 'white', 
 					        borderWidth: 0.25, 
 					        flexDirection: 'row',
@@ -1774,12 +1673,12 @@ class ReadyBox extends Component {
 							alignItems: 'center'}}>
 								{Platform.OS === 'ios' ? (
 								  <Switch
-									value={!this.state.resizeContent}
+									value={!this.props.resizeContent}
 									onValueChange={() => this.props.toggleResizeContent()}
 								  />
 								) : (
 								  <Checkbox
-									status={!this.state.resizeContent ? 'checked' : 'unchecked'}
+									status={!this.props.resizeContent ? 'checked' : 'unchecked'}
 									onPress={() => this.props.toggleResizeContent()}
 								  />
 								)}
@@ -1832,7 +1731,7 @@ class ReadyBox extends Component {
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
 
-                   {this.state.showQRCodeScanner ?
+                   {this.props.showQRCodeScanner ?
                     <QRCodeScanner
                         onRead={this.QRCodeRead}
                         showMarker={true}
@@ -1841,33 +1740,33 @@ class ReadyBox extends Component {
                      />
                       :
 					<ContactsListBox
-						allContacts={this.state.allContacts}
+						allContacts={this.props.allContacts}
 						targetUri={this.state.targetUri}
-						fontScale = {this.state.fontScale}
+						fontScale = {this.props.fontScale}
 						orientation={this.props.orientation}
 						setTargetUri={this.handleSearch}
-						selectedContact={this.state.selectedContact}
-						isTablet={this.state.isTablet}
-						chat={this.state.chat && !this.state.inviteContacts}
-						isLandscape={this.state.isLandscape}
+						selectedContact={this.props.selectedContact}
+						isTablet={this.props.isTablet}
+						chat={this.state.chat && !this.props.inviteContacts}
+						isLandscape={this.props.isLandscape}
 						account={this.props.account}
 						password={this.props.password}
-						callHistoryUrl={this.state.callHistoryUrl}
+						callHistoryUrl={this.props.callHistoryUrl}
 						refreshHistory={this.props.refreshHistory}
 						refreshFavorites={this.props.refreshFavorites}
 						localHistory={this.props.localHistory}
 						saveHistory={this.props.saveHistory}
-						myDisplayName={this.state.myDisplayName}
+						myDisplayName={this.props.myDisplayName}
 						myPhoneNumber={this.props.myPhoneNumber}
 						saveConference={this.props.saveConference}
-						myInvitedParties = {this.state.myInvitedParties}
+						myInvitedParties = {this.props.myInvitedParties}
 						favoriteUris={this.props.favoriteUris}
 						blockedUris={this.props.blockedUris}
 						contactsFilter={this.state.contactsFilter}
 						periodFilter={this.state.historyPeriodFilter}
 						defaultDomain={this.props.defaultDomain}
-						allContacts = {this.state.allContacts}
-						messages = {this.state.messages}
+						allContacts = {this.props.allContacts}
+						messages = {this.props.messages}
 						sendMessage = {this.props.sendMessage}
 						reSendMessage = {this.props.reSendMessage}
 						deleteMessages = {this.props.deleteMessages}
@@ -1877,32 +1776,32 @@ class ReadyBox extends Component {
 						pinMessage = {this.props.pinMessage}
 						unpinMessage = {this.props.unpinMessage}
 						confirmRead = {this.props.confirmRead}
-						inviteContacts = {this.state.inviteContacts}
-						shareToContacts = {this.state.shareToContacts}
-						selectedContacts = {this.state.selectedContacts}
+						inviteContacts = {this.props.inviteContacts}
+						shareToContacts = {this.props.shareToContacts}
+						selectedContacts = {this.props.selectedContacts}
 						toggleFavorite={this.props.toggleFavorite}
 						toggleAutoanswer={this.props.toggleAutoanswer}
 						toggleBlocked={this.props.toggleBlocked}
 						togglePinned = {this.props.togglePinned}
-						pinned = {this.state.pinned}
+						pinned = {this.props.pinned}
 						loadEarlierMessages = {this.props.loadEarlierMessages}
 						newContactFunc = {this.props.newContactFunc}
-						messageZoomFactor = {this.state.messageZoomFactor}
+						messageZoomFactor = {this.props.messageZoomFactor}
 						isTyping = {this.state.isTyping}
-						call = {this.state.call}
+						call = {this.props.call}
 						keys = {this.state.keys}
 						downloadFile = {this.props.downloadFile}
 						uploadFile = {this.props.uploadFile}
 						decryptFunc = {this.props.decryptFunc}
 						messagesCategoryFilter = {this.state.messagesCategoryFilter}
-						isTexting = {this.state.isTexting}
+						isTexting = {this.props.isTexting}
 						forwardMessageFunc = {this.props.forwardMessageFunc}
 						requestCameraPermission = {this.props.requestCameraPermission}
 						requestStoragePermissions = {this.props.requestStoragePermissions}
 						requestMicPermission = {this.props.requestMicPermission}
 						requestStoragePermission = {this.props.requestStoragePermission}
 						startCall = {this.props.startCall}
-						sourceContact = {this.state.sourceContact}
+						sourceContact = {this.props.sourceContact}
 						file2GiftedChat = {this.props.file2GiftedChat}
 						postSystemNotification = {this.props.postSystemNotification}
 						orderBy = {this.state.orderBy}
@@ -1911,14 +1810,14 @@ class ReadyBox extends Component {
 						searchMessages = {this.state.searchMessages}
 						searchString = {this.state.searchString}
 						recordAudio = {this.recordAudio}
-						dark = {this.state.dark}
-						messagesMetadata = {this.state.messagesMetadata}
+						dark = {this.props.dark}
+						messagesMetadata = {this.props.messagesMetadata}
 						contactStartShare = {this.props.contactStartShare}
 						contactStopShare = {this.props.contactStopShare}
 						setFullScreen = {this.props.setFullScreen}
-						fullScreen = {this.state.fullScreen}
-						transferProgress = {this.state.transferProgress}
-						totalMessageExceeded = {this.state.totalMessageExceeded}
+						fullScreen = {this.props.fullScreen}
+						transferProgress = {this.props.transferProgress}
+						totalMessageExceeded = {this.props.totalMessageExceeded}
 						requestDndPermission = {this.props.requestDndPermission}
 						gettingSharedAsset = {this.state.gettingSharedAsset}
 						startAudioPlayerFunc = {this.startAudioPlayer}
@@ -1928,8 +1827,8 @@ class ReadyBox extends Component {
 						isAudioRecording = {this.state.recording}
 						recordingFile = {this.state.recordingFile}
 						sendAudioFile = {this.sendAudioFile}
-						insets = {this.state.insets}
-						appState = {this.state.appState}
+						insets = {this.props.insets}
+						appState = {this.props.appState}
 					/>
 					}
 
@@ -1937,7 +1836,7 @@ class ReadyBox extends Component {
                     : null
                     }
 
-                    {this.showNavigationBar && !this.state.selectedContact ?
+                    {this.showNavigationBar && !this.props.selectedContact ?
                     <View style={navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
@@ -1945,7 +1844,7 @@ class ReadyBox extends Component {
                               onScrollToIndexFailed={info => {
                                 const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
-                                  if (!this.state.selectedContact) {
+                                  if (!this.props.selectedContact) {
                                       this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
                                   }
                                 });
@@ -1959,7 +1858,7 @@ class ReadyBox extends Component {
                     : null}
 
 
-                    {this.state.isTablet && 0?
+                    {this.props.isTablet && 0?
                     <View style={styles.footer}>
                         <FooterBox />
                     </View>
@@ -1968,10 +1867,10 @@ class ReadyBox extends Component {
                 </View>
 
                 <ConferenceModal
-                    show={this.state.showConferenceModal}
+                    show={this.props.showConferenceModal}
                     targetUri={uri}
-                    myInvitedParties={this.state.myInvitedParties}
-                    selectedContact={this.state.selectedContact}
+                    myInvitedParties={this.props.myInvitedParties}
+                    selectedContact={this.props.selectedContact}
                     handleConferenceCall={this.handleConferenceCall}
                     defaultDomain={this.props.defaultDomain}
                     accountId={this.props.account ? this.props.account.id: null}
@@ -2077,7 +1976,6 @@ ReadyBox.propTypes = {
 	updateFileTransferMetadata: PropTypes.func,
 	insets: PropTypes.object,
 	vibrate: PropTypes.func,
-	storageUsage: PropTypes.array,
 	toggleResizeContent: PropTypes.func,
 	resizeContent: PropTypes.bool,
 	sharedContent: PropTypes.array,

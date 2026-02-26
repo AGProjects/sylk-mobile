@@ -44,16 +44,14 @@ class ImportPrivateKeyModal extends Component {
     }
 
     save(event) {
-        event.preventDefault();
         this.props.saveFunc(this.state.password);
     }
 
     generateKeys(event) {
-        event.preventDefault();
         if (this.state.confirm) {
             this.setState({password: ''});
-            this.props.generateKeysFunc();
             this.props.close();
+            this.props.generateKeysFunc();
         } else {
             this.setState({confirm: true});
         }
@@ -138,7 +136,6 @@ class ImportPrivateKeyModal extends Component {
                 return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                        <Surface style={styles.container}>
                             <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
                              <Text style={styles.body}>
                                  You have used Sylk on multiple devices. To decrypt your messages, you need the same private key on all devices.
@@ -156,7 +153,6 @@ class ImportPrivateKeyModal extends Component {
                                 >Keep existing key
                             </Button>
                             </View>
-                        </Surface>
                     </DialogType>
                 </Portal>
                 );
@@ -164,7 +160,6 @@ class ImportPrivateKeyModal extends Component {
                 return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                        <Surface style={styles.container}>
                             <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
                              <Text style={styles.body}>
                                  To decrypt messages, you need the same private key on all devices.
@@ -186,7 +181,6 @@ class ImportPrivateKeyModal extends Component {
                                 >{this.state.confirm ? 'Confirm' : 'Generate key'}
                             </Button>
                             </View>
-                        </Surface>
                     </DialogType>
                 </Portal>
             );

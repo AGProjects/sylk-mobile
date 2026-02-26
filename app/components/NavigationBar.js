@@ -33,185 +33,54 @@ class NavigationBar extends Component {
         super(props);
         autoBind(this);
 
-        let displayName = this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName;
-        let organization = this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization;
         this.refetchMessagesForDays = 30;
         
         this.state = {
-            syncConversations: this.props.syncConversations,
-            inCall: this.props.inCall,
-            showCallMeMaybeModal: this.props.showCallMeMaybeModal,
-            showDeleteFileTransfers: false,
-            contactsLoaded: this.props.contactsLoaded,
-            appStoreVersion: this.props.appStoreVersion,
-            showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
-            privateKeyPassword: null,
-            registrationState: this.props.registrationState,
-            connection: this.props.connection,
-            proximity: this.props.proximity,
-            selectedContact: this.props.selectedContact,
-            mute: false,
-            menuVisible: false,
-            accountId: this.props.accountId,
-            account: this.props.account,
-            displayName: displayName,
-            myDisplayName: this.props.myDisplayName,
-            email: this.props.email,
-            organization: organization,
-            publicKey: this.props.publicKey,
             showPublicKey: false,
-            myPhoneNumber: this.props.myPhoneNumber,
-            messages: this.props.messages,
-            userClosed: false,
-            blockedUris: this.props.blockedUris,
-            filteredMessageIds: this.props.filteredMessageIds,
-            contentTypes: this.props.contentTypes,
-            sharingAction: this.props.sharingAction,
-            dnd: this.props.dnd,
-            myuuid: this.props.myuuid,
-            transferedFiles: this.props.transferedFiles,
-            rejectAnonymous: this.props.rejectAnonymous,
-            chatSounds: this.props.chatSounds,
-			rejectNonContacts: this.props.rejectNonContacts,
-			searchMessages: this.props.searchMessages,
-			searchContacts: this.props.searchContacts,
-			isLandscape: this.props.isLandscape,
+            menuVisible: false,
+            showDeleteFileTransfers: false,
+            showEditContactModal: false,
+			showGenerateKeysModal: false,
+			showExportPrivateKeyModal: false,
+            privateKeyPassword: null,
 			backupKey: false,
-			serverSettingsUrl: this.props.serverSettingsUrl,
-			publicUrl: this.props.publicUrl,
-			insets: this.props.insets,
-			call: this.props.call,
 			deleteContact: false,
-			storageUsage: this.props.storageUsage,
-			syncPercentage: this.props.syncPercentage,
-			devMode: this.props.devMode,
-			autoAnswerMode: this.props.autoAnswerMode,
-			hasAutoAnswerContacts: this.props.hasAutoAnswerContacts
+			showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
+			showCallMeMaybeModal: this.props.showCallMeMaybeModal
         }
 
         this.menuRef = React.createRef();
     }
     
-/*
     get hasFiles() {
-        if (!this.state.selectedContact) {
-			return false;
-        } 
-        
-        if (Object.keys(this.state.transferedFiles).indexOf(this.state.selectedContact.uri) === -1) {
-			return false;
-        }
-
-        const message_ids = this.state.transferedFiles[this.state.selectedContact.uri];
-        const hasAny = Object.values(message_ids).some(arr => arr.length > 0);
-
-        if (!hasAny) {
-			return false;
-        }
-
-        return true;
-    }
-    */
-
-    get hasFiles() {
-		const contact = this.state.selectedContact?.uri;
-		const msgs = this.state.messages[contact] || [];
-	
+		const contact = this.props.selectedContact?.uri;
+		const msgs = this.props.messages[contact] || [];
 		return msgs.some(m => m.contentType === "application/sylk-file-transfer");
 	}
     
     get hasMessages() {
-		const contact = this.state.selectedContact?.uri;
-		const msgs = this.state.messages[contact] || [];
-	
+		const contact = this.props.selectedContact?.uri;
+		const msgs = this.props.messages[contact] || [];
 		return msgs.some(m => m.contentType !== "application/sylk-file-transfer");
 	}
 
-    //getDerivedStateFromProps(nextProps, state) {
-    UNSAFE_componentWillReceiveProps(nextProps) {
+	componentDidUpdate(prevProps, prevState) {
+	    if (this.state.menuVisible != prevState.menuVisible && this.state.menuVisible) {
+		    Keyboard.dismiss();
+		}
 
-        if (nextProps.account !== null && nextProps.account.id !== this.state.accountId) {
-            this.setState({accountId: nextProps.accountId});
-        }
-
-        let displayName = nextProps.selectedContact ? nextProps.selectedContact.name : nextProps.displayName;
-        let organization = nextProps.selectedContact ? nextProps.selectedContact.organization : nextProps.organization;
-        
-        if ('selectedContact' in nextProps) {
-			this.setState({selectedContact: nextProps.selectedContact});
-            if (nextProps.selectedContact && nextProps.selectedContact != this.state.selectedContact) {
-				this.props.getTransferedFiles(nextProps.selectedContact.uri);
+		// let state = JSON.stringify(this.state, null, 2);
+		//console.log('NB state', state);
+		
+		let keys = Object.keys(this.state);
+		 for (const key of keys) {		
+			if (this.state[key] != prevState[key]) {
+			    //console.log('Navigation bar', key, 'has changed:', this.state[key]);
 			}
-        }
-        
-        if ('showDeleteHistoryModal' in nextProps) {
-			this.setState({showDeleteHistoryModal: nextProps.showDeleteHistoryModal});
-        }
-
-        if ('showDeleteFileTransfers' in nextProps) {
-			this.setState({showDeleteFileTransfers: nextProps.showDeleteFileTransfers});
-        }
-
-        if ('deleteContact' in nextProps) {
-			this.setState({deleteContact: nextProps.deleteContact});
-        }
-
-        this.setState({registrationState: nextProps.registrationState,
-			   connection: nextProps.connection,
-			   syncConversations: nextProps.syncConversations,
-			   contactsLoaded: nextProps.contactsLoaded,
-			   displayName: displayName,
-			   myDisplayName: nextProps.myDisplayName,
-			   appStoreVersion: nextProps.appStoreVersion,
-			   showExportPrivateKeyModal: nextProps.showExportPrivateKeyModal,
-			   email: nextProps.email,
-			   organization: organization,
-			   proximity: nextProps.proximity,
-			   account: nextProps.account,
-			   userClosed: true,
-			   inCall: nextProps.inCall,
-			   publicKey: nextProps.publicKey,
-			   showGenerateKeysModal: nextProps.showGenerateKeysModal,
-			   messages: nextProps.messages,
-			   showCallMeMaybeModal: nextProps.showCallMeMaybeModal,
-			   blockedUris: nextProps.blockedUris,
-			   filteredMessageIds: nextProps.filteredMessageIds,
-			   contentTypes: nextProps.contentTypes,
-			   sharingAction: nextProps.sharingAction,
-			   dnd: nextProps.dnd,
-			   myuuid: nextProps.myuuid,
-			   myPhoneNumber: nextProps.myPhoneNumber,
-			   transferedFiles: nextProps.transferedFiles,
-			   rejectAnonymous: nextProps.rejectAnonymous,
-			   chatSounds: nextProps.chatSounds,
-			   rejectNonContacts: nextProps.rejectNonContacts,
-			   searchMessages: nextProps.searchMessages,
-			   searchContacts: nextProps.searchContacts,
-			   isLandscape: nextProps.isLandscape,
-			   serverSettingsUrl: nextProps.serverSettingsUrl,
-			   publicUrl: nextProps.publicUrl,
-			   insets: nextProps.insets,
-			   call: nextProps.call,
-			   deleteContact: nextProps.deleteContact,
-			   storageUsage: nextProps.storageUsage,
-			   syncPercentage: nextProps.syncPercentage,
-			   devMode: nextProps.devMode,
-			   autoAnswerMode: nextProps.autoAnswerMode,
-			   hasAutoAnswerContacts: nextProps.hasAutoAnswerContacts
-		   });
-
-		   if (nextProps.menuVisible) {
-		       console.log('Next menu visible', nextProps.menuVisible);
-		   }
-			
-		   if ('backupKey' in nextProps) {
-		       this.setState({backupKey: nextProps.backupKey});
-		   }
-    }
+		 }
+	}
 
     handleMenu(event) {
-
-        this.callUrl = `${this.state.publicUrl}/call/${this.state.accountId}`;
         switch (event) {
             case 'about':
                 this.toggleAboutModal();
@@ -241,7 +110,7 @@ class NavigationBar extends Component {
                 this.props.showLogs();
                 break;
             case 'refetchMessages':
-                this.props.refetchMessages(this.refetchMessagesForDays, this.state.selectedContact?.uri);
+                this.props.refetchMessages(this.refetchMessagesForDays, this.props.selectedContact?.uri);
                 break;
             case 'preview':
                 this.props.preview();
@@ -268,7 +137,7 @@ class NavigationBar extends Component {
                 this.toggleAddContactModal();
                 break;
             case 'editContact':
-                if (this.state.selectedContact && this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+                if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
                     this.setState({showEditConferenceModal: true});
                 } else {
                     this.setState({showEditContactModal: true});
@@ -290,26 +159,26 @@ class NavigationBar extends Component {
                 this.setState({showGenerateKeysModal: true});
                 break;
             case 'toggleFavorite':
-                this.props.toggleFavorite(this.state.selectedContact);
+                this.props.toggleFavorite(this.props.selectedContact);
                 break;
             case 'toggleAutoAnswer':
-                this.props.toggleAutoAnswer(this.state.selectedContact);
+                this.props.toggleAutoAnswer(this.props.selectedContact);
                 break;
             case 'toggleBlocked':
-                this.props.toggleBlocked(this.state.selectedContact);
+                this.props.toggleBlocked(this.props.selectedContact);
                 break;
             case 'sendPublicKey':
-                this.props.sendPublicKey(this.state.selectedContact.uri);
+                this.props.sendPublicKey(this.props.selectedContact.uri);
                 break;
             case 'exportPrivateKey':
-                if (this.state.publicKey) {
+                if (this.props.publicKey) {
                     this.showExportPrivateKeyModal();
                 } else {
                     this.props.showImportModal(true);
                 }
                 break;
             case 'backupPrivateKey':
-                if (this.state.publicKey) {
+                if (this.props.publicKey) {
 					this.setState({backupKey: true});
                     this.showExportPrivateKeyModal();
                 }
@@ -328,27 +197,13 @@ class NavigationBar extends Component {
                 }
                 break;
             case 'settings':
-                Linking.openURL(this.state.serverSettingsUrl);
+                Linking.openURL(this.props.serverSettingsUrl);
                 break;
             default:
                 break;
         }
+
         this.setState({menuVisible: false});
-    }
-
-	componentDidUpdate(prevProps, prevState) {
-	    if (prevState.menuVisible !== this.state.menuVisible && this.state.menuVisible) {
-		    Keyboard.dismiss();
-		}
-
-	    if (prevState.selectedContact !== this.state.selectedContact) {
-			//console.log('NB selectedContact changed', this.state.selectedContact);
-		}			
-	}
-
-    toggleMute() {
-        this.setState(prevState => ({mute: !prevState.mute}));
-        this.props.toggleMute();
     }
 
     toggleAboutModal() {
@@ -364,12 +219,12 @@ class NavigationBar extends Component {
     }
 
     audioCall() {
-        let uri = this.state.selectedContact.uri;
+        let uri = this.props.selectedContact.uri;
         this.props.startCall(uri, {audio: true, video: false});
     }
 
     videoCall() {
-        let uri = this.state.selectedContact.uri;
+        let uri = this.props.selectedContact.uri;
         this.props.startCall(uri, {audio: true, video: true});
     }
 
@@ -378,7 +233,7 @@ class NavigationBar extends Component {
     }
 
     get myself() {
-        return this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId;
+        return this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId;
     }
 
     conferenceCall() {
@@ -412,8 +267,8 @@ class NavigationBar extends Component {
 
     hideEditContactModal() {
         this.setState({showEditContactModal: false,
-                       showPublicKey: false,
-                       userClosed: true});
+                       showPublicKey: false
+                       });
     }
 
     handleDnd () {
@@ -438,27 +293,28 @@ class NavigationBar extends Component {
 
     showExportPrivateKeyModal() {
         const password = Math.random().toString().substr(2, 6);
-        this.setState({privateKeyPassword: password});
+        this.setState({privateKeyPassword: password, showExportPrivateKeyModal: true});
         this.props.showExportPrivateKeyModalFunc()
     }
 
     hideExportPrivateKeyModal() {
-        this.setState({backupKey: false});
+        console.log('hideExportPrivateKeyModal');
+        this.setState({backupKey: false, showExportPrivateKeyModal: false});
         this.props.hideExportPrivateKeyModalFunc()
     }
 
     get showBackToCallButton() {
-        if (this.state.shareToContacts) {
+        if (this.props.shareToContacts) {
 			return false;
         }
         
-        if (!this.state.isLandscape) {
+        if (!this.props.isLandscape) {
 			return false;
         }
 
-        if (this.state.call) {
-            //console.log('this.state.call.state', this.state.call.state);
-            if (this.state.call.state !== 'incoming' && this.state.call.state !== 'terminated') {
+        if (this.props.call) {
+            //console.log('this.props.call.state', this.props.call.state);
+            if (this.props.call.state !== 'incoming' && this.props.call.state !== 'terminated') {
 				return true;
 			}
         }
@@ -467,10 +323,9 @@ class NavigationBar extends Component {
     }
 
     render() {
-         const muteIcon = this.state.mute ? 'bell-off' : 'bell';
-         const bellIcon = this.state.dnd ? 'bell-off' : 'bell';
+        const bellIcon = this.props.dnd ? 'bell-off' : 'bell';
 
-        if (this.state.menuVisible && !this.state.appStoreVersion) {
+        if (this.state.menuVisible && !this.props.appStoreVersion) {
             //this.props.checkVersionFunc()
         }
         
@@ -484,93 +339,97 @@ class NavigationBar extends Component {
         statusIcon = 'check-circle';
         let bellStyle = styles.whiteButton;
 
-        if (this.state.connection && this.state.connection.state === 'ready') {
+        if (this.props.connection && this.props.connection.state === 'ready') {
             bellStyle = styles.greenButton;
-        } else if (this.state.connection && this.state.connection.state === 'connecting') {
+        } else if (this.props.connection && this.props.connection.state === 'connecting') {
             bellStyle = styles.whiteButton;
-        } else if (this.state.connection && this.state.connection.state === 'disconnected') {
+        } else if (this.props.connection && this.props.connection.state === 'disconnected') {
             bellStyle = styles.whiteButton;
-        } else if (this.state.connection && this.state.registrationState !== 'registered') {
+        } else if (this.props.connection && this.props.registrationState !== 'registered') {
             bellStyle = styles.redButton;
         } else {
             bellStyle = styles.whiteButton;
         }
 
-        if (!this.state.connection || this.state.connection.state !== 'ready') {
+        if (!this.props.connection || this.props.connection.state !== 'ready') {
             statusIcon = 'alert-circle';
             statusColor = 'red';
-        } else if (this.state.registrationState !== 'registered') {
+        } else if (this.props.registrationState !== 'registered') {
             statusIcon = 'alert-circle';
             statusColor = 'orange';
         }
 
-        let callUrl = callUrl = this.state.publicUrl + "/call/" + this.state.accountId;
-        let proximityTitle = this.state.proximity ? 'Disable proximity sensor' : 'Enable proximity sensor';
-        let proximityIcon = this.state.proximity ? 'ear-hearing-off' : 'ear-hearing';
-        let rejectAnonymousTitle = this.state.rejectAnonymous ? 'Allow anonymous callers' : 'Reject anonymous callers';
-        let rejectIcon = this.state.rejectAnonymous ? 'door-closed-lock' : 'door-open';
+        let callUrl = this.props.publicUrl + "/call/" + this.props.accountId;
+        let proximityTitle = this.props.proximity ? '✓ Proximity sensor' : 'Proximity sensor';
+        let proximityIcon = this.props.proximity ? 'ear-hearing-off' : 'ear-hearing';
+        let rejectAnonymousTitle = this.props.rejectAnonymous ? 'Allow anonymous callers' : 'Reject anonymous callers';
+        let rejectIcon = this.props.rejectAnonymous ? 'door-closed-lock' : 'door-open';
         let isConference = false;
 
-		const friendlyName = this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0] : '';
-		const conferenceUrl = `${this.state.publicUrl}/conference/${friendlyName}`;
+		const friendlyName = this.props.selectedContact ? this.props.selectedContact.uri.split('@')[0] : '';
+		const conferenceUrl = `${this.props.publicUrl}/conference/${friendlyName}`;
 
-        if (this.state.selectedContact) {
-            tags = this.state.selectedContact.tags;
-            isConference = this.state.selectedContact.conference || tags.indexOf('conference') > -1;
+        if (this.props.selectedContact) {
+            tags = this.props.selectedContact.tags;
+            isConference = this.props.selectedContact.conference || tags.indexOf('conference') > -1;
         }
 
-		const isFavorite = this.state.selectedContact && tags && tags.indexOf('favorite') > -1;
+		const isFavorite = this.props.selectedContact && tags && tags.indexOf('favorite') > -1;
 				
         let favoriteTitle = isFavorite ? '✓ Favorite' : 'Favorite';
-        let favoriteIcon = (this.state.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
-        let autoAnswerTitle = this.state.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
-		let autoAnswerModeTitle = this.state.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
+        let favoriteIcon = (this.props.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
+        let autoAnswerTitle = this.props.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
+		let autoAnswerModeTitle = this.props.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
   
         let extraMenu = false;
-        let importKeyLabel = this.state.publicKey ? "Export private key...": "Import private key...";
+        let importKeyLabel = this.props.publicKey ? "Export private key...": "Import private key...";
 
         let showEditModal = this.state.showEditContactModal;
 
-        let showBackButton = this.state.selectedContact || this.state.sharingAction;
+        let showBackButton = this.props.selectedContact || this.props.sharingAction;
 
-        let hasUpdate = this.state.appStoreVersion && this.state.appStoreVersion.version > VersionNumber.appVersion;
+        let hasUpdate = this.props.appStoreVersion && this.props.appStoreVersion.version > VersionNumber.appVersion;
         let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
-        let isAnonymous = this.state.selectedContact && (this.state.selectedContact.uri.indexOf('@guest.') > -1 || this.state.selectedContact.uri.indexOf('anonymous@') > -1);
-        let isCallableUri = !isConference && !this.state.inCall && !isAnonymous && tags.indexOf('blocked') === -1;
+        let isAnonymous = this.props.selectedContact && (this.props.selectedContact.uri.indexOf('@guest.') > -1 || this.props.selectedContact.uri.indexOf('anonymous@') > -1);
+        let isCallableUri = !isConference && !this.props.inCall && !isAnonymous && tags.indexOf('blocked') === -1;
 
-        let blockedTitle = (this.state.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
-        if (isAnonymous && this.state.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
+        let blockedTitle = (this.props.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
+        if (isAnonymous && this.props.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
             blockedTitle = 'Allow anonymous callers';
         }
         
         let editTitle = isConference ? "Configure..." : "Edit contact...";
         let deleteTitle = isConference ? "Remove conference" : "Delete contact...";
-        let searchTitle = this.state.searchMessages ? 'End search': 'Search messages...';
+        let searchTitle = this.props.searchMessages ? 'End search': 'Search messages...';
         
-        let subtitle = this.state.accountId;
-        let title = this.state.myDisplayName || 'Myself';
-        let searchIcon = (this.state.searchMessages || this.state.searchContacts) ? "close" : "magnify";
+        let subtitle = this.props.accountId;
+
+        let organization = this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization;
+        let displayName = this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName;
+
+        let title = displayName || 'Myself';
+        let searchIcon = (this.props.searchMessages || this.props.searchContacts) ? "close" : "magnify";
 
 		function capitalizeFirstLetter(str) {
 		  if (!str) return ""; // Handle empty string
 		  return str[0].toUpperCase() + str.slice(1);
 		}
 
-        if (this.state.selectedContact) {
+        if (this.props.selectedContact) {
 			if (isConference) {
-				title = capitalizeFirstLetter(this.state.selectedContact.uri.split('@')[0]);
+				title = capitalizeFirstLetter(this.props.selectedContact.uri.split('@')[0]);
 				subtitle = 'Conference room';
 			} else {
-			    if (this.state.selectedContact.name && this.state.selectedContact.name != this.state.selectedContact.uri) {
-					title = this.state.selectedContact.name;
+			    if (this.props.selectedContact.name && this.props.selectedContact.name != this.props.selectedContact.uri) {
+					title = this.props.selectedContact.name;
 			    } else {
-					title = capitalizeFirstLetter(this.state.selectedContact.uri.split('@')[0]);
+					title = capitalizeFirstLetter(this.props.selectedContact.uri.split('@')[0]);
 			    }
-				subtitle = this.state.selectedContact.uri;
+				subtitle = this.props.selectedContact.uri;
 			}
 			
-			if (this.state.selectedContact.uri.indexOf('@guest.') > -1) {
+			if (this.props.selectedContact.uri.indexOf('@guest.') > -1) {
 				title = 'Anonymous caller';			
 			}
 
@@ -579,7 +438,7 @@ class NavigationBar extends Component {
         let backButtonTitle = 'Back to call';
 
         if (this.showBackToCallButton) {
-            if (this.state.call.hasOwnProperty('_participants')) {
+            if (this.props.call.hasOwnProperty('_participants')) {
                 backButtonTitle = 'Back to conference';
             } else {
                 backButtonTitle = 'Back to call';
@@ -590,10 +449,10 @@ class NavigationBar extends Component {
 
 		let { width, height } = Dimensions.get('window');
 
-		const topInset = this.state.insets?.top || 0;
-		const bottomInset = this.state.insets?.bottom || 0;
-		const leftInset = this.state.insets?.left || 0;
-		const rightInset = this.state.insets?.right || 0;
+		const topInset = this.props.insets?.top || 0;
+		const bottomInset = this.props.insets?.bottom || 0;
+		const leftInset = this.props.insets?.left || 0;
+		const rightInset = this.props.insets?.right || 0;
 
         let navBarContainer = { 
                               borderWidth: 0, 
@@ -601,8 +460,8 @@ class NavigationBar extends Component {
                               height: 60,
                               };
 
-		let marginLeft = this.state.isLandscape ? - rightInset - leftInset: 0;
-		let navBarWidth = this.state.isLandscape ? width - rightInset - leftInset : width;
+		let marginLeft = this.props.isLandscape ? - rightInset - leftInset: 0;
+		let navBarWidth = this.props.isLandscape ? width - rightInset - leftInset : width;
 
 		let appBarContainer = {
 		                 backgroundColor: 'black', 
@@ -617,7 +476,7 @@ class NavigationBar extends Component {
 
         if (Platform.OS === "ios") {
 			appBarContainer.marginTop = 0;
-			if (this.state.isLandscape) {
+			if (this.props.isLandscape) {
 			    appBarContainer.marginLeft = -leftInset;
 			    //appBarContainer.width = navBarWidth - 200;
 			}
@@ -656,10 +515,10 @@ class NavigationBar extends Component {
                     subtitleStyle={[subtitleStyle, { marginLeft: 0 }]}
                 />
 
-               { this.props.isTablet && this.state.syncPercentage != 100 ?
+               { this.props.isTablet && this.props.syncPercentage != 100 ?
 				<View style={{ flexDirection: 'column', flexShrink: 1, alignItems: 'center'}}>
 				  <Progress.Bar
-					progress={this.state.syncPercentage / 100 }
+					progress={this.props.syncPercentage / 100 }
 					width={150}         // smaller width for inline look
 					height={6}
 					borderRadius={3}
@@ -675,7 +534,7 @@ class NavigationBar extends Component {
 					  marginTop: 2,
 					}}
 				  >
-					Replay journal: {Math.round(this.state.syncPercentage)}%
+					Replay journal: {Math.round(this.props.syncPercentage)}%
 				  </Text>
 				</View>
 				   : null }
@@ -691,7 +550,7 @@ class NavigationBar extends Component {
 						</Button>
                 : null}
 
-                { false && !this.state.rejectNonContacts && ! this.state.selectedContact?
+                { false && !this.props.rejectNonContacts && ! this.props.selectedContact?
                 <IconButton
                     style={styles.whiteButton}
                     size={18}
@@ -701,7 +560,7 @@ class NavigationBar extends Component {
                 />
                 : null}
 
-                {this.state.selectedContact ?
+                {this.props.selectedContact ?
                 <IconButton
                     style={[styles.whiteButton ]}
                     size={18}
@@ -720,7 +579,7 @@ class NavigationBar extends Component {
 
                 }
 
-               { (!this.state.selectedContact && !this.state.searchContacts) ?
+               { (!this.props.selectedContact && !this.props.searchContacts) ?
                 <IconButton
                     style={styles.whiteButton}
                     size={18}
@@ -730,7 +589,7 @@ class NavigationBar extends Component {
                 />
                 : null}
 
-               { (!this.state.selectedContact && !this.state.searchContacts) ?
+               { (!this.props.selectedContact && !this.props.searchContacts) ?
                 <IconButton
                     style={[bellStyle, {marginLeft: 10}]}
                     size={18}
@@ -746,7 +605,7 @@ class NavigationBar extends Component {
                 : null }
                 
 
-                { this.state.selectedContact ?
+                { this.props.selectedContact ?
                     <Menu
                         visible={this.state.menuVisible}
                         onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
@@ -762,7 +621,7 @@ class NavigationBar extends Component {
 
                         { false ? <Menu.Item onPress={() => this.handleMenu('searchMessages')} icon="search" title={searchTitle}/> : null}
 
-						{ !this.state.searchMessages && !isAnonymous ?
+						{ !this.props.searchMessages && !isAnonymous ?
 						<Menu.Item onPress={() => this.handleMenu('editContact')} icon="account" title={editTitle}/>
 						: null}
 
@@ -772,55 +631,59 @@ class NavigationBar extends Component {
 
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
-                        {tags.indexOf('blocked') === -1 && !this.state.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
+                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
                                                 
-                        { !this.state.searchMessages && this.hasMessages && !this.state.inCall ?
+                        { !this.props.searchMessages && this.hasMessages && !this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Delete messages..."/>
                         : null
                         }
 
-                        {!this.state.searchMessages && this.hasFiles && !this.state.inCall ?
+                        {!this.props.searchMessages && this.hasFiles && !this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('deleteFileTransfers')} icon="delete" title="Delete files..."/>
                         : null
                         }
 
-                        { !this.state.searchMessages && this.hasFiles && !this.state.inCall && 'paused' in this.state.contentTypes ?
+                        { !this.props.searchMessages && this.hasFiles && !this.props.inCall && 'paused' in this.props.contentTypes ?
                         <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
                         : null
                         }
 
-						{!isConference && !this.state.searchMessages && this.props.publicKey ?
+						{!isConference && !this.props.searchMessages && this.props.publicKey ?
                         <Divider />
                         : null}
 
-                        { this.state.devMode ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>: null}
+                        { this.props.devMode ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>: null}
 
-                        {!isConference && !this.state.searchMessages && this.props.publicKey ?
+                        {!isConference && !this.props.searchMessages && this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
 
-                        {!isConference && !this.state.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous?
+                        {!isConference && !this.props.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
-
-                        {!isConference && !this.state.searchMessages && tags.indexOf('test') === -1 && !this.state.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
-                        : null}
  
-                        {!this.myself && !this.state.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 ?
+                        {!this.myself && !this.props.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
 
-                        {!isAnonymous && !isConference && !this.myself && !this.state.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.state.inCall ?
+                        {!isAnonymous && !isConference && !this.myself && !this.props.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!this.state.inCall && tags.indexOf('test') === -1 && !isFavorite?
+                        {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
                         <Divider />
                         : null}
 
-                        {!this.myself && !this.state.inCall && tags.indexOf('test') === -1 && !isFavorite?
+                        {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
+                        : null}
+
+                        {!this.props.inCall && tags.indexOf('test') === -1 && !isFavorite?
+                        <Divider />
+                        : null}
+
+                        {!this.props.inCall && !isFavorite?
                         <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
                         : null}
                         
@@ -838,28 +701,28 @@ class NavigationBar extends Component {
                             />
                         }
                     >
-                        {!this.state.inCall ?
+                        {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                          : null }
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
-                        {!this.state.inCall ?
+                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
                          : null }
 
-                        {!this.state.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
-                        {!this.state.inCall ?
+                        {!this.props.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
+                        {!this.props.inCall ?
                         <Divider />
                         : null}
 
-                        { (this.state.devMode && this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
+                        { (this.props.devMode && this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
  
-                        {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
-                        {this.props.canSend() && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
-                        {!this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
-                        {false && !this.state.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
+                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
+                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
+                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
+                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
+                        {this.props.devMode && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
 
-                        {!this.state.inCall ?
+                        {!this.props.inCall ?
 						<Divider />
                         : null}
 
@@ -873,27 +736,27 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
 
 
-                        {!this.state.inCall ?
+                        {!this.props.inCall ?
                         <Divider />
                          : null }
 
-                       {!this.state.syncConversations && !this.state.inCall  ?
+                       {!this.props.syncConversations && !this.props.inCall  ?
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
  
-                      {(!this.state.syncConversations && !this.state.inCall && Platform.OS === "ios" && this.state.hasAutoAnswerContacts) ?
+                      {(!this.props.syncConversations && !this.props.inCall && Platform.OS === "ios" && this.props.hasAutoAnswerContacts) ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
                         : null}
 
-                        {!this.state.inCall ?
+                        {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
                          : null }
 
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
 
-                        {!this.state.inCall ?
+                        {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
-                        {!this.state.inCall ?
+                        {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
                     </Menu>
                     }
@@ -902,14 +765,14 @@ class NavigationBar extends Component {
                     show={this.state.showAboutModal}
                     close={this.toggleAboutModal}
                     currentVersion={VersionNumber.appVersion}
-                    appStoreVersion={this.state.appStoreVersion}
+                    appStoreVersion={this.props.appStoreVersion}
                     buildId={this.props.buildId}
                     toggleDevMode={this.props.toggleDevMode}
-                    devMode={this.state.devMode}
+                    devMode={this.props.devMode}
                 />
 
                 <CallMeMaybeModal
-                    show={this.state.showCallMeMaybeModal}
+                    show={this.props.showCallMeMaybeModal}
                     close={this.props.toggleCallMeMaybeModal}
                     callUrl={callUrl}
                     notificationCenter={this.props.notificationCenter}
@@ -918,27 +781,27 @@ class NavigationBar extends Component {
                 <DeleteHistoryModal
                     show={this.state.showDeleteHistoryModal}
                     close={this.closeDeleteHistoryModal}
-                    uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
-                    displayName={this.state.displayName}
+                    uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
+                    displayName={this.props.displayName}
                     hasMessages={this.hasMessages}
                     deleteMessages={this.props.deleteMessages}
-                    filteredMessageIds={this.state.filteredMessageIds}
-                    selectedContact={this.state.selectedContact}
+                    filteredMessageIds={this.props.filteredMessageIds}
+                    selectedContact={this.props.selectedContact}
                     deleteContact={this.state.deleteContact}
-                    myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
+                    myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
                 />
 
                 <DeleteFileTransfers
                     show={this.state.showDeleteFileTransfers}
-                    selectedContact={this.state.selectedContact}
                     close={this.closeDeleteFileTransfers}
-                    selectedContact={this.state.selectedContact}
-                    uri={this.state.selectedContact ? this.state.selectedContact.uri : null}
-                    displayName={this.state.displayName}
+                    selectedContact={this.props.selectedContact}
+                    selectedContact={this.props.selectedContact}
+                    uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
+                    displayName={this.props.displayName}
                     deleteFilesFunc={this.props.deleteFiles}
-                    transferedFiles={this.state.transferedFiles}
+                    transferedFiles={this.props.transferedFiles}
                     getTransferedFiles={this.props.getTransferedFiles}
-                    myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
+                    myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
                 />
 
                 <AddContactModal
@@ -951,69 +814,63 @@ class NavigationBar extends Component {
                 <EditContactModal
                     show={showEditModal}
                     close={this.hideEditContactModal}
-                    uri={this.state.selectedContact ? this.state.selectedContact.uri : this.state.accountId}
-                    displayName={this.state.displayName}
-                    selectedContact={this.state.selectedContact}
-                    organization={this.state.organization}
-                    email={this.state.selectedContact ? this.state.selectedContact.email : this.state.email}
-                    myself={!this.state.selectedContact || (this.state.selectedContact && this.state.selectedContact.uri === this.state.accountId) ? true : false}
+                    uri={this.props.selectedContact ? this.props.selectedContact.uri : this.props.accountId}
+                    displayName={this.props.displayName}
+                    selectedContact={this.props.selectedContact}
+                    organization={this.props.organization}
+                    email={this.props.selectedContact ? this.props.selectedContact.email : this.props.email}
+                    myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
                     saveContactByUser={this.props.saveContactByUser}
                     deletePublicKey={this.props.deletePublicKey}
-                    publicKey={this.state.showPublicKey ? this.state.publicKey: null}
-                    myuuid={this.state.myuuid}
- 				    rejectNonContacts={this.state.rejectNonContacts}
+                    publicKey={this.state.showPublicKey ? this.props.publicKey: null}
+                    myuuid={this.props.myuuid}
+ 				    rejectNonContacts={this.props.rejectNonContacts}
  				    toggleRejectNonContacts={this.props.toggleRejectNonContacts}
-					rejectAnonymous={this.state.rejectAnonymous}
+					rejectAnonymous={this.props.rejectAnonymous}
  				    toggleRejectAnonymous={this.props.toggleRejectAnonymous}
-					chatSounds={this.state.chatSounds}
+					chatSounds={this.props.chatSounds}
  				    toggleChatSounds={this.props.toggleChatSounds}
- 				    storageUsage={this.state.storageUsage}
+ 				    storageUsage={this.props.storageUsage}
                 />
 
                 { this.state.showEditConferenceModal ?
                 <EditConferenceModal
                     show={this.state.showEditConferenceModal}
                     close={this.closeEditConferenceModal}
-                    room={this.state.selectedContact ? this.state.selectedContact.uri.split('@')[0]: ''}
-                    displayName={this.state.displayName}
-                    participants={this.state.selectedContact ? this.state.selectedContact.participants : []}
-                    selectedContact={this.state.selectedContact}
+                    room={this.props.selectedContact ? this.props.selectedContact.uri.split('@')[0]: ''}
+                    displayName={this.props.displayName}
+                    participants={this.props.selectedContact ? this.props.selectedContact.participants : []}
+                    selectedContact={this.props.selectedContact}
                     toggleFavorite={this.props.toggleFavorite}
                     saveConference={this.saveConference}
                     defaultDomain={this.props.defaultDomain}
-                    accountId={this.state.accountId}
+                    accountId={this.props.accountId}
                     favoriteUris={this.props.favoriteUris}
                 />
                 : null}
 
-                { this.state.showConferenceLinkModal ?
                 <ShareConferenceLinkModal
-                    notificationCenter={this.props.notificationCenter}
                     show={this.state.showConferenceLinkModal}
+                    notificationCenter={this.props.notificationCenter}
                     close={this.hideConferenceLinkModal}
                     conferenceUrl={conferenceUrl}
                 />
-                : null}
                 
-				{this.state.showExportPrivateKeyModal && (
-				  <ExportPrivateKeyModal
-					show={this.state.showExportPrivateKeyModal}
+				<ExportPrivateKeyModal
+					show={this.props.showExportPrivateKeyModal}
 					password={this.state.privateKeyPassword}
 					close={this.hideExportPrivateKeyModal}
 					exportFunc={this.props.exportKey|| (() => {})}
-					publicKeyHash={this.state.publicKeyHash}
-					publicKey={this.state.publicKey}
+					publicKeyHash={this.props.publicKeyHash}
+					publicKey={this.props.publicKey}
 					backup={this.state.backupKey}
-				  />
-				)}
+				/>
 
-                { this.state.showGenerateKeysModal && (
                 <GenerateKeysModal
                     show={this.state.showGenerateKeysModal}
                     close={this.hideGenerateKeysModal}
                     generateKeysFunc={this.props.generateKeysFunc}
-                />)
-                }
+                />
 
             </Appbar.Header>
 		</View>
@@ -1039,7 +896,6 @@ NavigationBar.propTypes = {
     account            : PropTypes.object,
     accountId          : PropTypes.string,
     connection         : PropTypes.object,
-    toggleMute         : PropTypes.func,
     orientation        : PropTypes.string,
     isTablet           : PropTypes.bool,
     selectedContact    : PropTypes.object,

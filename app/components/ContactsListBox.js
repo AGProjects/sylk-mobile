@@ -1458,6 +1458,7 @@ class ContactsListBox extends Component {
         }
 
         const item = this.props.newContactFunc(uri.toLowerCase(), null, {src: 'search_contact'});
+
         if (!item) {
             return [];
         }

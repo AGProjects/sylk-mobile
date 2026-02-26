@@ -663,6 +663,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				Log.d("[SYLK]", "Skipping notification: user is in chat " + activeChat);
 				return;
 			}
+			
+			if (activeChat != null) {
+			    Log.d("[SYLK]", "Active chat " + activeChat);
+			} else {
+			    Log.d("[SYLK]", "No active chat");
+			}
 
 			// increase unread badge counter
 			incrementUnreadForContact(fromUri);
