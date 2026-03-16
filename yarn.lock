@@ -10483,6 +10483,11 @@ react-native-sylkrtc@AGProjects/react-native-sylkrtc.js:
     websocket "^1.0.34"
     xss "^1.0.8"
 
+react-native-track-player@^4.1.2:
+  version "4.1.2"
+  resolved "https://registry.yarnpkg.com/react-native-track-player/-/react-native-track-player-4.1.2.tgz#f855e79ea947f7fed707dbd4b5e9a8bc02e0454d"
+  integrity sha512-cIgMlqVJx/95hirUWPRW8CHxiBFj9Rjl/voKHh2jF/2URYMTQyt76t/m2FKvjeYUW2doKv4QSCBIOUmtyDLtJw==
+
 react-native-typing-animation@0.1.7:
   version "0.1.7"
   resolved "https://registry.npmjs.org/react-native-typing-animation/-/react-native-typing-animation-0.1.7.tgz"

@@ -171,6 +171,10 @@ class ReadyBox extends Component {
 		  this.props.filterHistoryFunc(null);
       }
 
+      if (this.state.messagesCategoryFilter !== prevState.messagesCategoryFilter) {
+		  console.log('messagesCategoryFilter did change', this.state.messagesCategoryFilter);
+      }
+
       if (this.state.historyFilter !== prevState.historyFilter) {
 		  if (this.state.historyFilter == 'calls' || this.state.historyFilter == 'conference') {
 			  this.setState({historyPeriodFilter: 'recent'});
@@ -1038,9 +1042,6 @@ class ReadyBox extends Component {
     }
     
     toggleQRCodeScanner(event) {
-        if (event) {
-            event.preventDefault();
-        }
         //console.log('Scan QR code...');
         this.props.toggleQRCodeScannerFunc();
     }

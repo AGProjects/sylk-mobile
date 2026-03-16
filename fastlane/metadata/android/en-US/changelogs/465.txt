@@ -1,0 +1,3 @@
+Added key management submenu
+Fix building last message
+Fix replicating deleted contacts

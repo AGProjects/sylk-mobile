@@ -1138,6 +1138,9 @@ PODS:
     - React
   - react-native-sqlite-storage (5.0.0):
     - React
+  - react-native-track-player (4.1.2):
+    - React-Core
+    - SwiftAudioEx (= 1.1.0)
   - react-native-version-number (0.3.6):
     - React
   - react-native-video (5.2.1):
@@ -1382,6 +1385,7 @@ PODS:
     - libwebp (~> 1.0)
     - SDWebImage/Core (~> 5.10)
   - SocketRocket (0.6.1)
+  - SwiftAudioEx (1.1.0)
   - Yoga (1.14.0)
 
 DEPENDENCIES:
@@ -1465,6 +1469,7 @@ DEPENDENCIES:
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-splash-screen (from `../node_modules/react-native-splash-screen`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
+  - react-native-track-player (from `../node_modules/react-native-track-player`)
   - react-native-version-number (from `../node_modules/react-native-version-number`)
   - react-native-video (from `../node_modules/react-native-video`)
   - react-native-webrtc (from `../node_modules/react-native-webrtc`)
@@ -1546,6 +1551,7 @@ SPEC REPOS:
     - SDWebImage
     - SDWebImageWebPCoder
     - SocketRocket
+    - SwiftAudioEx
 
 EXTERNAL SOURCES:
   boost:
@@ -1651,6 +1657,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-splash-screen"
   react-native-sqlite-storage:
     :path: "../node_modules/react-native-sqlite-storage"
+  react-native-track-player:
+    :path: "../node_modules/react-native-track-player"
   react-native-version-number:
     :path: "../node_modules/react-native-version-number"
   react-native-video:
@@ -1826,6 +1834,7 @@ SPEC CHECKSUMS:
   react-native-safe-area-context: 758e894ca5a9bd1868d2a9cfbca7326a2b6bf9dc
   react-native-splash-screen: a43276f9cf4b2e65d7ce30efe372ffc528064293
   react-native-sqlite-storage: cd23d30c96b642f435f7b15bde803bdbc0289ea2
+  react-native-track-player: dd56f9948e03756a217c75e0a61aa04aab65b5a1
   react-native-version-number: 3d74b5224ca4e1032b1593937d86d3f3c94bf95c
   react-native-video: 2aad0d963bf3952bd9ebb2f53fab799338e8e202
   react-native-webrtc: ea360b86e6667ce9f317748d332423c6943483fd
@@ -1875,6 +1884,7 @@ SPEC CHECKSUMS:
   SDWebImage: a7f831e1a65eb5e285e3fb046a23fcfbf08e696d
   SDWebImageWebPCoder: 908b83b6adda48effe7667cd2b7f78c897e5111d
   SocketRocket: f32cd54efbe0f095c4d7594881e52619cfe80b17
+  SwiftAudioEx: f6aa653770f3a0d3851edaf8d834a30aee4a7646
   Yoga: a813a6d82538ccba91c54406404e3ed80b48a692
 
 PODFILE CHECKSUM: 321f6676371975236cd06b9f7aa1cbd15856aaa3

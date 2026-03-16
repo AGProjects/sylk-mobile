@@ -236,147 +236,154 @@ const ChatBubble = memo(
     );
   },
 
-  /**
+  /*
    * memo comparator:
    * return true  -> SKIP re-render
    * return false -> re-render
    */
-(prev, next) => {
-  const p = prev.currentMessage;
-  const n = next.currentMessage;
 
-  if (!p || !n) {
-    console.log(`[Bubble ${p?._id || '??'}] RERENDER → missing message`);
-    return false;
-  }
-
-  const id = p._id;
-
-	// ==== Reply messages ====
-	const currentId = p._id;
+	(prev, next) => {
+	  const p = prev.currentMessage;
+	  const n = next.currentMessage;
 	
-	const prevLabel = prev.mediaLabels?.[currentId];
-	const nextLabel = next.mediaLabels?.[currentId];
-	
-	if (prevLabel !== nextLabel) {
-	  if ( nextLabel === undefined) {
-		  return true;
+	  if (!p || !n) {
+		//console.log(`[Bubble ${p?._id || '??'}] RERENDER → missing message`);
+		return false;
 	  }
-
-	  console.log(`[Bubble ${currentId}] RERENDER → mediaLabels changed ${prevLabel} -> ${nextLabel}`);
+	
+	  const id = p._id;
+	
+		// ==== Reply messages ====
+		const currentId = p._id;
+		
+		const prevLabel = prev.mediaLabels?.[currentId];
+		const nextLabel = next.mediaLabels?.[currentId];
+		
+		if (prevLabel !== nextLabel) {
+		  if ( nextLabel === undefined) {
+			  return true;
+		  }
+	
+		  //console.log(`[Bubble ${currentId}] RERENDER → mediaLabels changed ${prevLabel} -> ${nextLabel}`);
+		  return false;
+		}
+		
+		// ==== Media rotation ====
+		const prevRotation = prev.mediaRotations?.[currentId];
+		const nextRotation = next.mediaRotations?.[currentId];
+		
+		if (prevRotation !== nextRotation) {
+		  //console.log(`[Bubble ${currentId}] RERENDER → mediaRotation changed ${prevRotation} -> ${nextRotation}`);
+		  return false; // re-render
+		}
+	
+		const prevReply = prev.replyMessages?.[currentId] ?? false;
+		const nextReply = next.replyMessages?.[currentId] ?? false;
+		
+		if (prevReply !== nextReply) {
+		  //console.log(`[Bubble ${currentId}] RERENDER → replyMessages changed from ${prevReply} to ${nextReply}`);
+		  return false; // trigger re-render
+		}
+	
+	  if (prev.fullSize != next.fullSize) {
+		//console.log(`[Bubble ${id}] RERENDER → fullSize changed`);
+		return false;
+	  }
+	
+	  // ==== Transfer progress ====
+	  const prevProgress = prev.transferProgress?.[id]?.progress ?? 0;
+	  const nextProgress = next.transferProgress?.[id]?.progress ?? 0;
+	  if (prevProgress !== nextProgress) {
+	    if (prevProgress && nextProgress !== 0 && prevProgress > nextProgress) {
+			console.log(`[Bubble ${id}] RERENDER → progress skip negative changed (${prevProgress} → ${nextProgress})`);
+			return true;
+	    } 
+		console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
+		return false;
+	  }
+		
+	  // ==== Image loading state ====
+	  const prevImgState = prev.imageLoadingState?.[id] ?? null;
+	  const nextImgState = next.imageLoadingState?.[id] ?? null;
+	  if (prevImgState !== nextImgState) {
+		//console.log(`[Bubble ${id}] RERENDER → image state changed ${prevImgState} -> ${nextImgState}`);
+		return true;
+	  }
+	
+	// ==== Thumbnail / video meta ====
+	const prevThumb = prev.videoMetaCache?.[id]?.thumbnail;
+	const nextThumb = next.videoMetaCache?.[id]?.thumbnail;
+	
+	// Treat undefined and null as the same
+	if ((prevThumb ?? null) !== (nextThumb ?? null)) {
+	  //console.log(`[Bubble ${id}] RERENDER → video thumbnail changed ${prevThumb} -> ${nextThumb}`);
 	  return false;
 	}
 	
-	// ==== Media rotation ====
-	const prevRotation = prev.mediaRotations?.[currentId];
-	const nextRotation = next.mediaRotations?.[currentId];
-	
-	if (prevRotation !== nextRotation) {
-	  console.log(`[Bubble ${currentId}] RERENDER → mediaRotation changed ${prevRotation} -> ${nextRotation}`);
-	  return false; // re-render
-	}
-
-	const prevReply = prev.replyMessages?.[currentId] ?? null;
-	const nextReply = next.replyMessages?.[currentId] ?? null;
-	
-	if (prevReply !== nextReply) {
-	  console.log(`[Bubble ${currentId}] RERENDER → replyMessages changed from ${prevReply} to ${nextReply}`);
-	  return false; // trigger re-render
-	}
-
-  if (prev.fullSize != next.fullSize) {
-    console.log(`[Bubble ${id}] RERENDER → fullSize changed`);
-    return false;
-  }
-
-  // ==== Transfer progress ====
-  const prevProgress = prev.transferProgress?.[id]?.progress;
-  const nextProgress = next.transferProgress?.[id]?.progress;
-  if (prevProgress !== nextProgress) {
-    //console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
-    return false;
-  }
-	
-	/*
-  // ==== Image loading state ====
-  const prevImgState = prev.imageLoadingState?.[id];
-  const nextImgState = next.imageLoadingState?.[id];
-  if (prevImgState !== nextImgState) {
-    console.log(`[Bubble ${id}] RERENDER → image state changed ${prevImgState} -> ${nextImgState}`);
-    return false;
-  }
-*/
-
-// ==== Thumbnail / video meta ====
-const prevThumb = prev.videoMetaCache?.[id]?.thumbnail;
-const nextThumb = next.videoMetaCache?.[id]?.thumbnail;
-
-// Treat undefined and null as the same
-if ((prevThumb ?? null) !== (nextThumb ?? null)) {
-  console.log(`[Bubble ${id}] RERENDER → video thumbnail changed ${prevThumb} -> ${nextThumb}`);
-  return false;
-}
-
-  // ==== Content changed ====
-	const contentFields = ['text', 'image', 'video', 'audio'];
-	for (let f of contentFields) {
-	  const oldVal = p[f] ?? null;  // convert undefined to null
-	  const newVal = n[f] ?? null;  // convert undefined to null
-	  if (oldVal !== newVal) {
-		//console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
-		return false;
-	  }
-	}
-
-	// ==== Status flags ====
-	const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label'];
-	
-	for (let f of flags) {
-		const oldValue = p[f] !== undefined ? p[f] : null;
-		const newValue = n[f] !== undefined ? n[f] : null;
-	
-		// Only trigger if they actually differ
-
-		if (f == 'playing') {
-			if (oldValue == null) {
-				oldValue = false;
-			}
-
-			if (newValue == null) {
-				newValue = false;
-			}
-		}
-
-		if ( f == 'consumed' && oldValue && newValue && newValue < oldValue) {
-			return true;
-		}
-
-		if ( f == 'rotation' || f == 'position') {
-		    if (oldValue == null && newValue == 0) {
+	  // ==== Content changed ====
+		const contentFields = ['text', 'image', 'video', 'audio'];
+		for (let f of contentFields) {
+		  const oldVal = p[f] ?? null;  // convert undefined to null
+		  const newVal = n[f] ?? null;  // convert undefined to null
+		  if (oldVal !== newVal) {
+		    if (oldVal && !newVal) {
+		        // don't empty existing content 
 				return true;
-			}
-
-			if (newValue == null) {
-				return true;
-			}
-		}
-
-		if (oldValue != null && newValue == null) {
-			// ignore transient disappearance
-			return true;
-		}
-
-		//console.log(`[Bubble ${id}] RERENDER → status '${f}' : ${oldValue} -> ${newValue}`);
-		
-		if (oldValue !== newValue) {
-			//console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
+		    } 
+			console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
 			return false;
+		  }
 		}
+	
+		// ==== Status flags ====
+		const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label'];
+		
+		for (let f of flags) {
+			const oldValue = p[f] !== undefined ? p[f] : null;
+			const newValue = n[f] !== undefined ? n[f] : null;
+		
+			// Only trigger if they actually differ
+	
+			if (f == 'playing') {
+				if (oldValue == null) {
+					oldValue = false;
+				}
+	
+				if (newValue == null) {
+					newValue = false;
+				}
+			}
+	
+			if ( f == 'consumed' && oldValue && newValue && newValue < oldValue) {
+				return true;
+			}
+	
+			if ( f == 'rotation' || f == 'position') {
+				if (oldValue == null && newValue == 0) {
+					return true;
+				}
+	
+				if (newValue == null) {
+					return true;
+				}
+			}
+	
+			if (oldValue != null && newValue == null) {
+				// ignore transient disappearance
+				return true;
+			}
+	
+			//console.log(`[Bubble ${id}] RERENDER → status '${f}' : ${oldValue} -> ${newValue}`);
+			
+			if (oldValue !== newValue) {
+				console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
+				return false;
+			}
+		}
+	
+	  // nothing relevant has changed  
+	  return true;
 	}
-
-  // nothing relevant has changed  
-  return true;
-}
 
 );
 

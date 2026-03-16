@@ -32,7 +32,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				//Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 
@@ -42,6 +42,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 		String from_uri = intent.getStringExtra("from_uri");
 		String to_uri = intent.getStringExtra("to_uri");
 		String phoneLockedStr = intent.getStringExtra("phoneLocked");
+
 		boolean phoneLocked = "true".equals(phoneLockedStr);
 		int notificationId = intent.getIntExtra("notification-id", -1);
 

@@ -332,7 +332,7 @@ public class IncomingCallService extends Service {
             Log.w(LOG_TAG, "Missing event");
             return START_NOT_STICKY;
         }
-           
+
 		if ("ACTION_ACCEPT_AUDIO".equals(action) || "ACTION_ACCEPT_VIDEO".equals(action)) {		 
 			Log.d(LOG_TAG, "Starting app for accepted call " + callId + " from " + from_uri);
 			stopRingtone();
@@ -431,6 +431,8 @@ public class IncomingCallService extends Service {
 		fullScreenIntent.putExtra("from_uri", from_uri);
 		fullScreenIntent.putExtra("to_uri", to_uri);
 		fullScreenIntent.putExtra("event", event);
+		fullScreenIntent.putExtra("media-type", mediaType);
+		fullScreenIntent.putExtra("phoneLocked", phoneLocked);
 	
 		fullScreenIntent.setFlags(
 				Intent.FLAG_ACTIVITY_NEW_TASK |
@@ -454,6 +456,7 @@ public class IncomingCallService extends Service {
 							.putExtra("from_uri", from_uri)
 							.putExtra("to_uri", to_uri)
 							.putExtra("event", event)
+							.putExtra("media-type", mediaType)
 							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 							PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -469,6 +472,7 @@ public class IncomingCallService extends Service {
 							.putExtra("from_uri", from_uri) 
 							.putExtra("to_uri", to_uri)
 							.putExtra("event", event)
+							.putExtra("media-type", mediaType)
 							.putExtra("phoneLocked", phoneLocked)
 							.putExtra("notification-id", notificationId),
 							PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE

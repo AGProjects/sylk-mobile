@@ -4,8 +4,10 @@ import PropTypes from 'prop-types';
 import ipaddr from 'ipaddr.js';
 import autoBind from 'auto-bind';
 
-import { Button, TextInput, Title, Subheading } from 'react-native-paper';
+import { Button, TextInput, Title, Subheading, IconButton } from 'react-native-paper';
 import EnrollmentModal from './EnrollmentModal';
+import QRCodeScanner from 'react-native-qrcode-scanner';
+import { RNCamera } from 'react-native-camera';
 import storage from '../storage';
 import styles from '../assets/styles/blink/_RegisterForm.scss';
 
@@ -41,10 +43,8 @@ class RegisterForm extends Component {
         this.state = {
             accountId: '',
             password: '',
-            connected: props.connected,
             registering: false,   // login in progress
             remember: false,
-            myPhoneNumber: props.myPhoneNumber,
             showEnrollmentModal: false,
             enrollmentUrl: props.enrollmentUrl,
             showServer: false,
@@ -80,6 +80,10 @@ class RegisterForm extends Component {
 	componentDidUpdate(prevProps, prevState) {
 	    if (prevState.serverIsValid != this.state.serverIsValid) {
 			console.log('serverIsValid', this.state.serverIsValid);
+	    }
+
+	    if (this.state.showQRCodeScanner != prevState.showQRCodeScanner && this.state.showQRCodeScanner) {
+		    this.props.requestCameraPermission();
 	    }
 
 	    if (prevState.domainChecked != this.state.domainChecked) {
@@ -250,6 +254,24 @@ class RegisterForm extends Component {
         
 		return this.props.registrationInProgress || !this.validInput();
     }
+
+    QRCodeRead(e) {
+        // console.log('QR code data:', e.data);
+        this.props.toggleQRCodeScannerFunc();
+
+		let domain;
+
+		try {
+		  const url = new URL(e.data);
+		  domain = url.hostname;
+		} catch {
+			domain = e.data.replace(/^https?:\/\//, '');
+		}        
+
+		this.setState({
+			newSylkDomain: domain
+		});
+    }
                             
     render() {   
         let serverLabel = "Chose another Sylk domain";
@@ -272,6 +294,21 @@ class RegisterForm extends Component {
             : this.props.orientation === 'landscape'
             ? styles.landscapeContainer
             : styles.portraitContainer;
+
+	   if (this.props.showQRCodeScanner) {
+        return (
+            <View style={containerClass}>
+				<Title style={styles.title}>Sylk</Title>
+                <Subheading style={styles.subtitle}>Scan domain...</Subheading>
+				<QRCodeScanner
+					onRead={this.QRCodeRead}
+					showMarker={true}
+					flashMode={RNCamera.Constants.FlashMode.off}
+					containerStyle={styles.QRcodeContainer}
+				 />
+			</View>
+		 );
+		}
 
         return (
             <View style={containerClass}>
@@ -334,6 +371,13 @@ class RegisterForm extends Component {
                         value={this.state.newSylkDomain}
                         onChangeText={this.changeSylkDomain}
                         autoCapitalize="none"
+						right={
+						  <TextInput.Icon
+							forceTextInputFocus={false}
+							icon="qrcode-scan"
+							onPress={() => this.props.toggleQRCodeScannerFunc()}
+						  />
+						}
                     />
                 </View>
                 : null}
@@ -406,7 +450,6 @@ class RegisterForm extends Component {
                 </Text>
                 :null}
                 
-
                 <EnrollmentModal
                     enrollmentUrl={this.state.enrollmentUrl}
                     show={this.state.showEnrollmentModal}
@@ -426,10 +469,9 @@ RegisterForm.propTypes = {
     defaultDomain: PropTypes.string,
     sylkDomain: PropTypes.string,
     serverIsValid: PropTypes.bool,
-    handleSignIn: PropTypes.func.isRequired,
-    handleEnrollment: PropTypes.func.isRequired,
-    registrationInProgress: PropTypes.bool.isRequired,
-    connected: PropTypes.bool,
+    handleSignIn: PropTypes.func,
+    handleEnrollment: PropTypes.func,
+    registrationInProgress: PropTypes.bool,
     orientation: PropTypes.string,
     isTablet: PropTypes.bool,
     myPhoneNumber: PropTypes.string,
@@ -437,7 +479,10 @@ RegisterForm.propTypes = {
     SylkServerDiscovery: PropTypes.bool,
     SylkServerDiscoveryResult: PropTypes.string,
     SylkServerStatus: PropTypes.string,
-    resetSylkServerStatus: PropTypes.func
+    resetSylkServerStatus: PropTypes.func,
+    showQRCodeScanner      : PropTypes.bool,
+    toggleQRCodeScannerFunc: PropTypes.func,
+    requestCameraPermission: PropTypes.func
 };
 
 export default RegisterForm;

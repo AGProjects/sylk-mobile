@@ -94,6 +94,7 @@
     "react-native-svg": "^12.1.0",
     "react-native-svg-charts": "^5.4.0",
     "react-native-swipe-list-view": "^3.2.3",
+    "react-native-track-player": "^4.1.2",
     "react-native-uuid": "^2.0.3",
     "react-native-vector-icons": "^10.0.0",
     "react-native-version-number": "^0.3.6",

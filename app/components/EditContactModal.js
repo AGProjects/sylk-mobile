@@ -7,9 +7,26 @@ import utils from '../utils';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 import {Keyboard} from 'react-native';
+import CryptoJS from "crypto-js";
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
+
+export function generateShortChecksum(publicKey) {
+  // Normalize key (important!)
+  const normalizedKey = publicKey
+    .replace(/\r\n/g, "\n") // normalize line endings
+    .trim();
+
+  // Hash with SHA-256
+  const hash = CryptoJS.SHA256(normalizedKey);
+
+  // Convert to hex
+  const hex = hash.toString(CryptoJS.enc.Hex);
+
+  // Return first 8 characters (32 bits)
+  return hex.substring(0, 8).toUpperCase();
+}
 
 const EditContactModal = ({
   show,
@@ -196,6 +213,11 @@ const getTotalPrettyStorage = (entity) => {
   entity = myself ? 'all' : uri;
   
   const totalUsage = getTotalPrettyStorage(entity);
+  let checksum;
+  
+  if (publicKey) {
+      checksum = generateShortChecksum(publicKey);
+  } 
   
   return (
     <Modal
@@ -288,7 +310,7 @@ const getTotalPrettyStorage = (entity) => {
                       </Button>
                     </View>
 
-                    <Text style={styles.small}>You can use this key with other software that uses OpenPGP for encryption</Text>
+                    <Text style={styles.small}>Checksum: {checksum}</Text>
 
                   </>
                 ) : (

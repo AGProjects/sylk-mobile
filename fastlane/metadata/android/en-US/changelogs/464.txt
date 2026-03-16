@@ -1,0 +1,1 @@
+Fix updating display name

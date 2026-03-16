@@ -35,6 +35,7 @@ public class IncomingCallActivity extends AppCompatActivity {
     private String mediaType;
     private String from_uri;
     private String to_uri;
+    private String event;
     private boolean phoneLocked;
 
     private Handler timeoutHandler = new Handler(Looper.getMainLooper());
@@ -50,7 +51,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 			Bundle extras = intent.getExtras();
 			if (extras != null) {
 				for (String key : extras.keySet()) {
-					//Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+					Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
 				}
 			}
 
@@ -84,10 +85,12 @@ public class IncomingCallActivity extends AppCompatActivity {
             mediaType = getIntent().getStringExtra("media-type");
             from_uri = getIntent().getStringExtra("from_uri");
             to_uri = getIntent().getStringExtra("to_uri");
+            event = getIntent().getStringExtra("event");
             phoneLocked = getIntent().getBooleanExtra("phoneLocked", false);
         }
 
         Log.d(LOG_TAG, "IncomingCallActivity phoneLocked=" + phoneLocked);
+        Log.d(LOG_TAG, "IncomingCallActivity mediaType=" + mediaType);
 
         String displayName = null;
 		Cursor cursor = null;
@@ -138,8 +141,8 @@ public class IncomingCallActivity extends AppCompatActivity {
 		if ("video".equals(mediaType)) {
 			videoContainer.setVisibility(View.VISIBLE);
 			audioContainer.setVisibility(View.GONE);
-		
-			acceptAudioButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_AUDIO"));
+
+			acceptAudioButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_AUDIO"));		
 			acceptVideoButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_VIDEO"));
 			rejectButtonVideo.setOnClickListener(v -> sendRejectIntent());
 		
@@ -163,6 +166,8 @@ public class IncomingCallActivity extends AppCompatActivity {
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked)
 				.putExtra("from_uri", from_uri)
+				.putExtra("event", event)
+				.putExtra("media-type", mediaType)
 				.putExtra("to_uri", to_uri)
 				.putExtra("notification-id", notificationId);
 	
@@ -177,6 +182,8 @@ public class IncomingCallActivity extends AppCompatActivity {
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked ? "true" : "false")
 				.putExtra("from_uri", from_uri)
+				.putExtra("media-type", mediaType)
+				.putExtra("event", event)
 				.putExtra("to_uri", to_uri)
 				.putExtra("notification-id", notificationId);
 	

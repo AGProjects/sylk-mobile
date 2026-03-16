@@ -106,7 +106,8 @@ class ContactsListBox extends Component {
 
         this.chatListRef = React.createRef();
         this.flatListRef = null;
-        this.default_placeholder = 'Type a message...'
+        this.default_placeholder = 'Type a message...';
+		this.previousAudioMode = null;
                 
         this.state = {
             accountId: this.props.account ? this.props.account.id : null,
@@ -430,7 +431,7 @@ class ContactsListBox extends Component {
             this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
         }
 
-        if ('messagesCategoryFilter' in nextProps) {
+        if ('messagesCategoryFilter' in nextProps) { 
 			if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
 				this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
 			}
@@ -1111,7 +1112,17 @@ class ContactsListBox extends Component {
 		const path = message.audio.startsWith('file://') ? message.audio : 'file://' + message.audio;
 		
 		try {
+		    /*
+			if (Platform.OS === 'android') {
+			    this.previousAudioMode = await AudioRouteModule.getAudioMode();
+			    console.log('Previous audio mode', this.previousAudioMode);
+			    await AudioRouteModule.setAudioMode(0); // MODE_NORMAL
+			}
+			*/
+			
+
 			await audioRecorderPlayer.startPlayer(path);
+
 			// Mark this audio as playing
 
 			let hasSeeked = false;
@@ -1180,6 +1191,15 @@ class ContactsListBox extends Component {
 
 		audioRecorderPlayer.stopPlayer();
 		audioRecorderPlayer.removePlayBackListener();
+		
+		/*
+		if (Platform.OS === 'android') {
+			if (this.previousAudioMode !== null) {
+			    console.log('Reset aduio mode', this.previousAudioMode);
+				await AudioRouteModule.setAudioMode(previousMode);
+			}
+		}
+		*/	
 
 		this.props.stopAudioPlayerFunc();
 
@@ -1256,7 +1276,9 @@ class ContactsListBox extends Component {
     loadEarlierMessages() {
         console.log('Load earlier messages...');
         this.setState({scrollToBottom: false, isLoadingEarlier: true});
-        this.props.loadEarlierMessages();
+        let filter = {category: this.props.messagesCategoryFilter, pinned: this.props.pinned};
+        //console.log('filter', filter);
+        this.props.loadEarlierMessages(filter);
     }
 
     sendEditedMessage(message, text) {
@@ -1881,7 +1903,7 @@ class ContactsListBox extends Component {
 			  style={{
 				width: '100%',
 				height: '100%',
-				opacity: isLoading ? 0.5 : 1,
+				opacity: isLoading ? 0.9 : 1,
 				transform: [{ rotate: `${rotation}deg` }],
 			  }}
 			  source={{
@@ -2083,7 +2105,8 @@ class ContactsListBox extends Component {
         if (currentMessage && currentMessage.text) {
 
             let options = []
-            if (currentMessage.direction == 'incoming' && !this.hideItem) {
+            //if (currentMessage.direction == 'incoming' && !this.hideItem) {
+            if (!this.hideItem) {
 				options.push('Reply');
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
@@ -2243,9 +2266,9 @@ class ContactsListBox extends Component {
 
     cancelTransfer(message) {
 		if (message.direction === 'outgoing' ) {
-			this.props.uploadFile(message.metadata);
+			this.props.uploadFile(message.metadata, true);
 		} else {
-			this.props.downloadFile(message.metadata, true);
+			this.props.downloadFile(message.metadata, true, true);
 		}
     }
 
@@ -2324,7 +2347,6 @@ class ContactsListBox extends Component {
 	componentDidUpdate(prevProps, prevState) {
 	               
       if (prevState.appState !== this.state.appState) {
-          console.log('appState', this.state.appState);
           if (this.state.appState !== 'active') {
 			  this.exitFullScreen();
 		  }
@@ -2565,12 +2587,12 @@ class ContactsListBox extends Component {
 		  thumbnail = 'file://' + thumbnail;
       }
 	
-		if (!thumbnail) {
-		  //console.log('making thumbail');
+		if (!thumbnail && !(id in this.state.videoMetaCache)) {
 		  const existingCache = this.state.videoMetaCache; // for clarity
 		
 		  // Prevent duplicate async calls for same id
 		  this.state.videoMetaCache[id] = { loading: true }; 
+
 			 if (Platform.OS === 'android') {			 
 			  createThumbnailSafe({ url: uri, timeMs: 1000 })
 				.then(path => {
@@ -2721,10 +2743,21 @@ class ContactsListBox extends Component {
 
 		const isIncoming = currentMessage.direction === 'incoming';
 
-	    let progressData = this.state.transferProgress[currentMessage._id];
+	    let progressData = this.state.transferProgress[currentMessage._id] ?? null;
 	    //console.log('-- progressData', progressData);
 	    let progress = progressData ? progressData.progress / 100 : null;
 	    isTransfering = progressData && progressData.progress < 100;
+	    
+	    if (!isIncoming && !currentMessage.pending) {
+			isTransfering = false;
+	    }
+
+		if (progressData) {
+			console.log('currentMessage.pending', currentMessage.pending);
+			console.log('currentMessage.sent', currentMessage.sent);
+			console.log('isTransfering', isTransfering);
+	    }
+
 	    let stage = progressData && progressData.stage;
 	    if (stage) {
 	        stage = stage.charAt(0).toUpperCase() + stage.substr(1).toLowerCase() + 'ing...';
@@ -2987,53 +3020,53 @@ class ContactsListBox extends Component {
             const fontColor = !isIncoming ? "black": "white";
 
             if (currentMessage.metadata.preview) {
-					return (
-						<View style={[{flexDirection: 'row', alignItems: 'flex-start',
-							justifyContent: 'space-between', // distribute items evenly
-							paddingHorizontal: 10,
-							paddingTop: 12}, styles.photoMenuContainer, extraStyles]}>
-		
-		
-						<View style={{flexDirection: 'row', alignItems: 'center',  borderWidth: 0, borderColor: 'red'}}>
-		
-						{ Platform.OS === "android" ?
-						   <Checkbox
-							 status={this.state.fullSize ? 'checked' : 'unchecked'}
-							 onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));						 							 
-							 }}
-							/>
-						:
-						
-						<View
-						  style={{
-							borderWidth: this.state.fullSize ? 0.5 : 2,
-							borderColor: 'black',
-							borderRadius: 2,
-							padding: 0,
-							transform: [{ scale: 0.5 }]
-						  }}
-						>
-							<Checkbox
-							  status={this.state.fullSize ? 'checked' : 'unchecked'}
-							  onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));		
-							 }}			
-							/>
-						 </View> 
-						 }
-						  <Text style={[styles.checkboxLabel, {marginTop: 0}]}>Full size of {formatFileSize(currentMessage.metadata?.filesize)}</Text>
-						  </View>
-			  
-						  <IconButton
-							style={styles.deleteButton}
-							type="font-awesome"
-							size={20}
-							icon="delete"
-							iconColor='red'
-							onPress={() => this.deleteSharingAsset()}
-						  />
-		
-						</View>
-					); 
+				return (
+					<View style={[{flexDirection: 'row', alignItems: 'flex-start',
+						justifyContent: 'space-between', // distribute items evenly
+						paddingHorizontal: 10,
+						paddingTop: 12}, styles.photoMenuContainer, extraStyles]}>
+	
+	
+					<View style={{flexDirection: 'row', alignItems: 'center',  borderWidth: 0, borderColor: 'red'}}>
+	
+					{ Platform.OS === "android" ?
+					   <Checkbox
+						 status={this.state.fullSize ? 'checked' : 'unchecked'}
+						 onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));						 							 
+						 }}
+						/>
+					:
+					
+					<View
+					  style={{
+						borderWidth: this.state.fullSize ? 0.5 : 2,
+						borderColor: 'black',
+						borderRadius: 2,
+						padding: 0,
+						transform: [{ scale: 0.5 }]
+					  }}
+					>
+						<Checkbox
+						  status={this.state.fullSize ? 'checked' : 'unchecked'}
+						  onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));		
+						 }}			
+						/>
+					 </View> 
+					 }
+					  <Text style={[styles.checkboxLabel, {marginTop: 0}]}>Full size of {formatFileSize(currentMessage.metadata?.filesize)}</Text>
+					  </View>
+		  
+					  <IconButton
+						style={styles.deleteButton}
+						type="font-awesome"
+						size={20}
+						icon="delete"
+						iconColor='red'
+						onPress={() => this.deleteSharingAsset()}
+					  />
+	
+					</View>
+				); 
 			} else {
 				return (
 				<View style={[{flexDirection: 'row', alignItems: 'center',
@@ -3718,12 +3751,8 @@ scrollToMessage(id) {
                 return;
             }
 
-            if (this.state.shareToContacts && elem.uri === this.state.accountId) {
-                return;
-            }
-
             if (this.state.accountId === elem.uri && elem.tags.length === 0) {
-                return;
+                //return;
             }
 
             if (this.state.shareToContacts && elem.uri.indexOf('@') === -1) {
@@ -3783,10 +3812,6 @@ scrollToMessage(id) {
                 return;
             }
 
-            if (item.uri === this.state.accountId && !item.direction) {
-                return;
-            }
-
             if (this.state.filter && item.tags.indexOf(this.state.filter) > -1) {
                 filteredItems.push(item);
             } else if (this.state.blockedUris.indexOf(item.uri) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
@@ -3796,6 +3821,7 @@ scrollToMessage(id) {
             //console.log(item.uri, item.tags);
 
         });
+
 
         items = filteredItems;
 
@@ -3831,21 +3857,17 @@ scrollToMessage(id) {
 			  return aName.localeCompare(bName);
 			});
         }
-        
+
         //console.log(this.state.orderBy);
 
         if (items.length === 1) {
             items[0].showActions = true;
         }
 
-        /*
-		console.log('Contacts ----');
-
         items.forEach((item) => {
             item.showActions = false;
-            console.log(item.timestamp, item.uri, item.name);
+            //console.log(item.timestamp, item.uri, item.name);
         });
-        */
 
         let columns = 1;
 
@@ -3938,7 +3960,7 @@ scrollToMessage(id) {
         let chatMessages = this.state.focusedMessages || messages;
         // remove duplicate messages no mater what
         chatMessages = chatMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
-        let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0
+        let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0;
         //console.log('chatMessages', chatMessages);
         //console.log(JSON.stringify(chatMessages, null, 2));
         if (this.state.isAudioRecording || this.state.recordingFile) {

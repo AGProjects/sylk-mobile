@@ -1,0 +1,3 @@
+Fix updating contacts from server journal entries
+Fix for deleting contacts
+Bug fixes

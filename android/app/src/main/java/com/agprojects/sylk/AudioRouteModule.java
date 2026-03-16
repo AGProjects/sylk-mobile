@@ -311,6 +311,26 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
         sendReactNativeEvent();
     }
 
+	@ReactMethod
+	public void getAudioMode(Promise promise) {
+		try {
+			int mode = audioManager.getMode();
+			promise.resolve(mode);
+		} catch (Exception e) {
+			promise.reject("ERROR", e);
+		}
+	}
+	
+	@ReactMethod
+	public void setAudioMode(int mode, Promise promise) {
+		try {
+			audioManager.setMode(mode);
+			promise.resolve(true);
+		} catch (Exception e) {
+			promise.reject("ERROR", e);
+		}
+	}
+
     @ReactMethod
     public void start(ReadableMap deviceMap, Promise promise) {
         if (started) return;

@@ -23,7 +23,10 @@ const RegisterBox = ({
   SylkServerDiscovery,
   SylkServerDiscoveryResult,
   SylkServerStatus,
-  resetSylkServerStatus
+  resetSylkServerStatus,
+  showQRCodeScanner,
+  toggleQRCodeScannerFunc,
+  requestCameraPermission
 }) => {
 
   // ---------------------------------------------
@@ -88,13 +91,15 @@ const RegisterBox = ({
           handleEnrollment={handleEnrollment}
           orientation={orientation}
           isTablet={isTablet}
-          connected={connected}
           myPhoneNumber={myPhoneNumber}
           lookupSylkServer={lookupSylkServer}
           SylkServerDiscovery={SylkServerDiscovery}
           SylkServerDiscoveryResult={SylkServerDiscoveryResult}
           SylkServerStatus={SylkServerStatus}
           resetSylkServerStatus={resetSylkServerStatus}
+          showQRCodeScanner={showQRCodeScanner}
+          toggleQRCodeScannerFunc={toggleQRCodeScannerFunc}
+          requestCameraPermission={requestCameraPermission}
         />
       </View>
     </View>

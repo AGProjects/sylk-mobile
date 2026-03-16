@@ -11,6 +11,7 @@ const styles = StyleSheet.create({
     padding: 4,
     fontSize: 18,
     textAlign: 'center',
+    marginBottom: 10,
   },
 
   body: {
@@ -20,6 +21,7 @@ const styles = StyleSheet.create({
   },
 
   small: {
+    padding: 5,
     fontSize: 12,
   },
 

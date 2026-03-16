@@ -67,7 +67,7 @@ public class MainActivity extends ReactActivity {
         String action = intent.getAction();
         Uri data = intent.getData();
 
-        Log.d(TAG, "handleIntent action=" + action + " data=" + data);
+        //Log.d(TAG, "handleIntent action=" + action + " data=" + data);
 
         // This exactly mirrors what SplashActivity forwarded
         if (Intent.ACTION_VIEW.equals(action) && data != null) {
@@ -236,25 +236,25 @@ public class MainActivity extends ReactActivity {
     protected void onPause() {
         super.onPause();
 		shareHandled = false;
-        Log.w(TAG, "MainActivity lost focus");
+        //Log.w(TAG, "MainActivity lost focus");
     }
 
 	@Override
 	protected void onStart() {
 		super.onStart();
-		Log.d(TAG, "MainActivity onStart");
+		//Log.d(TAG, "MainActivity onStart");
 	}
 	
 	@Override
 	protected void onStop() {
 		super.onStop();
-		Log.d(TAG, "MainActivity onStop");
+		//Log.d(TAG, "MainActivity onStop");
 	}
 	
 	@Override
 	public void onWindowFocusChanged(boolean hasFocus) {
 		super.onWindowFocusChanged(hasFocus);
-		Log.d(TAG, "MainActivity onWindowFocusChanged: " + hasFocus);
+		//Log.d(TAG, "MainActivity onWindowFocusChanged: " + hasFocus);
 	}
 	
 

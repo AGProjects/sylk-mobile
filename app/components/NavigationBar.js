@@ -38,6 +38,7 @@ class NavigationBar extends Component {
         this.state = {
             showPublicKey: false,
             menuVisible: false,
+            keyMenuVisible: false,
             showDeleteFileTransfers: false,
             showEditContactModal: false,
 			showGenerateKeysModal: false,
@@ -203,7 +204,7 @@ class NavigationBar extends Component {
                 break;
         }
 
-        this.setState({menuVisible: false});
+        this.setState({menuVisible: false, keyMenuVisible: false});
     }
 
     toggleAboutModal() {
@@ -485,8 +486,9 @@ class NavigationBar extends Component {
 				appBarContainer.marginTop = 0;
 			}
         }
-
+        
         return (
+        
 			<View style={navBarContainer}>
             <Appbar.Header style={appBarContainer}
                  statusBarHeight={Platform.OS === "ios" ? 0 : undefined} 
@@ -608,7 +610,7 @@ class NavigationBar extends Component {
                 { this.props.selectedContact ?
                     <Menu
                         visible={this.state.menuVisible}
-                        onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                        onDismiss={() => this.setState({menuVisible: !this.state.menuVisible, keyMenuVisible: false})}
                         anchor={
                             <Appbar.Action
                                 ref={this.menuRef}
@@ -715,12 +717,6 @@ class NavigationBar extends Component {
                         : null}
 
                         { (this.props.devMode && this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
- 
-                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
-                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
-                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
-                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
-                        {this.props.devMode && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
 
                         {!this.props.inCall ?
 						<Divider />
@@ -747,6 +743,31 @@ class NavigationBar extends Component {
                       {(!this.props.syncConversations && !this.props.inCall && Platform.OS === "ios" && this.props.hasAutoAnswerContacts) ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
                         : null}
+
+
+                     <Menu
+                        visible={this.state.keyMenuVisible}
+                        onDismiss={() => this.setState({keyMenuVisible: !this.state.keyMenuVisible})}
+						anchor={
+							<Menu.Item
+								title="My private key..."
+								icon="key"
+								onPress={() => this.setState({keyMenuVisible: true})}
+							/>
+						}
+                    >
+
+                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
+                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
+                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
+                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
+                        {(this.props.devMode && !this.props.inCall) ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
+
+                        {this.props.publicKey ?
+                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
+                        : null}
+
+					</Menu>
 
                         {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
@@ -815,7 +836,7 @@ class NavigationBar extends Component {
                     show={showEditModal}
                     close={this.hideEditContactModal}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : this.props.accountId}
-                    displayName={this.props.displayName}
+                    displayName={this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName}
                     selectedContact={this.props.selectedContact}
                     organization={this.props.organization}
                     email={this.props.selectedContact ? this.props.selectedContact.email : this.props.email}
@@ -838,7 +859,7 @@ class NavigationBar extends Component {
                     show={this.state.showEditConferenceModal}
                     close={this.closeEditConferenceModal}
                     room={this.props.selectedContact ? this.props.selectedContact.uri.split('@')[0]: ''}
-                    displayName={this.props.displayName}
+                    displayName={this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName}
                     participants={this.props.selectedContact ? this.props.selectedContact.participants : []}
                     selectedContact={this.props.selectedContact}
                     toggleFavorite={this.props.toggleFavorite}

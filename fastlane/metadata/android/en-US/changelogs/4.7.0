@@ -1,0 +1,4 @@
+* Don't remove myself from sharing list
+* Fix loading earlier messages
+* Fix canceling transfers
+* Added QR code scanner to Register form

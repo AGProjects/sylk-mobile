@@ -615,7 +615,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             Contact contact = getContact(toUri, fromUri);
 			String displayName = fromUri;
 
-			Log.w(LOG_TAG, event + " " + messageId + " from " + fromUri);
+			Log.w(LOG_TAG, event + " " + messageId + " from " + fromUri + " to " + toUri);
+
+			if (fromUri.equals(toUri)) {
+				Log.d("[SYLK]", "Skipping notification for my own account");
+				return;
+			}
 
 			if (contact != null) {
 				displayName = contact.getDisplayName();

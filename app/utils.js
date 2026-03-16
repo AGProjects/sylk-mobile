@@ -163,8 +163,8 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
             console.log("Error decoding json in sylk message:", e);
         }
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
-        image = `data:${sylkMessage.contentType};base64,${btoa(content)}`
-        text = 'Image';
+        image = `data:${sylkMessage.contentType};base64,${content}`
+        text = 'Photo';
     } else {
         text = 'Unknown message received ' + sylkMessage.contentType;
     }
@@ -404,7 +404,6 @@ async function sql2GiftedChat(item, content, filter = {}) {
 
         if (item.encrypted === 3) {
             text = text + " - decryption failed";
-            return null;
         }
     }
     
@@ -922,24 +921,30 @@ async function listAllFilesRecursive(path, level = 0) {
  */
  
 
-async function getRemotePartySizes(accountId) {
+async function getRemotePartySizes(accountId, uri) {
   const accountPath = `${RNFS.DocumentDirectoryPath}/${accountId}`;
+  let remoteParties = [];
   try {
-    const remoteParties = await RNFS.readDir(accountPath);
+	const remoteParties = await RNFS.readDir(accountPath);
     const results = [];
     let totalSize = 0;
 
     for (const item of remoteParties) {
       if (item.isDirectory()) {
         const remoteParty = item.name;
+        if (uri && remoteParty != uri) {
+			continue;
+        }
         const remotePartyPath = item.path;
-        const size = await getFolderSize(remotePartyPath);
-        //console.log('calculate size:', item.path);
+        const size = await getFolderSize(remotePartyPath, uri);
+        const dirs = await getDirs(remotePartyPath);
+        //console.log('Space used for', item.name, '->', size);
         //listAllFilesRecursive(item.path);        
         totalSize += size;
         results.push({
           remote_party: remoteParty,
           size,
+          dirs,
            prettySize: formatBytes(size),
         });
       }
@@ -965,21 +970,41 @@ async function getRemotePartySizes(accountId) {
 /**
  * Recursively calculates the total size of a folder in bytes.
  */
-async function getFolderSize(folderPath) {
+async function getFolderSize(folderPath, uri=null) {
   let totalSize = 0;
+  let dirSize = 0;
   try {
     const items = await RNFS.readDir(folderPath);
     for (const item of items) {
       if (item.isFile()) {
         totalSize += Number(item.size);
       } else if (item.isDirectory()) {
-        totalSize += await getFolderSize(item.path);
+		dirSize = await getFolderSize(item.path);
+        if (uri) {
+			//console.log('dir size', item.path, dirSize); 
+		}
+        totalSize += dirSize;
       }
     }
   } catch (error) {
     console.error(`Error calculating size for ${folderPath}:`, error);
   }
   return totalSize;
+}
+
+async function getDirs(folderPath) {
+  let dirs = [];
+  try {
+    const items = await RNFS.readDir(folderPath);
+    for (const item of items) {
+      if (item.isDirectory()) {
+        dirs.push(item.name);
+      }
+    }
+  } catch (error) {
+    console.error(`Error getting dirs for ${folderPath}:`, error);
+  }
+  return dirs;
 }
 
 /**

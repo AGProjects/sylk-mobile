@@ -150,7 +150,7 @@ class ImportPrivateKeyModal extends Component {
                                 onPress={this.useExistingKeys}
                                 icon="key"
                                 accessibilityLabel="keep existing key"
-                                >Keep existing key
+                                >Use this device key
                             </Button>
                             </View>
                     </DialogType>
