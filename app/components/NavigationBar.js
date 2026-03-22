@@ -803,7 +803,6 @@ class NavigationBar extends Component {
                     show={this.state.showDeleteHistoryModal}
                     close={this.closeDeleteHistoryModal}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
-                    displayName={this.props.displayName}
                     hasMessages={this.hasMessages}
                     deleteMessages={this.props.deleteMessages}
                     filteredMessageIds={this.props.filteredMessageIds}
@@ -816,11 +815,10 @@ class NavigationBar extends Component {
                     show={this.state.showDeleteFileTransfers}
                     close={this.closeDeleteFileTransfers}
                     selectedContact={this.props.selectedContact}
-                    selectedContact={this.props.selectedContact}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
-                    displayName={this.props.displayName}
                     deleteFilesFunc={this.props.deleteFiles}
                     transferedFiles={this.props.transferedFiles}
+                    transferedFilesSizes={this.props.transferedFilesSizes}
                     getTransferedFiles={this.props.getTransferedFiles}
                     myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
                 />
@@ -966,6 +964,7 @@ NavigationBar.propTypes = {
     buildId: PropTypes.string,
     getTransferedFiles: PropTypes.func,
     transferedFiles: PropTypes.object,
+    transferedFilesSizes: PropTypes.object,
     rejectAnonymous: PropTypes.bool,
     toggleRejectAnonymous: PropTypes.func,
     toggleChatSounds: PropTypes.func,

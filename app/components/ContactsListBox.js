@@ -146,8 +146,6 @@ class ContactsListBox extends Component {
             keys: this.props.keys,
             playing: false,
             texting: false,
-            sharingAsset: null,
-            sharingAssetMessage: null,
             placeholder: this.default_placeholder,
             audioSendFinished: false,
             messagesCategoryFilter: this.props.messagesCategoryFilter,
@@ -194,7 +192,14 @@ class ContactsListBox extends Component {
 		    composerHeight: 48,
 		    replyContainerHeight: 0,
 		    appState: this.props.appState,
-		    allContacts: this.props.allContacts
+		    allContacts: this.props.allContacts,
+		    groupOfImage: {}, // in what groups does an image appear
+		    imageGroups: {}, // in which group is an image present
+		    selectedImages: [],
+		    selectedImagesSearch: [],
+		    thumbnailGridSize: {},
+		    sharingAssets: [],
+            sharingMessages: []
         }
 
         this.ended = false;
@@ -202,7 +207,7 @@ class ContactsListBox extends Component {
         this.viewabilityConfig = { itemVisiblePercentThreshold: 20 };
         this.imageSizeCache = {};
 		this.currentOffset = 0;
-
+		
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
     }
 
@@ -529,7 +534,7 @@ class ContactsListBox extends Component {
   
     async aquireFromCamera() {
         console.log('aquireFromCamera');
-		this.setState({gettingSharedAsset: true}); 
+		this.setState({gettingSharedAsset: true, renderMessages:[]}); 
 		this._aquireFromCamera();
 		setTimeout(() => {
 			this.setState({gettingSharedAsset: false}); 
@@ -538,12 +543,14 @@ class ContactsListBox extends Component {
 
     async _aquireFromCamera() {
 		const cameraAllowed = await this.props.requestCameraPermission();
+
 		if (cameraAllowed) {
-			let options = {maxWidth: 2000,
-							maxHeight: 2000,
+			let options = {maxWidth: 4000,
+							maxHeight: 4000,
 							mediaType: 'mixed',
 							quality: 0.8,
 							cameraType: 'front',
+							saveToPhotos: true,
 							formatAsMp4: true
 						   }
 
@@ -556,7 +563,7 @@ class ContactsListBox extends Component {
 					this.setState({gettingSharedAsset: false}); 
 					return;
 				}
-	
+					
 				// Detect errors
 				if (result.errorCode) {
 					console.log("Camera error:", result.errorMessage);
@@ -566,7 +573,7 @@ class ContactsListBox extends Component {
 	
 				// Proceed normally
 				if (result.assets && result.assets.length > 0) {
-					this.assetSharingCallback(result);
+					this.assetSharingCallback(result.assets);
 				}
 			});
 		}
@@ -581,9 +588,10 @@ class ContactsListBox extends Component {
 	}
 
 	async _launchImageLibrary() {
-        let options = {maxWidth: 2000,
-                        maxHeight: 2000,
+        let options = { maxWidth: 4000,
+                        maxHeight: 4000,
                         mediaType: 'mixed',
+                        selectionLimit: 10,
                         formatAsMp4: true
                        }
 
@@ -593,7 +601,6 @@ class ContactsListBox extends Component {
 
     async libraryCallback(result) {
 		this.setState({fullSize: false, gettingSharedAsset: false});
-
 
 		if (result.errorCode) {
 			console.log("Picker error:", result.errorMessage);
@@ -608,35 +615,40 @@ class ContactsListBox extends Component {
 			return;
 		}
 
-        result.assets.forEach((asset) => {
-            this.assetSharingCallback({assets: [asset]});
-        });
+		this.assetSharingCallback(result.assets);
     }
 
-    async assetSharingCallback(result) {
-        console.log('assetSharingCallback');
+    async assetSharingCallback(assets) {
+        console.log('assetSharingCallback', assets.length);
 		this.setState({scrollToBottom: true, gettingSharedAsset: false});
 		this.scrollToBottom();
-
-        if (!result.assets || result.assets.length === 0) {
+		
+        if (!assets || assets.length === 0) {
             return;
         }
         
-        let asset = result.assets[0];
-        asset.preview = true;
-        
-        let msg = await this.props.file2GiftedChat(asset);
-
+        let messages = [];
+        let msg;
         let assetType = 'file';
-        if (msg.video) {
-            assetType = 'movie';
-        } else if (msg.image) {
-            assetType = 'photo';
+
+        for (const asset of assets) {
+			asset.preview = true;
+			msg = await this.props.file2GiftedChat(asset);
+			messages.push(msg);
+			if (msg.video) {
+				assetType = 'movie';
+			} else if (msg.image) {
+				assetType = 'photo';
+			} else if (msg.audio) {
+				assetType = 'audio';
+			}
+
+			console.log('Build temporary', assetType, 'message', msg._id);
         }
 
-        this.setState({ sharingAsset: asset,
-                        sharingAssetMessage: msg,
-                        renderMessages: GiftedChat.append(this.state.renderMessages, [msg]),
+        this.setState({ sharingAssets: assets,
+                        sharingMessages: messages,
+                        renderMessages: GiftedChat.append(messages, []),
 						fullSize: false,
                         //placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
 						placeholder: 'Add a note...'
@@ -650,7 +662,7 @@ class ContactsListBox extends Component {
          isAudioRecording={this.state.isAudioRecording} 
          recordingFile={this.state.recordingFile} 
          texting={this.state.texting || this.state.replyingTo} 
-         sendingImage={this.state.sharingAssetMessage !==null} 
+         sendingImage={this.state.sharingMessages.length > 0} 
          selectedContact={this.state.selectedContact}/>
     )
 
@@ -663,8 +675,8 @@ class ContactsListBox extends Component {
 
         this.setState({
             texting: false,
-            sharingAsset: null,
-            sharingAssetMessage: null,
+            sharingAssets: [],
+            sharingMessages: [],
             placeholder: this.default_placeholder
         });
     }
@@ -696,6 +708,9 @@ class ContactsListBox extends Component {
 		  renderMessageAudio={this.renderMessageAudio}
 		  renderMessageText={this.renderMessageText}
 		  focusedMessageId={this.state.focusedMessageId}
+		  imageGroups={this.state.imageGroups}
+		  groupOfImage={this.state.groupOfImage}
+		  thumbnailGridSize={this.state.thumbnailGridSize}
 		  fullSize={this.state.fullSize}
 		  sortOrder={this.state.orderBy}
 		  styles={styles}
@@ -713,7 +728,7 @@ class ContactsListBox extends Component {
 	  console.log('onImagePress', 'fullScreen', this.state.fullScreen);
 
 	  if (expandedImage) {
-		this.saveRotation(expandedImage);
+		this.saveRotation(expandedImage._id, this.state.rotation);
 		this.exitFullScreen();
 	  } else {
 	    let rotation = 0;
@@ -904,7 +919,7 @@ class ContactsListBox extends Component {
 	  
 	  let disableAttachments = this.state.selectedContact.tags.indexOf('test') > -1;
 	  
-	  if (this.state.sharingAsset) {
+	  if (this.state.sharingAssets.length > 0) {
 		return (
 		  <Send
 			{...props}
@@ -916,7 +931,7 @@ class ContactsListBox extends Component {
 		  >
 	
 			<View style={styles.chatRightActionsContainer}>
-			  <TouchableOpacity onPress={this.sendPhoto}>
+			  <TouchableOpacity onPress={this.sharePendingFiles}>
 				<Icon
 				  type="font-awesome"
 				  name="send"
@@ -1013,6 +1028,16 @@ class ContactsListBox extends Component {
     async handleShare(message, email=false) {
         //console.log('-- handleShare\n', JSON.stringify(message, null, 2));
         let what = 'Message';
+        
+        console.log('handleShare', message._id);
+		if (message._id in this.state.imageGroups) {  
+			console.log(' -- handleShare', this.state.selectedImages);
+		}
+		
+		//TODO
+
+        return;
+
 		let options = {
 			title: 'Share Message',
 			subject: 'Sylk shared message',
@@ -1350,9 +1375,11 @@ class ContactsListBox extends Component {
     
     onSendMessage(messages) {
 		const uri = this.state.selectedContact.uri;
-		if (this.state.sharingAssetMessage) {
-			this.sendPhoto()
+		if (this.state.sharingMessages.length > 0) {
+			this.sharePendingFiles()
 			return;
+		} else {
+		    console.log('onSendMessage');
 		}
 
 		const timestamp = new Date();
@@ -1384,44 +1411,46 @@ class ContactsListBox extends Component {
         this.setState({replyingTo: null, renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
-    sendPhoto() {
-        // TODO: send photo description if present
+    sharePendingFiles() {
+        console.log('sharePendingFiles');
+
         if (!this.state.selectedContact) {
 			return;
         }
 
-        if (!this.state.sharingAssetMessage) {
+        if (this.state.sharingMessages.length == 0) {
+            console.log('No sharingMessages to send');
 			return;
         }
 
-		try {
-			const uri = this.state.selectedContact.uri;
-			const text = this.state.text.trim();
-			const sharingAssetMessage = this.state.sharingAssetMessage;
-	
-			this.setState({ text: '' });
-			this.textInputRef.clear?.();  // works for plain TextInput
-			this.textInputRef.blur?.();   // dismiss keyboard
-	
-			this.setState({sharingAsset: null, 
-						   sharingAssetMessage: null,
-						   text: '',
-						   texting: false,
-						   placeholder: this.default_placeholder});
-						   
-			console.log('sendPhoto with label', text || 'Photo');
-	
+		const uri = this.state.selectedContact.uri;
+		const text = this.state.text.trim();
+		const sharingMessages = this.state.sharingMessages;
+		const timestamp = new Date();
+
+		this.setState({ text: '' });
+		this.textInputRef.clear?.();  // works for plain TextInput
+		this.textInputRef.blur?.();   // dismiss keyboard
+
+		this.setState({sharingAssets: [], 
+					   sharingMessages: [],
+					   text: '',
+					   texting: false,
+					   placeholder: this.default_placeholder});
+					   
+		console.log('sharePendingFiles with label', text || 'Photo');
+
+		for (const message of this.state.sharingMessages) {
 			if (text) {
-				const timestamp = new Date();
-				const transfer_id = sharingAssetMessage.metadata.transfer_id;
+				const transfer_id = message.metadata.transfer_id;
 				const mId = uuid.v4();
 				const metadataContent = {messageId: transfer_id, 
-				                         metadataId: mId,
-				                         action: 'label', 
-				                         value: text, 
-				                         timestamp: timestamp,
-				                         uri: uri
-				                         };
+										 metadataId: mId,
+										 action: 'label', 
+										 value: text, 
+										 timestamp: timestamp,
+										 uri: uri
+										 };
 
 				const metadataMessage = {_id: mId,
 										 key: mId,
@@ -1433,33 +1462,43 @@ class ContactsListBox extends Component {
 				console.log('metadataMessage', metadataMessage);
 	
 				this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
-				this.setState({scrollToBottom: true});
 			}
-		} catch (e) {
-			console.log('error', e);
-		}
 
-        this.uploadFile(this.state.sharingAssetMessage);
+			this.uploadFile(message);
+		}
+		this.setState({scrollToBottom: true});
     }
 
-	saveRotation(message) {
-		console.log('rotation', this.state.rotation, message._id);
-		const uri = this.state.selectedContact.uri;
+	saveRotation(id, rotation) {
 
-		//setTimeout(() => this.scrollToMessage(message._id) , 100);
-				
-		const mId = uuid.v4();
-		const timestamp = new Date();
-
-		if (message.rotation == this.state.rotation) {
-		    console.log('Rotation not changed');
+		const message = this.state.renderMessages.find(m => m._id === id);
+		
+		if (!message) {
+			console.log('Message id not found', id);
 			return;
 		}
+		
+		const uri = message.direction == 'outgoing' ? message.metadata?.receiver?.uri : message.metadata?.sender?.uri;
+
+		if (!uri) {
+			console.log('Message uri not found', id);
+			return;
+		}
+				
+		if (message.rotation == rotation) {
+		    //console.log('Rotation is the same',  message._id);
+			return;
+		}
+
+		console.log('saveRotation', id, rotation);
+
+		const mId = uuid.v4();
+		const timestamp = new Date();
 
 		const metadataContent = {messageId: message._id, 
 							     metadataId: mId, 
 							     action: 'rotation',
-							     value: this.state.rotation,
+							     value: rotation,
 							     timestamp: timestamp,
 							     uri: uri
 							     };
@@ -1470,7 +1509,10 @@ class ContactsListBox extends Component {
 								 metadata: metadataContent,
 								 text: JSON.stringify(metadataContent),
 								};
-
+								
+		let mediaRotations = this.state.mediaRotations;
+		mediaRotations[message._id] = rotation;
+        this.setState({mediaRotations: {...mediaRotations}});
 		this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
 	}
 
@@ -1629,23 +1671,24 @@ class ContactsListBox extends Component {
         this.setState({isRefreshing: false});
     }
 
-    deleteSharingAsset() {
-        console.log('deleteSharingAsset');
+    deleteSharingAssets() {
+        console.log('deleteSharingAssets');
 		this.setState({gettingSharedAsset: false}); 
 
-        if (!this.state.sharingAsset) {
-			return;
-        }
-
-		const fileUri = this.state.sharingAsset.uri.replace('file://', ''); // remove scheme
-		  RNFS.unlink(fileUri)
-		  .then(() => console.log('Temporary file deleted'))
-		  .catch(err => console.log('Error deleting temporary file', err));
+        for (const asset of this.state.sharingAssets) {
+			const fileUri = asset.uri.replace('file://', ''); // remove scheme
+			RNFS.unlink(fileUri)
+			  .then(() => console.log('Temporary file deleted', fileUri))
+			  .catch(err => console.log('Error deleting temporary file', err));
+		}
+		
+		let renderMessages = this.state.messages[this.state.selectedContact.uri];
 
 		this.setState(prevState => ({
 		  placeholder: this.default_placeholder,
-		  sharingAssetMessage: null,
-		  sharingAsset: null,
+		  sharingMessages: [],
+		  sharingAssets: [],
+		  renderMessages: {...renderMessages},
 		  text: ''
 		}));
 		
@@ -1794,7 +1837,46 @@ class ContactsListBox extends Component {
 		</View>
 	  );
 	};
-		
+
+	thumbnailSelectionChanged(newSelected, item) {
+	  console.log('thumbnailSelectionChanged');
+	  this.setState((prevState) => {
+		const exists = prevState.selectedImages.includes(item.id);
+	
+		let updated;
+		if (exists) {
+		  updated = prevState.selectedImages.filter(id => id !== item.id);
+		} else {
+		  updated = [...prevState.selectedImages, item.id];
+		}
+	
+		return { selectedImages: updated };
+	  });
+	}
+
+	searchThumbnailSelectionChanged(newSelected, item) {
+	  console.log('searchThumbnailSelectionChanged');
+	  this.setState((prevState) => {
+		const exists = prevState.selectedImagesSearch.includes(item.id);
+	
+		let updated;
+		if (exists) {
+		  updated = prevState.selectedImagesSearch.filter(id => id !== item.id);
+		} else {
+		  updated = [...prevState.selectedImagesSearch, item.id];
+		}
+	
+		return { selectedImagesSearch: updated };
+	  });
+	}
+
+	onRotateImage(rotations) {
+	  console.log('onRotateImage', rotations);
+	  Object.keys(rotations).forEach(id => {	
+		this.saveRotation(id, rotations[id]);
+	  });
+	}
+
 	renderMessageImage = ({ currentMessage, orderBy }) => {
 	  if (this.state.orderBy === 'size') {
 		  return null;
@@ -1803,11 +1885,16 @@ class ContactsListBox extends Component {
 	  if (!currentMessage?.image) return null;
 	
 	  const id = currentMessage._id;
+	  //console.log('renderMessageImage', id);
 	  const uri = currentMessage.image;
 	
 	  const isVisible = this.state.visibleMessageIds.includes(id);
 	  const wasRendered = this.state.renderedMessageIds.has(id);
-	  const isLoading = this.state.imageLoadingState[id];
+	  let isLoading = this.state.imageLoadingState[id];
+
+	  isLoading = false;
+	  
+	  let showGrid = false;
 
 	  // Skip offscreen images
 	  if (false && !isVisible && !wasRendered) {
@@ -1837,31 +1924,89 @@ class ContactsListBox extends Component {
 	  // 🧠 Try to get cached size
 	  let imageAspectRatio = 1;
       
-		  if (this.imageSizeCache[uri]) {
-			imageAspectRatio = this.imageSizeCache[uri].aspectRatio;
-		  } else {
-			// First time seeing this image
-			  Image.getSize(
-				uri,
-				(width, height) => {
-				  const aspectRatio =
-					width > 0 && height > 0 ? width / height : 1; // ✅ ensure finite ratio
-				  this.imageSizeCache[uri] = { width, height, aspectRatio };
-				  this.forceUpdate?.(); // re-render
-				},
-				(error) => {
-				  //console.warn("Image.getSize error:", error);
-				  this.imageSizeCache[uri] = { width: 1, height: 1, aspectRatio: 1 }; // ✅ fallback cache
-				}
-			  );
-		  }
+	  if (this.imageSizeCache[uri]) {
+	      imageAspectRatio = this.imageSizeCache[uri].aspectRatio;
+	  } else {
+		  // First time seeing this image
+		  Image.getSize(
+			uri,
+			(width, height) => {
+			  const aspectRatio =
+				width > 0 && height > 0 ? width / height : 1; // ✅ ensure finite ratio
+			  this.imageSizeCache[uri] = { width, height, aspectRatio };
+			  this.forceUpdate?.(); // re-render
+			},
+			(error) => {
+			  //console.warn("Image.getSize error:", error);
+			  this.imageSizeCache[uri] = { width: 1, height: 1, aspectRatio: 1 }; // ✅ fallback cache
+			}
+		  );
+	  }
 	
-	  const displayAspect = isVerticalRotation ? 1 / imageAspectRatio : imageAspectRatio;
+	const displayAspect = isVerticalRotation ? 1 / imageAspectRatio : imageAspectRatio;
 	
 	const safeRatio =
 	  imageAspectRatio && isFinite(imageAspectRatio) ? imageAspectRatio : 1;
 	  
-	  return (
+	let subsequentMessages = [];
+	let imageGroup;
+	if (id in this.state.imageGroups) {
+		imageGroup = this.state.groupOfImage[id];
+		const imageIds = this.state.imageGroups[imageGroup];
+		
+		subsequentMessages = this.state.renderMessages.filter(msg =>
+		  imageIds.includes(msg._id)
+		);
+	}
+	
+	// add next image if is an image
+	let numColumns = 1;
+
+	if (subsequentMessages.length > 1) {
+	    if (subsequentMessages.length < 5) {
+			numColumns = 2;
+	    } else {
+			numColumns = 3;
+	    } 
+	}
+	
+	if (id in this.state.thumbnailGridSize) {
+		numColumns = this.state.thumbnailGridSize[id];
+	}
+
+	const gridImages = subsequentMessages
+		  .filter(m => !!m.image)   // only messages that contain images
+		  .map(msg => ({
+			id: String(msg._id),
+			uri: msg.image,
+			size: msg.metadata.filesize,
+			timestamp: msg.metadata.timestamp,
+			rotation: msg.metadata.rotation || this.state.mediaRotations[msg._id] || 0,
+			title: msg.text || '',
+		  }));
+		  
+	showGrid = subsequentMessages.length > 1;
+
+	if (showGrid) {
+		return (
+		  <ThumbnailGrid
+			images={gridImages.reverse()}
+			isLandscape={this.state.isLandscape}
+			onRotateImage={this.onRotateImage}
+			numColumns={numColumns}
+			showTimestamp={false}
+			onSelectionChange = {this.thumbnailSelectionChanged}
+			onLongPress={(item) => console.log('long', item)}
+			renderThumb={({item, index, size}) => (
+			  <View style={{flex:1}}>
+				<Image source={{uri:item.uri}} style={{width:size, height:size, borderRadius:6}} />
+			  </View>
+			)}
+		  />
+		);
+	}
+
+	return (
 		<TouchableOpacity
 		  activeOpacity={0.8}
 		  onPress={() => this.onImagePress(currentMessage)}
@@ -1872,7 +2017,8 @@ class ContactsListBox extends Component {
 			marginBottom: -5,
 		  }}
 		>
-		  {false && isLoading && (
+
+		  {isLoading && (
 			<View
 			  style={{
 				position: 'absolute',
@@ -1951,14 +2097,14 @@ class ContactsListBox extends Component {
     }
 
     transferFailed(evt) {
-       console.log("An error occurred while transferring the file.", evt);
-       this.postChatSystemMessage('Upload failed')
+        console.log("An error occurred while transferring the file.", evt);
+        this.postChatSystemMessage('Upload failed')
     }
 
     transferCanceled(evt) {
 		this.props.contactStopShare();
-       console.log("The transfer has been canceled by the user.");
-       this.postChatSystemMessage('Upload has canceled')
+        console.log("The transfer has been canceled by the user.");
+        this.postChatSystemMessage('Upload has canceled')
     }
 
     async uploadFile(msg) {
@@ -2117,14 +2263,18 @@ class ContactsListBox extends Component {
 			}
 			
 			if (currentMessage.image) {
+			    if (!(currentMessage._id in this.state.imageGroups)) {  
                     options.push('Preview')
                     icons.push(<Icon name="image" size={20} />);
+                }
 			}
 
             if (currentMessage.metadata && !currentMessage.metadata.error) {
                 if (currentMessage.metadata && currentMessage.metadata.local_url) {
-                    options.push('Open')
-                    icons.push(<Icon name="folder-open" size={20} />);
+					if (!(currentMessage._id in this.state.imageGroups)) {  
+						options.push('Open')
+						icons.push(<Icon name="folder-open" size={20} />);
+                    }
                 //
                 } else {
                     options.push('Copy');
@@ -2132,8 +2282,20 @@ class ContactsListBox extends Component {
                 }
             }
 
-			options.push('Delete');
-			icons.push(<Icon name="delete" size={20} />);
+			if (currentMessage.image) {
+				if (!(currentMessage._id in this.state.imageGroups)) {  
+					options.push('Delete');
+					icons.push(<Icon name="delete" size={20} />);
+				} else {
+				    if (this.state.selectedImages.length > 0) {
+						options.push('Delete');
+						icons.push(<Icon name="delete" size={20} />);
+					}
+				}
+			} else {
+				options.push('Delete');
+				icons.push(<Icon name="delete" size={20} />);
+			}
 
             let showResend = currentMessage.metadata && currentMessage.metadata.error;
 
@@ -2158,15 +2320,28 @@ class ContactsListBox extends Component {
             }
 
             if (!currentMessage.metadata.error && !this.hideItem) {
-                options.push('Forward');
-                icons.push(<Icon name="arrow-right" size={20} />);
-            }
+				if (currentMessage.image) {
+					if (!(currentMessage._id in this.state.imageGroups)) {  
+						options.push('Forward');
+						icons.push(<Icon name="arrow-right" size={20} />);
+						options.push('Share');
+						icons.push(<Icon name="share" size={20} />);
 
-            if (!currentMessage.metadata.error && !this.hideItem) {
-                options.push('Share');
-                icons.push(<Icon name="share" size={20} />);
+					} else {
+						if (this.state.selectedImages.length > 0) {
+							options.push('Forward');
+							icons.push(<Icon name="arrow-right" size={20} />);
+							options.push('Share');
+							icons.push(<Icon name="share" size={20} />);
+						}
+					}
+				} else {
+					options.push('Forward');
+					icons.push(<Icon name="arrow-right" size={20} />);
+					options.push('Share');
+					icons.push(<Icon name="share" size={20} />);
+				}
             }
-            
             if  (currentMessage && currentMessage.metadata && !this.hideItem) {
 				//console.log('mesage metadata:', currentMessage.metadata);
 				if (currentMessage.metadata.filename) {
@@ -2175,8 +2350,9 @@ class ContactsListBox extends Component {
 						options.push('Download');
 						icons.push(<Icon name="cloud-download" size={20} />);
 					} else {
-					options.push('Download again');
-					icons.push(<Icon name="cloud-download" size={20} />);
+						//options.push('Download again');
+						//icons.push(<Icon name="cloud-download" size={20} />);
+
 					/*
 					if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
 						options.push('Decrypt');
@@ -2195,13 +2371,17 @@ class ContactsListBox extends Component {
 
             let l = options.length - 1;
             
-
             context.actionSheet().showActionSheetWithOptions({options, l, l, icons, textStyle: styles.actionSheetText}, (buttonIndex) => {
                 let action = options[buttonIndex];
                 if (action === 'Copy') {
                     Clipboard.setString(currentMessage.text);
                 } else if (action === 'Delete') {
-                    this.setState({showDeleteMessageModal: true, currentMessage: currentMessage});
+                    let messagesToDelete = [currentMessage._id];
+					if (currentMessage._id in this.state.imageGroups) {  
+						messagesToDelete = this.state.selectedImages;
+					}
+                    this.setState({messagesToDelete: messagesToDelete});
+                    this.setState({showDeleteMessageModal: true});
                 } else if (action === 'Pin') {
                     this.props.pinMessage(currentMessage._id);
                 } else if (action === 'Unpin') {
@@ -2217,7 +2397,13 @@ class ContactsListBox extends Component {
                 } else if (action.startsWith('Email')) {
                     this.handleShare(currentMessage, true);
                 } else if (action.startsWith('Forward')) {
-                    this.props.forwardMessageFunc(currentMessage, this.state.targetUri);
+                    let messagesToForward = [currentMessage];
+					if (currentMessage._id in this.state.imageGroups) {
+						  messagesToForward = this.state.renderMessages.filter(
+							msg => this.state.selectedImages.includes(msg._id)
+						  );
+					}
+                    this.props.forwardMessagesFunc(messagesToForward, this.state.targetUri);
                 } else if (action.startsWith('Reply')) {
                     this.replyMessage(currentMessage);
                 } else if (action === 'Resend') {
@@ -2345,6 +2531,36 @@ class ContactsListBox extends Component {
 	}
 	
 	componentDidUpdate(prevProps, prevState) {
+      if (prevState.renderMessages !== this.state.renderMessages) {
+	      //console.log('renderMessages did change', this.state.renderMessages.length);
+      }
+
+      if (prevState.thumbnailGridSize !== this.state.thumbnailGridSize) {
+		console.log('thumbnailGridSize did change', this.state.thumbnailGridSize);
+		
+		this.setState((prev) => {
+		  const gridMap = prev.thumbnailGridSize || {};
+	
+		  const updatedMessages = prev.renderMessages.map((msg) => {
+			const newGridSize = gridMap[msg._id];
+	
+			// Only update if changed (prevents useless re-renders)
+			if (msg.gridSize === newGridSize) {
+			  return msg;
+			}
+	
+			return {
+			  ...msg,
+			  gridSize: newGridSize,
+			};
+		  });
+	
+		  return {
+			renderMessages: updatedMessages,
+		  };
+		});
+      }
+	               
 	               
       if (prevState.appState !== this.state.appState) {
           if (this.state.appState !== 'active') {
@@ -2352,6 +2568,23 @@ class ContactsListBox extends Component {
 		  }
       }
 	  
+      if (prevState.messagesCategoryFilter !== this.state.messagesCategoryFilter) {
+		  this.setState({selectedImages: []});
+	      console.log('messagesCategoryFilter changed', this.state.messagesCategoryFilter);
+      }
+
+      if (prevState.sortOrder !== this.state.sortOrder) {
+	      console.log('sortOrder changed', this.state.sortOrder);
+      }
+	               
+      if (prevState.selectedImages !== this.state.selectedImages) {
+	      console.log('selectedImages changed', this.state.selectedImages);
+      }
+
+      if (prevState.selectedImagesSearch !== this.state.selectedImagesSearch) {
+	      console.log('selectedImagesSearch changed', this.state.selectedImagesSearch);
+      }
+
       if (prevState.isAudioRecording !== this.state.isAudioRecording) {
           if (this.state.isAudioRecording) {
 			  this.setState({placeholder: 'Recording audio...'});
@@ -2425,7 +2658,10 @@ class ContactsListBox extends Component {
 			console.log('mediaRotations', this.state.mediaRotations);
 			console.log('mediaLabels', this.state.mediaLabels);
 			console.log('replyMessages', this.state.replyMessages);
+			
 			*/
+			
+			this.getImageGroups();
 		}
 
 		if (prevState.audioRecordingStatus !== this.state.audioRecordingStatus) {
@@ -2483,9 +2719,9 @@ class ContactsListBox extends Component {
 			});
 		}
 
-	   if (prevState.sharingAssetMessage != this.state.sharingAssetMessage) {
+	   if (prevState.sharingMessages != this.state.sharingMessages) {
 		  // Handle sharing asset mode
-		  if (this.state.sharingAssetMessage) {
+		  if (this.state.sharingMessages) {
 			  filteredMessages = [];
 		  } else {
 			  filteredMessages = this.state.filteredMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
@@ -2498,18 +2734,20 @@ class ContactsListBox extends Component {
 
 	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy) {	   
 	       
-		  let filteredMessages = this.state.renderMessages;
+			let filteredMessages = this.state.renderMessages;
 	
 			const mediaLabels = this.mediaLabels;
 			const mediaRotations = this.mediaRotations;
 		
 		    if (this.state.orderBy === 'size') { 
-		        console.log('skip non files');
+		        //console.log('skip non files');
 				filteredMessages = filteredMessages.filter(
-				  message => message.metadata || message.metadata.filename
+				  message => message.metadata && message.metadata.filename
 				);
 			}
 
+		    //console.log('filteredMessages type:', typeof filteredMessages);
+		    try {
 			filteredMessages = filteredMessages.map(msg => {
 				const id = msg.messageId || msg._id;
 				return {
@@ -2518,6 +2756,11 @@ class ContactsListBox extends Component {
 					rotation: mediaRotations[id] ?? msg.rotation
 				};
 			});
+			
+			} catch (e) {
+			    console.log('filteredMessages error', e);
+				return;
+			}
 		    
 			// Add reply metadata
 		    filteredMessages = filteredMessages.map(m => ({
@@ -2578,7 +2821,7 @@ class ContactsListBox extends Component {
 	  const id = currentMessage._id;
 	  const uri = currentMessage.video;
 	  const videoMetaCache = this.state.videoMetaCache || {};
-	  let thumbnail = currentMessage.thumbnail || videoMetaCache[id]?.thumbnail;
+	  let thumbnail = currentMessage.thumbnail || currentMessage.thumbnail?.thumbnail || videoMetaCache[id]?.thumbnail;
 	  const isLoading = !!this.state.videoLoadingState?.[id];
 	  
 	  //console.log('renderMessageVideo', currentMessage.video, currentMessage.thumbnail);
@@ -2593,7 +2836,7 @@ class ContactsListBox extends Component {
 		  // Prevent duplicate async calls for same id
 		  this.state.videoMetaCache[id] = { loading: true }; 
 
-			 if (Platform.OS === 'android') {			 
+			if (Platform.OS === 'android') {			 
 			  createThumbnailSafe({ url: uri, timeMs: 1000 })
 				.then(path => {
 				  this.setState(prev => ({
@@ -2616,24 +2859,24 @@ class ContactsListBox extends Component {
 			  createThumbnail({
 					url: uri,
 					timeStamp: 1000, // first second of video
-			  })
-					.then(({ path, width, height }) => {
-					  this.setState((prev) => ({
-							videoMetaCache: {
-							  ...prev.videoMetaCache,
-							  [id]: { thumbnail: path, width, height },
-							},
-					  }));
-					  console.log(`Thumbnail ready for video ${id}:`, path);
-					  // TODO cache thumbnail
-					})
-					.catch((err) => {
-					  console.log('Thumbnail generation failed:', err);
-					  this.setState((prev) => {
-							const { [id]: _, ...rest } = prev.videoMetaCache;
-							return { videoMetaCache: rest };
-					  });
-					});
+			  }).then(({ path, width, height }) => {
+				  this.setState((prev) => ({
+						videoMetaCache: {
+						  ...prev.videoMetaCache,
+						  [id]: { thumbnail: path, width, height },
+						},
+				  }));
+				  console.log(`Thumbnail ready for video ${id}:`, path);
+				  this.props.updateFileTransferMetadata(currentMessage.metadata, 'thumbnail', path);
+				  // TODO cache thumbnail
+				})
+				.catch((err) => {
+				  console.log('Thumbnail generation failed:', err);
+				  this.setState((prev) => {
+						const { [id]: _, ...rest } = prev.videoMetaCache;
+						return { videoMetaCache: rest };
+				  });
+				});
 			}
 		}
                
@@ -2727,11 +2970,42 @@ class ContactsListBox extends Component {
         console.log('Video buffer error');
     }
 
-    // https://github.com/FaridSafi/react-native-gifted-chat/issues/571
-    // add view after bubble
+	toggleGridSize = (id) => {
+	  this.setState((prevState) => {
+		let values = [1, 2, 3];
+	
+		const prevGrid = prevState.thumbnailGridSize || {};
+		const images = this.state.imageGroups[id];
+		let default_val = 1;
+		if (images.length > 1) {
+			if (images.length < 5) {
+				default_val = 2;
+				values = [1, 2];
+			} else {
+				default_val = 3;
+				values = [1, 2, 3];
+			} 
+		}
+
+		//console.log('toggleGridSize', id, this.state.imageGroups[id]);
+	
+		const currentValue = prevGrid[id] ?? default_val;
+		const currentIndex = values.indexOf(currentValue);
+	
+		const nextIndex = (currentIndex + 1) % values.length;
+	
+		return {
+		  thumbnailGridSize: {
+			...prevGrid,
+			[id]: values[nextIndex],
+		  },
+		};
+	  });
+	};
 
     renderMessageText(props) {
         const { currentMessage } = props;
+
         let extraStyles = currentMessage.replyId ? {minWidth: 120} : {};
         // todo
 
@@ -2752,12 +3026,13 @@ class ContactsListBox extends Component {
 			isTransfering = false;
 	    }
 
+/*
 		if (progressData) {
 			console.log('currentMessage.pending', currentMessage.pending);
 			console.log('currentMessage.sent', currentMessage.sent);
 			console.log('isTransfering', isTransfering);
 	    }
-
+*/
 	    let stage = progressData && progressData.stage;
 	    if (stage) {
 	        stage = stage.charAt(0).toUpperCase() + stage.substr(1).toLowerCase() + 'ing...';
@@ -2828,7 +3103,7 @@ class ContactsListBox extends Component {
 						size={20}
 						icon="delete"
 						iconColor='red'
-						onPress={() => this.deleteSharingAsset()}
+						onPress={() => this.deleteSharingAssets()}
 					  />				  
 						</View>
 					); 
@@ -2902,7 +3177,6 @@ class ContactsListBox extends Component {
 								{Math.round(progress * 100)}%
 							  </Text>
 							  </View>
-							  
 							)}
 							
 							{!isTransfering?
@@ -3053,7 +3327,7 @@ class ContactsListBox extends Component {
 						/>
 					 </View> 
 					 }
-					  <Text style={[styles.checkboxLabel, {marginTop: 0}]}>Full size of {formatFileSize(currentMessage.metadata?.filesize)}</Text>
+					  <Text style={[styles.checkboxLabel, {marginTop: 0}]}>Full size</Text>
 					  </View>
 		  
 					  <IconButton
@@ -3062,7 +3336,7 @@ class ContactsListBox extends Component {
 						size={20}
 						icon="delete"
 						iconColor='red'
-						onPress={() => this.deleteSharingAsset()}
+						onPress={() => this.deleteSharingAssets()}
 					  />
 	
 					</View>
@@ -3139,23 +3413,42 @@ class ContactsListBox extends Component {
 						  </View>
 						)}
 
-						{!isTransfering?
+                        { !isTransfering && currentMessage._id in this.state.imageGroups ?
+							<View style={{flexDirection: 'row', justifyContent: 'center', alignItems: 'center' }}>
+							<IconButton
+							  icon="grid"
+							  size={18}
+							  onPress={() => this.toggleGridSize(currentMessage._id)}
+							  style={{ padding: 0, margin: 0 }}
+							  iconColor={fontColor}
+							/>
+	
+						  </View>
+						: null
+						}
+
+						{!isTransfering && !(currentMessage._id in this.state.imageGroups) ?
 						<IconButton
 						  icon="fullscreen"
-						  size={24}
+						  size={18}
 						  onPress={() => this.onImagePress(currentMessage)}
 						  style={{ padding: 0, margin: 0 }}
 						  iconColor={fontColor}
 						/>
 						: 
+						null}
+						
+						{isTransfering ?
 						<IconButton
 						  icon="cancel"
-						  size={24}
+						  size={18}
 						  onPress={() => this.cancelTransfer(currentMessage)}
 						  style={{ }}
 						  iconColor={fontColor}
 						/>
+						: null
 						}    
+
 					  </View>
 				  </View>
 				</View>
@@ -3326,13 +3619,16 @@ class ContactsListBox extends Component {
 
 	renderTime = (props) => {
 	  const { currentMessage, position } = props;
-	
+
 	  if (currentMessage.metadata?.preview) return null;
 	 
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const isMedia = currentMessage.video || currentMessage.audio;
 	  const textColor = currentMessage.audio || isIncoming ? 'white' : 'black';
-	  const hasFileSize = !!currentMessage.metadata?.filesize;
+	  let hasFileSize = !!currentMessage.metadata?.filesize;
+	  if (currentMessage._id in this.state.imageGroups) { 
+		  hasFileSize = false;
+	  }
 	
 	  const timeString = currentMessage.createdAt
 		? dayjs(currentMessage.createdAt).format('h:mm A')
@@ -3363,10 +3659,8 @@ class ContactsListBox extends Component {
 		>
 		  {/* Progress bar on the LEFT */}
 		  {showProgress && (
-	
 			<View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 10 }}>
 			  <UserIcon size={15} identity={this.state.selectedContact}/>
-	
 			  <Progress.Bar
 				progress={consumed/100}
 				width={60}
@@ -3680,6 +3974,105 @@ scrollToMessage(id) {
     this.setState({rotation: newRotation});
   };
   
+  async deleteImages(selectedImages) {
+		console.log('deleteImages', selectedImages);
+		if (!this.state.selectedContact) {
+			return;
+		}
+
+		for (const id of selectedImages) {
+		  console.log('delete image id', id);
+		  this.props.deleteMessage(id, this.state.selectedContact.uri);
+		}
+  }
+  
+	getImageGroups() {
+	  if (this.state.messagesCategoryFilter) {
+	      return;
+	  }
+	
+	  let messages = this.state.renderMessages;
+	  if (this.state.sharingMessages.length > 0) {
+		  messages = this.state.sharingMessages;
+	  }
+	  
+	  const groups = {};
+	  const byImage = {};
+	
+	  const FIVE_MIN = 5 * 60 * 1000;
+	
+	  let currentGroup = null;
+	  let lastImageTime = null;
+	  let lastImageId = null;
+	
+	messages = [...messages].sort(
+	  (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+	);
+
+	  for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+		const isImage = !!msg.image;
+	
+		if (isImage) {
+		  const currentTime = new Date(msg.createdAt).getTime();
+
+		/*
+		  if (lastImageTime) {
+			const diff = currentTime - lastImageTime;
+		
+			console.log('---');
+			console.log('prev:', lastImageId, new Date(lastImageTime).toISOString());
+			console.log('curr:', msg._id, new Date(currentTime).toISOString());
+			console.log('diff (min):', msg._id, diff / 60000);
+		  }
+		  */
+  
+		  const shouldStartNewGroup =
+			!currentGroup || // no active group
+			!lastImageTime || // safety
+			currentTime - lastImageTime > FIVE_MIN; // ⬅️ time gap rule
+	
+		  if (shouldStartNewGroup) {
+			currentGroup = msg._id;
+			groups[currentGroup] = [];
+			//console.log('Start group', currentGroup, msg.createdAt);
+		  }
+	
+		  groups[currentGroup].push(msg._id);
+		  byImage[msg._id] = currentGroup;
+	
+		  lastImageTime = currentTime;
+		  lastImageId = msg._id;
+		} else {
+		  currentGroup = null;
+		  lastImageTime = null;
+		  lastImageId = null;
+		}
+	  }
+	
+	  // ✅ PRUNE groups with only 1 image
+	  const prunedGroups = {};
+	  const prunedByImage = {};
+	
+	  Object.keys(groups).forEach(groupId => {
+		const imgs = groups[groupId];
+	
+		if (imgs.length > 1) {
+		  prunedGroups[groupId] = imgs;
+	
+		  imgs.forEach(imgId => {
+			prunedByImage[imgId] = groupId;
+		  });
+		}
+	  });
+	
+	  this.setState({
+		groupOfImage: prunedByImage,
+		imageGroups: prunedGroups
+	  });
+	}
+
+
     render() {
         let searchExtraItems = [];
         let items = [];
@@ -3822,7 +4215,6 @@ scrollToMessage(id) {
 
         });
 
-
         items = filteredItems;
 
         if (this.state.orderBy == 'size') {
@@ -3883,6 +4275,7 @@ scrollToMessage(id) {
         const borderClass = (this.state.filteredMessages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
         
         let addSpacer = false;
+
 		if (Platform.OS === 'android') {
 		  const androidVersion = Platform.Version;
 		  if (androidVersion >= 34) {
@@ -3907,14 +4300,18 @@ scrollToMessage(id) {
         const gettingSharedAsset = this.state.gettingSharedAsset;
         const showChat = this.showChat;
         const orderBy = this.state.orderBy;
+	    const groupOfImage = this.state.groupOfImage;
+	    const imageGroups = this.state.imageGroups;
 
 		if (debug) {
 			const values = {
- 			replyMessages,
+// 			mediaRotations,
 // 			mediaLabels,
 //			messagesMetadata,
+//			groupOfImage,
+			imageGroups,
 			};
-		
+			
 			//console.log(transferProgress);
 			const maxKeyLength = Math.max(...Object.keys(values).map(k => k.length));
 		
@@ -3932,9 +4329,15 @@ scrollToMessage(id) {
 		const footerHeightReply = Platform.OS === 'android' ? 60: 0;
 		const footerHeight = Platform.OS === 'android' ? 10: 0;
 
-        let messages = this.state.gettingSharedAsset ? [] : this.state.filteredMessages;
-        if (this.state.sharingAssetMessage) {
-			messages = [this.state.sharingAssetMessage];
+        // normal messages from database
+        let messages = this.state.filteredMessages;
+        
+        if (this.state.gettingSharedAsset) {
+            // we are acquiring files to share
+            messages = [];
+        } else if (this.state.sharingMessages.length > 0) {
+            // we have files to share
+			messages = this.state.sharingMessages;
         }
         
         if (this.state.orderBy === 'size') {
@@ -3960,7 +4363,7 @@ scrollToMessage(id) {
         let chatMessages = this.state.focusedMessages || messages;
         // remove duplicate messages no mater what
         chatMessages = chatMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
-        let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && !this.state.sharingAsset && messages.length > 0;
+        let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && this.state.sharingAssets.length == 0 && messages.length > 0;
         //console.log('chatMessages', chatMessages);
         //console.log(JSON.stringify(chatMessages, null, 2));
         if (this.state.isAudioRecording || this.state.recordingFile) {
@@ -3973,20 +4376,50 @@ scrollToMessage(id) {
 		const bottomInset = this.state.insets?.bottom || 0;
 		const leftInset = this.state.insets?.left || 0;
 		const rightInset = this.state.insets?.right || 0;
+
         const images = chatMessages
 		  .filter(m => !!m.image)   // only messages that contain images
 		  .map(msg => ({
 			id: String(msg._id),
 			uri: msg.image,
 			title: msg.text || '',
+			size: msg.metadata.filesize,
+			timestamp: msg.metadata.timestamp,
+			rotation: msg.metadata.rotation,
 		  }));
 		  
+			
+		if (this.state.orderBy === 'timestamp') {
+			if (this.state.sortOrder == 'desc') {
+                images.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
+            } else {
+                images.sort((a, b) => (a.timestamp > b.timestamp) ? 1 : -1)
+            }
+		}
+
 		const navigatorBarHeight = 60;
+		
+		const visibleMessages = chatMessages.filter(msg => {
+		      // skipped duplicate grouped images
+			  // if not an image → always show
+			  if (!msg.image) return true;
+			
+			  const groupId = this.state.groupOfImage[msg._id];
+			
+			  // not grouped → show
+			  if (!groupId) return true;
+			
+			  // show only first image of group
+			  return this.state.imageGroups[groupId][0] === msg._id;
+			});
+			
+		//console.log('visibleMessages', visibleMessages.length);
+		//console.log('chatMessages', chatMessages.length);
 		  		  
 		const KeyboardWrapper = Platform.OS === 'ios'
 			  ? View
 			  : KeyboardAvoidingView;
-
+	
         return (
             <SafeAreaView style={[container, {borderColor: 'white', borderWidth: 0}]}>
               {this.state.selectedContact ?
@@ -4027,17 +4460,22 @@ scrollToMessage(id) {
 				)}
   
              {this.showImageGrid ?
-			  <ThumbnailGrid
-				images={images}
-				isLandscape={this.state.isLandscape}
-				numColumns={3}
-				onLongPress={(item) => console.log('long', item)}
-				renderThumb={({item, index, size}) => (
-				  <View style={{flex:1}}>
-					<Image source={{uri:item.uri}} style={{width:size, height:size, borderRadius:6}} />
-				  </View>
-				)}
-			  />
+				  <ThumbnailGrid
+					images={images}
+					isLandscape={this.state.isLandscape}
+					numColumns={3}
+					showTimestamp={true}
+					enableDelete={true}
+					deleteImages={this.deleteImages}
+					onRotateImage={this.onRotateImage}
+					onSelectionChange = {this.searchThumbnailSelectionChanged}
+					onLongPress={(item) => console.log('long', item)}
+					renderThumb={({item, index, size}) => (
+					  <View style={{flex:1}}>
+						<Image source={{uri:item.uri}} style={{width:size, height:size, borderRadius:6}} />
+					  </View>
+					)}
+				  />
 			  : null}
 
              {this.showChat ?
@@ -4063,7 +4501,7 @@ scrollToMessage(id) {
 				  
 				  bottomOffset={Platform.OS === 'ios' ? bottomInset : 0}
                   innerRef={this.chatListRef}
-                  messages={chatMessages}
+                  messages={visibleMessages}
                   onSend={this.onSendMessage}
                   alwaysShowSend={true}
                   onLongPress={this.onLongMessagePress}
@@ -4249,8 +4687,8 @@ scrollToMessage(id) {
                 show={this.state.showDeleteMessageModal}
                 close={this.closeDeleteMessageModal}
                 contact={this.state.selectedContact}
-                deleteMessage={this.props.deleteMessage}
-                message={this.state.currentMessage}
+                deleteMessageFunc={this.props.deleteMessage}
+                messages={this.state.messagesToDelete}
             />
 
             <MessageInfoModal
@@ -4327,7 +4765,7 @@ ContactsListBox.propTypes = {
     downloadFile    : PropTypes.func,
     uploadFile : PropTypes.func,
     decryptFunc     : PropTypes.func,
-    forwardMessageFunc: PropTypes.func,
+    forwardMessagesFunc: PropTypes.func,
     messagesCategoryFilter: PropTypes.string,
     startCall: PropTypes.func,
     sourceContact: PropTypes.object,

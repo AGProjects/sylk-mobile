@@ -1,0 +1,2 @@
+ * Improve UI for deleting files
+ * Fix calculating space usage per contact

@@ -105,10 +105,7 @@ class DeleteHistoryModal extends Component {
         autoBind(this);
 
         this.state = {
-            displayName: this.props.displayName,
             show: this.props.show,
-            uri: this.props.uri,
-            username: this.props.uri ? this.props.uri.split('@')[0] : null,
             periodFilterKey: '2',
             periodType: 'after',
             remoteDelete: true,
@@ -117,10 +114,6 @@ class DeleteHistoryModal extends Component {
             confirm_again: false,
             incoming: false,
             outgoing: true,
-            myself: this.props.myself,
-            hasMessages: this.props.hasMessages,
-            filteredMessageIds: this.props.filteredMessageIds,
-            selectedContact: this.props.selectedContact,
             simulate: false,
         };
     }
@@ -128,18 +121,11 @@ class DeleteHistoryModal extends Component {
     UNSAFE_componentWillReceiveProps(nextProps) {
         this.setState({
             show: nextProps.show,
-            displayName: nextProps.displayName,
-            username: nextProps.uri ? nextProps.uri.split('@')[0] : null,
-            uri: nextProps.uri,
             deleteContact: nextProps.deleteContact,
             confirm: nextProps.confirm,
             confirm_again: nextProps.confirm_again,
-            hasMessages: nextProps.hasMessages,
-            myself: nextProps.myself,
             simulate: nextProps.simulate || false,
             periodType: nextProps.periodType,
-            selectedContact: nextProps.selectedContact,
-            filteredMessageIds: nextProps.filteredMessageIds
         });
         
         if ('show' in nextProps) {
@@ -148,7 +134,6 @@ class DeleteHistoryModal extends Component {
     }
 
     deleteMessages(event) {
-        event.preventDefault();
         if (this.state.confirm_again) {
             const filter = {
                 period: this.getPeriodFilterDate(),
@@ -157,12 +142,11 @@ class DeleteHistoryModal extends Component {
                 outgoing: this.state.outgoing,
                 deleteContact: this.state.deleteContact,
                 simulate: this.state.simulate,
-                wipe: this.state.myself && !this.state.selectedContact,
-                selectedContact: this.state.selectedContact
+                wipe: this.props.myself && !this.props.selectedContact,
+                selectedContact: this.props.selectedContact
             };
     
-            this.props.deleteMessages(this.state.uri, this.state.remoteDelete, filter);
-            
+            this.props.deleteMessages(this.props.uri, this.state.remoteDelete, filter);
             this.setState({ confirm: false, remoteDelete: false, deleteContact: false });
             this.props.close();
         } else if (this.state.confirm) {
@@ -181,10 +165,10 @@ class DeleteHistoryModal extends Component {
             const filter = {
                 deleteContact: true,
                 simulate: this.state.simulate,
-                selectedContact: this.state.selectedContact
+                selectedContact: this.props.selectedContact
             };
 
-            this.props.deleteMessages(this.state.uri, true, filter);
+            this.props.deleteMessages(this.props.uri, true, filter);
             this.props.close();
         } else if (this.state.confirm) {
             this.setState({ confirm_again: true }); 
@@ -219,7 +203,7 @@ class DeleteHistoryModal extends Component {
 
 	renderPeriodDropdown() {
 		const periodOptions = [
-			{ key: 'all', label: 'All' },
+			{ key: 'all', label: 'Any time' },
 			{ key: '1', label: 'Last day' },
 			{ key: '2', label: 'Last two days' },
 			{ key: '7', label: 'Last week' },
@@ -229,7 +213,7 @@ class DeleteHistoryModal extends Component {
 			{ key: '-365', label: 'Older than one year' }
 		];
 	
-		if (this.state.deleteContact || this.state.myself) {
+		if (this.state.deleteContact || this.props.myself) {
 			return null;
 		}
 	
@@ -289,21 +273,19 @@ class DeleteHistoryModal extends Component {
 	}
 
     render() {
-        const identity = { uri: this.state.uri, displayName: this.state.displayName };
-        const canDeleteRemote = this.state.uri && !this.state.uri.includes('@videoconference');
+        const canDeleteRemote = this.props.uri && !this.props.uri.includes('@videoconference');
         let deleteLabel = 'Delete';
-        const remote_label = (this.state.displayName && this.state.displayName !== this.state.uri)
-            ? this.state.displayName
-            : this.state.username;
-        const what = this.state.filteredMessageIds.length > 0
-            ? `${this.state.filteredMessageIds.length} selected messages`
+        
+		const remote_label = this.props.selectedContact ? (this.props.selectedContact.displayName || this.props.selectedContact.uri): this.props.uri;
+        const what = this.props.filteredMessageIds.length > 0
+            ? `${this.props.filteredMessageIds.length} selected messages`
             : 'messages';
         const simulate = false;
 
         if (this.state.confirm) deleteLabel = 'Confirm';
         if (this.state.confirm_again) deleteLabel = 'Confirm again';
         
-        if ((!this.state.hasMessages && this.state.uri) || this.state.deleteContact) {
+        if ((!this.props.hasMessages && this.props.uri) || this.state.deleteContact) {
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
@@ -312,7 +294,7 @@ class DeleteHistoryModal extends Component {
                             </View>
 
                             <Text style={styles.body}>
-                                Are you sure you want to delete {this.state.uri}?
+                                Are you sure you want to delete {this.props.uri}?
                             </Text>
 
                             <View style={styles.buttonRow}>
@@ -339,13 +321,13 @@ class DeleteHistoryModal extends Component {
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
                         <View style={styles.titleContainer}>
                             <Dialog.Title style={styles.title}>
-                                {this.state.myself && !this.state.selectedContact ? 'Wipe device' : 'Delete messages'}
+                                {this.props.myself && !this.props.selectedContact ? 'Wipe device' : 'Delete messages'}
                             </Dialog.Title>
                         </View>
 
-                        {this.state.uri ? (
+                        {this.props.uri ? (
                             <Text style={styles.body}>
-                                Select the messages exchanged with {remote_label} that you want to delete: 
+								Messages exchanged with {remote_label}: 
                             </Text>
                         ) : (
                             <Text style={styles.body}>
@@ -359,9 +341,9 @@ class DeleteHistoryModal extends Component {
                             <Text style={styles.body}>This includes all file transfers.</Text>
                         )}
 
-                        {this.renderPeriodDropdown()}
+						<View style={styles.checkBoxRow}>
 
-                        {!this.state.deleteContact && this.state.selectedContact && (
+                        {!this.state.deleteContact && this.props.selectedContact && (
                             <View style={styles.checkBoxRow}>
                                 {Platform.OS === 'ios' ? (
                                     <Switch value={this.state.incoming} onValueChange={this.toggleIncoming} />
@@ -375,7 +357,7 @@ class DeleteHistoryModal extends Component {
                             </View>
                         )}
 
-                        {!this.state.deleteContact && this.state.selectedContact && (
+                        {!this.state.deleteContact && this.props.selectedContact && (
                             <View style={styles.checkBoxRow}>
                                 {Platform.OS === 'ios' ? (
                                     <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
@@ -389,21 +371,10 @@ class DeleteHistoryModal extends Component {
                             </View>
                         )}
 
-                        {canDeleteRemote && (
-                            <View style={styles.checkBoxRow}>
-                                {Platform.OS === 'ios' ? (
-                                    <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
-                                ) : (
-                                    <Checkbox
-                                        status={this.state.remoteDelete ? 'checked' : 'unchecked'}
-                                        onPress={this.toggleRemoteDelete}
-                                    />
-                                )}
-                                <Text> Also delete for {remote_label}</Text>
-                            </View>
-                        )}
+						</View>
+                        {this.renderPeriodDropdown()}
 
-                        {!this.state.myself && this.state.uri && this.state.filteredMessageIds.length === 0 && false && (
+                        {!this.props.myself && this.props.uri && this.props.filteredMessageIds.length === 0 && false && (
                             <View style={styles.checkBoxRow}>
                                 {Platform.OS === 'ios' ? (
                                     <Switch value={this.state.deleteContact} onValueChange={this.toggleDeleteContact} />
@@ -445,6 +416,21 @@ class DeleteHistoryModal extends Component {
                                 {deleteLabel}
                             </Button>
                         </View>
+
+                        {canDeleteRemote && (
+                            <View style={styles.checkBoxRow}>
+                                {Platform.OS === 'ios' ? (
+                                    <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
+                                ) : (
+                                    <Checkbox
+                                        status={this.state.remoteDelete ? 'checked' : 'unchecked'}
+                                        onPress={this.toggleRemoteDelete}
+                                    />
+                                )}
+                                <Text> Also delete remotely</Text>
+                            </View>
+                        )}
+
                 </DialogType>
             </Portal>
         );
@@ -455,7 +441,6 @@ DeleteHistoryModal.propTypes = {
     show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     uri: PropTypes.string,
-    displayName: PropTypes.string,
     deleteMessages: PropTypes.func,
     deleteContact: PropTypes.bool,
     hasMessages: PropTypes.bool,

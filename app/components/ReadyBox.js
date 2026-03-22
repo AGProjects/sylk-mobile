@@ -894,18 +894,16 @@ class ReadyBox extends Component {
  		let content_items = [];
 
         if (this.props.selectedContact) {
-             
-            if (this.state.orderBy !== 'size') {
-				content_items.push({key: 'text', title: 'Text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
-			}
-			content_items.push({key: 'audio', title: 'Audio', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
-			content_items.push({key: 'image', title: 'Image', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
-			content_items.push({key: 'video', title: 'Video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
-			content_items.push({key: 'other', title: 'Other', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
+			content_items.push({key: 'text', title: 'Text', icon: 'text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
+			content_items.push({key: 'audio', title: 'Audio', icon: 'microphone', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
+			content_items.push({key: 'image', title: 'Image', icon: 'image', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
+			content_items.push({key: 'video', title: 'Video', icon: 'video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
+			content_items.push({key: 'other', title: 'Other', icon: 'file', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
 
             if ('pinned' in this.props.contentTypes) {
                 content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.props.pinned});
             }
+
 			content_items.push({key: 'orderByTime', title: 'By Time', enabled: this.state.orderBy === 'timestamp', selected: false});
 			content_items.push({key: 'orderBySize', title: 'By Size', enabled:  this.state.orderBy === 'size', selected: false});
             content_items.push({key: 'orderAscending', title: '↑ Asc', enabled: this.state.sortOrder === 'asc', selected: false});
@@ -923,7 +921,6 @@ class ReadyBox extends Component {
         }
         
         return content_items;
-
     }
 
     get navigationItems() {
@@ -976,7 +973,10 @@ class ReadyBox extends Component {
 
         let title = object.item.title;
         let key = object.item.key;
+        let icon = object.item.icon;
+        
         let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
+        let iconStyle = object.item.selected ? styles.categoryButtonSelected : styles.categoryButton;
 
         if (key === "hideQRCodeScanner") {
             return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
@@ -1008,6 +1008,15 @@ class ReadyBox extends Component {
 
         if (key === "orderDescending") {
             return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
+        }
+        
+        if (icon) {                                    
+ 			return (<IconButton 
+ 			         icon={icon} 
+					 size={18}
+ 			         style={iconStyle} 
+ 			         onPress={() => {this.filterHistory(key)}}
+ 			         />);
         }
 
         return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
@@ -1803,7 +1812,7 @@ class ReadyBox extends Component {
 						decryptFunc = {this.props.decryptFunc}
 						messagesCategoryFilter = {this.state.messagesCategoryFilter}
 						isTexting = {this.props.isTexting}
-						forwardMessageFunc = {this.props.forwardMessageFunc}
+						forwardMessagesFunc = {this.props.forwardMessagesFunc}
 						requestCameraPermission = {this.props.requestCameraPermission}
 						requestStoragePermissions = {this.props.requestStoragePermissions}
 						requestMicPermission = {this.props.requestMicPermission}
@@ -1957,7 +1966,7 @@ ReadyBox.propTypes = {
     filteredMessageIds: PropTypes.array,
     contentTypes: PropTypes.object,
     canSend: PropTypes.func,
-    forwardMessageFunc: PropTypes.func,
+    forwardMessagesFunc: PropTypes.func,
     sourceContact: PropTypes.object,
     requestCameraPermission: PropTypes.func,
     requestStoragePermissions: PropTypes.func,

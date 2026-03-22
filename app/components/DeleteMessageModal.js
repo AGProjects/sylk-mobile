@@ -23,7 +23,6 @@ class DeleteMessageModal extends Component {
             show: this.props.show,
             remoteDelete: true,
             afterDelete: false,
-            message: this.props.message,
             confirm: false,
         }
     }
@@ -35,16 +34,15 @@ class DeleteMessageModal extends Component {
                        displayName: nextProps.contact ? nextProps.contact.name : null,
                        confirm: nextProps.confirm,
                        contact: nextProps.contact,
-                       message: nextProps.message
                        });
     }
 
     deleteMessage(event) {
-        event.preventDefault();
         if (this.state.confirm || true) {
-            let id = this.state.message ? this.state.message._id : 'Unknown';
             this.setState({confirm: false, remoteDelete: true, afterDelete: false});
-            this.props.deleteMessage(id, this.state.uri, this.state.remoteDelete, this.state.afterDelete);
+            for (const id of this.props.messages) {
+				this.props.deleteMessageFunc(id, this.state.uri, this.state.remoteDelete, this.state.afterDelete);
+		    }
             this.props.close();
         } else {
             this.setState({confirm: true});
@@ -63,11 +61,8 @@ class DeleteMessageModal extends Component {
         let identity = {uri: this.state.uri, displayName: this.state.displayName};
         let deleteLabel = this.state.confirm || true ? 'Confirm': 'Delete';
         let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
-        let canDeleteRemote = this.state.message && this.state.message.direction === 'outgoing';
-
-        if (this.state.uri && this.state.uri.indexOf('@videoconference') > -1) {
-            canDeleteRemote = false;
-        }
+        
+        let canDeleteRemote = true;
 
         return (
         <Portal>
@@ -79,12 +74,12 @@ class DeleteMessageModal extends Component {
                         </View>
 
                         <View style={styles.titleContainer}>
-                           <Dialog.Title style={styles.title}>{'Delete message'} </Dialog.Title>
+                           <Dialog.Title style={styles.title}>{'Delete messages'} </Dialog.Title>
                        </View>
 
                     </View>
                          <Text style={styles.body}>
-                             Are you sure you want to delete this message?
+                             Are you sure you want to delete {this.props.messages?.length} {this.props.messages?.length == 1 ? 'message' : 'messages'}?
                          </Text>
                         <View style={styles.checkBoxRow}>
                           {Platform.OS === 'ios' && canDeleteRemote ?
@@ -97,7 +92,7 @@ class DeleteMessageModal extends Component {
                             }
 
                             {canDeleteRemote ?
-                            <Text> Also delete for {remote_label}</Text>
+                            <Text> Also delete those sent for {remote_label}</Text>
                             : null}
 
                             </View>
@@ -139,8 +134,8 @@ DeleteMessageModal.propTypes = {
     show               : PropTypes.bool,
     close              : PropTypes.func.isRequired,
     contact            : PropTypes.object,
-    deleteMessage      : PropTypes.func,
-    message            : PropTypes.object
+    deleteMessageFunc  : PropTypes.func,
+    messages           : PropTypes.array
 };
 
 export default DeleteMessageModal;

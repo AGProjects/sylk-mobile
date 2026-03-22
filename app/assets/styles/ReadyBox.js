@@ -191,6 +191,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'red',
   },
 
+  categoryButton: {
+    backgroundColor: 'gray',
+  },
+
+  categoryButtonSelected: {
+    backgroundColor: 'white',
+    borderWidth: 0,
+    borderColor: 'green'
+  },
+
   disabledBlueButton: {
     backgroundColor: 'rgba(46, 76, 111, 0.5)',
   },

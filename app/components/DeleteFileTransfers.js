@@ -5,6 +5,7 @@ import { View, Platform, Text } from 'react-native';
 import { Dialog, Portal, Button, Menu, Switch, Checkbox } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import UserIcon from './UserIcon';
+import utils from '../utils';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -46,8 +47,8 @@ const styles = StyleSheet.create({
   checkBoxRow: {
     flexDirection: 'row',    // align checkbox/switch and text horizontally
     alignItems: 'center',    // vertically center items
-    marginLeft: 20,          // spacing from left edge
-    marginBottom: 10,        // spacing between rows
+    marginLeft: 10,          // spacing from left edge
+    marginBottom: 5,        // spacing between rows
   },
 
   periodDropdownContainer: {
@@ -66,33 +67,31 @@ class DeleteFileTransfers extends Component {
   }
 
   UNSAFE_componentWillReceiveProps(nextProps) {
-    const transferedFiles = nextProps.uri in nextProps.transferedFiles ? nextProps.transferedFiles[nextProps.uri] : {};
-    if (!this.state.show && nextProps.show) {
-      const filter = {
-        incoming: true,
-        outgoing: true,
-        period: this.getPeriodFilterDate(),
-        periodType: 'after',
-      };
-      this.props.getTransferedFiles(nextProps.uri, filter);
-    }
-
     this.setState({
       show: nextProps.show,
-      displayName: nextProps.displayName,
-      username: nextProps.uri ? nextProps.uri.split('@')[0] : null,
-      uri: nextProps.uri,
-      transferedFiles,
-      confirm: nextProps.confirm,
-      selectedContact: nextProps.selectedContact,
+      confirm: nextProps.confirm
     });
   }
 
+	componentDidUpdate(prevProps, prevState) {
+	     if (this.state.show != prevState.show) {
+	         console.log('show', this.state.show);
+	         if (this.state.show) {
+				  const filter = {
+					incoming: true,
+					outgoing: true,
+					period: this.getPeriodFilterDate(),
+					periodType: 'after',
+				  };
+				  console.log('Filter', filter);
+				  this.props.getTransferedFiles(this.props.uri, filter);
+			  }
+	     }
+   }	     
+
   defaultState() {
-    const transferedFiles = this.props.uri in this.props.transferedFiles ? this.props.transferedFiles[this.props.uri] : {};
     return {
-      displayName: this.props.displayName,
-      transferedFiles,
+      transferedFiles: {},
       show: this.props.show,
       uri: this.props.uri,
       deletePhotos: false,
@@ -103,7 +102,6 @@ class DeleteFileTransfers extends Component {
       outgoing: true,
       periodFilterKey: '2',
       periodType: 'after',
-      username: this.props.uri ? this.props.uri.split('@')[0] : null,
       remoteDelete: false,
       confirm: false,
     };
@@ -114,7 +112,6 @@ class DeleteFileTransfers extends Component {
   }
 
   deleteMessages(event) {
-    event.preventDefault();
     if (this.state.confirm) {
       this.setState({ confirm: false, remoteDelete: false });
 
@@ -129,7 +126,7 @@ class DeleteFileTransfers extends Component {
         periodType: this.state.periodType,
       };
 
-      const transferedFiles = JSON.parse(JSON.stringify(this.state.transferedFiles));
+      const transferedFiles = JSON.parse(JSON.stringify(this.props.transferedFiles));
 
       if (!this.state.deleteAudios) delete transferedFiles.audios;
       if (!this.state.deleteVideos) delete transferedFiles.videos;
@@ -138,7 +135,7 @@ class DeleteFileTransfers extends Component {
 
       const allIds = Array.from(new Set(Object.values(transferedFiles).flat()));
 
-      this.props.deleteFilesFunc(this.state.uri, allIds, this.state.remoteDelete, filter);
+      this.props.deleteFilesFunc(this.props.uri, allIds, this.state.remoteDelete, filter);
       this.props.close();
       this.setState({
         periodFilterKey: '2',
@@ -199,7 +196,7 @@ class DeleteFileTransfers extends Component {
 
   renderPeriodDropdown() {
     const periodOptions = [
-      { key: 'all', label: 'All' },
+      { key: 'all', label: 'Any time' },
       { key: '1', label: 'Last day' },
       { key: '2', label: 'Last two days' },
       { key: '7', label: 'Last week' },
@@ -248,7 +245,7 @@ class DeleteFileTransfers extends Component {
   }
 
   render() {
-    const transferedFiles = JSON.parse(JSON.stringify(this.state.transferedFiles));
+    const transferedFiles = JSON.parse(JSON.stringify(this.props.transferedFiles));
     if (!this.state.deleteAudios) delete transferedFiles.audios;
     if (!this.state.deleteVideos) delete transferedFiles.videos;
     if (!this.state.deletePhotos) delete transferedFiles.photos;
@@ -256,13 +253,18 @@ class DeleteFileTransfers extends Component {
 
     const allIds = Array.from(new Set(Object.values(transferedFiles).flat()));
     const deleteLabel = this.state.confirm ? 'Confirm' : `Delete ${allIds.length} files`;
-    const remote_label = this.state.displayName && this.state.displayName !== this.state.uri ? this.state.displayName : this.state.username;
-    const audioFiles = 'audios' in this.state.transferedFiles ? this.state.transferedFiles.audios.length : 0;
-    const videoFiles = 'videos' in this.state.transferedFiles ? this.state.transferedFiles.videos.length : 0;
-    const photoFiles = 'photos' in this.state.transferedFiles ? this.state.transferedFiles.photos.length : 0;
-    const otherFiles = 'others' in this.state.transferedFiles ? this.state.transferedFiles.others.length : 0;
-    const canDeleteRemote = this.state.uri && !this.state.uri.includes('@videoconference');
+    const remote_label = this.props.selectedContact ? (this.props.selectedContact.displayName || this.props.selectedContact.uri): this.props.uri;
+    const audioFiles = 'audios' in this.props.transferedFiles ? this.props.transferedFiles.audios.length : 0;
+    const videoFiles = 'videos' in this.props.transferedFiles ? this.props.transferedFiles.videos.length : 0;
+    const photoFiles = 'photos' in this.props.transferedFiles ? this.props.transferedFiles.photos.length : 0;
+    const otherFiles = 'others' in this.props.transferedFiles ? this.props.transferedFiles.others.length : 0;
+    const canDeleteRemote = this.props.uri && !this.props.uri.includes('@videoconference') && this.state.outgoing;
     const isDisabled = allIds.length === 0;
+
+    const photoSize = this.props.transferedFilesSizes?.photos ?? 0;
+    const videoSize = this.props.transferedFilesSizes?.videos ?? 0;
+    const audioSize = this.props.transferedFilesSizes?.audios ?? 0;
+    const otherSize = this.props.transferedFilesSizes?.others ?? 0;
 
     return (
       <Portal>
@@ -272,54 +274,18 @@ class DeleteFileTransfers extends Component {
           </View>
 
           <Text style={styles.body}>
-            Select the files exchanged with {remote_label} that you want to delete: 
+            Files exchanged with {remote_label}: 
           </Text>
 
-          {this.renderPeriodDropdown()}
-
-          {photoFiles ? (
+            <View style={styles.checkBoxRow}>
             <View style={styles.checkBoxRow}>
               {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deletePhotos} onValueChange={this.toggleDeletePhotos} />
+                <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
               ) : (
-                <Checkbox status={this.state.deletePhotos ? 'checked' : 'unchecked'} onPress={this.toggleDeletePhotos} />
+                <Checkbox status={this.state.outgoing ? 'checked' : 'unchecked'} onPress={this.toggleOutgoing} />
               )}
-              <Text style={{ marginLeft: 8 }}>Delete {photoFiles} photos</Text>
+              <Text style={{ marginLeft: 8 }}>Outgoing</Text>
             </View>
-          ) : null}
-
-          {videoFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deleteVideos} onValueChange={this.toggleDeleteVideos} />
-              ) : (
-                <Checkbox status={this.state.deleteVideos ? 'checked' : 'unchecked'} onPress={this.toggleDeleteVideos} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Delete {videoFiles} videos</Text>
-            </View>
-          ) : null}
-
-          {audioFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deleteAudios} onValueChange={this.toggleDeleteAudios} />
-              ) : (
-                <Checkbox status={this.state.deleteAudios ? 'checked' : 'unchecked'} onPress={this.toggleDeleteAudios} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Delete {audioFiles} audio recordings</Text>
-            </View>
-          ) : null}
-
-          {otherFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deleteOthers} onValueChange={this.toggleDeleteOthers} />
-              ) : (
-                <Checkbox status={this.state.deleteOthers ? 'checked' : 'unchecked'} onPress={this.toggleDeleteOthers} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Delete other type of files ({otherFiles})</Text>
-            </View>
-          ) : null}
 
             <View style={styles.checkBoxRow}>
               {Platform.OS === 'ios' ? (
@@ -330,23 +296,51 @@ class DeleteFileTransfers extends Component {
               <Text style={{ marginLeft: 8 }}>Incoming</Text>
             </View>
 
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
-              ) : (
-                <Checkbox status={this.state.outgoing ? 'checked' : 'unchecked'} onPress={this.toggleOutgoing} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Outgoing</Text>
             </View>
 
-          {canDeleteRemote && !isDisabled ? (
+          {this.renderPeriodDropdown()}
+
+          {photoFiles ? (
             <View style={styles.checkBoxRow}>
               {Platform.OS === 'ios' ? (
-                <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
+                <Switch value={this.state.deletePhotos} onValueChange={this.toggleDeletePhotos} />
               ) : (
-                <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={this.toggleRemoteDelete} />
+                <Checkbox status={this.state.deletePhotos ? 'checked' : 'unchecked'} onPress={this.toggleDeletePhotos} />
               )}
-              <Text style={{ marginLeft: 8 }}>Also delete for {remote_label}</Text>
+              <Text style={{ marginLeft: 8 }}>{photoFiles} photos ({utils.beautySize(photoSize)})</Text>
+            </View>
+          ) : null}
+
+          {videoFiles ? (
+            <View style={styles.checkBoxRow}>
+              {Platform.OS === 'ios' ? (
+                <Switch value={this.state.deleteVideos} onValueChange={this.toggleDeleteVideos} />
+              ) : (
+                <Checkbox status={this.state.deleteVideos ? 'checked' : 'unchecked'} onPress={this.toggleDeleteVideos} />
+              )}
+              <Text style={{ marginLeft: 8 }}>{videoFiles} videos ({utils.beautySize(videoSize)})</Text>
+            </View>
+          ) : null}
+
+          {audioFiles ? (
+            <View style={styles.checkBoxRow}>
+              {Platform.OS === 'ios' ? (
+                <Switch value={this.state.deleteAudios} onValueChange={this.toggleDeleteAudios} />
+              ) : (
+                <Checkbox status={this.state.deleteAudios ? 'checked' : 'unchecked'} onPress={this.toggleDeleteAudios} />
+              )}
+              <Text style={{ marginLeft: 8 }}>{audioFiles} audio recordings ({utils.beautySize(audioSize)})</Text>
+            </View>
+          ) : null}
+
+          {otherFiles ? (
+            <View style={styles.checkBoxRow}>
+              {Platform.OS === 'ios' ? (
+                <Switch value={this.state.deleteOthers} onValueChange={this.toggleDeleteOthers} />
+              ) : (
+                <Checkbox status={this.state.deleteOthers ? 'checked' : 'unchecked'} onPress={this.toggleDeleteOthers} />
+              )}
+              <Text style={{ marginLeft: 8 }}>{otherFiles} other type ({utils.beautySize(otherSize)})</Text>
             </View>
           ) : null}
 
@@ -362,6 +356,18 @@ class DeleteFileTransfers extends Component {
               {deleteLabel}
             </Button>
           </View>
+          {canDeleteRemote && !isDisabled ? (
+            <View style={[styles.checkBoxRow, {borderTop: 0.5}]}>
+              {Platform.OS === 'ios' ? (
+                <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
+              ) : (
+                <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={this.toggleRemoteDelete} />
+              )}
+              <Text style={{ marginLeft: 8 }}>Also delete remotely</Text>
+            </View>
+          ) : null}
+
+
         </DialogType>
       </Portal>
     );
@@ -373,9 +379,9 @@ DeleteFileTransfers.propTypes = {
   selectedContact: PropTypes.object,
   close: PropTypes.func.isRequired,
   uri: PropTypes.string,
-  displayName: PropTypes.string,
   deleteFilesFunc: PropTypes.func,
   transferedFiles: PropTypes.object,
+  transferedFilesSizes: PropTypes.object,
   getTransferedFiles: PropTypes.func,
 };
 

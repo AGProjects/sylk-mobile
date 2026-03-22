@@ -774,8 +774,10 @@ function titleCase(str) {
 }
 
 function beautySize(fsize) {
-    let size = fsize + + " B";
-    if (fsize > 1024 * 1024) {
+    let size = fsize + " B";
+    if (fsize > 1024 * 1024 * 1024) {
+        size = Math.ceil(fsize/1024/1024/1024) + " GB";
+    } else if (fsize > 1024 * 1024) {
         size = Math.ceil(fsize/1024/1024) + " MB";
     } else if (fsize < 1024 * 1024) {
         size = Math.ceil(fsize/1024) + " KB";
@@ -938,7 +940,7 @@ async function getRemotePartySizes(accountId, uri) {
         const remotePartyPath = item.path;
         const size = await getFolderSize(remotePartyPath, uri);
         const dirs = await getDirs(remotePartyPath);
-        //console.log('Space used for', item.name, '->', size);
+        //console.log('Space used for', item.name, '->', beautySize(size), 'dirs', dirs.length);
         //listAllFilesRecursive(item.path);        
         totalSize += size;
         results.push({
@@ -970,18 +972,24 @@ async function getRemotePartySizes(accountId, uri) {
 /**
  * Recursively calculates the total size of a folder in bytes.
  */
-async function getFolderSize(folderPath, uri=null) {
+async function getFolderSize(folderPath, log=false) {
   let totalSize = 0;
   let dirSize = 0;
   try {
     const items = await RNFS.readDir(folderPath);
+	if (log) {
+		console.log('Found', items.length, 'items');
+    }
     for (const item of items) {
       if (item.isFile()) {
         totalSize += Number(item.size);
+        if (log) {
+			console.log('Found file', item.path, 'with size', item.size);
+		}
       } else if (item.isDirectory()) {
-		dirSize = await getFolderSize(item.path);
-        if (uri) {
-			//console.log('dir size', item.path, dirSize); 
+		dirSize = await getFolderSize(item.path, log);
+        if (log) {
+			console.log('log dir', item.path, 'with size', dirSize); 
 		}
         totalSize += dirSize;
       }
@@ -1150,3 +1158,7 @@ exports.fileChecksum = fileChecksum;
 exports.deepEqual = deepEqual;
 exports.availableAudioDevicesIconsMap = availableAudioDevicesIconsMap;
 exports.availableAudioDeviceNames = availableAudioDeviceNames;
+exports.getFolderSize = getFolderSize;
+
+
+

@@ -29,6 +29,9 @@ const ChatBubble = memo(
     renderMessageText,
     focusedMessageId,
     sortOrder,
+	imageGroups,
+	groupOfImage,
+	thumbnailGridSize,
     // catch-all for any other GiftedChat bubble props
     ...restProps
   }) => {
@@ -37,6 +40,10 @@ const ChatBubble = memo(
 
     const isFocused = focusedMessageId === currentMessage._id;
     const focusedBorder = isFocused ? { borderWidth: 3, borderColor: 'orange' } : {};
+
+	if (currentMessage._id in groupOfImage && !(currentMessage._id in imageGroups)) {
+		 return (null);
+	}
 
     // === Styling / colors ===
     const bubbleRadius = 16;
@@ -162,7 +169,7 @@ const ChatBubble = memo(
 
     if (currentMessage.image) {
       content = (
-        <Bubble
+        <Bubble 
           {...bubbleProps}
           wrapperStyle={{ left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 }, right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 } }}
           textProps={{ style: { color: position === 'left' ? '#000' : '#000' } }}
@@ -273,7 +280,7 @@ const ChatBubble = memo(
 		const nextRotation = next.mediaRotations?.[currentId];
 		
 		if (prevRotation !== nextRotation) {
-		  //console.log(`[Bubble ${currentId}] RERENDER → mediaRotation changed ${prevRotation} -> ${nextRotation}`);
+		  console.log(`[Bubble ${currentId}] RERENDER → mediaRotation changed ${prevRotation} -> ${nextRotation}`);
 		  return false; // re-render
 		}
 	
@@ -309,6 +316,11 @@ const ChatBubble = memo(
 		//console.log(`[Bubble ${id}] RERENDER → image state changed ${prevImgState} -> ${nextImgState}`);
 		return true;
 	  }
+
+    if (prev.thumbnailGridSize !== next.thumbnailGridSize) {
+	  //console.log(`[Bubble ${id}] RERENDER → thumbnailGridSize changed`);
+	  return false;
+    }
 	
 	// ==== Thumbnail / video meta ====
 	const prevThumb = prev.videoMetaCache?.[id]?.thumbnail;
@@ -337,23 +349,16 @@ const ChatBubble = memo(
 	
 		// ==== Status flags ====
 		const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label'];
-		
+		let defaultFalse = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing'];
+
 		for (let f of flags) {
-			const oldValue = p[f] !== undefined ? p[f] : null;
-			const newValue = n[f] !== undefined ? n[f] : null;
+		    
+		    const defValue = defaultFalse.indexOf(f) > -1 ? false: null;
+			const oldValue = p[f] !== undefined ? p[f] : defValue;
+			const newValue = n[f] !== undefined ? n[f] : defValue;
 		
 			// Only trigger if they actually differ
-	
-			if (f == 'playing') {
-				if (oldValue == null) {
-					oldValue = false;
-				}
-	
-				if (newValue == null) {
-					newValue = false;
-				}
-			}
-	
+		
 			if ( f == 'consumed' && oldValue && newValue && newValue < oldValue) {
 				return true;
 			}
@@ -376,7 +381,7 @@ const ChatBubble = memo(
 			//console.log(`[Bubble ${id}] RERENDER → status '${f}' : ${oldValue} -> ${newValue}`);
 			
 			if (oldValue !== newValue) {
-				console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
+				//console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
 				return false;
 			}
 		}

@@ -394,6 +394,7 @@ class Sylk extends Component {
             appState: null,
             configurationUrl: 'https://download.ag-projects.com/Sylk/Mobile/config.json',
 		    wsUrl: 'wss://webrtc-gateway.sipthor.net:9999/webrtcgateway/ws',
+		    testConnectionUrl: null,
             defaultDomain: 'sylk.link',
             sylkDomain: 'sylk.link',
             publicUrl: 'https://webrtc.sipthor.net',
@@ -470,6 +471,7 @@ class Sylk extends Component {
             inviteContacts: false,
             shareToContacts: false,
             sharedContent: [],
+            forwardContent: [],
             selectedContacts: [],
             pinned: false,
             callContact: null,
@@ -510,6 +512,7 @@ class Sylk extends Component {
             headsetIsPlugged: false,
             sortBy: 'timestamp',
             transferedFiles: {},
+            transferedFilesSizes: {},
             searchMessages: false,
             searchContacts: false,
             dark: false,
@@ -553,6 +556,7 @@ class Sylk extends Component {
         this.uploadRequests = {};
         this.decryptRequests = {};
         this.cancelDecryptRequests = {};
+        this.uploadedFiles = new Set();
 
         this.pendingNewSQLMessages = [];
         this.syncStartTimestamp = null;
@@ -1052,8 +1056,8 @@ class Sylk extends Component {
 	
 		this.setState({SylkServerDiscovery: true, SylkServerDiscoveryResult: null, SylkServerStatus: ''});
 	
-		const primaryUrl = `https://dns.google/resolve?name=_sylkserver.${domain}&type=TXT`;
-		const fallbackUrl = `https://mdns.sipthor.net/dnslookup.php?name=_sylkserver.${domain}&type=TXT`;
+		const  fallbackUrl = `https://mdns.sipthor.net/dnslookup.php?name=_sylkserver.${domain}&type=TXT`;
+		const  primaryUrl = `https://dns.google/resolve?name=_sylkserver.${domain}&type=TXT`;
 	
 		const fetchDns = async (url) => {
 			const res = await this.fetchWithTimeout(url, {}, 3000); // 5-second timeout
@@ -1092,6 +1096,7 @@ class Sylk extends Component {
 			}
 		}
 	
+	console.log('data', data);
 		const answers = data.Answer?.map(a => a.data) || [];
 		const configurationUrl = Array.isArray(answers) && answers.length === 1 ? answers[0] : null;
 		console.log('DNS response', configurationUrl);
@@ -1145,7 +1150,7 @@ class Sylk extends Component {
 		
 		if (checkOnly) {
 			let wsUrl = json.wsServer;
-			this.setState({configurationJson: jsonString});
+			this.setState({configurationJson: jsonString, testConnectionUrl: wsUrl});
 			this.testConnectionToSylkServer(wsUrl);
 			return;
 		}
@@ -1161,7 +1166,7 @@ class Sylk extends Component {
 	
 		return json;  // return it if you want to use it
 	  } catch (error) {
-		this.setState({SylkServerDiscovery: false});
+		this.setState({SylkServerDiscovery: false, SylkServerStatus: 'Server configuration unavailable:\n' + url});
 		console.log("downloadSylkConfiguration error:", error);
 		return null;
 	  }
@@ -3035,7 +3040,10 @@ class Sylk extends Component {
     }
 
     get sharingAction() {
-        return !!this.state.forwardContent || (this.state.sharedContent && this.state.sharedContent.length > 0);
+        return (
+		  (this.state.forwardContent?.length > 0) ||
+		  (this.state.sharedContent?.length > 0)
+		);
     }
 
     async initConfiguration(configurationJson, origin=null) {
@@ -4417,6 +4425,7 @@ class Sylk extends Component {
     }
 
 	async getStorageUsage(uri) {
+		console.log('getStorageUsage', uri);
 	
 		const sizes = await utils.getRemotePartySizes(this.state.accountId, uri);
 		
@@ -5453,7 +5462,7 @@ class Sylk extends Component {
             case 'closed':
 				this.state.testConnection.removeListener('stateChanged', this.testConnectionStateChanged);
 				this.state.testConnection.close();
-			    this.setState({SylkServerDiscoveryResult: newState, testConnection: null, SylkServerDiscovery: false, SylkServerStatus: 'Server connection failed'});
+			    this.setState({SylkServerDiscoveryResult: newState, testConnection: null, SylkServerDiscovery: false, SylkServerStatus: 'Server connection failed:' + this.state.testConnectionUrl});
                 break;
             case 'ready':
 				this.state.testConnection.removeListener('stateChanged', this.testConnectionStateChanged);
@@ -5463,7 +5472,7 @@ class Sylk extends Component {
             case 'disconnected':
 				this.state.testConnection.removeListener('stateChanged', this.testConnectionStateChanged);
 				this.state.testConnection.close();
-			    this.setState({SylkServerDiscoveryResult: newState, testConnection: null, SylkServerDiscovery: false, SylkServerStatus: 'Server connection failed'});
+			    this.setState({SylkServerDiscoveryResult: newState, testConnection: null, SylkServerDiscovery: false, SylkServerStatus: 'Server connection failed ' + this.state.testConnectionUrl});
                 break;
             default:
                 break;
@@ -6695,6 +6704,10 @@ class Sylk extends Component {
 			return;
 		}
 
+		if (this.uploadedFiles.has(id)) {
+			return;
+		}
+
 		console.log('-- Incoming message from push', id, 'from', from, contentType);
 		
 		const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
@@ -7184,7 +7197,7 @@ class Sylk extends Component {
 
         await this.ExecuteQuery("UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?", params).then((result) => {
             if (result.rowsAffected === 1) {
-				console.log('SQL updated contact', contact.id, uri, 'by', origin);
+				//console.log('SQL updated contact', contact.id, uri, 'by', origin);
 
 				this.setState(prevState => {
 					const updatedContacts = prevState.allContacts.map(c =>
@@ -7555,7 +7568,7 @@ class Sylk extends Component {
 
 		await this.waitForContactsLoaded();
 
-        console.log('--- sendMessage', uri, contentType);
+        console.log('--- sendMessage', uri, message._id, contentType);
         //console.log(message);
 
         let renderMessages = this.state.messages;
@@ -7882,7 +7895,7 @@ class Sylk extends Component {
 	   	   
 	   //console.log('upload final file', JSON.stringify(file_transfer, null, 2));
 
-       utils.timestampedLog('--- Uploading file', local_url, 'to', remote_url);
+       utils.timestampedLog('--- Uploading file', file_transfer.transfer_id);
        
        
 	   let task = RNBlobUtil.fetch('POST', remote_url, {
@@ -7890,10 +7903,11 @@ class Sylk extends Component {
 		}, RNBlobUtil.wrap(local_url));
 
         this.uploadRequests[file_transfer.transfer_id] = task;
+        this.uploadedFiles.add(file_transfer.transfer_id);
 
         task.uploadProgress((written, total) => {
 		  const progress = Math.floor((written / total) * 100);
-		  console.log('File transfer', file_transfer.transfer_id, 'upload progress', progress);   
+		  //console.log('File transfer', file_transfer.transfer_id, 'upload progress', progress);   
 		  if (file_transfer.transfer_id in this.cancelledUploads) {
 		      console.log('Upload was cancelled');
 			  this.deleteMessage(file_transfer.transfer_id, uri, false);
@@ -7906,10 +7920,10 @@ class Sylk extends Component {
 		  this.updateTransferProgress(file_transfer.transfer_id, progress, 'upload');
 		})
 		.then((res) => {
-			console.log('File uploaded:', local_url);
+			console.log('File uploaded:', file_transfer.transfer_id, local_url);
 			this.deleteTransferProgress(file_transfer.transfer_id);
 	        this.updateFileTransferBubble(file_transfer);
-            delete this.uploadRequests[file_transfer.transfer_id]
+            delete this.uploadRequests[file_transfer.transfer_id];
 		})
 		.cancel((err) => {
 			console.log('Upload was cancelled', err);
@@ -9033,6 +9047,11 @@ class Sylk extends Component {
         	console.log('autoDownloadFile large file transfer skipped on mobile', file_transfer.transfer_id);
  			return;
         }
+  
+ 		if (this.uploadedFiles.has(file_transfer.transfer_id)) {
+        	//console.log('we have uploaded this file, skip autodownload');
+			return;
+		}
         
  		if (file_transfer.transfer_id in this.downloadRequests) {
         	console.log('downloadFile already in progress', file_transfer.transfer_id);
@@ -9062,7 +9081,7 @@ class Sylk extends Component {
             }
         }
 
-        //console.log('autoDownloadFile', file_transfer.filename, 'from', file_transfer.sender.uri);
+        console.log('autoDownloadFile', file_transfer.transfer_id, file_transfer.filename, 'from', file_transfer.sender.uri);
 
         let difference;
         let now = new Date();
@@ -9674,7 +9693,7 @@ class Sylk extends Component {
             contact = this.lookupContact(uri, true);
         } 
                
-        //console.log('-- Get messages', uri, filter, 'zoom', this.state.messageZoomFactor);
+        console.log('-- Get messages', uri, filter, 'zoom', this.state.messageZoomFactor);
         let pinned = filter && 'pinned' in filter ? filter['pinned'] : false;
         let category = filter && 'category' in filter ? filter['category'] : null;
         
@@ -9792,6 +9811,11 @@ class Sylk extends Component {
 
             let last_content = null;
 
+			let now = new Date();
+            let ft_ts;
+			let ft_difference;
+			let ft_days;
+
             for (let i = 0; i < rows.length; i++) {
                 try {
 					var item = rows.item(i);
@@ -9800,8 +9824,6 @@ class Sylk extends Component {
 					if (!content) {
 						content = 'Empty message...';
 					}
-	
-					last_direction = item.direction;
 	
 					let timestamp;
 					last_message = null;
@@ -9821,7 +9843,7 @@ class Sylk extends Component {
 					const broken_envelope = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') === -1;
 					
 					if (broken_envelope) {
-					    console.log('Envelope is broken');
+					    console.log('Message PGP envelope is broken', item.msg_id);
 					    enc = 3;
 					    item.encrypted = 3;
 					} else {
@@ -9989,8 +10011,15 @@ class Sylk extends Component {
 							//this.deleteMessage(item.msg_id, item.to_uri);
 							continue;
 						}
-	
+						
+						if (last_content == content && last_direction == item.direction) {
+							contact.totalMessages -= 1;
+							continue;
+						}
+
+						last_direction = item.direction;
 						last_content = content;
+
 						msg = await utils.sql2GiftedChat(item, content, filter);
 						
 						// Prevent crash when msg is null
@@ -10039,8 +10068,14 @@ class Sylk extends Component {
 							if (msg.metadata.failed) {
 								contentTypes['failed'] = true;
 							}
-	
-							this.autoDownloadFile(msg.metadata);
+							
+							ft_ts = new Date(msg.metadata.timestamp);
+							ft_difference = now.getTime() - ft_ts.getTime();
+							ft_days = Math.ceil(ft_difference / (1000 * 3600 * 24));
+
+							if (ft_days < 10 && !msg.metadata.local_url) {
+								this.autoDownloadFile(msg.metadata);
+							}
 						}
 						
 					}
@@ -10120,11 +10155,13 @@ class Sylk extends Component {
 			return;
         }
 
-        console.log('-- Get files for', uri, filter={});
+        console.log('-- Get files for', uri, filter);
         
-		let transferedFiles = this.state.transferedFiles;
 		let metadata;
-		let message_ids = {'audios': [], 'videos': [], 'photos': [], 'others': []};
+		let transferedFiles = {'audios': [], 'videos': [], 'photos': [], 'others': []};
+		let transferedFilesSizes = {'audios': 0, 'videos': 0, 'photos': 0, 'others': 0};
+		let transferedFolderSizes = {'audios': 0, 'videos': 0, 'photos': 0, 'others': 0};
+		
 		let found = 0;
 
         let query = "SELECT * FROM messages where account = ? and metadata != '' and ((from_uri = ? and to_uri = ?) or (from_uri = ? and to_uri = ?)) ";
@@ -10133,68 +10170,142 @@ class Sylk extends Component {
         let { incoming = true, outgoing = true, period = null, periodType = 'after' } = filter || {};
 
 		incoming = filter?.incoming || incoming;
-		outgoing = filter?.incoming || incoming;
+		outgoing = filter?.outgoing || outgoing;
 		period = filter?.period || period;
 		periodType = filter?.periodType || periodType;
 		
-        await this.ExecuteQuery(query, params).then((results) => {
-            let rows = results.rows;
-            //console.log('Got', rows.length);
-            for (let i = 0; i < rows.length; i++) {
-               try {
-				   var item = rows.item(i);
-				   timestamp = new Date(JSON.parse(item.timestamp, _parseSQLDate));
-				   	
-				   if (period) {
-					   if (periodType == 'before') {
-							if (timestamp > period) {
-							   continue;
-							}
-						} else {
-							if (timestamp < period) {
-							   continue;
-							}
+		const results = await this.ExecuteQuery(query, params);
+		
+		let rows = results.rows;
+		console.log('Got', rows.length);
+		for (let i = 0; i < rows.length; i++) {
+		   try {
+			   var item = rows.item(i);
+			   timestamp = new Date(JSON.parse(item.timestamp, _parseSQLDate));
+				
+			   if (period) {
+				   if (periodType == 'before') {
+						if (timestamp > period) {
+						   //console.log('Skip newer'); 
+						   continue;
 						}
-				   }
-	
-				   if (!incoming && item.direction === 'incoming') {
-					   continue;
-				   }
-	
-				   if (!outgoing && item.direction === 'outgoing') {
-					   continue;
-				   }
-	
-                   metadata = JSON.parse(item.metadata);
-                   if (!metadata.local_url) {
-					   continue;
-                   }
+					} else {
+						if (timestamp < period) {
+						   //console.log('Skip older');
+						   continue;
+						}
+					}
+			   }
 
-				   const filename = metadata.local_url.split('/').pop();
+			   console.log('FT', item.msg_id, timestamp, item.direction);
+
+			   if (!incoming && item.direction === 'incoming') {
+				   //console.log('skip incoming');
+				   continue;
+			   }
+
+			   if (!outgoing && item.direction === 'outgoing') {
+				   //console.log('skip outgoing');
+				   continue;
+			   }
+
+			   metadata = JSON.parse(item.metadata);
+			   if (!('local_url' in metadata)) {
+				   continue;
+			   }
+
+			   const filename = metadata.local_url.split('/').pop();
+			   const filesize = metadata.filesize || metadata.size;
+			   const parts = metadata.local_url.split('/').filter(Boolean);
+			   const folderName = '/' + parts.slice(0, -1).join('/') + '/';
+			   const folderPath = Platform.OS === "android" ? 'file://' + folderName : folderName;
+				
+			   let folderSize = filesize;
+
+			   try {
+				   folderSize = await utils.getFolderSize(folderPath);
+			   } catch (e) {
+				   console.log('Error getting folder size', folderPath, e);
+				   folderSize = 0;
+			   }
+			   
+			   if (utils.beautySize(filesize) != utils.beautySize(folderSize)) {
+				   console.log('FT file and folder sizes differ', filename, utils.beautySize(filesize), utils.beautySize(folderSize));
+				   console.log(' -- FT Folder', folderPath);
 				   
-				   if (metadata.filetype.toLowerCase().startsWith('image/')) {
-					   message_ids['photos'].push(item.msg_id);
-				   } else if (metadata.filetype.toLowerCase().startsWith('audio/')) {
-					   message_ids['audios'].push(item.msg_id);
-				   } else if (metadata.filetype.toLowerCase().startsWith('video/')) {
-					   message_ids['videos'].push(item.msg_id);
-				   } else {
-					   message_ids['others'].push(item.msg_id);
+				   if (!filename.endsWith('.asc')) {
+				       const fileExists = await RNFS.exists(metadata.local_url);
+				       const encFilename = metadata.local_url + ".asc"; 
+				       const encryptedFileExists = await RNFS.exists(encFilename);
+				       if (encryptedFileExists && fileExists) {
+						   console.log('Delete encrypted file', encFilename);
+						   try { await RNFS.unlink(encFilename); } catch (e) { /* optional cleanup */ }
+				       }
 				   }
-				   found = found + 1;
-	
-               } catch (e) {
-                   console.log('getTransferedFiles row error:', e);
-                   continue;
-               }
-            }
+				   
+                   // scan what files take space: 
+				   await utils.getFolderSize(folderPath, true);
+			   }
+			   
+			   const itemSize = folderSize > filesize ? folderSize : filesize;
 
-			transferedFiles[uri] = message_ids;
-			this.setState({transferedFiles: transferedFiles});
+			   if (folderSize == 0) {
+				   itemSize = 0;
+			   }
+			   
+			   if (metadata.filetype.toLowerCase().startsWith('image/')) {
+				   transferedFiles['photos'].push(item.msg_id);
+				   if (filesize) {
+					   transferedFilesSizes['photos'] = transferedFilesSizes['photos'] + itemSize;
+					   transferedFolderSizes['photos'] = transferedFolderSizes['photos'] + folderSize;
+				   }
+			   } else if (metadata.filetype.toLowerCase().startsWith('audio/')) {
+				   transferedFiles['audios'].push(item.msg_id);
+				   if (filesize) {
+					   transferedFilesSizes['audios'] = transferedFilesSizes['audios'] + itemSize;
+					   transferedFolderSizes['audios'] = transferedFolderSizes['audios'] + folderSize;
+				   }
+			   } else if (metadata.filetype.toLowerCase().startsWith('video/')) {
+				   transferedFiles['videos'].push(item.msg_id);
+				   if (filesize) {
+					   transferedFilesSizes['videos'] = transferedFilesSizes['videos'] + itemSize;
+					   transferedFolderSizes['videos'] = transferedFolderSizes['videos'] + folderSize;
+				   }
+			   } else {
+				   transferedFiles['others'].push(item.msg_id);
+				   if (filesize) {
+					   transferedFilesSizes['others'] = transferedFilesSizes['others'] + itemSize;
+					   transferedFolderSizes['others'] = transferedFolderSizes['others'] + folderSize;
+				   }
+			   }
 
-        }).catch((error) => {
-            console.log('----getTransferedFiles SQL error:', error);
-        });   
+			   found = found + 1;
+
+		   } catch (e) {
+			   console.log('getTransferedFiles row error:', e);
+			   continue;
+		   }
+		}
+		
+		console.log('transferedFilesSizes', transferedFilesSizes);
+		console.log('transferedFolderSizes', transferedFolderSizes);
+		
+		let tf = 0;
+		let td = 0;
+		let nf = 0;
+
+		for (const key of Object.keys(transferedFiles)) {
+			const fs = utils.beautySize(transferedFilesSizes[key]);
+			td = td + transferedFolderSizes[key];
+			tf = tf + transferedFilesSizes[key];
+			nf = nf + transferedFiles[key].length;
+			if (transferedFiles[key].length) {
+				console.log('Total FT', key, transferedFiles[key].length, fs);
+			}
+		}
+
+		console.log(nf, 'total FT file and folders sizes', utils.beautySize(tf), utils.beautySize(td));
+		this.setState({transferedFiles: transferedFiles, transferedFilesSizes: transferedFilesSizes});
     }
     
     async deleteFiles(uri, ids=[], remote=false, filter={}) {
@@ -11980,6 +12091,7 @@ class Sylk extends Component {
 		} else if (attribute == 'thumbnail') {
 		   const thumbnail_filename = value.split('/').pop();
 		   console.log('Update thumbnail', value, metadata.thumbnail);
+		   update = true;
 		}
 
 		this.updateFileTransferBubble(metadata);
@@ -12286,6 +12398,7 @@ class Sylk extends Component {
 			newMsg.consumed = newMsg.metadata.consumed || 0;
 			newMsg.position = newMsg.metadata.position || 0;
 			newMsg.playing = newMsg.metadata.playing || false;
+			newMsg.thumbnail = newMsg.metadata.thumbnail;
 
 			//console.log('updateFileTransferBubble newMsg.playing', newMsg.playing);
 			//console.log('updateFileTransferBubble newMsg.consumed', newMsg.consumed);
@@ -13119,12 +13232,12 @@ class Sylk extends Component {
         this.saveConference(room, uris);
     }
 
-    forwardMessage(message, uri) {
-        console.log('forwardMessage', uri, message);
+    forwardMessages(messages, uri) {
+        console.log('forwardMessages', uri, messages);
         // this will show the main interface to select one or more contacts
         
         this.setState({shareToContacts: true,
-                       forwardContent: message,
+                       forwardContent: messages || [],
                        selectedContact: null,
                        sourceContact: this.state.selectedContact});
     }
@@ -13340,10 +13453,13 @@ class Sylk extends Component {
     }
     
     async shareContent() {
-        console.log('shareContent');
-        let sharedContent = this.state.sharedContent;
-        let selectedContacts = this.state.selectedContacts;
-        let message = this.state.forwardContent;
+        console.log('-- shareContent');
+        let selectedContacts = this.state.selectedContacts || [];
+        let forwardContent = this.state.forwardContent || [];
+        let sharedContent = this.state.sharedContent || [];
+        
+        console.log('forwardContent', forwardContent);
+        console.log('sharedContent', sharedContent);
 
         this.endShareContent();
 
@@ -13373,43 +13489,55 @@ class Sylk extends Component {
             createdAt: new Date(),
             direction: 'outgoing',
             user: {}
-            }
+        }
+            
+        if (forwardContent.length > 0) {
+		    for (const message of forwardContent) {
+				console.log('Forwarding content', message._id);
 
-        if (this.state.forwardContent) {
-            console.log('Forwarding content...');
-            msg.text = message.text;
+				msg = {
+					createdAt: new Date(),
+					direction: 'outgoing',
+					user: {},
+					text: message.text
+				}
+	
+				if (message.metadata && message.metadata.filename) {
+					contentType = 'application/sylk-file-transfer';
+					msg.metadata = message.metadata;
+					msg.metadata.sender.uri = this.state.accountId;
+					msg.metadata.path = msg.metadata.local_url;
+					msg.metadata.receiver.uri = null;
+					msg.metadata.error = null;
+					msg.metadata.local_url = null;
+					msg.metadata.url = null;
+					msg.metadata.paused = false;
+					msg.metadata.failed = false;
+					msg.metadata.until = null;
+					if (message.metadata.filename.endsWith('.asc')) {
+						msg.metadata.filename = message.metadata.filename.slice(0, -4);
+					}
+				}
+	
+				i = 0;
 
-            if (message.metadata && message.metadata.filename) {
-                contentType = 'application/sylk-file-transfer';
-                msg.metadata = message.metadata;
-                msg.metadata.sender.uri = this.state.accountId;
-                msg.metadata.path = msg.metadata.local_url;
-                msg.metadata.receiver.uri = null;
-                msg.metadata.error = null;
-                msg.metadata.local_url = null;
-                msg.metadata.url = null;
-                msg.metadata.paused = false;
-                msg.metadata.failed = false;
-                msg.metadata.until = null;
-                if (message.metadata.filename.endsWith('.asc')) {
-                    msg.metadata.filename = message.metadata.filename.slice(0, -4);
-                }
-            }
+				while (i < selectedContacts.length) {
+					uri = selectedContacts[i];
+					i++;
+	
+					id = uuid.v4();
+					console.log('Create new message id', id,  'for', message._id, uri);
+					msg._id = id;
+					msg.key = id;
 
-            i = 0;
-            while (i < selectedContacts.length) {
-                uri = selectedContacts[i];
-                i++;
-
-                id = uuid.v4();
-                msg._id = id;
-                msg.key = id;
-                if (msg.metadata && msg.metadata.receiver) {
-                    msg.metadata.receiver.uri = uri;
-                    msg.metadata.transfer_id = id;
-                }
-                await this.sendMessage(uri, msg, contentType);
-            }
+					if (msg.metadata && msg.metadata.receiver) {
+						msg.metadata.receiver.uri = uri;
+						msg.metadata.transfer_id = id;
+					}
+					console.log(' ---- msg', msg);
+					this.sendMessage(uri, msg, contentType);
+				}
+			}
 
         } else {
             if (sharedContent.length === 0) {
@@ -13558,8 +13686,8 @@ class Sylk extends Component {
         //console.log('Switch to contact', newSelectedContact);
         this.setState({sharedContent: [],
                        selectedContacts: [],
+                       forwardContent: [],
                        selectedContact: newSelectedContact,
-                       forwardContent: null,
                        sourceContact: null,
                        shareToContacts: false});
 
@@ -14137,6 +14265,7 @@ return (
                     buildId = {this.buildId}
                     getTransferedFiles = {this.getTransferedFiles}
                     transferedFiles = {this.state.transferedFiles}
+                    transferedFilesSizes = {this.state.transferedFilesSizes}
                     toggleSearchMessages = {this.toggleSearchMessages}
                     toggleSearchContacts = {this.toggleSearchContacts}
                     searchMessages = {this.state.searchMessages}
@@ -14227,7 +14356,7 @@ return (
                     keyboardVisible = {this.state.keyboardVisible}
                     contentTypes = {this.state.contentTypes}
                     canSend = {this.canSend}
-                    forwardMessageFunc = {this.forwardMessage}
+                    forwardMessagesFunc = {this.forwardMessages}
                     sourceContact = {this.state.sourceContact}
                     requestCameraPermission = {this.requestCameraPermission}
                     requestDndPermission = {this.requestDndPermission}

@@ -1,0 +1,4 @@
+ * Improve messages media navigator
+ * Fix rendering video thumbnails
+ * Added stacked images belonging to same event
+ * Skip autodownload old files
