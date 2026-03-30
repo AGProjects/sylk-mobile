@@ -36,19 +36,21 @@ export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) =
 			]}
 			parse={[
 			  {
-				type: 'url',
-				style: linkStyle,
+				pattern: /((https?:\/\/|[\w.+-]+:\/\/)[^\s]+)/g,
+				style: styles.linkText,
 				onPress: (url) => {
-				  console.log('URL clicked:', url);
-				  Linking.openURL(url);
+				  console.log('Link clicked:', url, currentMessage.text);
+				  Linking.openURL(url)
 				},
 			  },
 			  {
 				pattern: /#(\w+)/,
 				style: styles.hashtag,
-				onPress: (hashtag) => console.log('Hashtag clicked:', hashtag),
+				onPress: (hashtag) =>
+				  console.log('Hashtag clicked:', hashtag),
 			  },
 			]}
+
 			childrenProps={{ ...labelProps }}
 		  >
         {currentMessage.text}

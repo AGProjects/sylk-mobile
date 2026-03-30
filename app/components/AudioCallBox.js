@@ -344,11 +344,10 @@ class AudioCallBox extends Component {
 
         const buttonSize = this.props.isTablet ? 40 : 34;
 
-        let disablePlus = false;
+        let disableChat = false;
         if (this.state.callContact) {
-            if (isPhoneNumber) disablePlus = true;
-            if (this.state.callContact.tags.indexOf('test') > -1) disablePlus = true;
-            if (this.state.callContact.tags.indexOf('conference') > -1) disablePlus = true;
+            if (isPhoneNumber) disableChat = true;
+            if (this.state.callContact.tags.indexOf('conference') > -1) disableChat = true;
         }
 
         let whiteButtonClass         = Platform.OS === 'ios' ? styles.whiteButtoniOS         : styles.whiteButton;
@@ -440,20 +439,20 @@ class AudioCallBox extends Component {
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
                         <View style={[buttonContainerClass, extraButtonContainerClass]}>
-                            {!disablePlus ?
+                            {!disableChat ?
                                 <View style={styles.buttonContainer}>
                                     <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
                                             size={buttonSize}
-                                            style={disablePlus ? disabledGreenButtonClass : greenButtonClass}
+                                            style={disableChat ? disabledGreenButtonClass : greenButtonClass}
                                             icon="chat"
                                             onPress={this.props.goBackFunc}
-                                            disabled={disablePlus} />
+                                            disabled={disableChat} />
                                     </TouchableHighlight>
                                 </View>
                                 : null}
 
-                            {!disablePlus ?
+                            {!disableChat ?
                                 <View style={styles.buttonContainer}>
                                     <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -461,7 +460,7 @@ class AudioCallBox extends Component {
                                             style={whiteButtonClass}
                                             icon="account-plus"
                                             onPress={this.props.inviteToConferenceFunc}
-                                            disabled={disablePlus} />
+                                            disabled={disableChat} />
                                     </TouchableHighlight>
                                 </View>
                                 : null}

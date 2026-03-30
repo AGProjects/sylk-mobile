@@ -82,6 +82,10 @@ class RegisterForm extends Component {
 			console.log('serverIsValid', this.state.serverIsValid);
 	    }
 
+	    if (prevState.showServer != this.state.showServer) {
+			console.log('showServer', this.state.showServer);
+	    }
+
 	    if (this.state.showQRCodeScanner != prevState.showQRCodeScanner && this.state.showQRCodeScanner) {
 		    this.props.requestCameraPermission();
 	    }
@@ -125,12 +129,12 @@ class RegisterForm extends Component {
 	}
 
 	async handleServerChange() {
-	    console.log('handleServerChange', this.state.sylkDomain, '->', this.state.newSylkDomain);
+	    console.log('---- handleServerChange', this.state.sylkDomain, '->', this.state.newSylkDomain, this.state.domainChecked);
 
 		if (!this.state.domainChecked) {
-			console.log('check new Sylk domain', this.state.newSylkDomain);
 			this.props.lookupSylkServer(this.state.newSylkDomain, true);
 		} else {
+			this.setState({showServer: false, domainChecked: false});
 		    if (this.state.newSylkDomain) {
 				await this.props.lookupSylkServer(this.state.newSylkDomain, false);
 				this.setState({ 
@@ -138,7 +142,6 @@ class RegisterForm extends Component {
 					password: ''
 				});
 			}
-			this.setState({showServer: false, domainChecked: false});
 		}
 	}
 

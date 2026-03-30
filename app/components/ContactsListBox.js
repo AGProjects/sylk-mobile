@@ -27,6 +27,7 @@ import { createThumbnail } from "react-native-create-thumbnail";
 import { createThumbnailSafe } from '../thumbnailService';
 import UserIcon from './UserIcon';
 import { CustomMessageText } from './CustomMessageText';
+import RenderHTML from 'react-native-render-html';
 
 import * as Progress from 'react-native-progress';
 
@@ -86,6 +87,15 @@ const getAudioDuration = (filePath) => {
       resolve(sound.getDuration()); // duration in seconds
     });
   });
+};
+
+const navButton = {
+  width: 34,
+  height: 34,
+  borderRadius: 17,
+  backgroundColor: "rgba(0,0,0,0.4)",
+  justifyContent: "center",
+  alignItems: "center",
 };
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
@@ -199,7 +209,8 @@ class ContactsListBox extends Component {
 		    selectedImagesSearch: [],
 		    thumbnailGridSize: {},
 		    sharingAssets: [],
-            sharingMessages: []
+            sharingMessages: [],
+            showScrollSideButtons: false,
         }
 
         this.ended = false;
@@ -315,8 +326,6 @@ class ContactsListBox extends Component {
 			const sameLength = oldMessages.length === newMessages.length;
 			const idsEqual = sameLength && oldMessages.every((m, i) => m._id === newMessages[i]._id);
 		
-			this.setState({isLoadingEarlier: false});
-
 			const equalNullish = (a, b) =>
 			  (a == null && b == null) ? true : a === b;
 			
@@ -1300,10 +1309,14 @@ class ContactsListBox extends Component {
 
     loadEarlierMessages() {
         console.log('Load earlier messages...');
-        this.setState({scrollToBottom: false, isLoadingEarlier: true});
+        this.setState({scrollToBottom: false, 
+                      isLoadingEarlier: true});
+
         let filter = {category: this.props.messagesCategoryFilter, pinned: this.props.pinned};
         //console.log('filter', filter);
-        this.props.loadEarlierMessages(filter);
+        if (!this.state.isLoadingEarlier) {
+			this.props.loadEarlierMessages(filter);
+        }
     }
 
     sendEditedMessage(message, text) {
@@ -2535,6 +2548,19 @@ class ContactsListBox extends Component {
 	      //console.log('renderMessages did change', this.state.renderMessages.length);
       }
 
+      if (prevState.totalMessageExceeded !== this.state.totalMessageExceeded) {
+	      console.log('totalMessageExceeded did change', this.state.totalMessageExceeded);
+      }
+
+      if (prevState.isLoadingEarlier !== this.state.isLoadingEarlier) {
+	      console.log('----- isLoadingEarlier did change', this.state.isLoadingEarlier);
+      }
+
+      if (prevState.messages !== this.state.messages) {
+		  const length = this.state.messages?.[this.state.selectedContact?.uri]?.length ?? 0;
+		  console.log('messages did change', length);
+      }
+
       if (prevState.thumbnailGridSize !== this.state.thumbnailGridSize) {
 		console.log('thumbnailGridSize did change', this.state.thumbnailGridSize);
 		
@@ -2653,12 +2679,13 @@ class ContactsListBox extends Component {
 		}
 
 		if (prevState.renderMessages !== this.state.renderMessages) {
+			//console.log("==== renderMessages changed ====", this.state.renderMessages.length);
+			this.setState({isLoadingEarlier: false});
+
 		    /*
-			console.log("==== renderMessages changed ====", this.state.renderMessages.length);
 			console.log('mediaRotations', this.state.mediaRotations);
 			console.log('mediaLabels', this.state.mediaLabels);
 			console.log('replyMessages', this.state.replyMessages);
-			
 			*/
 			
 			this.getImageGroups();
@@ -3566,6 +3593,17 @@ class ContactsListBox extends Component {
 				);
 			}
 
+			if (currentMessage.html) {
+			    //console.log('html message', currentMessage._id);
+				return (
+				  <RenderHTML
+					contentWidth={300}
+					source={{ html: currentMessage.html }}
+					ignoredDomTags={['meta', 'style']}
+				  />
+				);
+			  }
+  
             return (
                 <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>
                      {currentMessage.metadata && currentMessage.metadata.filename ?
@@ -3585,21 +3623,6 @@ class ContactsListBox extends Component {
 					customTextStyle={styles.messageText}
 					linkStyle={styles.linkText}
 					enableUrlPreview={false} // disables default auto-link open
-					parse={[
-					  {
-						type: 'url',
-						style: styles.linkText,
-						onPress: (url) => {
-						  console.log('URL clicked:', url); // log click
-						  Linking.openURL(url); // open the link
-						},
-					  },
-					  {
-						pattern: /#(\w+)/,
-						style: styles.hashtag,
-						onPress: (hashtag) => console.log('Hashtag clicked:', hashtag),
-					  },
-					]}
 				  />
 
                 </View>
@@ -3750,58 +3773,61 @@ loadNext = (count = 10) => {
   console.log(`[loadNext] added ${batch.length} messages; new min index ${newMin}`);
 };
 
-
-renderFloatingControls = () => (
+renderScrollingControls = () => (
   <View
     style={{
       position: "absolute",
       right: 10,
-      bottom: 100,
+      bottom: 80,
       alignItems: "center",
       gap: 6,
       zIndex: 999,
     }}
   >
 
-    {/* LOAD PREVIOUS */}
-    <TouchableOpacity
-      onPress={() => this.loadPrevious()}
-      style={{
-        borderRadius: 20,
-        paddingVertical: 4,
-        paddingHorizontal: 8,
-        marginBottom: 4,
-        backgroundColor: "rgba(0,0,0,0.4)",
-      }}
-    >
-      <Text style={{ color: "white", fontSize: 18 }}>▲</Text>
-    </TouchableOpacity>
+	<TouchableOpacity
+	  onPress={() => this.scrollToTop()}
+	  style={navButton}
+	>
+	  <Icon name="format-vertical-align-top" size={22} color="white" />
+	</TouchableOpacity>
+	
+	<TouchableOpacity
+	  onPress={() => this.scrollToBottom()}
+	  style={navButton}
+	>
+	  <Icon name="format-vertical-align-bottom" size={22} color="white" />
+	</TouchableOpacity>
 
-    {/* LOAD NEXT */}
-    <TouchableOpacity
-      onPress={() => this.loadNext()}
-      style={{
-        borderRadius: 20,
-        paddingVertical: 4,
-        paddingHorizontal: 8,
-        marginBottom: 4,
-        backgroundColor: "rgba(0,0,0,0.4)",
-      }}
-    >
-      <Text style={{ color: "white", fontSize: 18 }}>▼</Text>
-    </TouchableOpacity>
+  </View>
+);
+			
+renderFocusedMessagesControls = () => (
+  <View
+    style={{
+      position: "absolute",
+      right: 10,
+      bottom: 160,
+      alignItems: "center",
+      gap: 6,
+      zIndex: 999,
+    }}
+  >
 
-    {/* SCROLL TO BOTTOM (your original) */}
-    <TouchableOpacity
-      onPress={() => this.scrollToBottom()}
-      style={{
-        borderRadius: 20,
-        padding: 6,
-        backgroundColor: "rgba(0,0,0,0.5)",
-      }}
-    >
-      <Text style={{ color: "white", fontSize: 18 }}>∨</Text>
-    </TouchableOpacity>
+	<TouchableOpacity
+	  onPress={() => this.loadPrevious()}
+	  style={navButton}
+	>
+	  <Icon name="arrow-up" size={22} color="white" />
+	</TouchableOpacity>
+	
+	<TouchableOpacity
+	  onPress={() => this.loadPrevious()}
+	  style={navButton}
+	>
+	  <Icon name="arrow-down" size={22} color="white" />
+	</TouchableOpacity>
+
   </View>
 );
 
@@ -3841,7 +3867,6 @@ goToMessage = (targetId) => {
 
 scrollToMessage(id) {
   console.log('scrollToMessage', id);
-  return;
 
   const messagesArray = this.state.focusedMessages || this.state.filteredMessages;
   
@@ -3874,9 +3899,30 @@ scrollToMessage(id) {
   }
 }
 
+	scrollToTop = () => {
+	  if (this.flatListRef) {
+		try {
+			this.flatListRef.scrollToEnd({ animated: true });
+
+		} catch (e) {
+		  console.warn('scrollToTop failed:', e);
+		}
+	  }
+	};
+
+	onScroll = (event) => {
+	  const offsetY = event.nativeEvent.contentOffset.y;
+	  //console.log('onScroll offsetY', offsetY);
+	
+	  // adjust threshold as needed
+	  this.setState({
+		showScrollSideButtons: offsetY > 300,
+	  });
+	};
+
 	scrollToBottom() {
 	  //console.log('scrollToBottom called');
-	  this.exitFocusMode();	  
+	  this.exitFocusMode();
 	  if (this.flatListRef?.scrollToOffset) {
 		try {
 		  this.flatListRef.scrollToOffset({ offset: 0, animated: true });
@@ -4005,6 +4051,13 @@ scrollToMessage(id) {
 	  let lastImageTime = null;
 	  let lastImageId = null;
 	
+		const seen = new Set();
+		messages = messages.filter(msg => {
+		  if (seen.has(msg._id)) return false;
+		  seen.add(msg._id);
+		  return true;
+		});
+
 	messages = [...messages].sort(
 	  (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
 	);
@@ -4080,7 +4133,7 @@ scrollToMessage(id) {
         let contacts = this.state.allContacts;
         //console.log('----');
                 
-        //console.log('--- Render contacts with filter', this.state.filter);
+        //console.log('--- Render contacts', this.state.isLoadingEarlier);
         //console.log('--- CL selectedContact', this.state.selectedContact?.messagesMetadata);
 
        let chatInputClass = this.customInputToolbar;
@@ -4366,6 +4419,7 @@ scrollToMessage(id) {
         let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && this.state.sharingAssets.length == 0 && messages.length > 0;
         //console.log('chatMessages', chatMessages);
         //console.log(JSON.stringify(chatMessages, null, 2));
+        
         if (this.state.isAudioRecording || this.state.recordingFile) {
 			chatMessages = [];
 			loadEarlier = false;
@@ -4496,6 +4550,8 @@ scrollToMessage(id) {
 				  listViewProps={{
 					ref: (ref) => { this.flatListRef = ref; },
 					onViewableItemsChanged: this.onViewableItemsChanged,
+				    onScroll: this.onScroll,
+				    scrollEventThrottle: 16,
 					viewabilityConfig: this.viewabilityConfig,
 				  }}
 				  
@@ -4527,7 +4583,7 @@ scrollToMessage(id) {
                   maxInputLength={16000}
                   tickStyle={{ color: 'green' }}
                   renderTicks={this.state.orderBy === 'size' ? null : undefined}
-                  infiniteScroll
+                  infiniteScroll={false}
                   loadEarlier={loadEarlier}
                   isLoadingEarlier={this.state.isLoadingEarlier}
                   onLoadEarlier={this.loadEarlierMessages}
@@ -4540,6 +4596,7 @@ scrollToMessage(id) {
 					isScrollToBottomVisible={() => {
 					  return true;
 					}}
+
 				  scrollToBottomComponent={() => (
 					<TouchableOpacity
 					  onPress={() => this.scrollToBottom()}
@@ -4555,11 +4612,11 @@ scrollToMessage(id) {
 				  )}
                   renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
                 />
-				   </KeyboardWrapper>
 
-				{this.state.focusedMessages ?
-				this.renderFloatingControls():
-				null}
+			   </KeyboardWrapper>
+
+				{ this.state.focusedMessages ? this.renderFocusedMessagesControls(): null}
+				{(this.state.showScrollSideButtons || this.state.focusedMessages)? this.renderScrollingControls(): null}
 
                 {addSpacer ? <KeyboardSpacer /> : null }
 

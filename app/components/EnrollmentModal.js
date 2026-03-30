@@ -3,11 +3,14 @@ import { View, Text, TouchableOpacity } from 'react-native';
 import PropTypes from 'prop-types';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
-import { Portal, Dialog, TextInput, Button, Snackbar } from 'react-native-paper';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { Portal, Dialog, TextInput, Button, Snackbar, Surface } from 'react-native-paper';
+import { Modal, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView } from 'react-native';
+
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import LoadingScreen from './LoadingScreen';
+
 import styles from '../assets/styles/blink/_EnrollmentModal.scss';
+import containerStyles from '../assets/styles/ContainerStyles';
 
 class EnrollmentModal extends Component {
     constructor(props) {
@@ -46,6 +49,15 @@ class EnrollmentModal extends Component {
             password === password2 &&
             validEmail;
     }
+
+	componentDidUpdate(prevProps) {
+		if (!prevProps.show && this.props.show) {
+			// Modal just opened
+			setTimeout(() => {
+				this.usernameInput && this.usernameInput.focus();
+			}, 250); // small delay helps with Modal rendering
+		}
+	}
 
     enroll(event) {
         if (event) event.preventDefault();
@@ -149,81 +161,93 @@ class EnrollmentModal extends Component {
         const validEmail = emailReg.test(this.state.email);
 
         return (
-		<Portal>
-		  <Dialog visible={this.props.show} onDismiss={this.onHide}>
-			<Dialog.ScrollArea>
-			  <KeyboardAwareScrollView
-				contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}
-				enableOnAndroid={true}
-				keyboardShouldPersistTaps="handled"
-				extraScrollHeight={120}       
+		<Modal
+		  style={containerStyles.container}
+		  visible={this.props.show}
+		  transparent
+		  animationType="fade"
+		  onRequestClose={this.onHide}
+		>
+	
+		  <TouchableWithoutFeedback onPress={this.onHide}>
+			<View style={containerStyles.overlay}>
+			  <KeyboardAvoidingView
+				behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+				keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
 			  >
-				<View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
-				  <Text style={{ textAlign: 'center', lineHeight: 20, fontSize: 18}}>
-					Create SIP address
-				  </Text>
-				</View>
+				{/* Prevent taps inside modal from dismissing */}
+				<TouchableWithoutFeedback onPress={() => {}}>
+	
+				<Surface style={containerStyles.modalSurface}>
 
-				  <TextInput
-					style={styles.row}
-					label="Username"
-					autoCapitalize="none"
-					autoCorrect={false}
-					value={this.state.username}
-					onChangeText={(text) => this.handleFormFieldChange(text, 'username')}
-					disabled={this.state.enrolling}
-					returnKeyType="next"
-					ref={ref => { this.usernameInput = ref; }}
-					onSubmitEditing={() => this.passwordInput && this.passwordInput.focus()}
-				  />
-		
-				  <TextInput
-					style={styles.row}
-					label="E-mail for password recovery"
-					keyboardType="email-address"
-					autoCapitalize="none"
-					autoCorrect={false}
-					value={this.state.email}
-					onChangeText={(text) => this.handleFormFieldChange(text, 'email')}
-					disabled={this.state.enrolling}
-					returnKeyType="next"
-					ref={ref => { this.emailInput = ref; }}
-					onSubmitEditing={() => validEmail && this.usernameInput && this.usernameInput.focus()}
-				  />
-		
-				{this.state.username.length > 2 && this.renderPasswordFields()}
-		
-				{this.validInput ? (
-				  <Button
-					mode="contained"
-					style={styles.button}
-					disabled={!this.validInput}
-					onPress={this.enroll}
-				  >
-					Sign Up
-				  </Button>
-				) : (
-				  <Text style={styles.status}>
-					{this.state.username.length <= 3 ? 'Enter username' :
-					 !validEmail ? 'Enter valid email address' :
-					 !this.state.password ? 'Enter password' :
-					 this.state.password !== this.state.password2 ? 'Passwords do not match' : ''}
-				  </Text>
-				)}
-		
-				<Snackbar
-				  style={styles.snackbar}
-				  visible={this.state.errorVisible}
-				  duration={4000}
-				  onDismiss={() => this.setState({ errorVisible: false })}
-				>
-				  {this.state.error}
-				</Snackbar>
-			  </KeyboardAwareScrollView>
-			</Dialog.ScrollArea>
-		  </Dialog>
-		</Portal>
-
+					<View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
+					  <Text style={{ textAlign: 'center', lineHeight: 20, fontSize: 18}}>
+						Create Sylk account
+					  </Text>
+					</View>
+	
+					  <TextInput
+						style={styles.row}
+						label="Username"
+						autoCapitalize="none"
+						autoCorrect={false}
+						value={this.state.username}
+						onChangeText={(text) => this.handleFormFieldChange(text, 'username')}
+						disabled={this.state.enrolling}
+						returnKeyType="next"
+						ref={ref => { this.usernameInput = ref; }}
+						onSubmitEditing={() => this.passwordInput && this.passwordInput.focus()}
+					  />
+			
+					  <TextInput
+						style={styles.row}
+						label="E-mail for password recovery"
+						keyboardType="email-address"
+						autoCapitalize="none"
+						autoCorrect={false}
+						value={this.state.email}
+						onChangeText={(text) => this.handleFormFieldChange(text, 'email')}
+						disabled={this.state.enrolling}
+						returnKeyType="next"
+						ref={ref => { this.emailInput = ref; }}
+						onSubmitEditing={() => validEmail && this.usernameInput && this.usernameInput.focus()}
+					  />
+			
+					{this.renderPasswordFields()}
+			
+					{this.validInput ? (
+					  <Button
+						mode="contained"
+						style={styles.button}
+						disabled={!this.validInput}
+						onPress={this.enroll}
+					  >
+						Sign Up
+					  </Button>
+					) : (
+					  <Text style={styles.status}>
+						{this.state.username.length <= 3 ? 'Enter username (min 4 letters)' :
+						 !validEmail ? 'Enter valid email address' :
+						 !this.state.password ? 'Enter password' :
+						 this.state.password !== this.state.password2 ? 'Passwords do not match' : ''}
+					  </Text>
+					)}
+			
+					<Snackbar
+					  style={styles.snackbar}
+					  visible={this.state.errorVisible}
+					  duration={4000}
+					  onDismiss={() => this.setState({ errorVisible: false })}
+					>
+					  {this.state.error}
+					</Snackbar>
+	
+				</Surface>
+				</TouchableWithoutFeedback>
+			  </KeyboardAvoidingView>
+			</View>
+		  </TouchableWithoutFeedback>
+		</Modal>
         );
     }
 }

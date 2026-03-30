@@ -1,0 +1,7 @@
+  * Fix handling outgoing html messages
+  * Improve HTML rendering
+  * Improve loading old messages
+  * Filter duplicate images in groups
+  * Fix parsing http urls
+  * Improve enrollment form
+  * Cache server configurations

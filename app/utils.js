@@ -137,8 +137,10 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
         system = true;
     }
 
+	let html = null;
     if (sylkMessage.contentType === 'text/html') {
-        text = html2text(content);
+		html = cleanHtml(content);
+		text = html2text(content); // optional fallback
     } else if (sylkMessage.contentType === 'text/plain') {
         text = content;
     } else if (sylkMessage.contentType === 'application/sylk-file-transfer') {
@@ -175,6 +177,7 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
         _id: g_id,
         key: g_id,
         text: text,
+        html: html,
         image: image,
         video: video,
         audio: audio,
@@ -231,6 +234,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
     //console.log('-- sql2GiftedChat', item);
     let msg;
     let image = null;
+    let html = null;
     let video = null;
     let audio = null;
     let metadata = {};
@@ -238,6 +242,10 @@ async function sql2GiftedChat(item, content, filter = {}) {
 
     let timestamp = new Date(item.unix_timestamp * 1000);
     let text = content || item.content;
+
+	if (item.content_type === 'text/html') {
+		html = cleanHtml(text);
+	}
 
     if (text && text.indexOf("-----BEGIN PGP MESSAGE-----") > -1) {
         text = "";
@@ -435,6 +443,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
         metadata,
         contentType: item.content_type,
         text,
+        html,
         createdAt: timestamp,
         sent,
         received,
@@ -510,6 +519,15 @@ function html2text(content) {
             });
 
     return content.replace(/&nbsp;/g, ' ');
+}
+
+function cleanHtml(html) {
+  if (!html) return html;
+
+  return html
+    .replace(/<meta[^>]*>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!doctype[^>]*>/gi, '');
 }
 
 function normalizeUri(uri, defaultDomain) {
@@ -1159,6 +1177,7 @@ exports.deepEqual = deepEqual;
 exports.availableAudioDevicesIconsMap = availableAudioDevicesIconsMap;
 exports.availableAudioDeviceNames = availableAudioDeviceNames;
 exports.getFolderSize = getFolderSize;
+exports.cleanHtml = cleanHtml;
 
 
 
