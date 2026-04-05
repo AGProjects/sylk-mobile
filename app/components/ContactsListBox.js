@@ -49,6 +49,16 @@ import dayjs from 'dayjs';
 import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
 
+function linkifyHtml(html) {
+  if (!html) return html;
+
+  const urlRegex = /(https?:\/\/[^\s<]+)/g;
+
+  return html.replace(urlRegex, (url) => {
+    return `<a href="${url}">${url}</a>`;
+  });
+}
+
 
 String.prototype.toDate = function(format)
 {
@@ -3594,15 +3604,54 @@ class ContactsListBox extends Component {
 			}
 
 			if (currentMessage.html) {
-			    //console.log('html message', currentMessage._id);
+			    const html = linkifyHtml(utils.cleanHtml(currentMessage.html));
+			    let w = 300;
+			     
+			    if (currentMessage._id in this.state.bubbleWidths) {
+			        w = this.state.bubbleWidths[currentMessage._id];
+					//console.log('w', w);
+			    }
+			   
 				return (
+                <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginRight: 10}]}>
+
 				  <RenderHTML
-					contentWidth={300}
-					source={{ html: currentMessage.html }}
-					ignoredDomTags={['meta', 'style']}
-				  />
+					source={{ html: html }}
+					contentWidth={w}
+					ignoredDomTags={[
+					  'html',
+					  'head',
+					  'body',
+					  'title',
+					  'svg',
+					  'meta',
+					  'link',
+					  'style',
+					  'script',
+					  'iframe',
+					  'object',
+					  'embed',
+					  'noscript'
+					]}
+
+					renderersProps={{
+					    a: {
+							onPress: (event, href) => {
+							  let url = href;
+				
+							  if (!url.startsWith('http')) {
+							    url = 'https://' + url;
+							  }
+				
+							  Linking.openURL(url);
+							}
+						  }
+					}}
+          		  />
+				  </View>
+
 				);
-			  }
+			}
   
             return (
                 <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>

@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { View, TouchableOpacity, Text, Image } from 'react-native';
 import { Bubble } from 'react-native-gifted-chat';
+import utils from '../utils';
 
 const ChatBubble = memo(
   ({
@@ -39,8 +40,8 @@ const ChatBubble = memo(
     if (!currentMessage) return null;
 
     const isFocused = focusedMessageId === currentMessage._id;
-    const focusedBorder = isFocused ? { borderWidth: 3, borderColor: 'orange' } : {};
-
+    const focusedBorder = isFocused ? { borderWidth: 2, borderColor: 'orange'} : {};
+        
 	if (currentMessage._id in groupOfImage && !(currentMessage._id in imageGroups)) {
 		 return (null);
 	}
@@ -79,6 +80,12 @@ const ChatBubble = memo(
         ? styles.replyPreviewContainerIncoming
         : styles.replyPreviewContainerOutgoing;
     const hasPreview = !!originalMessage;
+    
+    let originalText = originalMessage?.text;
+    
+    if (originalMessage && originalMessage.contentType == 'text/html') {
+		originalText = utils.html2text(originalMessage.text);
+    }
 
     const replyPreview = originalMessage ? (
       <TouchableOpacity
@@ -110,7 +117,7 @@ const ChatBubble = memo(
             <Image source={{ uri: originalMessage.image }} style={{ width: '85%', height: 100 }} resizeMode="cover" />
           ) : (
             <Text style={styles.replyPreviewText} numberOfLines={3} ellipsizeMode="tail">
-              {originalMessage.text}
+              {originalText}
             </Text>
           )}
         </View>
@@ -229,6 +236,14 @@ const ChatBubble = memo(
             right: { ...rightWrapper },
           }}
 
+	  containerStyle={{
+		left: isFocused
+		  ? { borderWidth: 0, borderColor: 'orange', borderRadius: 0 }
+		  : {},
+		right: isFocused
+		  ? { borderWidth: 0, borderColor: 'orange', borderRadius: 0}
+		  : {},
+	  }}
           textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
           textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
         />
@@ -332,6 +347,13 @@ const ChatBubble = memo(
 	  return false;
 	}
 	
+	if (
+	  prev.focusedMessageId === id ||
+	  next.focusedMessageId === id
+	) {
+	  return false; // only re-render affected bubble
+	}
+
 	  // ==== Content changed ====
 		const contentFields = ['text', 'image', 'video', 'audio'];
 		for (let f of contentFields) {

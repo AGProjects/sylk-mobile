@@ -3125,6 +3125,8 @@ class Sylk extends Component {
 				callHistoryUrl = null;
             }
     
+            const publicUrl = configuration.publicUrl ? configuration.publicUrl : 'https://' + configuration.sylkDomain;
+     
 			this.setState({
 			               defaultDomain: configuration.defaultDomain,
 			               enrollmentUrl: configuration.enrollmentUrl,
@@ -3137,6 +3139,7 @@ class Sylk extends Component {
 			               testNumbers: Array.isArray(configuration.testNumbers) ? configuration.testNumbers: [],
 						   configurationUrl: configuration.configurationUrl,
 			               sylkDomain: configuration.sylkDomain,
+			               publicUrl: publicUrl,
 			               serverIsValid: true,
 			               SylkServerDiscovery: false,
 			               SylkServerDiscoveryResult: 'ready'
@@ -5269,9 +5272,7 @@ class Sylk extends Component {
 					reason = "TLS media failure";
                 }
 
-                if (direction === 'outgoing') {
-					this.addHistoryEntry(uri, callUUID);
-				}
+				this.addHistoryEntry(uri, callUUID, direction);
 
                 utils.timestampedLog(callUUID, direction, 'terminated reason', data.reason, '->', reason);
                 
@@ -7264,7 +7265,7 @@ class Sylk extends Component {
 
         await this.ExecuteQuery("UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?", params).then((result) => {
             if (result.rowsAffected === 1) {
-				//console.log('SQL updated contact', contact.id, uri, 'by', origin);
+				console.log('SQL updated contact', contact.id, uri, 'by', origin);
 
 				this.setState(prevState => {
 					const updatedContacts = prevState.allContacts.map(c =>
@@ -9716,7 +9717,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (contact.uri.indexOf('anonymous') > -1) {
+        if (contact.uri.indexOf('anonymous@') > -1) {
             return;
         }
 
@@ -12402,6 +12403,13 @@ class Sylk extends Component {
         let timestamp = new Date();
         let unix_timestamp = Math.floor(timestamp / 1000);
         let id = uuid.v4();
+
+		if (uri.indexOf('@guest.') > -1) {
+			uri = "anonymous@anonymous.invalid";
+		}
+		
+		console.log('saveSystemMessage', uri, content);
+
         let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction];
 
         await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, pending, system, direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
@@ -13785,8 +13793,24 @@ class Sylk extends Component {
     }
 
     addHistoryEntry(uri, callUUID, direction='outgoing', participants=[]) {
-		let contacts = this.lookupContacts(uri);
+		
+		console.log('addHistoryEntry', uri, callUUID, direction);
+
+        //console.log('addHistoryEntry', uri);
         
+        if (uri.indexOf('@') === -1) {
+            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        }
+
+		if (uri.indexOf('@guest.') > -1) {
+			uri = "anonymous@anonymous.invalid";
+		}
+
+        if (this.state.rejectAnonymous && uri.indexOf('anonymous@') > -1) {
+			console.log('skip history entry from anonymous address', uri);                
+			return;
+		}
+
         if (this.state.rejectNonContacts && direction == 'incoming') {
             if (contacts.length == 0) {
 				console.log('skip history entry from unknown address', uri);                
@@ -13794,32 +13818,20 @@ class Sylk extends Component {
             }
         }
 
-        //console.log('addHistoryEntry', uri);
-
-        if (uri.indexOf('@') === -1) {
-            uri = uri + '@videoconference.' + this.state.defaultDomain;
-        }
-
-		if (uri.indexOf('anonymous') > -1) {
-			console.log('skip history entry from anonymous address', uri);                
-			return;
-		}
-
-		if (uri.indexOf('@guest') > -1) {
-			console.log('skip history entry from quest address', uri);                
-			return;
-		}
-
+		let contacts = this.lookupContacts(uri);
+        //console.log('Found contacts', contacts);
+        
 		if (contacts.length === 0) {
 			let newContact = this.newContact(uri);
 			contacts = [newContact];
-		}	
+		}
 
 		for (const contact of contacts) {
-			contact.conference = true;
+			contact.conference = participants.length > 1;
 			contact.timestamp = new Date();
 			contact.lastCallId = callUUID;
 			contact.direction = direction;
+			contact.lastMessage = direction + ' call';
 			this.saveSylkContact(uri, contact, 'addHistoryEntry');
         }
     }
