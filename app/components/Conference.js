@@ -426,6 +426,7 @@ class Conference extends React.Component {
 						publicUrl = {this.state.publicUrl}
 						enableFullScreen = {this.props.enableFullScreen}
 						disableFullScreen = {this.props.disableFullScreen}
+						sylkDomain = {this.props.sylkDomain}
                    />
                 );
             } else {
@@ -516,8 +517,8 @@ Conference.propTypes = {
     insets                  : PropTypes.object,
     publicUrl               : PropTypes.string,
 	enableFullScreen        : PropTypes.func,
-	disableFullScreen       : PropTypes.func
-
+	disableFullScreen       : PropTypes.func,
+	sylkDomain              : PropTypes.string
 };
 
 

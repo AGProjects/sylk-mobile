@@ -47,7 +47,8 @@ const EditContactModal = ({
   toggleRejectAnonymous,
   chatSounds,
   toggleChatSounds,
-  storageUsage
+  storageUsage,
+  deleteAccountUrl
 }) => {
   const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
@@ -439,9 +440,9 @@ const getTotalPrettyStorage = (entity) => {
                       </Button>
                     </View>
 
-                    {myself ? (
+                    {(myself && deleteAccountUrl) ? (
                       <Text
-                        onPress={() => Linking.openURL('http://delete.sylk.link')}
+                        onPress={() => Linking.openURL(deleteAccountUrl)}
                         style={[styles.link, { paddingBottom: 10 }]}
                       >
                         Delete account on server...
@@ -495,7 +496,8 @@ EditContactModal.propTypes = {
   toggleRejectAnonymous: PropTypes.func,
   chatSounds: PropTypes.bool,
   toggleChatSounds: PropTypes.func,
-  storageUsage: PropTypes.array
+  storageUsage: PropTypes.array,
+  deleteAccountUrl: PropTypes.string,
 };
 
 export default EditContactModal;

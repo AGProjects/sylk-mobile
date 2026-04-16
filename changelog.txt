@@ -1,4 +1,44 @@
-Version 4.2.9
+Version 4.8.1 / 2026-04-05
+
+  * Added share multiple files capability
+  * Added QR code scanner to Register form
+  * Added submenu for PGP key management
+  * Added native Android sharing 
+  * Added option to resize shared content
+  * Added new enrollment form
+  * Save call history contact after call ends
+  * Improve HTML messages rendering
+  * Don't lookup public key for myself
+  * Fix rendering video thumbnails
+  * Skip autodownload old files
+  * Added stacked images sent at the same time
+  * Improve delete Messages modal
+  * Allow replies to my own messages
+  * Fix setting display name in edit contact and start conference
+  * Fix deleting contacts
+  * Show last message for contact subtitle
+  * Android native fixes for incoming calls
+  * Improve Navigation bar
+  * Fix updating contacts
+  * Don't lookup key more then once per chat session
+  * Lookup displayName for incoming iOS calls
+  * Filter out unread messages from journal
+  * Make autoanswer local per device
+  * Don't start the app on reject call from push notification
+  * Skip saving anonymous contacts 
+  * Fixed saving IMDNs
+  * Implement auto-answer on iOS
+  * Handle chat for test contacts
+  * Aspect ratio fixes and conference speaker selection
+  * Fix ios chat composer height
+  * Fix sharing web links from iOS
+  * Edit contact improvements
+  * iOS landscape fixes
+  * Journal sync fixes
+  * Improve first sync
+
+
+Version 4.2.9 / 2026-01-14
 
   * Layout improvement and fixes
   * Fix saving unsent IMDNs

@@ -26,7 +26,13 @@ const RegisterBox = ({
   resetSylkServerStatus,
   showQRCodeScanner,
   toggleQRCodeScannerFunc,
-  requestCameraPermission
+  requestCameraPermission,
+  configurations,
+  accounts,
+  serversAccounts,
+  connection,
+  wsUrl,
+  passwordRecoveryUrl
 }) => {
 
   // ---------------------------------------------
@@ -100,6 +106,12 @@ const RegisterBox = ({
           showQRCodeScanner={showQRCodeScanner}
           toggleQRCodeScannerFunc={toggleQRCodeScannerFunc}
           requestCameraPermission={requestCameraPermission}
+          configurations={configurations}
+          accounts={accounts}
+          serversAccounts={serversAccounts}
+          connection={connection}
+          wsUrl={wsUrl}
+          passwordRecoveryUrl={passwordRecoveryUrl}
         />
       </View>
     </View>

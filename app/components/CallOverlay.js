@@ -123,6 +123,11 @@ class CallOverlay extends React.Component {
 						selectedAudioDevice: nextProps.selectedAudioDevice,
 						insets: nextProps.insets
                        });
+				// Only log when the audio device values actually changed
+				if (nextProps.availableAudioDevices !== this.state.availableAudioDevices ||
+					nextProps.selectedAudioDevice !== this.state.selectedAudioDevice) {
+					console.log('[CallOverlay] audio devices updated — available:', nextProps.availableAudioDevices, 'selected:', nextProps.selectedAudioDevice);
+				}
     }
 
     callStateChanged(oldState, newState, data) {
@@ -334,7 +339,10 @@ class CallOverlay extends React.Component {
 							<Menu.Item
 								title="Audio device"
 								icon="volume-high"
-								onPress={() => this.setState({audioMenuVisible: true})}
+								onPress={() => {
+								console.log('[CallOverlay] audio menu opened — available:', this.props.availableAudioDevices, 'selected:', this.props.selectedAudioDevice);
+								this.setState({audioMenuVisible: true});
+							}}
 							/>
 						}
 					>
@@ -351,11 +359,12 @@ class CallOverlay extends React.Component {
 											: deviceTitle
 									}
 									onPress={() => {
-										this.props.selectAudioDevice(device);
+										console.log('[CallOverlay] tapped device:', device, '(currently selected:', this.props.selectedAudioDevice, ')');
 										this.setState({
 											audioMenuVisible: false,
 											menuVisible: false
 										});
+										setTimeout(() => this.props.selectAudioDevice(device), 50);
 									}}
 								/>
 							);

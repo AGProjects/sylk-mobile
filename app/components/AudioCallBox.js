@@ -474,28 +474,16 @@ class AudioCallBox extends Component {
                                 </TouchableHighlight>
                             </View>
 
-							{ this.props.useInCallManger ?
-                            <View style={styles.buttonContainer}>
-                                <TouchableHighlight style={styles.roundshape}>
-                                    <IconButton
-                                        size={buttonSize}
-                                        style={whiteButtonClass}
-                                        icon={this.state.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
-                                        onPress={this.props.toggleSpeakerPhone} />
-                                </TouchableHighlight>
-                            </View>
-                            : 
                             <View style={styles.buttonContainer}>
                                 <TouchableHighlight style={styles.roundshape}>
                                     <IconButton
                                         size={buttonSize}
                                         style={whiteButtonClass}
                                         icon={utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
-										onPress={() => this.toggleAudioDevice()}
+                                        onPress={() => this.toggleAudioDevice()}
                                         />
                                 </TouchableHighlight>
                             </View>
-                            }
 
                             {isPhoneNumber ?
                                 <View style={styles.buttonContainer}>

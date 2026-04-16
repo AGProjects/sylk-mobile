@@ -132,6 +132,15 @@ const styles = StyleSheet.create({
   actionSheetText: {
     width: '100%',
   },
+
+  linkOutgoing: {
+    color: 'blue',
+  },
+
+  linkIncoming: {
+    color: 'white',
+  },
+
   messageText: {
     fontWeight: 'normal',
   },

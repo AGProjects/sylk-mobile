@@ -26,6 +26,7 @@ import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import Sound from 'react-native-sound';
 
 import styles from '../assets/styles/ReadyBox';
+import containerStyles from '../assets/styles/ContainerStyles';
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
 
@@ -311,7 +312,7 @@ class ReadyBox extends Component {
         }
 
         if (this.props.showQRCodeScanner) {
-            return false;
+            //return false;
         }
 
         if (this.props.isTablet || (!this.props.isLandscape && this.props.selectedContact)) {
@@ -654,8 +655,8 @@ class ReadyBox extends Component {
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
         Keyboard.dismiss();
-        //console.log('handleConferenceCall options', options);
-        this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants});
+        console.log('--- handleConferenceCall options', options);
+        this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants}, options.domain);
         this.props.hideConferenceModalFunc();
     }
 
@@ -1753,7 +1754,7 @@ class ReadyBox extends Component {
                         onRead={this.QRCodeRead}
                         showMarker={true}
                         flashMode={RNCamera.Constants.FlashMode.off}
-                        containerStyle={styles.QRcodeContainer}
+                        containerStyle={containerStyles.QRCodeScanner}
                      />
                       :
 					<ContactsListBox
@@ -1885,11 +1886,11 @@ class ReadyBox extends Component {
 
                 <ConferenceModal
                     show={this.props.showConferenceModal}
-                    targetUri={uri}
+                    targetUri={this.props.remoteConferenceRoom || uri}
+                    defaultDomain={this.props.remoteConferenceDomain || this.props.defaultDomain}
                     myInvitedParties={this.props.myInvitedParties}
                     selectedContact={this.props.selectedContact}
                     handleConferenceCall={this.handleConferenceCall}
-                    defaultDomain={this.props.defaultDomain}
                     accountId={this.props.account ? this.props.account.id: null}
                     lookupContacts={this.props.lookupContacts}
 					defaultConferenceDomain = {this.props.defaultConferenceDomain}
@@ -1998,7 +1999,10 @@ ReadyBox.propTypes = {
 	sharedContent: PropTypes.array,
 	autoAnswerMode: PropTypes.bool,
 	hasAutoAnswerContacts: PropTypes.bool,
-	appState: PropTypes.string
+	appState: PropTypes.string,
+	remoteConferenceRoom: PropTypes.string,
+	remoteConferenceDomain: PropTypes.string
 };
+
 
 export default ReadyBox;

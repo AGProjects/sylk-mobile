@@ -168,7 +168,6 @@ const backgroundImage = require('./assets/images/dark_linen.png');
 const logger = new Logger("App");
 
 function logDevices(label, devices) {
-  return;
   if (!devices || devices.length === 0) {
     console.log(`-- ${label}: (none)`);
     return;
@@ -406,6 +405,8 @@ class Sylk extends Component {
             fileTransferUrl: 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filetransfer',
             fileSharingUrl: 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
 			testNumbers:[{uri: '4444@sylk.link', name: 'Test microphone'}, {uri: '3333@sylk.link', name: 'Test video'}],    
+			passwordRecoveryUrl: 'https://mdns.sipthor.net/sip_login_reminder.phtml',
+			deleteAccountUrl: 'http://delete.sylk.link',
             configurationJson: null,
             serverIsValid: true,
             terminatedReason: null,
@@ -540,7 +541,12 @@ class Sylk extends Component {
             resizeContent: false,
             autoAnswerMode: false,
             hasAutoAnswerContacts: false,
-            allContacts: []
+            allContacts: [],
+            accounts: {},
+            serversAccounts: {},
+            remoteConferenceRoom: null,
+            remoteConferenceDomain: null,
+			conferenceConnection: null
         };
 
         this.buildId = "2026022201";
@@ -587,8 +593,6 @@ class Sylk extends Component {
 
         this.cancelRingtoneTimer = null;
     
-        this.signup = {};
-        this.last_signup = null;
         this.keyboardDidShowListener = null;
 
         this.state = Object.assign({}, this._initialState);
@@ -664,18 +668,10 @@ class Sylk extends Component {
                 //console.log('My participants', this.myParticipants);
             }
         });
-
-        storage.get('signup').then((signup) => {
-            if (signup) {
-                this.signup = signup;
-            }
-        });
-
-        storage.get('last_signup').then((last_signup) => {
-            if (last_signup) {
-                this.last_signup = last_signup;
-            }
-        });
+        
+        storage.remove('last_signup');
+        storage.remove('signup');
+        storage.remove('account');        
 
         storage.get('outgoingJournalEntries').then((outgoingJournalEntries) => {
             if (outgoingJournalEntries) {
@@ -712,7 +708,7 @@ class Sylk extends Component {
 
         this.sqlTableVersions = {'messages': 15,
                                  'contacts': 12,
-                                 'accounts': 12
+                                 'accounts': 16
                                  }
                                    
         this.db = null;
@@ -1046,8 +1042,8 @@ class Sylk extends Component {
 		this.setState({resizeContent: !this.state.resizeContent});
 	}
 
-	async lookupSylkServer(domain, checkOnly = false) {
-		console.log(' --- lookupSylkServer', domain, checkOnly);
+	async lookupSylkServer(domain, checkOnly = false, force = false) {
+		console.log(' --- lookupSylkServer', domain, 'checkOnly', checkOnly, 'force', force);
 	
 		if (domain == this.state.sylkDomain && checkOnly) {
 			// Optionally skip
@@ -1059,14 +1055,24 @@ class Sylk extends Component {
 		this.configurations = configurationsString ? JSON.parse(configurationsString) : {};
 
 		let closeConnection = domain != this.state.sylkDomain;
+		
+		if (closeConnection && this.state.connection !== null) {
+			console.log('Disconnecting existing connection');   
+            this.state.connection.close();
+        }
 
-		this.setState({SylkServerDiscovery: true, SylkServerDiscoveryResult: null, SylkServerStatus: ''});
+		this.setState({SylkServerDiscovery: true, 
+		               SylkServerDiscoveryResult: null, 
+		               SylkServerStatus: ''
+		               });
 	
 		const fallbackUrl = `https://mdns.sipthor.net/dnslookup.php?name=_sylkserver.${domain}&type=TXT`;
 		const primaryUrl = `https://dns.google/resolve?name=_sylkserver.${domain}&type=TXT`;
 	
 		const fetchDns = async (url) => {
-			const res = await this.fetchWithTimeout(url, {}, 3000);
+			// 5 s gives a cold TCP+TLS connection to dns.google enough headroom
+			// at startup when the network stack is handling several concurrent requests.
+			const res = await this.fetchWithTimeout(url, {}, 5000);
 			return await res.json();
 		};
 	
@@ -1082,56 +1088,30 @@ class Sylk extends Component {
 			try {
 				data = await fetchDns(fallbackUrl);
 			} catch (fallbackErr) {
-
-			    if (domain in this.configurations) {
-					const configuration = this.configurations[domain];
-
-					if (configuration) {
-						console.log('Cached configuration found');
-						const configurationString = JSON.stringify(configuration);
-						const res = await this.initConfiguration(configurationString, "cache");
-	
-						if (res) {
-							Object.keys(json).forEach((key) => {
-								//utils.timestampedLog('Cached config', key, json[key]);
-							});
-	
-							if (closeConnection) {
-								console.log('Destroy connection, new sylk domain')
-								this.connectToSylkServer();
-							}
-
-							this.setState({
-								SylkServerDiscovery: false,
-								SylkServerDiscoveryResult: 'ready'
-							});
-
-							return true;						
-						}
-					}
-			    } else {
-					console.log('Domain configuration is not cached yet', domain);
-			    }
-
 				console.log('Fallback fetch also failed', fallbackErr);
+
 				this.setState({
 					SylkServerDiscovery: false,
 					SylkServerStatus: 'No DNS TXT record',
 					SylkServerDiscoveryResult: 'noDNSrecord'
 				});
+
+			    await this.initWithCachedDomain(domain);
 				return;
 			}
 		}
 	
 	    //console.log('data', data);
-		const answers = data.Answer?.map(a => a.data) || [];
+		// DNS TXT record values are wrapped in double-quotes per RFC 1035;
+		// strip them so the URL passed to fetch is well-formed.
+		const answers = data.Answer?.map(a => a.data.replace(/^"|"$/g, '')) || [];
 		const configurationUrl = Array.isArray(answers) && answers.length === 1 ? answers[0] : null;
 		console.log('DNS response', configurationUrl);
 	
 		if (!configurationUrl) {
 			this.setState({
-				SylkServerDiscoveryResult: 'noDNSrecord',
 				SylkServerDiscovery: false,
+				SylkServerDiscoveryResult: 'noDNSrecord',
 				SylkServerStatus: 'No DNS TXT record'
 			});
 			console.log('no configurationUrl');
@@ -1144,7 +1124,39 @@ class Sylk extends Component {
 		} else if (configurationUrl) {
 			console.log('Sylkserver configuration URL', configurationUrl);
 			this.setState({ configurationUrl: configurationUrl });
-			await this.downloadSylkConfiguration(domain, configurationUrl, false, closeConnection);
+			await this.downloadSylkConfiguration(domain, configurationUrl, false, closeConnection, force);
+		}
+	}
+
+    async initWithCachedDomain(domain, closeConnection) {
+		console.log('initWithCachedDomain', domain);
+
+		if (!(domain in this.configurations)) {
+			console.log('Domain configuration is not yet cached', domain);
+			return;
+		}
+
+		const configuration = this.configurations[domain];
+
+		if (configuration) {
+			console.log('Cached configuration found');
+			const configurationString = JSON.stringify(configuration);
+			const res = await this.initConfiguration(configurationString, "cache");
+
+			if (res) {
+				Object.keys(json).forEach((key) => {
+					//utils.timestampedLog('Cached config', key, json[key]);
+				});
+
+				this.connectToSylkServer();
+
+				this.setState({
+					SylkServerDiscovery: false,
+					SylkServerDiscoveryResult: 'ready'
+				});
+
+				return true;						
+			}
 		}
 	}
 
@@ -1152,27 +1164,41 @@ class Sylk extends Component {
 		this.setState({SylkServerDiscoveryResult: '', SylkServerDiscovery: false, SylkServerStatus: ''});
 	}
 
-	async downloadSylkConfiguration(domain, url, checkOnly = false, closeConnection=false) {
+	async downloadSylkConfiguration(domain, url, checkOnly = false, closeConnection = false, force = false) {
 	
-		console.log("downloadSylkConfiguration:", domain);
-		console.log('Configurations cache', Object.keys(this.configurations));
+	  console.log("downloadSylkConfiguration:", domain, 'force', force);
+	  console.log('Configurations cache', Object.keys(this.configurations));
 
 	  this.setState({configurationJson: null});
 
-
 	  try {
-		const response = await this.fetchWithTimeout(url, {}, 5000); // 5-second timeout
+		const response = await this.fetchWithTimeout(url, {}, 3000);
 
 		if (!response.ok) {
-		  this.setState({SylkServerDiscoveryResult: 'noJson', SylkServerDiscovery: false});
+		  this.setState({SylkServerDiscoveryResult: 'noJson', 
+		                 SylkServerDiscovery: false,  
+		                 SylkServerStatus: 'No config for ' + domain});
+
 		  console.log("Failed to download JSON: " + response.status);
+
+		  if (force) {
+		    await this.initWithCachedDomain(domain);
+		  }
+
 		  return;
 		}
 
 		const json = await response.json();
 		if (!json || !json.wsServer) {
-			  this.setState({SylkServerDiscoveryResult: 'noWsServer', SylkServerDiscovery: false});
-			  return;
+		    this.setState({SylkServerDiscoveryResult: 'noWsServer', 
+			                SylkServerDiscovery: false,
+			                SylkServerStatus: 'No server available'
+			                });
+
+			if (force) {
+			    await this.initWithCachedDomain(domain);
+			}
+			return;
 		}
 		
 		json.sylkDomain = domain;
@@ -1199,17 +1225,26 @@ class Sylk extends Component {
 
 			await AsyncStorage.setItem("configuration", jsonString);
 
+            if (this.state.accountId) {
+				setTimeout(() => {
+					this.createTestNumbers();
+				}, 100);
+			}
+
 			this.configurations[domain] = json;
 			let configurationsString = JSON.stringify(this.configurations);
 			await AsyncStorage.setItem("configurations", configurationsString);
-
 		}
 	
 		return json;
 	  } catch (error) {
-		this.setState({SylkServerDiscovery: false, SylkServerStatus: 'Server configuration unavailable:\n' + url});
-		console.log("downloadSylkConfiguration error:", error);
-		return null;
+		  this.setState({SylkServerDiscovery: false, SylkServerStatus: 'DNS configuration unavailable'});
+		  console.log("downloadSylkConfiguration error:", error);
+		  if (force) {
+		    await this.initWithCachedDomain(domain);
+		  }
+
+		  return;
 	  }
 	}
 
@@ -1431,8 +1466,10 @@ class Sylk extends Component {
             }
         }
 
-        let params = [id, this.state.accountId];
-        await this.ExecuteQuery("update accounts set last_sync_id = ? where account = ?", params).then((result) => {
+		let timestamp = new Date();
+        let params = [id, JSON.stringify(timestamp), this.state.accountId];
+
+        await this.ExecuteQuery("update accounts set last_sync_id = ?, last_sync_timestamp = ?  where account = ?", params).then((result) => {
             this.setState({lastSyncId: id});
         }).catch((error) => {
             console.log('Save last sync id SQL error:', error);
@@ -1644,58 +1681,6 @@ class Sylk extends Component {
         this.setState({searchContacts: !this.state.searchContacts});
     }
 
-    async loadAccount() {
-		 if (!this.state.accountId) {
-            console.log('Cannot load account without accountId');
-            return;
-		 }
-
-        console.log('Loading account', this.state.accountId);
-
-        let keyStatus = this.state.keyStatus;
-
-		let query = "SELECT * FROM accounts where account = ?";
-
-		await this.ExecuteQuery(query, [this.state.accountId]).then((results) => {
-			const rows = results.rows;
-			if (rows.length === 1) {
-				const data = rows.item(0);
-				let keys = {};
-
-                keys.public = data.public_key;
-				keys.private = data.private_key;
-
-                if (keys.public && keys.private) {
-					utils.timestampedLog('PGP private keys loaded from account');
-                    keyStatus.existsLocal = true;
-                } else {
-                    keyStatus.existsLocal = false;
-					console.log('PGP private keys not saved for account');
-                }
-                
-				this.setState({rejectAnonymous: data.reject_anonymous == "1",
-				               dnd: data.dnd == "1",
-				               keys: keys, 
-				               lastSyncId: data.last_sync_id,
-				               chatSounds: data.chat_sounds == "1",
-				               keyStatus: {...keyStatus},
-				               rejectNonContacts: data.reject_non_contacts == "1"}
-				               );
-
-				setTimeout(() => {this.checkPendingActions()}, 10);
-
-				this.loadSylkContacts('loadAccount');
-
-			} else {
-				console.log('No account found in database');
-			}
-
-
-		}).catch((error) => {
-			console.log('SQL loadAccount error:', error);
-		});
-    }
-
 	async getChatContacts() {
 		  try {
 			const results = await this.ExecuteQuery(
@@ -1864,20 +1849,6 @@ class Sylk extends Component {
         let displayName;
         let uniqueUris = {};
 
-        if (this.state.accountId in this.signup) {
-            email = this.signup[this.state.accountId];
-            this.setState({email: email});
-        }
-
-        if (!this.last_signup) {
-            storage.set('last_signup', this.state.accountId);
-            if (this.state.accountId in this.signup) {
-            } else {
-                this.signup[this.state.accountId] = '';
-                storage.set('signup', this.signup);
-            }
-        }
-
         this.setState({defaultDomain: this.state.accountId.split('@')[1]});
         
         console.log('Loading Sylk contacts....');
@@ -1995,7 +1966,7 @@ class Sylk extends Component {
                     //console.log('Load contact', contact.uri, contact.tags, contact.properties);
                 }
 
-                utils.timestampedLog('SQL loaded', rows.length, 'contacts');
+                utils.timestampedLog('SQL loaded', rows.length, 'contacts for account', this.state.accountId);
                 //console.log(' --- pending incomingMessage', this.state.incomingMessage);
                 Object.keys(this.state.incomingMessage).forEach((key) => {
                     const msg = this.state.incomingMessage[key];
@@ -2029,15 +2000,17 @@ class Sylk extends Component {
 				const filteredContacts = allContacts.filter(
 				  contact => !purgeSet.has(contact.id)
 				);
+
+				const duplicateContacts = allContacts.filter(
+				  contact => purgeSet.has(contact.id)
+				);
 				
+			    for (const contact of duplicateContacts) {		
+					 console.log(' -- Duplicate contact', contact.id, contact.uri);
+			    }
+
 				this.deleteDuplicateContacts(purgeSet);
 				
-				/*
-			    for (const contact of filteredContacts) {		
-					 console.log(' -- Loaded contact', contact.id, contact.uri);
-			    }
-			    */
-
                 this.setState({allContacts: filteredContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
@@ -2103,6 +2076,10 @@ class Sylk extends Component {
 	     if (this.state.messageZoomFactor != prevState.messageZoomFactor) {
 		      console.log('messageZoomFactor has changed', this.state.messageZoomFactor);
 	     }
+
+	     if (this.state.keys != prevState.keys) {
+		      //console.log('keys have changed', this.state.keys);
+		 }
 
 	     if (this.state.accountVerified != prevState.accountVerified) {
 			 console.log(this.cdu_counter, 'CDU --- accountVerified did change', this.state.accountVerified);
@@ -2200,6 +2177,10 @@ class Sylk extends Component {
 	     if (this.state.selectedContact != prevState.selectedContact) {
 	         if (this.state.selectedContact) {
 	             const uri = this.state.selectedContact.uri;
+	             
+	             if (this.state.searchContacts) {
+					 this.setState({searchContacts: false});
+	             }
 
 	             if (prevState.selectedContact && prevState.selectedContact.uri == uri) {
 					 //console.log('selectedContact is the same', this.state.selectedContact?.id);
@@ -2239,6 +2220,11 @@ class Sylk extends Component {
 												AudioRouteModule.getEvent();
 												}, 2000);
 				 AudioRouteModule.setActiveDevice(this.state.userSelectedDevice);
+			 } else {
+				 // On Android < 31 (InCallManager path) there is no native event that
+				 // confirms the route change and resets waitForCommunicationsDevicesChanged.
+				 // Reset it immediately so subsequent selections are not blocked.
+				 this.setState({waitForCommunicationsDevicesChanged: false});
 			 }
 		 }
 
@@ -2315,15 +2301,13 @@ class Sylk extends Component {
 		return false;
 	}
 
-    async afterFirstSync() {
-		await this.waitForContactsLoaded();
-
-        //console.log('addTestContacts');
-
+    createTestNumbers() {
+        console.log('createTestNumbers');
         let test_numbers = this.state.testNumbers;
 
         test_numbers.forEach((item) => {
             let existingContact = this.lookupContact(item.uri);
+            
             if (!existingContact) {
                 existingContact = this.newContact(item.uri, item.name, {src: 'init'});
                 existingContact.tags.push('test');
@@ -2339,10 +2323,15 @@ class Sylk extends Component {
                     existingContact.name = item.name;
                     this.saveSylkContact(item.uri, existingContact, 'init name');
                 }
-                
                 //console.log('Test contact exists', existingContact.id, item.uri);
             }
         });
+    }
+
+    async afterFirstSync() {
+		await this.waitForContactsLoaded();
+
+		this.createTestNumbers();
 
 		let msg = {
 		    _id: this.deviceId,
@@ -2502,7 +2491,9 @@ class Sylk extends Component {
 		  CREATE TABLE IF NOT EXISTS accounts (
 			account TEXT PRIMARY KEY,
 			password TEXT,
-			active TEXT,
+			email TEXT,
+			active TEXT NULL default '0',
+			verified TEXT NULL default '0',
 			dnd TEXT,
 			reject_anonymous TEXT,
 			reject_non_contacts TEXT,
@@ -2510,7 +2501,9 @@ class Sylk extends Component {
 			private_key TEXT,
 			public_key TEXT,
 			last_sync_id TEXT,
-			last_sync_timestamp TEXT
+			last_sync_timestamp TEXT NOT NULL default '',
+			server TEXT,
+			last_active_timestamp TEXT NOT NULL default ''		
 		  )
 		`;
 
@@ -2650,6 +2643,10 @@ class Sylk extends Component {
 												10: [{query: 'alter table accounts add column last_sync_timestamp TEXT', params: []}],
 												11: [{query: 'update accounts set private_key = k.private_key, public_key = k.public_key, last_sync_id = k.last_sync_id FROM keys k WHERE accounts.account = k.account', params: []}],
 												12: [{query: 'drop table if exists keys', params: []}],
+												13: [{query: 'alter table accounts add column server TEXT', params: []}],
+												14: [{query: 'alter table accounts add column last_active_timestamp TEXT  NOT NULL default ""', params: []}],
+												15: [{query: 'alter table accounts add column email TEXT  NOT NULL default ""', params: []}],
+												16: [{query: 'alter table accounts add column verified TEXT  NOT NULL default "0"', params: []}],
                                                }
                                    };
 
@@ -3093,7 +3090,8 @@ class Sylk extends Component {
     }
 
     async initConfiguration(configurationJson, origin=null) {
-		console.log('--- initConfiguration', configurationJson, origin);
+		console.log('--- initConfiguration', origin);
+		//console.log('--- initConfiguration', configurationJson, origin);
 		try {
 			configuration = await JSON.parse(configurationJson);
 
@@ -3126,7 +3124,9 @@ class Sylk extends Component {
             }
     
             const publicUrl = configuration.publicUrl ? configuration.publicUrl : 'https://' + configuration.sylkDomain;
-     
+
+            const testNumbers = Array.isArray(configuration.testNumbers) ? configuration.testNumbers: [];
+
 			this.setState({
 			               defaultDomain: configuration.defaultDomain,
 			               enrollmentUrl: configuration.enrollmentUrl,
@@ -3135,8 +3135,10 @@ class Sylk extends Component {
 			               fileSharingUrl: server + '/filesharing',
 			               fileTransferUrl: server + '/filetransfer',
 			               serverSettingsUrl: configuration.serverSettingsUrl,
+			               passwordRecoveryUrl: configuration.passwordRecoveryUrl,
+			               deleteAccountUrl: configuration.deleteAccountUrl,
 			               callHistoryUrl: callHistoryUrl,
-			               testNumbers: Array.isArray(configuration.testNumbers) ? configuration.testNumbers: [],
+			               testNumbers: testNumbers,
 						   configurationUrl: configuration.configurationUrl,
 			               sylkDomain: configuration.sylkDomain,
 			               publicUrl: publicUrl,
@@ -3237,17 +3239,7 @@ class Sylk extends Component {
 
 		this.lookupSylkServer(this.state.sylkDomain);
 
-        storage.get('account').then((account) => {
-            if (account && account.verified) {
-                utils.timestampedLog('Account is verified, sign in');
-                this.setState({accountVerified: account.verified, 
-                               accountId: account.accountId});
-                this.handleRegistration(account.accountId, account.password);
-				this.changeRoute('/ready', 'start_up');
-            } else {
-				this.changeRoute('/login', 'start_up');
-			}
-        });
+		this.loadAccounts(true);
            
 		this.setState({dark: DarkModeManager.isDark()});
 
@@ -3267,8 +3259,6 @@ class Sylk extends Component {
 				this.onRemoteNotification(initialNotification);
 			}
 		}
-        
-        this.getTransferedFiles();
         
 		if (Platform.OS === 'android') {
 		    this.getLastCallEvent();
@@ -3320,12 +3310,9 @@ class Sylk extends Component {
             this.heartbeat();
         }, 5000);
 
-        try {
-            await RNCallKeep.supportConnectionService();
-            utils.timestampedLog('Connection service is enabled');
-        } catch(err) {
-            utils.timestampedLog(err);
-        }
+        RNCallKeep.supportConnectionService()
+            .then(() => utils.timestampedLog('Connection service is enabled'))
+            .catch(err => utils.timestampedLog(err));
 
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
         this._boundOnPushRegistered = this._onPushRegistered.bind(this);
@@ -3338,17 +3325,41 @@ class Sylk extends Component {
         });
 
  		this.listenForPushNotifications();
-        this.checkVersion();    
+        setTimeout(() => this.checkVersion(), 10000);
         this.getAudioState();
         this.startWatchingNetwork();
         this.proximityListener = Proximity.addListener(this.handleProximity);
-        logPermissions();
         
+        //logPermissions();
 	}
 	
 	audioManagerStart() {
 		if (this.useInCallManger) {
 		    InCallManager.start({media: 'audio'});
+			// AudioRouteModule is not used for routing on Android < 31, but we still
+			// call getEvent() to enumerate available devices and populate the UI menu.
+			AudioRouteModule.getEvent();
+			// On Android < 31 getCommunicationDevice() is unavailable so the native event
+			// never reports a selected device. Infer the initial active device from what
+			// is already connected: InCallManager auto-routes BT > wired > earpiece.
+			const currentOutputs = this.state.audioOutputs || [];
+			const btDevice     = currentOutputs.find(d => d.type === 'BLUETOOTH_SCO');
+			const wiredDevice  = currentOutputs.find(d => d.type === 'WIRED_HEADSET');
+			const earpieceDevice = currentOutputs.find(d => d.type === 'BUILTIN_EARPIECE');
+			const initialDevice = btDevice || wiredDevice || earpieceDevice
+				|| { type: 'BUILTIN_EARPIECE', name: 'Earpiece', id: '' };
+			console.log('[audioManagerStart] initial audio device:', initialDevice.type);
+			this.setState({
+				selectedAudioDevice: initialDevice.type,
+				selectedDevice: initialDevice,
+				speakerPhoneEnabled: false,
+			});
+			// Poll for device changes (BT/wired headset plug-in mid-call) every 3 seconds.
+			// This is a JS-level fallback; the Java receiver (ACTION_CONNECTION_STATE_CHANGED)
+			// handles it natively after a rebuild but polling ensures it works immediately.
+			this._audioDevicePollInterval = setInterval(() => {
+				AudioRouteModule.getEvent();
+			}, 3000);
 			return;
 	    }
 
@@ -3363,6 +3374,7 @@ class Sylk extends Component {
 	audioManagerStop() {
 		if (this.useInCallManger) {
 		    InCallManager.stop();
+			if (this._audioDevicePollInterval) { clearInterval(this._audioDevicePollInterval); this._audioDevicePollInterval = null; }
 		    return;
 	    }
 
@@ -3370,22 +3382,83 @@ class Sylk extends Component {
     }
 
 	async selectAudioDevice(deviceType) {
-		//console.log('User selectAudioDevice', deviceType);
+		console.log('[selectAudioDevice] requested:', deviceType, '| selectedAudioDevice:', this.state.selectedAudioDevice, '| useInCallManger:', this.useInCallManger, '| audioOutputs:', JSON.stringify(this.state.audioOutputs));
 
 		if (deviceType == this.state.selectedAudioDevice) {
+			console.log('[selectAudioDevice] same device, no-op');
 		    return;
 		}
 
 		if (this.state.waitForCommunicationsDevicesChanged) {
-			console.log('waitForCommunicationsDevicesChanged...');
+			console.log('[selectAudioDevice] blocked: waitForCommunicationsDevicesChanged');
 			return;
 		}
-		
-		const selectedDevice = this.state.audioOutputs.find(device => device.type === deviceType);
 
-		this.setState({ userSelectedDevice: selectedDevice, 
+		const selectedDevice = this.state.audioOutputs.find(device => device.type === deviceType);
+		console.log('[selectAudioDevice] resolved device object:', JSON.stringify(selectedDevice));
+
+		this.setState({ userSelectedDevice: selectedDevice,
 		                selectedAudioDevice: null });
-		                
+
+		// On Android 12+ (API 31+) we use AudioRouteModule instead of InCallManager.
+		// Motorola (and similar OEMs) locks audio routing at the Telecom framework level,
+		// which AudioManager.setCommunicationDevice() cannot override. We must use
+		// RNCallKeep.setAudioRoute() to tell Telecom which route to use, so the HAL
+		// honours AudioRouteModule's setCommunicationDevice() call.
+		//
+		//   SPEAKER      → ROUTE_SPEAKER    (Telecom speaker lock; breaks AudioManager lock)
+		//   EARPIECE     → ROUTE_EARPIECE   (restore earpiece via Telecom)
+		//   BLUETOOTH_*  → ROUTE_BLUETOOTH  (let Telecom know BT is desired, not speaker/earpiece)
+		//   WIRED_*      → no Telecom call  (AudioRouteModule handles these fine)
+		if (!this.useInCallManger) {
+			// Android 12+: AudioRouteModule + RNCallKeep Telecom routing
+			const call = this.activeCall;
+			if (call) {
+				if (deviceType === 'BUILTIN_SPEAKER') {
+					RNCallKeep.setAudioRoute(call.id, 'Speaker');
+				} else if (deviceType === 'BUILTIN_EARPIECE') {
+					RNCallKeep.setAudioRoute(call.id, 'Earpiece');
+				} else if (deviceType === 'BLUETOOTH_SCO' || deviceType === 'BLUETOOTH_A2DP') {
+					RNCallKeep.setAudioRoute(call.id, 'Bluetooth');
+				}
+			}
+		} else {
+			// Android < 31: InCallManager handles the audio session; RNCallKeep.setAudioRoute
+			// updates the Telecom route so it doesn't override InCallManager's choice.
+			// Both calls are needed: InCallManager manages SCO/speaker at AudioManager level,
+			// RNCallKeep ensures Telecom's route is consistent (otherwise switching away from
+			// BT leaves Telecom on ROUTE_BLUETOOTH and audio stays in the headset).
+			console.log('[selectAudioDevice] InCallManager path for:', deviceType);
+			const call = this.activeCall;
+			if (deviceType === 'BUILTIN_SPEAKER') {
+				if (call) RNCallKeep.setAudioRoute(call.id, 'Speaker');
+				InCallManager.chooseAudioRoute('SPEAKER_PHONE');
+				InCallManager.setForceSpeakerphoneOn(true);
+			} else if (deviceType === 'BUILTIN_EARPIECE') {
+				if (call) RNCallKeep.setAudioRoute(call.id, 'Earpiece');
+				InCallManager.chooseAudioRoute('EARPIECE');
+				InCallManager.setForceSpeakerphoneOn(false);
+			} else if (deviceType === 'BLUETOOTH_SCO') {
+				if (call) RNCallKeep.setAudioRoute(call.id, 'Bluetooth');
+				InCallManager.chooseAudioRoute('BLUETOOTH');
+				InCallManager.setForceSpeakerphoneOn(false);
+			} else if (deviceType === 'WIRED_HEADSET') {
+				if (call) RNCallKeep.setAudioRoute(call.id, 'Headset');
+				InCallManager.chooseAudioRoute('WIRED_HEADSET');
+				InCallManager.setForceSpeakerphoneOn(false);
+			} else {
+				console.log('[selectAudioDevice] InCallManager: no route mapping for:', deviceType);
+			}
+			// On Android < 31 there is no native event that updates selectedAudioDevice,
+			// so set it directly here to keep the checkmark in the menu up to date.
+			const selectedDevice = this.state.audioOutputs.find(d => d.type === deviceType);
+			this.setState({
+				speakerPhoneEnabled: deviceType === 'BUILTIN_SPEAKER',
+				selectedAudioDevice: deviceType,
+				selectedDevice: selectedDevice || null,
+			});
+		}
+
 		return;
 
 //		InCallManager.chooseAudioRoute(device);
@@ -3400,9 +3473,10 @@ class Sylk extends Component {
 	}
 	
 	async getAudioState() {
-	    if (this.useInCallManger) {
-			return;
-	    }
+		// Register the device-change listener unconditionally.
+		// On Android < 31 (InCallManager path), AudioRouteModule is still initialised
+		// and can enumerate devices via AudioManager.getDevices() (API 23+).
+		// The listener keeps the audio device menu populated on all Android versions.
 	
 		function devicesEqual(a, b) {
 		  // Treat null/undefined as empty arrays
@@ -3444,24 +3518,56 @@ class Sylk extends Component {
 						waitForCommunicationsDevicesChanged: false,
 					});
 
-					// Usage:
 					if (!devicesEqual(audioInputs, this.state.audioInputs)) {
 					    logDevices("Inputs changed", audioInputs);
 						this.setState({
 							audioInputs: audioInputs,
 						});
 					}
-	
+
 					if (!devicesEqual(audioOutputs, this.state.audioOutputs)) {
-						logDevices("Outputs changed", audioInputs);
+						logDevices("Outputs changed", audioOutputs);
 						this.setState({
 							audioOutputs: audioOutputs,
 						});
+
+						// On Android < 31 (InCallManager path), getCommunicationDevice() is
+						// unavailable so the native event never reports which device is selected.
+						// Sync the UI with what InCallManager actually routes to:
+						//   - BT or wired present + currently on earpiece → switch to headset
+						//     (InCallManager auto-routes to headsets when connected)
+						//   - BT/wired gone + currently selected was that headset → fall back to earpiece
+						if (this.useInCallManger) {
+							const newTypes = audioOutputs.map(d => d.type);
+							const hasBT    = newTypes.includes('BLUETOOTH_SCO');
+							const hasWired = newTypes.includes('WIRED_HEADSET');
+							const cur      = this.state.selectedAudioDevice;
+
+							if (hasBT && cur !== 'BLUETOOTH_SCO' && cur !== 'BUILTIN_SPEAKER') {
+								const btDevice = audioOutputs.find(d => d.type === 'BLUETOOTH_SCO');
+								console.log('[AudioDevices] BT available, updating selected to BLUETOOTH_SCO');
+								this.setState({ selectedAudioDevice: 'BLUETOOTH_SCO', selectedDevice: btDevice || null });
+							} else if (!hasBT && hasWired && cur !== 'WIRED_HEADSET' && cur !== 'BUILTIN_SPEAKER') {
+								const wiredDevice = audioOutputs.find(d => d.type === 'WIRED_HEADSET');
+								console.log('[AudioDevices] Wired available, updating selected to WIRED_HEADSET');
+								this.setState({ selectedAudioDevice: 'WIRED_HEADSET', selectedDevice: wiredDevice || null });
+							} else if (!hasBT && !hasWired && (cur === 'BLUETOOTH_SCO' || cur === 'WIRED_HEADSET')) {
+								const earpiece = audioOutputs.find(d => d.type === 'BUILTIN_EARPIECE');
+								console.log('[AudioDevices] Headset gone, falling back to BUILTIN_EARPIECE');
+								this.setState({
+									selectedAudioDevice: 'BUILTIN_EARPIECE',
+									selectedDevice: earpiece || { type: 'BUILTIN_EARPIECE', name: 'Earpiece', id: '' },
+									speakerPhoneEnabled: false,
+								});
+							}
+						}
 					}
 
-					if (!selectedDeviceEqual(selectedDevice, this.state.selectedDevice)) {
+					// On Android < 31 getCommunicationDevice() is unavailable so the native
+					// event always sends an empty selected object. Ignore it to avoid
+					// clearing the selectedDevice state that was set directly in selectAudioDevice.
+					if (selectedDevice.type && !selectedDeviceEqual(selectedDevice, this.state.selectedDevice)) {
 						logDevices("Selected device changed", [selectedDevice]); // wrap single object in array
-						// Update state
 						this.setState({
 							selectedDevice: selectedDevice
 						});
@@ -3628,8 +3734,13 @@ class Sylk extends Component {
     }
 
     async checkVersion() {
+        const withTimeout = (promise, ms) => Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+        ]);
+
         if (Platform.OS === 'android') {
-            getAppstoreAppMetadata("com.agprojects.sylk") //put any apps packageId here
+            withTimeout(getAppstoreAppMetadata("com.agprojects.sylk"), 10000)
               .then(metadata => {
                 console.log("Sylk app version on playstore",
                   metadata.version,
@@ -3639,17 +3750,17 @@ class Sylk extends Component {
                 this.setState({appStoreVersion: metadata});
               })
               .catch(err => {
-                console.log("error occurred checking app store version", err);
+                console.log("error occurred checking app store version", err.message || err);
               });
               return;
         } else {
-            getAppstoreAppMetadata("1489960733") //put any apps id here
+            withTimeout(getAppstoreAppMetadata("1489960733"), 10000)
             .then(appVersion => {
                 console.log("Sylk app version on appstore", appVersion.version, "published on", appVersion.currentVersionReleaseDate);
                 this.setState({appStoreVersion: appVersion});
             })
             .catch(err => {
-                console.log("Error fetching app store version occurred", err);
+                console.log("Error fetching app store version occurred", err.message || err);
             });
         }
     }
@@ -4118,7 +4229,7 @@ class Sylk extends Component {
     }
 
     _handleAppStateChange = nextAppState => {
-        utils.timestampedLog('--- APP state changed', this.state.appState, '->', nextAppState);
+        //utils.timestampedLog('--- APP state changed', this.state.appState, '->', nextAppState);
         
         const oldState = this.state.appState;
 
@@ -4371,7 +4482,7 @@ class Sylk extends Component {
         }
 
         if (!this.state.account) {
-            utils.timestampedLog('Account', this.state.accountId, 'is disabled');
+            utils.timestampedLog('No account active yet');
             this.updateLoading(null, 'account_disabled');
             return;
         }
@@ -4435,12 +4546,6 @@ class Sylk extends Component {
             if (this.mustSendPublicKey) {
                 this.sendPublicKey();
             }
-
-            storage.set('account', {
-                accountId: this.state.account.id,
-                password: this.state.password,
-                verified: true
-            });
             
             this.setState({accountVerified: true,
                            enrollment: false,
@@ -4448,7 +4553,7 @@ class Sylk extends Component {
                            registrationState: 'registered'
                            });
 
-            this.saveSqlAccount(this.state.account.id, 1);
+            this.saveSqlAccount(this.state.account.id, 1, this.state.password);
 
             this.updateLoading(null, 'registered');
 
@@ -4653,22 +4758,147 @@ class Sylk extends Component {
 			console.error('Error updating storage:', e);
 		}
 	}
-    
-    async saveSqlAccount(account, active) {
-        let params = [active, account];
 
-		await this.ExecuteQuery("INSERT INTO accounts (active, account) VALUES (?, ?)", params).then((result) => {
-            console.log('SQL inserted account', account);
-            this.loadAccount();
-        }).catch((error) => {
-			this.updateSqlAccount(account, active);
+    async loadAccounts(init=false) {
+        console.log('loadAccounts');
+
+		let query = "SELECT * FROM accounts order by account ASC, last_active_timestamp DESC";
+		let accounts = {};
+		let serversAccounts = {};
+		
+		// Cleanup queries: only run if stale rows actually exist to avoid
+		// taking the SQLite write lock on every startup.
+		const staleCheck = await this.ExecuteQuery(
+			"SELECT count(*) as n FROM accounts WHERE account like 'sip:%' OR account = ''", []
+		);
+		if (staleCheck.rows.item(0).n > 0) {
+			await this.ExecuteQuery("delete from accounts where account like 'sip:%'", []);
+			await this.ExecuteQuery("delete from accounts where account = ''", []);
+		}
+
+        let init_active_account = false;
+
+		await this.ExecuteQuery(query, []).then((results) => {
+			let rows = results.rows;
+			for (let i = 0; i < rows.length; i++) {
+				var item = rows.item(i);
+				accounts[item.account] = item.server;
+				//console.log('Load account', 'active', item.active, 'verified', item.verified, item.account, 'server', item.server);
+				if ((item.verified == "1" || item.verified == 1) && (item.active == "1" || item.active == 1)) {
+					init_active_account = true;
+					if (this.state.accountId != item.account) {
+						console.log('Auto login');
+						this.setState({accountVerified: true, accountId: item.account});
+						this.handleRegistration(item.account, item.password);
+						this.changeRoute('/ready', 'start_up');
+					}
+				}
+
+				if (item.server && !(item.server in serversAccounts)) {
+				    // only add the most recent one
+					serversAccounts[item.server] = {account: item.account, password: item.password};
+				}
+			}
+			
+			if (!init_active_account) {
+			    // go to login screen
+			    console.log('No active account, yet');
+				this.changeRoute('/login', 'start_up');
+			}
+
+			this.setState({accounts: accounts, serversAccounts: serversAccounts});
+
+		}).catch((error) => {
+			console.log('SQL loadAccounts error:', error);
 		});
     }
 
-    async updateSqlAccount(account, active) {
-        let params = [active, account];
-		await this.ExecuteQuery("update accounts set active = ? where account = ?", params).then((result) => {
-			//console.log('SQL update account OK', account);
+    async loadAccount() {
+		 if (!this.state.accountId) {
+            console.log('Cannot load account without accountId');
+            return;
+		 }
+
+        console.log('Loading active account', this.state.accountId);
+
+        let keyStatus = this.state.keyStatus;
+
+		let query = "SELECT * FROM accounts where account = ?";
+
+		await this.ExecuteQuery(query, [this.state.accountId]).then((results) => {
+			const rows = results.rows;
+			if (rows.length === 1) {
+				const data = rows.item(0);
+				let keys = {};
+
+                keys.public = data.public_key;
+				keys.private = data.private_key;
+
+                if (keys.public && keys.private) {
+					utils.timestampedLog('PGP private keys loaded from account');
+                    keyStatus.existsLocal = true;
+                } else {
+                    keyStatus.existsLocal = false;
+					console.log('PGP private keys not saved for account');
+                }
+                
+				this.setState({rejectAnonymous: data.reject_anonymous == "1",
+				               dnd: data.dnd == "1",
+				               keys: keys, 
+				               lastSyncId: data.last_sync_id,
+				               chatSounds: data.chat_sounds == "1",
+				               keyStatus: {...keyStatus},
+				               rejectNonContacts: data.reject_non_contacts == "1"}
+				               );
+
+				setTimeout(() => {this.checkPendingActions()}, 10);
+
+				this.loadSylkContacts('loadAccount');
+
+			} else {
+				console.log('No account found in database');
+			}
+
+
+		}).catch((error) => {
+			console.log('SQL loadAccount error:', error);
+		});
+    }
+    
+    async saveSqlAccount(account, active, password) {
+		let timestamp = new Date();
+        let params = [active, active, account, password, this.state.sylkDomain, JSON.stringify(timestamp)];
+        let query = "INSERT INTO accounts (active, verified, account, password, server, last_active_timestamp) VALUES (?, ?, ?, ?, ?, ?)"
+        
+        if (active == 0 || active == "0") {
+            params = [active, account, this.state.sylkDomain];
+            query = "INSERT INTO accounts (active, account, server) VALUES (?, ?, ?)"
+        }
+
+		await this.ExecuteQuery(query, params).then((result) => {
+            console.log('SQL inserted account', account, 'for server', this.state.sylkDomain);
+            this.loadAccount();
+			this.loadAccounts();
+        }).catch((error) => {
+			this.updateSqlAccount(account, active, password);
+		});
+    }
+
+    async updateSqlAccount(account, active, password) {
+		let timestamp = new Date();
+        let params = [active, active, password, JSON.stringify(timestamp), this.state.sylkDomain, account];
+        let query = "update accounts set active = ?, verified = ?, password = ?, last_active_timestamp = ?, server = ? where account = ?"
+
+        if (active == 0 || active == "0") {
+            params = [active, this.state.sylkDomain, account];
+            query = "update accounts set active = ?, server = ? where account = ?"
+        }
+        
+		await this.ExecuteQuery(query, params).then((result) => {
+			console.log('SQL updated account', account, active, 'for server', this.state.sylkDomain);
+			if (result.rowsAffected) {
+				this.loadAccounts();
+			}
 		}).catch((error) => {
 			console.log('SQL updateSqlAccount error:', error);
 		});
@@ -4957,6 +5187,11 @@ class Sylk extends Component {
         let readyDelay = 5000;
 
         if (this.state.incomingCall && this.state.currentCall) {
+
+			if (this.state.searchContacts) {
+				this.setState({searchContacts: false});
+			}
+
             if (newState === 'terminated') {
                 if (this.state.incomingCall == this.state.currentCall) {
                     newCurrentCall = null;
@@ -5194,6 +5429,10 @@ class Sylk extends Component {
                     newCurrentCall = null;
                 }
 
+	            if (this.state.searchContacts) {
+				    this.setState({searchContacts: false});
+	            }
+
                 let callSuccesfull = false;
                 let reason = data.reason;
                 let play_busy_tone = !this.isConference(call);
@@ -5423,9 +5662,6 @@ class Sylk extends Component {
 
     handleEnrollment(account) {
         console.log('Enrollment for new account', account);
-        this.signup[account.id] = account.email;
-        storage.set('signup', this.signup);
-        storage.set('last_signup', account.id);
 
 		this.signIn = true;
 
@@ -5437,12 +5673,8 @@ class Sylk extends Component {
         this.handleRegistration(account.id, account.password);
     }
 
-    handleSignIn(accountId, password) {
-        console.log(' HandleSignIn', accountId);
-        storage.set('account', {
-                                accountId: accountId,
-                                password: password
-        });
+    async handleSignIn(accountId, password) {
+        console.log('HandleSignIn', accountId);
 
         this.signOut = false;
         this.signIn = true;
@@ -5453,9 +5685,7 @@ class Sylk extends Component {
     handleRegistration(accountId, password) {
         console.log('HandleRegistration', accountId, 'verified =', this.state.accountVerified);
 
-        this.setState({accountId: accountId,
-                       password: password,
-        });
+        this.setState({accountId: accountId, password: password});
     
         if (!this.state.wsUrl) {
 			console.log('Wait for web socket server address...');
@@ -5467,8 +5697,8 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.state.connection === null) {
-			this.connectToSylkServer();
+        if (this.state.connection === null || this.state.connection.state != 'ready') {
+			this.connectToSylkServer(true);
 
         } else {
             if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
@@ -5479,14 +5709,21 @@ class Sylk extends Component {
                 if (this._notificationCenter) {
                     //this._notificationCenter.postSystemNotification('Waiting for Internet connection');
                 }
-                if (this.currentRoute === '/login' && this.state.accountVerified) {
+
+                if (this.currentRoute === '/login') {
+
+//                if (this.currentRoute === '/login' && this.state.accountVerified) {
                     this.changeRoute('/ready', 'start_up');
+                } else {
+                    console.log('Cannot go to ready because account was not verified');
                 }
             }
         }
     }
 
     connectToSylkServer(close=false) {    
+		console.log('connectToSylkServer');
+		  
         if (close && this.state.connection !== null) {
 			console.log('Disconnecting existing connection');   
             this.state.connection.close();
@@ -5627,6 +5864,11 @@ class Sylk extends Component {
     }
 
     async generateKeysIfNecessary() {
+
+        if (!this.state.accountId) {
+			return;
+        }
+
         let keyStatus = this.state.keyStatus;
 
         console.log('PGP keys generation if necessary');
@@ -5651,6 +5893,8 @@ class Sylk extends Component {
                     console.log('PGP key exists local but not on server');
                 }
             }
+        } else {
+			console.log('PGP key not yet checked on server');
         }
     }
 
@@ -5777,7 +6021,7 @@ class Sylk extends Component {
     }
 
     hideConferenceModal() {
-        this.setState({showConferenceModal: false});
+        this.setState({showConferenceModal: false, remoteConferenceRoom: null, remoteConferenceDomain: null});
     }
 
     updateSelection(uri) {
@@ -5796,12 +6040,12 @@ class Sylk extends Component {
          this.setState({selectedContacts: selectedContacts});
     }
 
-    async callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}) {
+    async callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}, domain=null) {
         if (!targetUri) {
             return;
         }
 
-        //console.log('callKeepStartConference', options);
+        console.log('callKeepStartConference', options);
 
         this.changeRoute('/conference');
 
@@ -5858,8 +6102,8 @@ class Sylk extends Component {
             }
         }
 
-        this.respawnConnection();
-        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, callUUID: callUUID});
+        //this.respawnConnection();
+        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, domain: domain, callUUID: callUUID});
     }
 
     openAppSettings(subject) {
@@ -5989,7 +6233,7 @@ class Sylk extends Component {
     }
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
-        utils.timestampedLog('New outgoing conference to room', targetUri);
+        utils.timestampedLog('New outgoing conference to room', targetUri, options);
         this.backToForeground();
         this.setState({targetUri: targetUri});
 		if (Platform.OS === 'ios') {
@@ -6305,7 +6549,11 @@ class Sylk extends Component {
         InCallManager.setForceSpeakerphoneOn(true);
         let call = this.activeCall;
         if (call) {
-            RNCallKeep.toggleAudioRouteSpeaker(call.id, true);
+            if (this.useInCallManger) {
+                RNCallKeep.toggleAudioRouteSpeaker(call.id, true);
+            } else {
+                RNCallKeep.setAudioRoute(call.id, 'Speaker');
+            }
         }
     }
 
@@ -6318,7 +6566,13 @@ class Sylk extends Component {
 
         let call = this.activeCall;
         if (call) {
-            RNCallKeep.toggleAudioRouteSpeaker(call.id, false);
+            if (this.useInCallManger) {
+                RNCallKeep.toggleAudioRouteSpeaker(call.id, false);
+            } else if (this.state.speakerPhoneEnabled) {
+                // On Android 12+ only undo a Telecom speaker lock we explicitly set.
+                // Calling this unconditionally at call start overrides BT auto-routing.
+                RNCallKeep.setAudioRoute(call.id, 'Earpiece');
+            }
         }
     }
 
@@ -6329,6 +6583,9 @@ class Sylk extends Component {
     toggleQRCodeScanner() {
         utils.timestampedLog('Toggle QR code scanner');
         this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
+        if (!this.state.searchContacts) {
+			this.toggleSearchContacts()
+		}
     }
 
     startGuestConference(targetUri) {
@@ -6525,6 +6782,7 @@ class Sylk extends Component {
             let to;
             let displayName;
             let mediaType = 'audio';
+            let remoteSylkDomain = null;
 
             var url_parts = url.split("/");
             let scheme = url_parts[0];
@@ -6539,21 +6797,30 @@ class Sylk extends Component {
                 //sylk://call/incoming/callUUID/from/to/displayName/media - when Android is asleep
                 //sylk://call/cancel//callUUID - when Android is asleep
                 //sylk://message/incoming/from
-
-                event       = url_parts[2];
-                direction   = url_parts[3];
-                callUUID    = url_parts[4];
-                from        = url_parts[5];
-                to          = url_parts[6];
-                displayName = url_parts[7];
-                mediaType   = url_parts[8] || 'audio';
-
-                if (event !== 'cancel' && from && from.search('@videoconference.') > -1) {
+                
+                const conferenceObject = utils.parseSylkConferenceUrl(url);
+                console.log('conferenceObject', conferenceObject);
+                if (conferenceObject) {
                     event = 'conference';
-                    to = from;
+                    to = conferenceObject.conferenceRoom;
+                    remoteSylkDomain = conferenceObject.sylkDomain;
+                    
+                } else {
+					event       = url_parts[2];
+					direction   = url_parts[3];
+					callUUID    = url_parts[4];
+					from        = url_parts[5];
+					to          = url_parts[6];
+					displayName = url_parts[7];
+					mediaType   = url_parts[8] || 'audio';
+	
+					if (event !== 'cancel' && from && from.search('@videoconference.') > -1) {
+						event = 'conference';
+						to = from;
+					}
+	
+					this.setState({targetUri: from});
                 }
-
-                this.setState({targetUri: from});
 
             } else if (scheme === 'https:') {
                 // https://webrtc.sipthor.net/conference/DaffodilFlyChill0 from external web link
@@ -6602,6 +6869,16 @@ class Sylk extends Component {
                     this.backToForeground();
                     const media = {audio: true, video: mediaType === 'video'}
                     this.incomingConference(callUUID, to, from, displayName, media, 'url');
+                } else {
+                    // allow app to wake up
+                    this.backToForeground();
+                    let remoteRoom = to;
+                    if (remoteSylkDomain && remoteSylkDomain != this.state.sylkDomain) {
+						remoteRoom = to + "@" + remoteSylkDomain;
+                    }
+                    utils.timestampedLog('Outgoing conference to', remoteRoom);
+					this.setState({remoteConferenceRoom: remoteRoom, remoteConferenceDomain: remoteSylkDomain});
+                    this.showConferenceModal();
                 }
             } else if (event === 'wakeup') {
                 console.log('wakeup from Linking');
@@ -8349,12 +8626,22 @@ class Sylk extends Component {
         });
     }
 
+    async deleteRawMessage(rowid) {
+		console.log('Deleting broken row id', rowid);
+		await this.ExecuteQuery("DELETE FROM messages WHERE rowid = ?", [rowid]);
+	}
+
     async deleteMessage(id, uri, remote=true, after=false) {
         //utils.timestampedLog('Message', id, 'is deleted');
         console.log('deleteMessage', id, 'remote', remote);
+        let query;
+
+        if (!id) {
+			return;
+        }
+
 		this.deleteRenderMessage(id, uri);
 
-        let query;
 
         let message_ids = [id];
         if (after) {
@@ -8393,7 +8680,7 @@ class Sylk extends Component {
             }
         }
         
-        //console.log('messages to remove', message_ids);
+        console.log('messages to remove', message_ids);
 
         for (let j = 0; j < message_ids.length; j++) {
             var _id = message_ids[j];
@@ -8539,6 +8826,10 @@ class Sylk extends Component {
 
     async sendPendingMessage(uri, text, id, contentType, timestamp) {
         utils.timestampedLog('Outgoing pending message', id);
+        if (!id) {
+			return;
+        }
+
         let contact = this.lookupContact(uri);
 
         if (contact && contact.publicKey && this.state.keys.public) {
@@ -8561,7 +8852,7 @@ class Sylk extends Component {
     }
 
     async sendPendingMessages() {
-        //console.log('sendPendingMessages');
+        console.log('sendPendingMessages');
 
         if (this.signOut) {
            return;
@@ -8570,7 +8861,7 @@ class Sylk extends Component {
         let content;
         let metadata;
         //await this.ExecuteQuery("SELECT * from messages where pending = 1 and content_type like 'text/%' and from_uri = ?", [this.state.accountId]).then((results) => {
-        await this.ExecuteQuery("SELECT * from messages where pending = 1 and from_uri = ?", [this.state.accountId]).then((results) => {
+        await this.ExecuteQuery("SELECT rowid, * from messages where pending = 1 and from_uri = ?", [this.state.accountId]).then((results) => {
             let rows = results.rows;
             for (let i = 0; i < rows.length; i++) {
                 if (this.signOut) {
@@ -8578,13 +8869,20 @@ class Sylk extends Component {
                 }
                 
                 var item = rows.item(i);
-                //console.log('sendPendingMessages item', item);
+                console.log('sendPendingMessages item', item);
+
+                if (!item.msg_id) {
+                    console.log('Skip broken item without msg_id', item.rowid);
+					this.deleteRawMessage(item.rowid);
+                    continue;
+                }
                  
                 if (!item.to_uri) {
                     console.log('Skip broken item without to_uri');
 					this.deleteMessage(item.msg_id, item.to_uri);
                     continue;
                 }
+
 
                 if (item.to_uri.indexOf('@conference.') > -1) {
                     //console.log('Skip outgoing conference conference messages');
@@ -8823,6 +9121,9 @@ class Sylk extends Component {
      }
 
      async addJournal(id, action, data={}) {
+        if (!id) {
+			return;
+        }
         console.log('Add journal entry:', action, id);
         this.outgoingJournalEntries[uuid.v4()] = {id: id, action: action, data: data};
         this.replayJournal();
@@ -9833,7 +10134,7 @@ class Sylk extends Component {
         
 		contact.totalMessages = total;
 
-        query = `SELECT * FROM messages WHERE account = ? AND 
+        query = `SELECT rowid, * FROM messages WHERE account = ? AND 
         ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))`;
 
         if (pinned) {
@@ -9856,7 +10157,7 @@ class Sylk extends Component {
 		];
 
 		await this.ExecuteQuery(query, params).then(async (results) => {
-            console.log('SQL get messages, rows =', results.rows.length);
+            //console.log('SQL get messages, rows =', results.rows.length);
             let rows = results.rows;
             messages[orig_uri] = [];
             let content;
@@ -9890,12 +10191,19 @@ class Sylk extends Component {
             for (let i = 0; i < rows.length; i++) {
                 try {
 					var item = rows.item(i);
+
+	                if (!item.msg_id) {
+						console.log('Skip broken item without msg_id', item.rowid);
+						//this.deleteRawMessage(item.rowid);
+						continue;
+					}
 	
 					content = item.content;
 					if (!content) {
 						content = 'Empty message...';
 					}
 	
+
 					let timestamp;
 					last_message = null;
 					last_message_id = null;
@@ -10133,7 +10441,8 @@ class Sylk extends Component {
 						if (orig_uri in messages) {
 							messages[orig_uri].push(msg);
 						}
-						//console.log("---- Loaded message from SQL:", msg._id);
+					    
+					    //console.log("---- Loaded message from SQL:", msg._id);
 						
 						if (pinned || category) {
 							filteredMessageIds.push(msg._id);
@@ -10593,8 +10902,6 @@ class Sylk extends Component {
 		
 		const storage_keys = ['autoAnswerMode', 
 		                      'devMode',
-		                      'last_signup',
-		                      'signup',
 		                      'account',
 		                      'proximityEnabled',
 		                      'devices',
@@ -10963,13 +11270,13 @@ class Sylk extends Component {
 		if (realMessages.length == 1) {
 			label = 'One new message on server';
 			if (!this.state.selectedContact) {
-				this._notificationCenter.postSystemNotification(label);
+				//this._notificationCenter.postSystemNotification(label);
 			}
 			this.setState({syncPercentage: 0});
 		} else if (realMessages.length > 1) {
 			label = messages.length + ' new messages on server';
 			if (!this.state.selectedContact) {
-				this._notificationCenter.postSystemNotification(label);
+				//this._notificationCenter.postSystemNotification(label);
 			}
 			this.setState({syncPercentage: 0});
 		}
@@ -11690,7 +11997,8 @@ class Sylk extends Component {
 	
 			return {
 				allContacts: newAllContacts,
-				selectedContact: selectedContact
+				selectedContact: selectedContact,
+				messagesMetadata: newMessagesMetadataForUri
 			};
 		});
 	}
@@ -13076,6 +13384,7 @@ class Sylk extends Component {
         let domain;
         let els = uri.split('@');
         let username = els[0];
+        let conferenceObject = null;
 
         let isNumber = utils.isPhoneNumber(username);
 
@@ -13088,7 +13397,12 @@ class Sylk extends Component {
 
         if (!isUUID && !isNumber && !utils.isEmailAddress(uri) && username !== '*') {
             console.log('Sanitize check failed for uri:', uri);
-            return null;
+            conferenceObject = utils.parseSylkUrl(uri);
+            if (!conferenceObject) {
+				return null;
+            } else {
+				console.log('conferenceObject', conferenceObject);
+            }
         }
 
         contact.uri = uri;
@@ -14270,6 +14584,7 @@ return (
                 <NavigationBar
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
+                    sylkDomain = {this.state.sylkDomain}
                     accountId = {this.state.accountId}
                     email = {this.state.email}
                     logout = {this.logout}
@@ -14357,6 +14672,9 @@ return (
 					toggleAutoAnswerMode = {this.toggleAutoAnswerMode}
  					autoAnswerMode = {this.state.autoAnswerMode}
  					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
+ 					deleteAccountUrl = {this.state.deleteAccountUrl}
+                    showQRCodeScanner = {this.state.showQRCodeScanner}
+                    toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
                 />
                 : null}
 
@@ -14465,6 +14783,8 @@ return (
 					autoAnswerMode = {this.state.autoAnswerMode}
  					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
  					appState = {this.state.appState}
+ 					remoteConferenceRoom = {this.state.remoteConferenceRoom}
+ 					remoteConferenceDomain = {this.state.remoteConferenceDomain}
                 />
 
                 <ImportPrivateKeyModal
@@ -14687,6 +15007,7 @@ return (
 				insets = {this._insets}
 				enableFullScreen = {this.enableFullScreen}
 				disableFullScreen = {this.disableFullScreen}
+				sylkDomain = {this.state.sylkDomain}
             />
         )
     }
@@ -14774,6 +15095,8 @@ return (
                 <RegisterBox
                     enrollmentUrl = {this.state.enrollmentUrl}
                     serverSettingsUrl = {this.state.serverSettingsUrl}
+                    passwordRecoveryUrl = {this.state.passwordRecoveryUrl}
+                    wsUrl = {this.state.wsUrl}
                     defaultDomain = {this.state.defaultDomain}
                     sylkDomain = {this.state.sylkDomain}
                     registrationInProgress = {this.state.registrationState !== null && this.state.registrationState !== 'failed'}
@@ -14792,7 +15115,11 @@ return (
                     resetSylkServerStatus={this.resetSylkServerStatus}
                     showQRCodeScanner = {this.state.showQRCodeScanner}
                     toggleQRCodeScannerFunc = {this.toggleQRCodeScanner}
-                    requestCameraPermission ={this.requestCameraPermission}
+                    requestCameraPermission = {this.requestCameraPermission}
+                    configurations = {this.configurations}
+                    accounts = {this.state.accounts}
+                    serversAccounts = {this.state.serversAccounts}
+                    connection = {this.state.connection}
                 />
             );
         }
@@ -14841,11 +15168,6 @@ return (
         this.resetState();
 
 		this.saveSqlAccount(this.state.accountId, 0);
-
-        storage.set('account', {accountId: this.state.accountId,
-                                password: this.state.password,
-                                verified: false
-                                });
 
         this.changeRoute('/login', 'user logout');
 

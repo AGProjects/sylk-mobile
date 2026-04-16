@@ -327,7 +327,7 @@ class ConferenceHeader extends React.Component {
                     }
                 >
                     <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
-                    <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share web link..." />
+                    <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share conference link..." />
                     {this.state.participants > 1 && !this.state.audioOnly?
                     <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
                     : null}
@@ -347,7 +347,7 @@ class ConferenceHeader extends React.Component {
 						anchor={
 							<Menu.Item
 								title="Audio device"
-								icon="volume-high"
+								icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
 								onPress={() => this.setState({audioMenuVisible: true})}
 							/>
 						}

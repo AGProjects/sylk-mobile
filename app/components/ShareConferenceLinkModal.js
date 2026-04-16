@@ -5,11 +5,12 @@ import { Text, IconButton, Surface, Portal } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import Share from 'react-native-share';
 import utils from '../utils';
+import QRCode from 'react-native-qrcode-svg';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
 
-const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCenter }) => {
+const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCenter, sylkDomain, conferenceRoom }) => {
 
   const handleClipboardButton = () => {
     utils.copyToClipboard(conferenceUrl);
@@ -46,6 +47,7 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
   if (!show) return null;
 
   const title= "Share conference link?";
+  const sylkUrl = "sylk://" + sylkDomain + "/conference/" + conferenceRoom
 
   return (
     <Modal
@@ -75,9 +77,15 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
 				</Text>
               </View>
 
-				<View style={styles.buttonRow}>
+              <View style={[styles.chipsContainer, styles.iconContainer]}>
+				<QRCode
+				  value={sylkUrl}
+				/>
+              </View>
+
+			  <View style={styles.buttonRow}>
 				<Text style={styles.shareText}>
-					Select an external application to share the conference web link:
+					Share the conference web link:
 				</Text>
               </View>
 
@@ -86,6 +94,7 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
                 <IconButton size={34} onPress={handleEmailButton} icon="email" />
                 <IconButton size={34} onPress={handleShareButton} icon="share-variant" />
               </View>
+
 
                {/* Modal content end */}
               </Surface>
@@ -101,7 +110,9 @@ ShareConferenceLinkModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
   conferenceUrl: PropTypes.string.isRequired,
-  notificationCenter: PropTypes.func.isRequired
+  notificationCenter: PropTypes.func.isRequired,
+  sylkDomain: PropTypes.string.isRequired,
+  conferenceRoom: PropTypes.string.isRequired,
 };
 
 export default ShareConferenceLinkModal;

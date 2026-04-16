@@ -591,21 +591,12 @@ class VideoBox extends Component {
                     key="toggleAspectRatio"
                 />
 
-				{ this.props.useInCallManger ?
-                <IconButton
-                    size={buttonSize}
-                    style={[buttonClass]}
-                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'headphones'}
-                    onPress={this.props.toggleSpeakerPhone}
-                />
-                : 
                 <IconButton
                     size={buttonSize}
                     style={[buttonClass]}
                     icon={utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
                     onPress={() => this.toggleAudioDevice()}
                 />
-                }
 
                 <IconButton
                     size={buttonSize}

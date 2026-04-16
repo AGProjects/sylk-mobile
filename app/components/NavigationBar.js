@@ -89,6 +89,9 @@ class NavigationBar extends Component {
             case 'callMeMaybe':
                 this.props.toggleCallMeMaybeModal();
                 break;
+            case 'scanQr':
+                this.props.toggleQRCodeScannerFunc();
+                break;
             case 'shareConferenceLinkModal':
                 this.showConferenceLinkModal();
                 break;
@@ -369,6 +372,7 @@ class NavigationBar extends Component {
 
 		const friendlyName = this.props.selectedContact ? this.props.selectedContact.uri.split('@')[0] : '';
 		const conferenceUrl = `${this.props.publicUrl}/conference/${friendlyName}`;
+		const conferenceRoom = `${friendlyName}`;
 
         if (this.props.selectedContact) {
             tags = this.props.selectedContact.tags;
@@ -486,7 +490,6 @@ class NavigationBar extends Component {
 				appBarContainer.marginTop = 0;
 			}
         }
-        
         return (
         
 			<View style={navBarContainer}>
@@ -581,7 +584,7 @@ class NavigationBar extends Component {
 
                 }
 
-               { (!this.props.selectedContact && !this.props.searchContacts) ?
+               { (!this.props.selectedContact && !this.props.searchContacts && false) ?
                 <IconButton
                     style={styles.whiteButton}
                     size={18}
@@ -706,6 +709,11 @@ class NavigationBar extends Component {
                         {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                          : null }
+
+                        {!this.props.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('scanQr')} icon="qr-code" title="Scan QR code..." />
+                         : null }
+
                         {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
@@ -850,6 +858,7 @@ class NavigationBar extends Component {
 					chatSounds={this.props.chatSounds}
  				    toggleChatSounds={this.props.toggleChatSounds}
  				    storageUsage={this.props.storageUsage}
+ 				    deleteAccountUrl={this.props.deleteAccountUrl}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -873,6 +882,8 @@ class NavigationBar extends Component {
                     notificationCenter={this.props.notificationCenter}
                     close={this.hideConferenceLinkModal}
                     conferenceUrl={conferenceUrl}
+                    conferenceRoom={conferenceRoom}
+                    sylkDomain={this.props.sylkDomain}
                 />
                 
 				<ExportPrivateKeyModal
@@ -977,6 +988,7 @@ NavigationBar.propTypes = {
     isLandscape: PropTypes.bool,
     publicUrl: PropTypes.string,
     serverSettingsUrl: PropTypes.string,
+	deleteAccountUrl: PropTypes.string,
 	insets: PropTypes.object,
 	call: PropTypes.object,
 	storageUsage: PropTypes.array,
@@ -985,7 +997,10 @@ NavigationBar.propTypes = {
 	devMode: PropTypes.bool,
 	toggleAutoAnswerMode: PropTypes.func,
 	autoAnswerMode: PropTypes.bool,
-	hasAutoAnswerContacts: PropTypes.bool
+	hasAutoAnswerContacts: PropTypes.bool,
+	showQRCodeScanner: PropTypes.bool,
+	toggleQRCodeScannerFunc: PropTypes.func,
+	sylkDomain: PropTypes.string,
 };
 
 export default NavigationBar;

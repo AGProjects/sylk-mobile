@@ -55,7 +55,14 @@ const containerStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
+	QRCodeScanner: {
+		flex: 1,
+		width: '100%',
+		height: '100%',
+		backgroundColor: 'black',
+		justifyContent: 'center',
+		alignItems: 'center',
+	}
 });
 
 export default containerStyles;

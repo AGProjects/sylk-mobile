@@ -2,6 +2,8 @@ import React from 'react';
 import {  Platform, Linking } from 'react-native';
 import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import { Text, IconButton, Surface, Portal } from 'react-native-paper';
+import QRCode from 'react-native-qrcode-svg';
+
 import PropTypes from 'prop-types';
 import Share from 'react-native-share';
 import utils from '../utils';
@@ -78,12 +80,19 @@ const CallMeMaybeModal = ({ show, close, callUrl, notificationCenter }) => {
               <Text style={styles.body}>or with a Web browser at:</Text>
               <Text style={styles.link}>{callUrl}</Text>
 
+              <View style={[styles.chipsContainer, styles.iconContainer]}>
+				<QRCode
+				  value={callUrl}
+				/>
+              </View>
+
               <Text style={styles.body}>Share this address with others:</Text>
 
               <View style={styles.iconContainer}>
                 <IconButton size={34} onPress={handleClipboardButton} icon="content-copy" />
                 <IconButton size={34} onPress={handleEmailButton} icon="email" />
                 <IconButton size={34} onPress={handleShareButton} icon="share-variant" />
+
               </View>
 
                {/* Modal content end */}

@@ -1,0 +1,6 @@
+Enrollment fixes
+Image sharing improvements
+Added QR codes for link sharing
+Refactor active account management
+Fixed audio message rendering
+Various bug fixes

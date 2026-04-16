@@ -78,6 +78,7 @@
     "react-native-proximity": "^3.0.0",
     "react-native-push-notification": "^8.1.1",
     "react-native-qrcode-scanner": "^1.5.4",
+    "react-native-qrcode-svg": "6.2.0",
     "react-native-randombytes": "^3.6.1",
     "react-native-receive-sharing-intent": "^2.0.0",
     "react-native-render-html": "^6.3.4",

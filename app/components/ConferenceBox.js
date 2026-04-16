@@ -2080,38 +2080,20 @@ class ConferenceBox extends Component {
               </View>
             );
 
-        if (this.props.useInCallManger) {
-            floatingButtons.push(
-              <View style={styles.buttonContainer} key='recon'>
-                <TouchableHighlight style={styles.roundshape}>
-                <IconButton
-                    size={this.state.videoEnabled ? 25 : 25}
-                    style={buttonClass}
-                    icon={this.props.speakerPhoneEnabled ? 'volume-high' : 'volume-off'}
-                    onPress={this.props.toggleSpeakerPhone}
-                    key="speakerPhoneButton"
-                />
-                </TouchableHighlight>
-              </View>
-            )
-        } else {
-
-            floatingButtons.push(
-              <View style={styles.buttonContainer} key="audioDevice">
-                <TouchableHighlight style={styles.roundshape}>
-                <IconButton
-                    size={25}
-                    style={buttonClass}
-                    title="Device"
-                    onPress={this.toggleAudioDevice}
-                    icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice]} // toggle icon
-                    key="toggleAudioDevice"
-                />
-                </TouchableHighlight>
-              </View>
-            );
-            
-        }
+        floatingButtons.push(
+          <View style={styles.buttonContainer} key="audioDevice">
+            <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={25}
+                style={buttonClass}
+                title="Device"
+                onPress={this.toggleAudioDevice}
+                icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone'}
+                key="toggleAudioDevice"
+            />
+            </TouchableHighlight>
+          </View>
+        );
 
        }
 
@@ -2293,6 +2275,7 @@ class ConferenceBox extends Component {
         let callUrl = callUrl = this.state.publicUrl + "/call/" + this.state.accountId;
         const friendlyName = this.state.remoteUri ? this.state.remoteUri.split('@')[0] : '';
         const conferenceUrl = `${this.state.publicUrl}/conference/${friendlyName}`;
+        const conferenceRoom = `${friendlyName}`;
 
         //console.log(this.state.publicUrl);
         let container = styles.container;
@@ -2538,6 +2521,9 @@ class ConferenceBox extends Component {
 					show={this.state.showInviteModal && !this.state.reconnectingCall}
 					close={this.toggleInviteModal}
 					conferenceUrl={conferenceUrl}
+                    conferenceRoom={conferenceRoom}
+                    sylkDomain={this.props.sylkDomain}
+
 				/>
 
 				<View style={conferenceHeader}>
@@ -3386,7 +3372,8 @@ ConferenceBox.propTypes = {
     publicUrl               : PropTypes.string,
     insets                  : PropTypes.object,
 	enableFullScreen        : PropTypes.func,
-	disableFullScreen       : PropTypes.func
+	disableFullScreen       : PropTypes.func,
+	sylkDomain              : PropTypes.string
 
 };
 

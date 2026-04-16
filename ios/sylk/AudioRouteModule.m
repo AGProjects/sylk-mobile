@@ -28,6 +28,7 @@
   AVAudioSessionCategoryOptions _origOptions;
   AVAudioSessionMode _origMode;
   BOOL _started;
+  NSDictionary *_lastKnownBtDevice; // cached so BT stays in the list while earpiece is active
 }
 
 RCT_EXPORT_MODULE(AudioRouteModule);
@@ -140,83 +141,82 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 }
 
 - (NSArray *)getAudioOutputsArray {
-    //NSLog(@"[sylk_app][AudioRouteModule] getAudioOutputsArray (currentRoute outputs + virtuals)");
+    // Build a deduplicated, type-keyed output list for VoIP use.
+    // We track by type (not object identity) to avoid duplicates that arise when
+    // the same physical device appears in both currentRoute.outputs and availableInputs
+    // with different UIDs.
+    //
+    // Rules:
+    //  1. BUILTIN_EARPIECE and BUILTIN_SPEAKER are always present — the user must be
+    //     able to select them even when a BT headset is connected.
+    //  2. BT (HFP) and wired headsets are added when present in availableInputs (iOS
+    //     exposes them there for input-capable ports used in HFP mode).
+    //  3. Any active output from currentRoute that isn't covered above is included too.
+    //  4. No earpiece-removal filter when BT is present (that hid earpiece from the menu).
 
-    NSMutableArray *arr = [NSMutableArray array];
+    NSMutableDictionary *byType = [NSMutableDictionary dictionary]; // type → dict
     AVAudioSession *session = [AVAudioSession sharedInstance];
-    AVAudioSessionRouteDescription *route = session.currentRoute;
 
-    // Add actual outputs
-    for (AVAudioSessionPortDescription *p in route.outputs) {
+    // Step 1: seed from availableInputs (catches BT HFP, wired headset).
+    // Also update the cached BT device whenever we see one.
+    for (AVAudioSessionPortDescription *p in session.availableInputs) {
         NSString *type = [self typeStringForPortType:p.portType];
-        // Only include allowed VOIP-capable types
+        if ([type isEqualToString:@"BLUETOOTH_SCO"] || [type isEqualToString:@"WIRED_HEADSET"]) {
+            if (!byType[type]) {
+                NSDictionary *dev = [self deviceDictForPort:p typeForIOS:NO];
+                byType[type] = dev;
+                if ([type isEqualToString:@"BLUETOOTH_SCO"]) {
+                    _lastKnownBtDevice = dev; // cache for when AllowBluetooth is removed
+                }
+            }
+        }
+    }
+
+    // If AllowBluetooth was removed (earpiece mode), BT disappears from availableInputs
+    // but is still physically connected. Include the cached device so the user can still
+    // switch back to BT from the menu.
+    if (!byType[@"BLUETOOTH_SCO"] && _lastKnownBtDevice) {
+        byType[@"BLUETOOTH_SCO"] = _lastKnownBtDevice;
+        NSLog(@"[sylk_app][AudioRouteModule] using cached BT device: %@", _lastKnownBtDevice);
+    }
+
+    // Step 2: pick up anything active in currentRoute that we haven't seen yet
+    for (AVAudioSessionPortDescription *p in session.currentRoute.outputs) {
+        NSString *type = [self typeStringForPortType:p.portType];
         if ([type isEqualToString:@"BUILTIN_EARPIECE"] ||
             [type isEqualToString:@"BUILTIN_SPEAKER"] ||
             [type isEqualToString:@"WIRED_HEADSET"] ||
             [type isEqualToString:@"BLUETOOTH_SCO"]) {
-            [arr addObject:[self deviceDictForPort:p typeForIOS:NO]];
-        } else {
-            //NSLog(@"[sylk_app][AudioRouteModule] skipping output type %@", type);
+            if (!byType[type]) {
+                byType[type] = [self deviceDictForPort:p typeForIOS:NO];
+            }
         }
     }
 
-    // Add missing inputs to outputs (for VOIP-capable devices)
-    NSArray *inputs = [self getAudioInputsArray];
-    for (NSDictionary *input in inputs) {
-        NSString *type = input[@"type"];
-        if (([type isEqualToString:@"WIRED_HEADSET"] || [type isEqualToString:@"BLUETOOTH_SCO"]) &&
-            ![arr containsObject:input]) {
-            //NSLog(@"[sylk_app][AudioRouteModule] adding input to outputs: %@", input);
-            [arr addObject:input];
-        }
+    // Step 3: always guarantee speaker exists.
+    // Earpiece is only shown when NO headset (BT or wired) is connected.
+    // With a headset connected, iOS routes to it by hardware/OS design and the
+    // earpiece option is non-functional, so hiding it avoids user confusion.
+    if (!byType[@"BUILTIN_SPEAKER"]) {
+        byType[@"BUILTIN_SPEAKER"] = @{@"id": @"builtin_speaker", @"name": @"Speaker", @"type": @"BUILTIN_SPEAKER"};
+    }
+    BOOL headsetConnected = (byType[@"WIRED_HEADSET"] != nil || byType[@"BLUETOOTH_SCO"] != nil);
+    if (!headsetConnected && !byType[@"BUILTIN_EARPIECE"]) {
+        byType[@"BUILTIN_EARPIECE"] = @{@"id": @"builtin_earpiece", @"name": @"Earpiece", @"type": @"BUILTIN_EARPIECE"};
+    }
+    if (headsetConnected) {
+        [byType removeObjectForKey:@"BUILTIN_EARPIECE"];
     }
 
-    // Always append virtual outputs: Speaker + Earpiece (if not already present)
-    BOOL hasSpeaker = NO;
-    BOOL hasEarpiece = NO;
-    for (NSDictionary *d in arr) {
-        NSString *t = d[@"type"];
-        if ([t isEqualToString:@"BUILTIN_SPEAKER"]) hasSpeaker = YES;
-        if ([t isEqualToString:@"BUILTIN_EARPIECE"]) hasEarpiece = YES;
+    // Return in a consistent order: wired > BT > earpiece > speaker
+    // (wired headset first since it has hardware priority when connected)
+    NSArray *order = @[@"WIRED_HEADSET", @"BLUETOOTH_SCO", @"BUILTIN_EARPIECE", @"BUILTIN_SPEAKER"];
+    NSMutableArray *arr = [NSMutableArray array];
+    for (NSString *type in order) {
+        if (byType[type]) [arr addObject:byType[type]];
     }
 
-    if (!hasSpeaker) {
-        NSDictionary *speaker = @{@"id": @"builtin_speaker", @"name": @"Speaker", @"type": @"BUILTIN_SPEAKER"};
-        //NSLog(@"[sylk_app][AudioRouteModule] adding virtual output: Speaker");
-        [arr addObject:speaker];
-    }
-
-    if (!hasEarpiece) {
-        NSDictionary *earpiece = @{@"id": @"builtin_earpiece", @"name": @"Earpiece", @"type": @"BUILTIN_EARPIECE"};
-        //NSLog(@"[sylk_app][AudioRouteModule] adding virtual output: Earpiece");
-        [arr addObject:earpiece];
-    }
-
-    BOOL bluetoothSCOFound = NO;
-
-    for (NSDictionary *d in inputs) {
-      NSString *type = d[@"type"];
-      if ([type isEqualToString:@"BLUETOOTH_SCO"]) {
-        bluetoothSCOFound = YES;
-        break;
-      }
-    }
-
-    if (bluetoothSCOFound) {
-      NSMutableArray *filtered = [NSMutableArray array];
-      for (NSDictionary *d in arr) {
-        NSString *type = d[@"type"];
-        if (![type isEqualToString:@"BUILTIN_EARPIECE"]) {
-          [filtered addObject:d];
-        } else {
-          //NSLog(@"[sylk_app][AudioRouteModule] (filter) Removing earpiece because BT SCO input detected");
-        }
-      }
-      arr = filtered;
-    }
-    
     //NSLog(@"[sylk_app][AudioRouteModule] outputs=%@", arr);
-
     return arr;
 }
 
@@ -270,23 +270,8 @@ RCT_EXPORT_MODULE(AudioRouteModule);
             //NSLog(@"[sylk_app][AudioRouteModule] selected device already exists in inputs");
         }
 
-        // If selected device not in outputs, add it as output-only
-        BOOL foundInOutputs = NO;
-        for (NSDictionary *output in outputs) {
-            if ([output[@"id"] isEqualToString:selected[@"id"]]) {
-                foundInOutputs = YES;
-                break;
-            }
-        }
-        if (!foundInOutputs) {
-            NSDictionary *outputOnlyDevice = @{@"id": selected[@"id"],
-                                               @"name": selected[@"name"],
-                                               @"type": selected[@"type"]};
-            [outputs addObject:outputOnlyDevice];
-            NSLog(@"[sylk_app][AudioRouteModule] added selected device to outputs: %@", outputOnlyDevice);
-        } else {
-            //NSLog(@"[sylk_app][AudioRouteModule] selected device already exists in outputs");
-        }
+        // Note: we no longer add selected back to outputs here — getAudioOutputsArray
+        // already includes all available devices consistently via type-keyed deduplication.
 
         if (selected[@"type"]) {
             _currentRoute = selected[@"type"];
@@ -316,7 +301,23 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 
 - (void)handleRouteChange:(NSNotification *)note {
   // Called when AVAudioSession route changes (headset plug/unplug, BT connect/disconnect, speaker toggle)
-  //NSLog(@"[sylk_app][AudioRouteModule] handleRouteChange: %@", note.userInfo);
+  AVAudioSessionRouteChangeReason reason = [note.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
+
+  // Clear cached BT device if it has been physically disconnected
+  if (reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
+      BOOL btStillAvailable = NO;
+      for (AVAudioSessionPortDescription *p in [AVAudioSession sharedInstance].availableInputs) {
+          if ([p.portType isEqualToString:AVAudioSessionPortBluetoothHFP]) {
+              btStillAvailable = YES;
+              break;
+          }
+      }
+      if (!btStillAvailable) {
+          NSLog(@"[sylk_app][AudioRouteModule] BT device disconnected, clearing cache");
+          _lastKnownBtDevice = nil;
+      }
+  }
+
   if (_hasListeners) {
     [self sendReactNativeEvent];
   }
@@ -617,14 +618,59 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
 
         // --- Handle built-in earpiece explicitly ---
         if ([type isEqualToString:@"BUILTIN_EARPIECE"]) {
-            // Set preferred input to built-in mic
-            if (![session setPreferredInput:nil error:&err]) {
-                NSLog(@"[sylk_app][AudioRouteModule] setPreferredInput to built-in failed: %@", err);
+            // On iOS, overrideOutputAudioPort:None alone is not sufficient to route to
+            // earpiece when a BT HFP device is connected — iOS keeps routing to BT.
+            // The reliable fix is to remove AVAudioSessionCategoryOptionAllowBluetooth
+            // from the category options, which tells the system the BT device should no
+            // longer be used for this session. This must be done before clearing the
+            // preferred input and overriding the output port.
+            // Remove AllowBluetooth so BT cannot override earpiece. Do NOT add
+            // DefaultToSpeaker — that routes to speaker instead of earpiece.
+            BOOL categoryOk = [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                                       withOptions:0
+                                             error:&err];
+            if (!categoryOk) {
+                NSLog(@"[sylk_app][AudioRouteModule] setCategory (no BT) failed: %@", err);
             } else {
-                NSLog(@"[sylk_app][AudioRouteModule] setPreferredInput to built-in OK");
+                NSLog(@"[sylk_app][AudioRouteModule] setCategory: removed AllowBluetooth for earpiece routing");
             }
 
-            // Force output to earpiece (default route)
+            // Switch from VoiceChat to Default mode. In VoiceChat mode, iOS
+            // automatically routes to any connected external device (wired USB headset,
+            // etc.). Default mode lets the explicit preferred-input + port-override-None
+            // combination actually land on the built-in receiver (earpiece).
+            NSError *modeErr = nil;
+            if (![session setMode:AVAudioSessionModeDefault error:&modeErr]) {
+                NSLog(@"[sylk_app][AudioRouteModule] setMode Default failed: %@", modeErr);
+            } else {
+                NSLog(@"[sylk_app][AudioRouteModule] setMode: Default (for earpiece)");
+            }
+
+            // Explicitly set preferred input to the built-in mic.
+            // Passing nil means "no preference" and iOS picks the highest-priority input,
+            // which is the wired/BT headset if connected — defeating the earpiece routing.
+            // Explicitly choosing the built-in mic tells iOS to use the internal audio
+            // path, which routes output to the built-in earpiece.
+            AVAudioSessionPortDescription *builtInMic = nil;
+            for (AVAudioSessionPortDescription *p in session.availableInputs) {
+                if ([p.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                    builtInMic = p;
+                    break;
+                }
+            }
+            if (builtInMic) {
+                if (![session setPreferredInput:builtInMic error:&err]) {
+                    NSLog(@"[sylk_app][AudioRouteModule] setPreferredInput to built-in mic failed: %@", err);
+                } else {
+                    NSLog(@"[sylk_app][AudioRouteModule] setPreferredInput to built-in mic OK");
+                }
+            } else {
+                // Fallback: clear preference and hope iOS picks earpiece
+                [session setPreferredInput:nil error:&err];
+                NSLog(@"[sylk_app][AudioRouteModule] built-in mic not found, cleared preferred input");
+            }
+
+            // Remove speaker override so the default earpiece route takes effect
             if (![session overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&err]) {
                 NSLog(@"[sylk_app][AudioRouteModule] overrideOutputAudioPort to earpiece failed: %@", err);
             } else {
@@ -632,6 +678,28 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
                 _currentRoute = @"BUILTIN_EARPIECE";
                 switched = YES;
             }
+
+            // react-native-webrtc manages its own RTCAudioSession and restores
+            // AllowBluetooth ~200ms after we remove it, causing iOS to route back to BT.
+            // Schedule a single deferred re-application to outlast that restoration.
+            // This is one-shot: if the user has switched away by then, _currentRoute
+            // won't be BUILTIN_EARPIECE and we bail immediately.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{
+                if (![self->_currentRoute isEqualToString:@"BUILTIN_EARPIECE"]) return;
+                NSLog(@"[sylk_app][AudioRouteModule] earpiece deferred re-apply (WebRTC BT restoration guard)");
+                AVAudioSession *s = [AVAudioSession sharedInstance];
+                NSError *e = nil;
+                [s setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:0 error:&e];
+                [s setMode:AVAudioSessionModeDefault error:&e];
+                for (AVAudioSessionPortDescription *p in s.availableInputs) {
+                    if ([p.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                        [s setPreferredInput:p error:&e];
+                        break;
+                    }
+                }
+                [s overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&e];
+            });
         } else {
             // Use your normal routing logic for other devices
             switched = [self switchAudioRouteInternal:deviceMap];
@@ -684,7 +752,15 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
       NSLog(@"[sylk_app][AudioRouteModule] trying match by type: %@", type);
       // If type requests speaker explicitly
       if ([type isEqualToString:@"BUILTIN_SPEAKER"] || [type isEqualToString:@"SPEAKER_PHONE"]) {
-        // Use overrideOutputAudioPort to force speaker
+        // Restore AllowBluetooth and VoiceChat mode in case earpiece routing
+        // changed them, so BT and voice processing work correctly on speaker.
+        NSError *catErr = nil;
+        [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                 withOptions:(AVAudioSessionCategoryOptionAllowBluetooth |
+                              AVAudioSessionCategoryOptionDefaultToSpeaker)
+                       error:&catErr];
+        { NSError *modeErr = nil; [session setMode:AVAudioSessionModeVoiceChat error:&modeErr]; }
+
         NSError *err = nil;
         BOOL ok = [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&err];
         if (!ok) {
@@ -699,6 +775,26 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
 
       // Wired headset/headphones: prefer input by port type first
       // We search availableInputs and current route outputs for matching port types
+      // When routing away from earpiece to any external device:
+      // 1. Restore VoiceChat mode (we switched to Default for earpiece routing)
+      // 2. Clear the built-in mic preference so iOS uses the external device's mic
+      { NSError *modeErr = nil; [session setMode:AVAudioSessionModeVoiceChat error:&modeErr]; }
+      { NSError *clearErr = nil; [session setPreferredInput:nil error:&clearErr]; }
+
+      // Restore AllowBluetooth if we're routing to a BT device — it may have been
+      // removed when earpiece was selected to prevent BT from taking over.
+      if ([type isEqualToString:@"BLUETOOTH_SCO"] || [type isEqualToString:@"BLUETOOTH_A2DP"]) {
+          NSError *catErr = nil;
+          BOOL ok = [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                             withOptions:(AVAudioSessionCategoryOptionAllowBluetooth)
+                                   error:&catErr];
+          if (!ok) {
+              NSLog(@"[sylk_app][AudioRouteModule] setCategory (restore AllowBluetooth) failed: %@", catErr);
+          } else {
+              NSLog(@"[sylk_app][AudioRouteModule] setCategory: restored AllowBluetooth for BT routing");
+          }
+      }
+
       NSString *targetPortType = nil;
       if ([type isEqualToString:@"WIRED_HEADSET"]) targetPortType = AVAudioSessionPortHeadsetMic;
       else if ([type isEqualToString:@"BLUETOOTH_SCO"]) targetPortType = AVAudioSessionPortBluetoothHFP;

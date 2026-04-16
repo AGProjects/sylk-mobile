@@ -20,10 +20,15 @@ const ConferenceModal = ({
   const initialTargetUri = propTargetUri ? propTargetUri.split('@')[0] : '';
   const [targetUri, setTargetUri] = useState(initialTargetUri);
   const [participants, setParticipants] = useState([]);
-
+  const [domain, setDomain] = useState(defaultDomain);
+  
   useEffect(() => {
     setTargetUri(propTargetUri ? propTargetUri.split('@')[0] : '');
   }, [propTargetUri]);
+
+	useEffect(() => {
+	  setDomain(defaultDomain);
+	}, [defaultDomain]);
 
   useEffect(() => {
     handleConferenceTargetChange(targetUri);
@@ -44,7 +49,7 @@ const ConferenceModal = ({
       const [username, domain] = item.split('@');
       if (!username) return;
 
-      if (!domain || domain === defaultDomain) {
+      if (!domain) {
         sanitized.push(username);
       } else {
         sanitized.push(item);
@@ -82,7 +87,7 @@ const ConferenceModal = ({
       p.includes('@') ? p : `${p}@${defaultDomain}`
     );
     
-    const options = { audio: true, video: withVideo, participants: fullParticipants }; 
+    const options = { audio: true, video: withVideo, participants: fullParticipants, domain: defaultDomain }; 
 
     handleConferenceCall(uri, options);
   };
@@ -128,6 +133,7 @@ const ConferenceModal = ({
                 >
 
                   {!selectedContact ? (
+                      <View style={styles.chipsContainer}>
                     <TextInput
                       mode="flat"
                       autoCapitalize="none"
@@ -136,6 +142,16 @@ const ConferenceModal = ({
                       value={targetUri}
                       onChangeText={setTargetUri}
                     />
+					<TextInput
+					  mode="flat"
+					  autoCapitalize="none"
+					  label="Sylk Domain"
+					  placeholder="domain"
+					  value={domain}
+					  onChangeText={setDomain}
+					/>
+                    </View>
+
                   ) : (
                     <Text style={styles.subtitle}>{targetUri}</Text>
                   )}
@@ -207,7 +223,7 @@ ConferenceModal.propTypes = {
   selectedContact: PropTypes.object,
   targetUri: PropTypes.string.isRequired,
   defaultDomain: PropTypes.string,
-  defaultConferenceDomain: PropTypes.string,
+  defaultConferenceDomain: PropTypes.string
 };
 
 export default ConferenceModal;

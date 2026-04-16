@@ -96,6 +96,9 @@ public class BluetoothScoManager {
                         }
                     } else if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
                         retryCount = 0;
+                        if (scoConnectedListener != null) {
+                            scoConnectedListener.onScoConnected();
+                        }
                     }
                 }
             }
@@ -133,6 +136,19 @@ public class BluetoothScoManager {
 		void onBluetoothHeadsetConnected();
 	}
 
+	// Separate listener fired when SCO audio channel actually connects.
+	// AudioRouteModule uses this to re-apply a pending BT device route that
+	// was requested while SCO was still establishing.
+	public interface ScoConnectedListener {
+		void onScoConnected();
+	}
+
+	private ScoConnectedListener scoConnectedListener;
+
+	public void setScoConnectedListener(ScoConnectedListener listener) {
+		this.scoConnectedListener = listener;
+	}
+
     public boolean isHeadsetConnected() {
         if (bluetoothAdapter == null || bluetoothHeadset == null) return false;
         for (android.bluetooth.BluetoothDevice device : bluetoothHeadset.getConnectedDevices()) {
@@ -145,10 +161,19 @@ public class BluetoothScoManager {
 
     public void startScoIfNeeded() {
 		userRequestedSco = true;
+		retryCount = 0; // reset retry counter — user explicitly wants BT
         if (isHeadsetConnected() && !audioManager.isBluetoothScoOn()) {
             Log.d(TAG, "Starting Bluetooth SCO...");
-            audioManager.startBluetoothSco();
-            audioManager.setBluetoothScoOn(true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // startBluetoothSco() is deprecated on API 31+ and is a no-op on many
+                // OEM devices (including Motorola). On API 31+ the system establishes
+                // SCO automatically when setCommunicationDevice(BLUETOOTH_SCO) is called,
+                // so we only use the legacy path on older Android.
+                Log.d(TAG, "API 31+: SCO establishment handled by setCommunicationDevice");
+            } else {
+                audioManager.startBluetoothSco();
+                audioManager.setBluetoothScoOn(true);
+            }
         }
     }
 

@@ -1,0 +1,3 @@
+ * HTML messages render improvements
+ * Save call history contact after call ends
+ * Enrollment fixes

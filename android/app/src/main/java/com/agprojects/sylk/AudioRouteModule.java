@@ -40,6 +40,9 @@ import com.facebook.react.bridge.ReadableMapKeySetIterator;
 
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
+import android.media.AudioFocusRequest;
+import android.media.AudioAttributes;
+
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothProfile;
@@ -62,6 +65,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     public static AudioRouteModule instance;
     private BluetoothHeadset bluetoothHeadset = null;
     private int lastScoState = AudioManager.SCO_AUDIO_STATE_DISCONNECTED;
+    private AudioManager.OnAudioFocusChangeListener audioFocusListener;
     // Periodic event fields
     private Handler handler = new Handler(Looper.getMainLooper());
     private Runnable periodicRunnable = null;
@@ -75,6 +79,9 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 
     private Object communicationDeviceListener; // holds the listener only on supported API
     private boolean listenerStarted = false;
+    // When the user requests BT routing before SCO is established, store the target
+    // device here and apply it as soon as SCO audio connects.
+    private Map<String, String> pendingBtDevice = null;
 
     public AudioRouteModule(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -119,6 +126,28 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
         return false;
     }
 
+	private void acquireAudioFocus() {
+		audioFocusListener = focusChange -> {
+			Log.d(TAG, "AudioFocus change: " + focusChange);
+		};
+	
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			AudioFocusRequest request = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+				.setAudioAttributes(new AudioAttributes.Builder()
+					.setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+					.setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+					.build())
+				.setAcceptsDelayedFocusGain(false)
+				.setOnAudioFocusChangeListener(audioFocusListener)
+				.build();
+			audioManager.requestAudioFocus(request);
+		} else {
+			audioManager.requestAudioFocus(audioFocusListener,
+				AudioManager.STREAM_VOICE_CALL,
+				AudioManager.AUDIOFOCUS_GAIN);
+		}
+	}
+
     private void startCommunicationDeviceListener() {
         if (listenerStarted) return;
     
@@ -133,6 +162,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                 int deviceId = deviceInfo.getId();
             
                 Log.d(TAG, "Communication device changed to " + deviceId + " " + deviceName + " " + typeName);
+            
                 sendReactNativeEvent();
             }
         };
@@ -156,9 +186,9 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     }
 
     private void registerReceivers() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            return;
-        }
+        // Register on all API levels so BT/headset connect events update the device
+        // list on old Android (< 31) too. getAudioOutputs() uses getDevices() (API 23+)
+        // so all the sendReactNativeEvent() calls inside are safe on old Android.
 
         //Log.d(TAG, "Registering headset/Bluetooth/SCO receivers…");
         headsetReceiver = new BroadcastReceiver() {
@@ -190,26 +220,30 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                     
                         Log.d(TAG, "BT profile state=" + headsetProfileStateToString(profileState));
                                         
-                        // Optional auto-route when device connects
+                        // Notify JS so the device list updates on all Android versions.
+                        // Auto-route to BT only on API 31+ (uses getAvailableCommunicationDevices).
                         if (profileState == BluetoothProfile.STATE_CONNECTED) {
                             Log.d(TAG, "BT headset connected");
-                        
-                            handler.postDelayed(() -> {
-                                List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
-                                for (AudioDeviceInfo device : devices) {
-                                    if (device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                                        Map<String, String> btDevice = new HashMap<>();
-                                        btDevice.put("id", String.valueOf(device.getId()));
-                                        btDevice.put("name", device.getProductName() != null
-                                                ? device.getProductName().toString() : "UNKNOWN");
-                                        btDevice.put("type", "BLUETOOTH_SCO");
-                                        Log.d(TAG, "Auto routing to BLUETOOTH");
-                                        switchAudioRoute(btDevice);                                        
-                                        break;
+                            sendReactNativeEvent(); // update device list on old Android
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                handler.postDelayed(() -> {
+                                    List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
+                                    for (AudioDeviceInfo device : devices) {
+                                        if (device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                                            Map<String, String> btDevice = new HashMap<>();
+                                            btDevice.put("id", String.valueOf(device.getId()));
+                                            btDevice.put("name", device.getProductName() != null
+                                                    ? device.getProductName().toString() : "UNKNOWN");
+                                            btDevice.put("type", "BLUETOOTH_SCO");
+                                            Log.d(TAG, "Auto routing to BLUETOOTH");
+                                            switchAudioRoute(btDevice);
+                                            break;
+                                        }
                                     }
-                                }
-                            }, 100);
-
+                                }, 100);
+                            }
+                        } else {
+                            sendReactNativeEvent(); // BT disconnected — update list
                         }
                     
                         break;
@@ -217,30 +251,32 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     
                     case AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED: {
                         int scoState = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
-    
+
                         // SUPPRESS CONNECTED → CONNECTING noise
                         if (lastScoState == AudioManager.SCO_AUDIO_STATE_CONNECTED && scoState == AudioManager.SCO_AUDIO_STATE_CONNECTING) {
                             return;
                         }
-    
+
                         // ignore repeated DISCONNECTED
-                        if (scoState == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && lastScoAudioState == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && !audioManager.isBluetoothScoOn()) {
+                        if (scoState == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && lastScoState == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && !audioManager.isBluetoothScoOn()) {
                             return;
                         }
-                        
-                        if (lastScoState == AudioManager.SCO_AUDIO_STATE_CONNECTED && scoState == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
-                            sendReactNativeEvent();
-                        }
 
-                        if (lastScoState != AudioManager.SCO_AUDIO_STATE_CONNECTED && scoState == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
-                            sendReactNativeEvent();
-                        }
+                        if (scoState == lastScoState) return;
 
-                        if (scoState == lastScoAudioState) return;
-                        lastScoAudioState = scoState;
-    
                         Log.d(TAG, "BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
-    
+
+                        int prevScoState = lastScoState;
+                        lastScoState = scoState; // UPDATE THE MODULE FIELD
+
+                        if (prevScoState == AudioManager.SCO_AUDIO_STATE_CONNECTED && scoState == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+                            sendReactNativeEvent();
+                        }
+
+                        if (prevScoState != AudioManager.SCO_AUDIO_STATE_CONNECTED && scoState == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+                            sendReactNativeEvent();
+                        }
+
                         break;
                     }
 
@@ -250,36 +286,35 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                         break;
     
                     case Intent.ACTION_HEADSET_PLUG:
-                        handler.postDelayed(() -> {
-                            List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
-                            Log.d(TAG, "HEADSET plugged event");
-                        
-                            for (AudioDeviceInfo device : devices) {
-                                if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
-                                    Map<String, String> wiredDevice = new HashMap<>();
-                                    wiredDevice.put("id", String.valueOf(device.getId()));
-                                    wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
-                                    wiredDevice.put("type", "WIRED_HEADSET");
-                
-                                    Log.d(TAG, "Auto route to wired headset");
-                                    switchAudioRoute(wiredDevice);
-                                } else if (device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
-                                    Map<String, String> wiredDevice = new HashMap<>();
-                                    wiredDevice.put("id", String.valueOf(device.getId()));
-                                    wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
-                                    wiredDevice.put("type", "USB_HEADSET");
-                
-                                    Log.d(TAG, "Auto route to USB headset");
-                                    switchAudioRoute(wiredDevice);
-                                } else {
-                                    String typeName = getDeviceTypeName(device.getType());
-                                    Log.d(TAG, "Audio device: " + device.getId() + " Type: " + device.getType() + " " + typeName);
-                                }
-                            }
-                        
-                        }, 50); // <-- 50ms delay
-                    
+                        // Always notify JS so the device list updates on all Android versions.
+                        // Auto-route to the wired device only on API 31+ (uses getAvailableCommunicationDevices).
                         sendReactNativeEvent();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            handler.postDelayed(() -> {
+                                List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
+                                Log.d(TAG, "HEADSET plugged event");
+                                for (AudioDeviceInfo device : devices) {
+                                    if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
+                                        Map<String, String> wiredDevice = new HashMap<>();
+                                        wiredDevice.put("id", String.valueOf(device.getId()));
+                                        wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
+                                        wiredDevice.put("type", "WIRED_HEADSET");
+                                        Log.d(TAG, "Auto route to wired headset");
+                                        switchAudioRoute(wiredDevice);
+                                    } else if (device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
+                                        Map<String, String> wiredDevice = new HashMap<>();
+                                        wiredDevice.put("id", String.valueOf(device.getId()));
+                                        wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
+                                        wiredDevice.put("type", "USB_HEADSET");
+                                        Log.d(TAG, "Auto route to USB headset");
+                                        switchAudioRoute(wiredDevice);
+                                    } else {
+                                        String typeName = getDeviceTypeName(device.getType());
+                                        Log.d(TAG, "Audio device: " + device.getId() + " Type: " + device.getType() + " " + typeName);
+                                    }
+                                }
+                            }, 50);
+                        }
                         break;
                 }
             }
@@ -347,17 +382,20 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
             audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
             Log.d(TAG, "Audio mode switched to: IN_COMMUNICATION");
 
+			acquireAudioFocus();
+
             sendReactNativeEvent();
     
             // Instantiate SCO manager if not yet created
             if (scoManager == null) {
                 scoManager = new BluetoothScoManager(reactContext);
+
+                // Fired when BT headset profile first connects (auto-route on headset plug-in)
                 scoManager.setEventListener(() -> {
                     try {
                         List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
                         for (AudioDeviceInfo device : devices) {
                             int deviceType = device.getType();
-                            
                             if (deviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
                                 Log.d(TAG, "auto route to BLUETOOTH_SCO");
                                 Map<String, String> btDevice = new HashMap<>();
@@ -365,15 +403,42 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                                 btDevice.put("name", device.getProductName() != null
                                         ? device.getProductName().toString() : "UNKNOWN");
                                 btDevice.put("type", "BLUETOOTH_SCO");
-    
                                 switchAudioRoute(btDevice);
                                 break;
-                            } else {
-                                //Log.d(TAG, "Other type of device connected: " + getDeviceTypeName(deviceType));
                             }
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "Error routing to BT device on SCO connect", e);
+                        Log.e(TAG, "Error routing to BT device on headset connect", e);
+                    }
+                });
+
+                // Fired when SCO audio channel is actually established (CONNECTED state).
+                // If the user requested BT routing while SCO was still negotiating, apply
+                // the pending route now that audio is ready.
+                scoManager.setScoConnectedListener(() -> {
+                    try {
+                        if (pendingBtDevice != null) {
+                            Log.d(TAG, "SCO connected — applying pending BT route: " + pendingBtDevice);
+                            Map<String, String> device = pendingBtDevice;
+                            pendingBtDevice = null;
+                            // Re-look up the device by type in case id changed
+                            String targetType = device.get("type");
+                            List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
+                            for (AudioDeviceInfo d : devices) {
+                                if (getDeviceTypeName(d.getType()).equals(targetType)) {
+                                    boolean result = audioManager.setCommunicationDevice(d);
+                                    Log.d(TAG, "Pending BT setCommunicationDevice result=" + result
+                                        + " device=" + d.getId() + " " + d.getProductName());
+                                    sendReactNativeEvent();
+                                    break;
+                                }
+                            }
+                        } else {
+                            // No pending manual selection — just notify JS so it can update the UI
+                            sendReactNativeEvent();
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error applying pending BT route on SCO connected", e);
                     }
                 });
             }
@@ -421,6 +486,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
             case AudioManager.MODE_RINGTONE: return "RINGTONE";
             case AudioManager.MODE_IN_CALL: return "IN_CALL";
             case AudioManager.MODE_IN_COMMUNICATION: return "IN_COMMUNICATION";
+            case AudioManager.MODE_CALL_SCREENING: return "CALL_SCREENING";
             default: return "UNKNOWN(" + mode + ")";
         }
     }
@@ -478,6 +544,8 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     
         switch (type) {
             case "EARPIECE": return AudioDeviceInfo.TYPE_BUILTIN_EARPIECE;
+            case "BUILTIN_EARPIECE": return AudioDeviceInfo.TYPE_BUILTIN_EARPIECE;
+            case "BUILTIN_SPEAKER": return AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
             case "SPEAKER_PHONE": return AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
             case "WIRED_HEADSET": return AudioDeviceInfo.TYPE_WIRED_HEADSET;
             case "WIRED_HEADPHONES": return AudioDeviceInfo.TYPE_WIRED_HEADPHONES;
@@ -494,6 +562,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 
         Log.d(TAG, "AudioRouteModule stop");
 
+        pendingBtDevice = null;
         audioManager.setMode(origAudioMode);
         Log.d(TAG, "Audio mode restored to original " + getAudioModeDescription(origAudioMode));
 
@@ -598,38 +667,9 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                 selectedMap.putString(entry.getKey(), entry.getValue());
             }
             
-            // --- FIXED FILTERING LOGIC ---
-            if (selectedType != null && selectedType.startsWith("BLUETOOTH")) {
-            
-                WritableArray filteredOutputs = Arguments.createArray();
-            
-                for (int i = 0; i < outputs.size(); i++) {
-            
-                    ReadableMap dev = outputs.getMap(i);   // <-- ReadableMap here
-                    if (dev == null) continue;
-            
-                    String type = dev.getString("type");
-                    if (type != null && type.startsWith("BLUETOOTH")) {
-            
-                        // Create a new WritableMap because ReadableMap cannot be reused
-                        WritableMap newDev = Arguments.createMap();
-            
-                        // Copy fields over (assuming each device map has id, name, type, etc.)
-                        for (Map.Entry<String, Object> e : dev.toHashMap().entrySet()) {
-                            Object val = e.getValue();
-                            if (val instanceof String) newDev.putString(e.getKey(), (String) val);
-                            else if (val instanceof Boolean) newDev.putBoolean(e.getKey(), (Boolean) val);
-                            else if (val instanceof Double) newDev.putDouble(e.getKey(), (Double) val);
-                            // Add more if needed
-                        }
-            
-                        filteredOutputs.pushMap(newDev);
-                    }
-                }
-            
-                outputs = filteredOutputs;
-            }
-            
+            // Always send all available output devices so the UI can show the full
+            // device list regardless of which device is currently selected.
+            // (The previous BT-only filter was hiding earpiece/speaker when BT was active.)
             event.putArray("outputs", outputs);
 
             event.putMap("selected", selectedMap);
@@ -698,6 +738,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     private boolean switchAudioRouteInternal(Map<String, String> deviceMap) {
         if (deviceMap == null) return false;
     
+        // Add this check at the top:
+		if (audioManager.getMode() != AudioManager.MODE_IN_COMMUNICATION) {
+			Log.w(TAG, "Audio mode was reset, restoring MODE_IN_COMMUNICATION");
+			audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+		}
+    
         String type = deviceMap.get("type");
         String idStr = deviceMap.get("id");
         Log.d(TAG, "Switch audio route to audio device: " + deviceMap);
@@ -729,20 +775,114 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                 // Update currentRoute for logging/state
                 currentRoute = type;
 
-                audioManager.clearCommunicationDevice();
-                // Handle speakerphone toggle
+				//audioManager.clearCommunicationDevice();
+
+
+				if (type != null && type.equals("BUILTIN_SPEAKER")) {
+					// Stop BT SCO before activating speaker. When SCO is active, BT takes
+					// priority over speaker in the HAL and both setCommunicationDevice(SPEAKER)
+					// and setSpeakerphoneOn() will be ignored. clearCommunicationDevice() +
+					// stopScoIfActive() removes BT from the audio path first.
+					pendingBtDevice = null;
+					if (scoManager != null) {
+						scoManager.stopScoIfActive();
+					}
+					audioManager.clearCommunicationDevice();
+
+					if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+						// Try the modern API first.
+						Log.d(TAG, "Switching to BUILTIN_SPEAKER via setCommunicationDevice (API 31+)");
+						boolean result = audioManager.setCommunicationDevice(selectedDevice);
+						AudioDeviceInfo actual = audioManager.getCommunicationDevice();
+						int actualId = actual != null ? actual.getId() : -1;
+						Log.d(TAG, "setCommunicationDevice(BUILTIN_SPEAKER) result=" + result
+							+ " communicationDevice=" + actualId);
+
+						// On Motorola RAZR (and similar OEMs) setCommunicationDevice returns true
+						// but getCommunicationDevice() still reports earpiece — the HAL silently
+						// ignores the request. Detect this and fall through to the MODE_NORMAL
+						// workaround path.
+						if (result && actualId == selectedDevice.getId()) {
+							currentRoute = type;
+							return true;
+						}
+						Log.w(TAG, "setCommunicationDevice did not take effect (OEM override), "
+							+ "falling back to MODE_NORMAL + setSpeakerphoneOn");
+					}
+					// Workaround for Motorola RAZR 60 (and similar OEMs) where the audio HAL
+					// locks MODE_IN_COMMUNICATION and ignores both setCommunicationDevice(SPEAKER)
+					// and setMode(MODE_NORMAL). Steps:
+					//   1. clearCommunicationDevice() — release the HAL's routing lock
+					//   2. setMode(MODE_IN_CALL) — native telephony mode; Motorola honors
+					//      setSpeakerphoneOn here but not in MODE_IN_COMMUNICATION
+					//   3. setSpeakerphoneOn(true)
+					// We do NOT switch back to IN_COMMUNICATION while speaker is active.
+					// The earpiece path below restores IN_COMMUNICATION when speaker is deselected.
+					Log.d(TAG, "Forcing speaker: clearCommunicationDevice + MODE_IN_CALL + setSpeakerphoneOn(true)");
+					audioManager.clearCommunicationDevice();
+					audioManager.setMode(AudioManager.MODE_IN_CALL);
+					audioManager.setSpeakerphoneOn(true);
+					Log.d(TAG, "isSpeakerphoneOn=" + audioManager.isSpeakerphoneOn()
+						+ " mode=" + getAudioModeDescription(audioManager.getMode()));
+					currentRoute = type;
+					return true;
+				} else if (type != null && type.startsWith("BLUETOOTH")) {
+					// BT routing: do NOT call clearCommunicationDevice() here —
+					// clearing the routing context before SCO establishment prevents
+					// the system from establishing SCO on Motorola and similar devices.
+					Log.d(TAG, "Routing to BT, disabling speakerphone");
+					audioManager.setSpeakerphoneOn(false);
+					audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+
+					if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+						// API 31+: setCommunicationDevice() triggers SCO establishment
+						// automatically — no need to call startBluetoothSco() separately.
+						// OnCommunicationDeviceChangedListener fires when routing completes.
+						pendingBtDevice = null;
+						boolean result = audioManager.setCommunicationDevice(selectedDevice);
+						Log.d(TAG, "BT setCommunicationDevice result=" + result
+							+ " device=" + selectedDevice.getId() + " " + selectedDevice.getProductName());
+						return result;
+					}
+
+					// API < 31: legacy SCO path
+					if (scoManager != null) {
+						if (lastScoState == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+							Log.d(TAG, "SCO already connected, routing directly to BT");
+							pendingBtDevice = null;
+							boolean result = audioManager.setCommunicationDevice(selectedDevice);
+							Log.d(TAG, "BT setCommunicationDevice result=" + result);
+							return result;
+						} else {
+							Log.d(TAG, "SCO not connected, starting legacy SCO and deferring BT route");
+							audioManager.setCommunicationDevice(selectedDevice);
+							pendingBtDevice = new HashMap<>(deviceMap);
+							scoManager.startScoIfNeeded();
+							return true;
+						}
+					}
+					boolean result = audioManager.setCommunicationDevice(selectedDevice);
+					Log.d(TAG, "BT setCommunicationDevice result=" + result);
+					return result;
+
+				} else {
+					// Earpiece, wired headset, etc.
+					// clearCommunicationDevice() releases the HAL speaker lock so that
+					// the subsequent setCommunicationDevice(earpiece/wired) takes effect.
+                    Log.d(TAG, "setSpeakerphoneOff + clearCommunicationDevice, restoring MODE_IN_COMMUNICATION");
+					audioManager.setSpeakerphoneOn(false);
+					audioManager.clearCommunicationDevice();
+					audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+				}
 
                 boolean result = audioManager.setCommunicationDevice(selectedDevice);
-    
+
                 if (result) {
-                    Log.d(TAG, "requested change to " + selectedDevice.getId() + " " + selectedDevice.getProductName() + " " + type);
-                    if (type.startsWith("BLUETOOTH") && scoManager != null) {
-                        scoManager.startScoIfNeeded();
-                    }
+                    Log.d(TAG, "requested change to " + selectedDevice.getId() + " " + selectedDevice.getProductName() + " " + type + " " + getAudioDeviceTypeFromString(type));
                 } else {
                     Log.d(TAG, "setCommunicationDevice failed to switch");
                 }
-    
+
                 return result;
             } else {
                 Log.d(TAG, "No matching AudioDeviceInfo found for device: " + deviceMap);
@@ -754,6 +894,17 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
             return false;
         }
     }
+
+	private void reapplyCurrentRoute() {
+		List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
+		for (AudioDeviceInfo device : devices) {
+			if (getDeviceTypeName(device.getType()).equals(currentRoute)) {
+				audioManager.setCommunicationDevice(device);
+				Log.d(TAG, "Re-applied route to " + currentRoute);
+				return;
+			}
+		}
+	}
 
     private Map<String, String> getCurrentRouteInfo() {
         Map<String, String> info = new HashMap<>();
@@ -815,6 +966,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
         
         for (AudioDeviceInfo device : inputs) {
             String typeName;
+            String productName = device.getProductName() != null
+                    ? device.getProductName().toString()
+                    : "UNKNOWN";
+    
+            //Log.d(TAG, "Input Device: " + device.getType() + ", Name: " + productName + ", ID: " + device.getId());
+
             switch (device.getType()) {
                 case AudioDeviceInfo.TYPE_BUILTIN_MIC: typeName = "BUILTIN_MIC"; break;
                 case AudioDeviceInfo.TYPE_WIRED_HEADSET: typeName = "WIRED_HEADSET"; break;
@@ -824,10 +981,6 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                 default: continue; // skip unknowns
             }
     
-            String productName = device.getProductName() != null
-                    ? device.getProductName().toString()
-                    : "UNKNOWN";
-    
             WritableMap inputDevice = Arguments.createMap();
             inputDevice.putString("type", typeName);
             inputDevice.putString("name", productName);
@@ -835,7 +988,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     
             inputsArray.pushMap(inputDevice);
     
-            //Log.d(TAG, "Input Device: " + typeName + ", Name: " + productName + ", ID: " + device.getId());
+            Log.d(TAG, "Input Device: " + typeName + ", Name: " + productName + ", ID: " + device.getId());
         }
     
         return inputsArray;
@@ -882,7 +1035,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     
             outputsArray.pushMap(outputDevice);
     
-            //Log.d(TAG, "Output Device: " + getDeviceTypeName(type) + ", Name: " + productName + ", ID: " + device.getId());
+            Log.d(TAG, "Output Device: " + getDeviceTypeName(type) + ", Name: " + productName + ", ID: " + device.getId());
         }
     
         return outputsArray;

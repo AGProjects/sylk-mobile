@@ -2,8 +2,6 @@ import React from 'react';
 import { View, StyleSheet, Linking } from 'react-native';
 import ParsedText from 'react-native-parsed-text';
 import Icon from 'react-native-vector-icons/FontAwesome';
-//import styles from '../assets/styles/ContactsListBox';
-
 export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) => {
   if (!currentMessage || !currentMessage.text) return null;
 
@@ -37,7 +35,7 @@ export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) =
 			parse={[
 			  {
 				pattern: /((https?:\/\/|[\w.+-]+:\/\/)[^\s]+)/g,
-				style: styles.linkText,
+				style: linkStyle,
 				onPress: (url) => {
 				  console.log('Link clicked:', url, currentMessage.text);
 				  Linking.openURL(url)

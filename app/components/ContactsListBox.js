@@ -221,6 +221,7 @@ class ContactsListBox extends Component {
 		    sharingAssets: [],
             sharingMessages: [],
             showScrollSideButtons: false,
+            actionSheetDisplayed: false
         }
 
         this.ended = false;
@@ -1049,13 +1050,56 @@ class ContactsListBox extends Component {
         let what = 'Message';
         
         console.log('handleShare', message._id);
-		if (message._id in this.state.imageGroups) {  
-			console.log(' -- handleShare', this.state.selectedImages);
-		}
-		
-		//TODO
+		const selectedIds = this.state.selectedImages;
 
-        return;
+		if (message._id in this.state.imageGroups && selectedIds && selectedIds.length > 0) {  
+			console.log(' -- handleShare', this.state.selectedImages);
+
+			what = 'Share images';
+			let urls = [];
+	
+			for (let msg of this.state.filteredMessages) {
+				if (!selectedIds.includes(msg._id)) continue;
+	
+				if (msg.metadata && msg.metadata.local_url) {
+					let filePath = msg.metadata.local_url;
+	
+					if (Platform.OS === 'android') {
+						try {
+							const filename = msg.metadata.filename || `file-${Date.now()}`;
+							const destPath = `${RNFS.CachesDirectoryPath}/${filename}`;
+							await RNFS.copyFile(filePath, destPath);
+							filePath = `file://${destPath}`;
+						} catch (err) {
+							console.log('Error copying file:', err);
+							continue;
+						}
+					}
+	
+					urls.push(filePath);
+				}
+			}
+	
+			if (urls.length === 0) {
+				console.log('No files to share');
+				return;
+			} else {
+				console.log('Sharing urls', urls);
+			}
+	
+			const options = {
+				title: what,
+				urls: urls,
+			};
+	
+			try {
+				await Share.open(options);
+			} catch (error) {
+				console.log('Error sharing multiple', error);
+			}
+	
+			return;
+		}
 
 		let options = {
 			title: 'Share Message',
@@ -1064,7 +1108,7 @@ class ContactsListBox extends Component {
 		};    
 
         if (message.metadata && message.metadata.filename) {
-            console.log('is a file');
+            console.log('Sharing file');
             const { local_url, filename, filetype } = message.metadata;
             what = 'File';
 			let newFilename = filename;
@@ -1195,9 +1239,10 @@ class ContactsListBox extends Component {
 				}
 	
 				let percentage = Math.floor((current / duration) * 100); // Integer between 0 and 100
-				//console.log('e.currentPosition', e.currentPosition, 'percentage', percentage );
-	
-				if (e.duration === e.currentPosition) {
+				console.log('e.currentPosition', e.currentPosition, 'e.duration', e.duration, 'percentage', percentage );
+				const isFinished = (e.duration - e.currentPosition) <= 300 || percentage >= 99;	
+
+				if (isFinished) {
 					// Playback finished
 					percentage = 100;
 					this.setState(
@@ -1330,38 +1375,54 @@ class ContactsListBox extends Component {
     }
 
     sendEditedMessage(message, text) {
+        console.log('sendEditedMessage', message._id);
         if (!this.state.selectedContact) {
 			return;
         } 
 
-        const messageId = uuid.v4();
-		const mId = uuid.v4();
+        const uri = this.state.selectedContact.uri;
         const timestamp = new Date();
+
+        let messageId;
+		let mId;
 
         let metadataContent;
         let metadataMessage;
-        
-        const uri = this.state.selectedContact.uri;
-        
-        const replyMessageId = this.state.replyMessages[message._id];
-        
-        if (message.contentType === 'application/sylk-file-transfer') {
-			metadataContent = {messageId: message._id, 
-								 metadataId: messageId, 
-								 action: 'label',
-								 value: text, 
-								 timestamp: timestamp,
-								 uri: uri
-								 };
-	
-			metadataMessage = {_id: messageId,
-							   key: messageId,
-							   createdAt: timestamp,
-							   metadata: metadataContent,
-							   text: JSON.stringify(metadataContent),
-							   };
 
-			this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+		const selectedIds = this.state.selectedImages;
+		
+		let editedMessages = [message._id];
+
+		if (message._id in this.state.imageGroups && selectedIds && selectedIds.length > 0) {  
+			console.log('Edit label of selectedIds', selectedIds);
+			editedMessages = selectedIds;
+		}
+
+        if (message.contentType === 'application/sylk-file-transfer') {
+			for (let _eId of editedMessages) {
+				messageId = uuid.v4();
+				mId = uuid.v4();
+	
+				metadataContent = {messageId: _eId, 
+									 metadataId: messageId, 
+									 action: 'label',
+									 value: text, 
+									 timestamp: timestamp,
+									 uri: uri
+									 };
+		
+				metadataMessage = {_id: messageId,
+								   key: messageId,
+								   createdAt: timestamp,
+								   metadata: metadataContent,
+								   text: JSON.stringify(metadataContent),
+								   };
+	
+				//console.log('Will send metadata for _eId', metadataMessage);
+			    //this.setState({selectedImages: []});
+	
+				this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+			}
         } else {
 			const replyMeta = this.getMetadataByActionForMessage(message._id, 'reply');
 			if (replyMeta) {
@@ -2264,6 +2325,7 @@ class ContactsListBox extends Component {
 
     onLongMessagePress(context, currentMessage) {
 		Keyboard.dismiss();
+		this.setState({actionSheetDisplayed: true});
 
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
@@ -2324,8 +2386,7 @@ class ContactsListBox extends Component {
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
-                    //if (showResend && !this.hideItem) {
-                    if (!this.hideItem) {
+                    if (showResend && !this.hideItem) {
                         options.push('Resend')
                         icons.push(<Icon name="send" size={20} />);
                     }
@@ -2396,7 +2457,9 @@ class ContactsListBox extends Component {
             
             context.actionSheet().showActionSheetWithOptions({options, l, l, icons, textStyle: styles.actionSheetText}, (buttonIndex) => {
                 let action = options[buttonIndex];
-                if (action === 'Copy') {
+                if (action === 'Cancel') {
+                    this.setState({actionSheetDisplayed: false});
+                } else if (action === 'Copy') {
                     Clipboard.setString(currentMessage.text);
                 } else if (action === 'Delete') {
                     let messagesToDelete = [currentMessage._id];
@@ -2558,6 +2621,10 @@ class ContactsListBox extends Component {
 	      //console.log('renderMessages did change', this.state.renderMessages.length);
       }
 
+      if (prevState.actionSheetDisplayed !== this.state.actionSheetDisplayed) {
+	      console.log('actionSheetDisplayed did change', this.state.actionSheetDisplayed);
+      }
+
       if (prevState.totalMessageExceeded !== this.state.totalMessageExceeded) {
 	      console.log('totalMessageExceeded did change', this.state.totalMessageExceeded);
       }
@@ -2568,7 +2635,7 @@ class ContactsListBox extends Component {
 
       if (prevState.messages !== this.state.messages) {
 		  const length = this.state.messages?.[this.state.selectedContact?.uri]?.length ?? 0;
-		  console.log('messages did change', length);
+		  //console.log('messages did change', length);
       }
 
       if (prevState.thumbnailGridSize !== this.state.thumbnailGridSize) {
@@ -2711,9 +2778,11 @@ class ContactsListBox extends Component {
 		}
 		
 		if (prevState.messagesMetadata !== this.state.messagesMetadata) {
-			//console.log("==== CL messagesMetadata changed ==== ");
-			//console.log("old", prevState.messagesMetadata);
-			//console.log("new", this.state.messagesMetadata);
+			/*
+			console.log("==== CL messagesMetadata changed ==== ");
+			console.log("old", JSON.stringify(prevState.messagesMetadata, null, 2));
+			console.log("new", JSON.stringify(this.state.messagesMetadata, null, 2));
+			*/
 		
 			const mediaLabels = this.mediaLabels;
 			//console.log('CL mediaLabels:', mediaLabels);
@@ -3604,13 +3673,21 @@ class ContactsListBox extends Component {
 			}
 
 			if (currentMessage.html) {
-			    const html = linkifyHtml(utils.cleanHtml(currentMessage.html));
+
+
+			    let html = linkifyHtml(utils.cleanHtml(currentMessage.html));
+				// remove background + color styles
+				html = html.replace(/background-color:[^;"]+;?/gi, '');
+				html = html.replace(/color:[^;"]+;?/gi, '');
+
 			    let w = 300;
-			     
+
 			    if (currentMessage._id in this.state.bubbleWidths) {
 			        w = this.state.bubbleWidths[currentMessage._id];
 					//console.log('w', w);
 			    }
+			   
+			    const isIncoming = currentMessage.direction === 'incoming';
 			   
 				return (
                 <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginRight: 10}]}>
@@ -3618,6 +3695,19 @@ class ContactsListBox extends Component {
 				  <RenderHTML
 					source={{ html: html }}
 					contentWidth={w}
+					  tagsStyles={{
+						span: {
+						  color: isIncoming ? '#FFFFFF' : '#000000',
+						  backgroundColor: 'transparent',
+						},
+						p: {
+						  color: isIncoming ? '#FFFFFF' : '#000000',
+						},
+						a: {
+						  color: isIncoming ? '#FFFFFF' : '#1DA1F2',
+						  textDecorationLine: 'underline',
+						}
+					  }}
 					ignoredDomTags={[
 					  'html',
 					  'head',
@@ -4079,7 +4169,7 @@ scrollToMessage(id) {
 		  console.log('delete image id', id);
 		  this.props.deleteMessage(id, this.state.selectedContact.uri);
 		}
-  }
+    }
   
 	getImageGroups() {
 	  if (this.state.messagesCategoryFilter) {
@@ -4128,11 +4218,15 @@ scrollToMessage(id) {
 			console.log('diff (min):', msg._id, diff / 60000);
 		  }
 		  */
-  
-		  const shouldStartNewGroup =
-			!currentGroup || // no active group
-			!lastImageTime || // safety
-			currentTime - lastImageTime > FIVE_MIN; // ⬅️ time gap rule
+
+			const hasLabel = !!this.state.mediaLabels?.[msg._id];
+			
+			const shouldStartNewGroup =
+			  !currentGroup ||
+			  !lastImageTime ||
+			  currentTime - lastImageTime > FIVE_MIN ||
+			  (hasLabel && msg._id !== currentGroup); // ⬅️ NEW RULE
+    
 	
 		  if (shouldStartNewGroup) {
 			currentGroup = msg._id;
@@ -4408,7 +4502,7 @@ scrollToMessage(id) {
 		if (debug) {
 			const values = {
 // 			mediaRotations,
-// 			mediaLabels,
+ 			mediaLabels,
 //			messagesMetadata,
 //			groupOfImage,
 			imageGroups,
@@ -4664,8 +4758,8 @@ scrollToMessage(id) {
 
 			   </KeyboardWrapper>
 
-				{ this.state.focusedMessages ? this.renderFocusedMessagesControls(): null}
-				{(this.state.showScrollSideButtons || this.state.focusedMessages)? this.renderScrollingControls(): null}
+				{ (this.state.focusedMessages && !this.state.actionSheetDisplayed) ? this.renderFocusedMessagesControls(): null}
+				{((this.state.showScrollSideButtons || this.state.focusedMessages) && !this.state.actionSheetDisplayed)? this.renderScrollingControls(): null}
 
                 {addSpacer ? <KeyboardSpacer /> : null }
 

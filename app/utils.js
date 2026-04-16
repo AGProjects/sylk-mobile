@@ -230,6 +230,42 @@ function fixLocalUrl(localUrl) {
 	return parts.join("/");
 }
 
+function parseSylkConferenceUrl(url) {
+  try {
+    if (!url || typeof url !== 'string') return null;
+    if (!url.startsWith('sylk://')) return null;
+
+    // Remove scheme
+    const withoutScheme = url.replace('sylk://', '');
+
+    // Split into domain + path
+    const firstSlash = withoutScheme.indexOf('/');
+
+    if (firstSlash === -1) return null;
+
+    const sylkDomain = withoutScheme.substring(0, firstSlash);
+    const path = withoutScheme.substring(firstSlash + 1);
+
+    const parts = path.split('/').filter(Boolean);
+
+    // Expect: conference/<room>
+    if (parts.length < 2) return null;
+    if (parts[0] !== 'conference') return null;
+
+    const conferenceRoom = parts[1];
+
+    if (!sylkDomain || !conferenceRoom) return null;
+
+    return {
+      sylkDomain,
+      conferenceRoom,
+    };
+  } catch (e) {
+    console.log('parse error:', e);
+    return null;
+  }
+}
+
 async function sql2GiftedChat(item, content, filter = {}) {
     //console.log('-- sql2GiftedChat', item);
     let msg;
@@ -1178,6 +1214,7 @@ exports.availableAudioDevicesIconsMap = availableAudioDevicesIconsMap;
 exports.availableAudioDeviceNames = availableAudioDeviceNames;
 exports.getFolderSize = getFolderSize;
 exports.cleanHtml = cleanHtml;
+exports.parseSylkConferenceUrl = parseSylkConferenceUrl;
 
 
 

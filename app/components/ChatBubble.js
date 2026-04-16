@@ -53,7 +53,7 @@ const ChatBubble = memo(
 
     if (currentMessage.failed) {
       rightColor = 'red';
-      leftColor = 'red';
+      //leftColor = 'red';
     } else if (currentMessage.pinned) {
       rightColor = '#2ecc71';
       leftColor = '#2ecc71';
