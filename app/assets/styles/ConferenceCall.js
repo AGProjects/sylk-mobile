@@ -208,7 +208,7 @@ const styles = StyleSheet.create({
   hangupButtonAudioContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginRight: 15,
+    marginRight: 20,
     borderWidth: 0,
   },
 
@@ -217,11 +217,11 @@ const styles = StyleSheet.create({
   },
 
   hangupButtonVideoContainer: {
-    marginLeft: 15,
+    marginLeft: 20,
   },
 
   hangupButtonVideoContainerLandscape: {
-    marginRight: 15,
+    marginRight: 20,
   },
 
     buttonsContainerLandscape: {

@@ -1424,6 +1424,7 @@ class ContactsListBox extends Component {
 				this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
 			}
         } else {
+			messageId = uuid.v4();
 			const replyMeta = this.getMetadataByActionForMessage(message._id, 'reply');
 			if (replyMeta) {
 				 console.log('replyMeta', replyMeta);
@@ -2383,6 +2384,7 @@ class ContactsListBox extends Component {
 			}
 
             let showResend = currentMessage.metadata && currentMessage.metadata.error;
+            showResend = true;
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {

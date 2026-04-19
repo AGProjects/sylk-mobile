@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { View, Platform, TouchableWithoutFeedback, TouchableHighlight } from 'react-native';
-import { IconButton, Dialog, Text, ActivityIndicator } from 'react-native-paper';
+import { IconButton, Dialog, Text, ActivityIndicator, Menu } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
@@ -25,6 +25,12 @@ function toTitleCase(str) {
 }
 
 const MAX_POINTS = 30;
+
+// Audio device picker variant. Change this value to switch styles:
+//   'cycle'    - tap the button to cycle through available devices (legacy behaviour)
+//   'menu'     - react-native-paper dropdown Menu with device icon + name per row
+//   'floating' - WhatsApp-style: extra IconButtons float above the main button
+const AUDIO_DEVICE_PICKER_MODE = 'floating';
 
 class AudioCallBox extends Component {
     constructor(props) {
@@ -53,7 +59,8 @@ class AudioCallBox extends Component {
 			availableAudioDevices       : this.props.availableAudioDevices,
 			selectedAudioDevice         : this.props.selectedAudioDevice,
 			insets                      : this.props.insets,
-			isLandscape                 : this.props.isLandscape
+			isLandscape                 : this.props.isLandscape,
+			audioDevicePickerVisible    : false
         };
 
         this.remoteAudio = React.createRef();
@@ -217,23 +224,128 @@ class AudioCallBox extends Component {
 
 	toggleAudioDevice() {
 		console.log('toggleAudioDevice');
-	
+
 		const devices = this.props.availableAudioDevices;
 		const current = this.props.selectedAudioDevice;
-	
+
 		if (!devices || devices.length === 0) return;
-	
+
 		// Find current index
 		const currentIndex = devices.indexOf(current);
-	
+
 		// Compute next index (wrap around)
 		const nextIndex = (currentIndex + 1) % devices.length;
-	
+
 		// Select next device
 		const nextDevice = devices[nextIndex];
-	
+
 		console.log('Switching audio device to:', nextDevice);
 		this.props.selectAudioDevice(nextDevice);
+	}
+
+	renderAudioDevicePicker(buttonSize, buttonStyle) {
+		const devices = this.props.availableAudioDevices || [];
+		const selectedIcon = utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
+
+		// Variant 1: cycle through devices on tap
+		if (AUDIO_DEVICE_PICKER_MODE === 'cycle') {
+			return (
+				<View style={styles.buttonContainer}>
+					<TouchableHighlight style={styles.roundshape}>
+						<IconButton
+							size={buttonSize}
+							style={buttonStyle}
+							icon={selectedIcon}
+							onPress={() => this.toggleAudioDevice()}
+						/>
+					</TouchableHighlight>
+				</View>
+			);
+		}
+
+		// Variant 2: react-native-paper Menu (icon + device name per row)
+		if (AUDIO_DEVICE_PICKER_MODE === 'menu') {
+			return (
+				<Menu
+					visible={this.state.audioDevicePickerVisible}
+					onDismiss={() => this.setState({audioDevicePickerVisible: false})}
+					anchor={
+						<View style={styles.buttonContainer}>
+							<TouchableHighlight style={styles.roundshape}>
+								<IconButton
+									size={buttonSize}
+									style={buttonStyle}
+									icon={selectedIcon}
+									onPress={() => this.setState({audioDevicePickerVisible: true})}
+								/>
+							</TouchableHighlight>
+						</View>
+					}
+				>
+					{devices.map(device => {
+						const isSelected = device === this.props.selectedAudioDevice;
+						const deviceIcon = utils.availableAudioDevicesIconsMap[device] || 'phone';
+						const deviceName = utils.availableAudioDeviceNames[device] || device;
+						return (
+							<Menu.Item
+								key={device}
+								icon={deviceIcon}
+								title={isSelected ? `✓ ${deviceName}` : deviceName}
+								onPress={() => {
+									this.setState({audioDevicePickerVisible: false});
+									setTimeout(() => this.props.selectAudioDevice(device), 50);
+								}}
+							/>
+						);
+					})}
+				</Menu>
+			);
+		}
+
+		// Variant 3: WhatsApp-style floating icon buttons stacked above the main button
+		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
+			const otherDevices = devices.filter(d => d !== this.props.selectedAudioDevice);
+			return (
+				<View style={[styles.buttonContainer, {position: 'relative'}]}>
+					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+						<View style={{
+							position: 'absolute',
+							bottom: '100%',
+							left: 0,
+							right: 0,
+							alignItems: 'center',
+							marginBottom: 4,
+							zIndex: 100,
+							elevation: 10,
+						}}>
+							{otherDevices.map(device => (
+								<TouchableHighlight key={device} style={[styles.roundshape, {marginBottom: 21}]}>
+									<IconButton
+										size={buttonSize}
+										style={buttonStyle}
+										icon={utils.availableAudioDevicesIconsMap[device] || 'phone'}
+										onPress={() => {
+											this.props.selectAudioDevice(device);
+											this.setState({audioDevicePickerVisible: false});
+										}}
+									/>
+								</TouchableHighlight>
+							))}
+						</View>
+					)}
+					<TouchableHighlight style={styles.roundshape}>
+						<IconButton
+							size={buttonSize}
+							style={buttonStyle}
+							icon={selectedIcon}
+							onPress={() => this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible})}
+						/>
+					</TouchableHighlight>
+				</View>
+			);
+		}
+
+		return null;
 	}
 
     showDtmfModal() {
@@ -474,16 +586,7 @@ class AudioCallBox extends Component {
                                 </TouchableHighlight>
                             </View>
 
-                            <View style={styles.buttonContainer}>
-                                <TouchableHighlight style={styles.roundshape}>
-                                    <IconButton
-                                        size={buttonSize}
-                                        style={whiteButtonClass}
-                                        icon={utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
-                                        onPress={() => this.toggleAudioDevice()}
-                                        />
-                                </TouchableHighlight>
-                            </View>
+                            {this.renderAudioDevicePicker(buttonSize, whiteButtonClass)}
 
                             {isPhoneNumber ?
                                 <View style={styles.buttonContainer}>
@@ -497,7 +600,7 @@ class AudioCallBox extends Component {
                                     </TouchableHighlight>
                                 </View>
                                 : null}
-                            <View style={styles.buttonContainer}>
+                            <View style={[styles.buttonContainer, {marginLeft: 30}]}>
                                 <TouchableHighlight style={styles.roundshape}>
                                     <IconButton
                                         size={buttonSize}

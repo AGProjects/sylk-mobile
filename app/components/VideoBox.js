@@ -4,7 +4,7 @@ import classNames from 'classnames';
 import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
-import { IconButton, ActivityIndicator, Colors } from 'react-native-paper';
+import { IconButton, ActivityIndicator, Colors, Menu } from 'react-native-paper';
 import { View, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import {StatusBar} from 'react-native';
@@ -26,6 +26,12 @@ const DEBUG = debug('blinkrtc:Video');
 
 
 const MAX_POINTS = 30;
+
+// Audio device picker variant. Change this value to switch styles:
+//   'cycle'    - tap the button to cycle through available devices (legacy behaviour)
+//   'menu'     - react-native-paper dropdown Menu with device icon + name per row
+//   'floating' - WhatsApp-style: extra IconButtons float above the main button
+const AUDIO_DEVICE_PICKER_MODE = 'floating';
 
 function appendBits(bits) {
     let i = -1;
@@ -74,7 +80,8 @@ class VideoBox extends Component {
 			selectedAudioDevice: this.props.selectedAudioDevice,
 			insets: this.props.insets,
 			isLandscape: this.props.isLandscape,
-			aspectRatio: 'cover'
+			aspectRatio: 'cover',
+			audioDevicePickerVisible: false
         };
 
 		this.prevStats = {}; // initialize here
@@ -267,23 +274,121 @@ class VideoBox extends Component {
 
 	toggleAudioDevice() {
 		console.log('toggleAudioDevice');
-	
+
 		const devices = this.props.availableAudioDevices;
 		const current = this.props.selectedAudioDevice;
-	
+
 		if (!devices || devices.length === 0) return;
-	
+
 		// Find current index
 		const currentIndex = devices.indexOf(current);
-	
+
 		// Compute next index (wrap around)
 		const nextIndex = (currentIndex + 1) % devices.length;
-	
+
 		// Select next device
 		const nextDevice = devices[nextIndex];
-	
+
 		console.log('Switching audio device to:', nextDevice);
 		this.props.selectAudioDevice(nextDevice);
+	}
+
+	renderAudioDevicePicker(buttonSize, buttonClass) {
+		const devices = this.props.availableAudioDevices || [];
+		const selectedIcon = utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
+
+		// Variant 1: cycle through devices on tap
+		if (AUDIO_DEVICE_PICKER_MODE === 'cycle') {
+			return (
+				<View style={styles.buttonContainer}>
+					<IconButton
+						size={buttonSize}
+						style={[buttonClass]}
+						icon={selectedIcon}
+						onPress={() => this.toggleAudioDevice()}
+					/>
+				</View>
+			);
+		}
+
+		// Variant 2: react-native-paper Menu (icon + device name per row)
+		if (AUDIO_DEVICE_PICKER_MODE === 'menu') {
+			return (
+				<Menu
+					visible={this.state.audioDevicePickerVisible}
+					onDismiss={() => this.setState({audioDevicePickerVisible: false})}
+					anchor={
+						<View style={styles.buttonContainer}>
+							<IconButton
+								size={buttonSize}
+								style={[buttonClass]}
+								icon={selectedIcon}
+								onPress={() => this.setState({audioDevicePickerVisible: true})}
+							/>
+						</View>
+					}
+				>
+					{devices.map(device => {
+						const isSelected = device === this.props.selectedAudioDevice;
+						const deviceIcon = utils.availableAudioDevicesIconsMap[device] || 'phone';
+						const deviceName = utils.availableAudioDeviceNames[device] || device;
+						return (
+							<Menu.Item
+								key={device}
+								icon={deviceIcon}
+								title={isSelected ? `✓ ${deviceName}` : deviceName}
+								onPress={() => {
+									this.setState({audioDevicePickerVisible: false});
+									setTimeout(() => this.props.selectAudioDevice(device), 50);
+								}}
+							/>
+						);
+					})}
+				</Menu>
+			);
+		}
+
+		// Variant 3: WhatsApp-style floating icon buttons stacked above the main button
+		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
+			const otherDevices = devices.filter(d => d !== this.props.selectedAudioDevice);
+			return (
+				<View style={styles.buttonContainer}>
+					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+						<View style={{
+							position: 'absolute',
+							bottom: '100%',
+							left: 0,
+							right: 0,
+							alignItems: 'center',
+							marginBottom: 4,
+							zIndex: 100,
+							elevation: 10,
+						}}>
+							{otherDevices.map(device => (
+								<IconButton
+									key={device}
+									size={buttonSize}
+									style={[buttonClass, {marginBottom: 6}]}
+									icon={utils.availableAudioDevicesIconsMap[device] || 'phone'}
+									onPress={() => {
+										this.props.selectAudioDevice(device);
+										this.setState({audioDevicePickerVisible: false});
+									}}
+								/>
+							))}
+						</View>
+					)}
+					<IconButton
+						size={buttonSize}
+						style={[buttonClass]}
+						icon={selectedIcon}
+						onPress={() => this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible})}
+					/>
+				</View>
+			);
+		}
+
+		return null;
 	}
 
     toggleCamera(event) {
@@ -516,7 +621,7 @@ class VideoBox extends Component {
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
-        const buttonSize = this.props.isTablet ? 40 : 24;
+        const buttonSize = this.props.isTablet ? 40 : 20;
 
         if (this.props.isTablet) {
             buttonsContainerClass = this.state.isLandscape ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
@@ -552,58 +657,65 @@ class VideoBox extends Component {
         if (this.state.callOverlayVisible) {
             let content = (<View style={buttonsContainerClass}>
                 {!disablePlus ?
-                <IconButton
-                    size={buttonSize}
-                    style={buttonClass}
-                    onPress={this.props.inviteToConferenceFunc}
-                    icon="account-plus"
-                />
+                <View style={styles.buttonContainer}>
+                    <IconButton
+                        size={buttonSize}
+                        style={buttonClass}
+                        onPress={this.props.inviteToConferenceFunc}
+                        icon="account-plus"
+                    />
+                </View>
                 : null}
 
-                <IconButton
-                    size={buttonSize}
-                    style={buttonClass}
-                    onPress={this.muteAudio}
-                    icon={muteButtonIcons}
-                />
-                <IconButton
-                    size={buttonSize}
-                    style={buttonClass}
-                    onPress={this.muteVideo}
-                    icon={muteVideoButtonIcons}
-                />
+                <View style={styles.buttonContainer}>
+                    <IconButton
+                        size={buttonSize}
+                        style={buttonClass}
+                        onPress={this.muteAudio}
+                        icon={muteButtonIcons}
+                    />
+                </View>
+                <View style={styles.buttonContainer}>
+                    <IconButton
+                        size={buttonSize}
+                        style={buttonClass}
+                        onPress={this.muteVideo}
+                        icon={muteVideoButtonIcons}
+                    />
+                </View>
 
-                <IconButton
-                    size={buttonSize}
-                    style={[buttonClass]}
-                    title="Toggle camera"
-                    onPress={this.toggleCamera}
-                    icon='camera-switch'
-                    key="toggleVideo"
-                />
+                <View style={styles.buttonContainer}>
+                    <IconButton
+                        size={buttonSize}
+                        style={[buttonClass]}
+                        title="Toggle camera"
+                        onPress={this.toggleCamera}
+                        icon='camera-switch'
+                        key="toggleVideo"
+                    />
+                </View>
 
-                <IconButton
-                    size={buttonSize}
-                    style={[buttonClass]}
-                    title="Toggle Aspect"
-                    onPress={this.toggleAspectRatio}
-                    icon='aspect-ratio'
-                    key="toggleAspectRatio"
-                />
+                <View style={styles.buttonContainer}>
+                    <IconButton
+                        size={buttonSize}
+                        style={[buttonClass]}
+                        title="Toggle Aspect"
+                        onPress={this.toggleAspectRatio}
+                        icon='aspect-ratio'
+                        key="toggleAspectRatio"
+                    />
+                </View>
 
-                <IconButton
-                    size={buttonSize}
-                    style={[buttonClass]}
-                    icon={utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || "phone"}
-                    onPress={() => this.toggleAudioDevice()}
-                />
+                {this.renderAudioDevicePicker(buttonSize, buttonClass)}
 
-                <IconButton
-                    size={buttonSize}
-                    style={[buttonClass, styles.hangupButton]}
-                    onPress={this.hangupCall}
-                    icon="phone-hangup"
-                />
+                <View style={[styles.buttonContainer, {marginLeft: 30}]}>
+                    <IconButton
+                        size={buttonSize}
+                        style={[buttonClass, styles.hangupButton]}
+                        onPress={this.hangupCall}
+                        icon="phone-hangup"
+                    />
+                </View>
             </View>);
             buttons = (<View style={buttonsContainer}>{content}</View>);
         }

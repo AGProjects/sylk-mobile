@@ -110,6 +110,8 @@ if (Platform.OS === 'android') {
 }
 
 const USER_AGENT = `Sylk (${getBrand()} ${getModel()} on ${platform})`;
+//const USER_AGENT_LOG = `${getBrand()} ${getModel()} ${platform}`;
+const USER_AGENT_LOG = `${getModel()} ${platform}`;
   
 const ANDROID_PERMISSIONS = Object.values(
   PermissionsAndroid.PERMISSIONS
@@ -216,6 +218,8 @@ let bundleId = `${getBundleId()}`;
 
 const version = '1.0.0';
 const MAX_LOG_LINES = 500;
+
+let deviceId = getUniqueId();
 
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
@@ -357,7 +361,7 @@ if (!console.log.__isWrapped) {
 //   // mute all logs on iOS
 //   console.log = () => {};
 //  } else {
-    const LOG_PREFIX = `[${Platform.OS}]`;
+    const LOG_PREFIX = `[${USER_AGENT_LOG}]`;
     console.log = function(...args) {
       originalLog(LOG_PREFIX, ...args);
     };
@@ -544,9 +548,11 @@ class Sylk extends Component {
             allContacts: [],
             accounts: {},
             serversAccounts: {},
+			verifiedAccounts: {},
             remoteConferenceRoom: null,
             remoteConferenceDomain: null,
-			conferenceConnection: null
+			conferenceConnection: null,
+			hasHeadset: false
         };
 
         this.buildId = "2026022201";
@@ -1070,9 +1076,7 @@ class Sylk extends Component {
 		const primaryUrl = `https://dns.google/resolve?name=_sylkserver.${domain}&type=TXT`;
 	
 		const fetchDns = async (url) => {
-			// 5 s gives a cold TCP+TLS connection to dns.google enough headroom
-			// at startup when the network stack is handling several concurrent requests.
-			const res = await this.fetchWithTimeout(url, {}, 5000);
+			const res = await this.fetchWithTimeout(url, {}, 3000);
 			return await res.json();
 		};
 	
@@ -1102,8 +1106,6 @@ class Sylk extends Component {
 		}
 	
 	    //console.log('data', data);
-		// DNS TXT record values are wrapped in double-quotes per RFC 1035;
-		// strip them so the URL passed to fetch is well-formed.
 		const answers = data.Answer?.map(a => a.data.replace(/^"|"$/g, '')) || [];
 		const configurationUrl = Array.isArray(answers) && answers.length === 1 ? answers[0] : null;
 		console.log('DNS response', configurationUrl);
@@ -1823,7 +1825,6 @@ class Sylk extends Component {
 	}
 
     async loadSylkContacts(origin) {
-    
         if (this.state.contactsLoaded) {
             return;
         }
@@ -1833,7 +1834,7 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('-- loading Sylk contacts...', origin);
+        console.log('LO - loading Sylk contacts...');
 
         await this.loadAddressBook();
         
@@ -2059,7 +2060,7 @@ class Sylk extends Component {
 	     }
 
 	     if (this.state.accountId != prevState.accountId) {
-		     console.log(this.cdu_counter, 'CDU --- accountId changed', this.state.accountId, 'accountVerified =', this.state.accountVerified);
+		     console.log(this.cdu_counter, 'LO - CDU --- accountId changed', prevState.accountId, '->', this.state.accountId);
 			 this.cdu_counter = this.cdu_counter + 1;
 			 this.loadAccount();
 		 }
@@ -2084,10 +2085,6 @@ class Sylk extends Component {
 	     if (this.state.accountVerified != prevState.accountVerified) {
 			 console.log(this.cdu_counter, 'CDU --- accountVerified did change', this.state.accountVerified);
 			 this.cdu_counter = this.cdu_counter + 1;
-
-			 if (this.state.account && this.state.accountVerified) {
-				 this.requestSyncConversations(this.state.lastSyncId);
-			 }
 	     }
 
 	     if (this.state.keyStatus !== prevState.keyStatus) {
@@ -2157,7 +2154,7 @@ class Sylk extends Component {
 		 }
 
 	     if (this.state.storageUsage != prevState.storageUsage) {
-		     console.log(this.cdu_counter, 'CDU --- Storage usage calculated');
+		     //console.log(this.cdu_counter, 'CDU --- Storage usage calculated', this.state.storageUsage);
 			 this.cdu_counter = this.cdu_counter + 1;
 		 }
 
@@ -2228,7 +2225,7 @@ class Sylk extends Component {
 			 }
 		 }
 
-		if (this.state.proximityEnabled && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+		if (this.state.proximityEnabled && !this.state.hasHeadset && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			if (this.state.proximityNear) {
 				if (this.useInCallManger) {
 					this.speakerphoneOff();
@@ -2256,8 +2253,9 @@ class Sylk extends Component {
 
 		 if (prevState.wsUrl !== this.state.wsUrl && this.state.wsUrl) {
 		     this.connectToSylkServer(true);
+	
 			 if (this.state.accountVerified && this.state.accountId) {
-                this.handleRegistration(this.state.accountId, this.state.password);
+                this.handleRegistration(this.state.accountId, this.state.password, 'wsUrl');
              }
 		 }
 	}
@@ -2764,7 +2762,7 @@ class Sylk extends Component {
     }
 
     changeRoute(route, reason) {
-        //console.log('Route', route, 'with reason', reason);
+        console.log('LO - Route', route, 'with reason', reason);
         utils.timestampedLog('Route', this.currentRoute, '->', route, ':', reason);
         let messages = this.state.messages;
 
@@ -3310,9 +3308,12 @@ class Sylk extends Component {
             this.heartbeat();
         }, 5000);
 
-        RNCallKeep.supportConnectionService()
-            .then(() => utils.timestampedLog('Connection service is enabled'))
-            .catch(err => utils.timestampedLog(err));
+        try {
+            await RNCallKeep.supportConnectionService();
+            utils.timestampedLog('Connection service is enabled');
+        } catch(err) {
+            utils.timestampedLog(err);
+        }
 
         this._boundOnPushkitRegistered = this._onPushkitRegistered.bind(this);
         this._boundOnPushRegistered = this._onPushRegistered.bind(this);
@@ -3345,6 +3346,7 @@ class Sylk extends Component {
 			const currentOutputs = this.state.audioOutputs || [];
 			const btDevice     = currentOutputs.find(d => d.type === 'BLUETOOTH_SCO');
 			const wiredDevice  = currentOutputs.find(d => d.type === 'WIRED_HEADSET');
+			const hasHeadset = (btDevice || wiredDevice) ? true : false;
 			const earpieceDevice = currentOutputs.find(d => d.type === 'BUILTIN_EARPIECE');
 			const initialDevice = btDevice || wiredDevice || earpieceDevice
 				|| { type: 'BUILTIN_EARPIECE', name: 'Earpiece', id: '' };
@@ -3352,6 +3354,7 @@ class Sylk extends Component {
 			this.setState({
 				selectedAudioDevice: initialDevice.type,
 				selectedDevice: initialDevice,
+				hasHeadset: hasHeadset,
 				speakerPhoneEnabled: false,
 			});
 			// Poll for device changes (BT/wired headset plug-in mid-call) every 3 seconds.
@@ -3364,6 +3367,7 @@ class Sylk extends Component {
 	    }
 
 		logDevices("Inputs", this.state.audioInputs);
+		console.log('this.state.audioInputs', this.state.audioInputs);
 		logDevices("Outputs", this.state.audioOutputs);
 		logDevices("Selected device", [this.state.selectedDevice]); // wrap single object in array
           
@@ -3542,6 +3546,7 @@ class Sylk extends Component {
 							const hasBT    = newTypes.includes('BLUETOOTH_SCO');
 							const hasWired = newTypes.includes('WIRED_HEADSET');
 							const cur      = this.state.selectedAudioDevice;
+							this.setState({hasHeadset: hasBT || hasWired});
 
 							if (hasBT && cur !== 'BLUETOOTH_SCO' && cur !== 'BUILTIN_SPEAKER') {
 								const btDevice = audioOutputs.find(d => d.type === 'BLUETOOTH_SCO');
@@ -4286,7 +4291,7 @@ class Sylk extends Component {
         }
 
         if (this.state.accountId && (!this.state.connection || !this.state.account) && this.state.accountVerified) {
-            this.handleRegistration(this.state.accountId, this.state.password);
+            this.handleRegistration(this.state.accountId, this.state.password, 'respawnConnection');
         }
     }
 
@@ -4311,6 +4316,7 @@ class Sylk extends Component {
             this.state.account.removeListener('missedCall', this.missedCall);
             this.state.account.removeListener('conferenceInvite', this.conferenceInviteFromWebSocket);
 
+			console.log('LO - Remove connection account');
             this.state.connection.removeAccount(this.state.account,
                 (error) => {
                     if (error) {
@@ -4373,16 +4379,16 @@ class Sylk extends Component {
     }
 
     connectionStateChanged(oldState, newState) {
-        //console.log('--- connectionStateChanged', newState);
+        console.log('--- connectionStateChanged', newState);
         if (this.unmounted) {
-            //console.log('App is not yet mounted');
+            console.log('App is not yet mounted');
             return;
         }
 
         const connection = this.getConnection();
 
         if (oldState) {
-            //utils.timestampedLog('Web socket', connection, 'state changed:', oldState, '->' , newState);
+            utils.timestampedLog('Web socket', connection, 'state changed:', oldState, '->' , newState);
         }
 
         switch (newState) {
@@ -4402,6 +4408,8 @@ class Sylk extends Component {
                 if (this.state.accountVerified || this.signIn) {
                     this.processRegistration(this.state.accountId, this.state.password);
                     this.callKeeper.setAvailable(true);
+                } else {
+                    console.log('We do not have accountVerified yet nor sign in', this.state.accountVerified, this.signIn);
                 }
 
 				if (this.state.appState == 'active' && this.state.selectedContact) {
@@ -4444,8 +4452,20 @@ class Sylk extends Component {
         return this._notificationCenter;
     }
 
-    showRegisterFailure(reason) {
+    showRegisterFailure(reason=null) {
         const connection = this.getConnection();
+
+		if (typeof reason === 'string' && reason.includes('Wrong')) {
+            if (this.state.connection) { 
+				console.log('LO - Remove connection account');
+				this.state.connection.removeAccount(this.state.account,
+					(error) => {
+						this.setState({registrationState: null, registrationKeepalive: false});
+					}
+				);
+				this.setState({account: null});
+            }
+        }
 
         utils.timestampedLog('Registration error: ' + reason, 'on web socket', connection);
         this.setState({
@@ -4523,6 +4543,9 @@ class Sylk extends Component {
             }
 
         } else if (newState === 'registered') {
+			
+			this.requestSyncConversations(this.state.lastSyncId);
+
             if (this.registrationFailureTimer) {
                 clearTimeout(this.registrationFailureTimer);
                 this.registrationFailureTimer = null;
@@ -4760,37 +4783,50 @@ class Sylk extends Component {
 	}
 
     async loadAccounts(init=false) {
-        console.log('loadAccounts');
+        console.log(' --- loadAccounts');
 
-		let query = "SELECT * FROM accounts order by account ASC, last_active_timestamp DESC";
+		let query = "SELECT * FROM accounts order by last_active_timestamp DESC";
 		let accounts = {};
 		let serversAccounts = {};
+		let verifiedAccounts = {};
 		
 		// Cleanup queries: only run if stale rows actually exist to avoid
 		// taking the SQLite write lock on every startup.
 		const staleCheck = await this.ExecuteQuery(
 			"SELECT count(*) as n FROM accounts WHERE account like 'sip:%' OR account = ''", []
 		);
+
 		if (staleCheck.rows.item(0).n > 0) {
 			await this.ExecuteQuery("delete from accounts where account like 'sip:%'", []);
 			await this.ExecuteQuery("delete from accounts where account = ''", []);
 		}
 
         let init_active_account = false;
+        let account;
+        let password;
 
 		await this.ExecuteQuery(query, []).then((results) => {
 			let rows = results.rows;
 			for (let i = 0; i < rows.length; i++) {
 				var item = rows.item(i);
 				accounts[item.account] = item.server;
-				//console.log('Load account', 'active', item.active, 'verified', item.verified, item.account, 'server', item.server);
+				//console.log('LO - Load account', 'active', item.active, 'verified', item.verified, item.account, 'server', item.server);
+				
+				if (item.verified == "1" || item.verified == 1) {
+					verifiedAccounts[item.account] = true;
+				} else {
+				    verifiedAccounts[item.account] = false;
+				}
+				
 				if ((item.verified == "1" || item.verified == 1) && (item.active == "1" || item.active == 1)) {
 					init_active_account = true;
-					if (this.state.accountId != item.account) {
-						console.log('Auto login');
+					if (this.state.accountId != item.account && !this.signOut) {
+						console.log('LO - Auto login', item.account);
 						this.setState({accountVerified: true, accountId: item.account});
-						this.handleRegistration(item.account, item.password);
+						account = item.account;
+						password = item.password;
 						this.changeRoute('/ready', 'start_up');
+						setTimeout(() => {this.handleRegistration(account, password, 'loadAccounts');}, 10);
 					}
 				}
 
@@ -4804,9 +4840,13 @@ class Sylk extends Component {
 			    // go to login screen
 			    console.log('No active account, yet');
 				this.changeRoute('/login', 'start_up');
+			} else {
+			    if (!this.signOut) {
+					this.loadSylkContacts('loadAccounts');
+				}
 			}
 
-			this.setState({accounts: accounts, serversAccounts: serversAccounts});
+			this.setState({accounts: accounts, serversAccounts: serversAccounts, verifiedAccounts: verifiedAccounts});
 
 		}).catch((error) => {
 			console.log('SQL loadAccounts error:', error);
@@ -4819,7 +4859,12 @@ class Sylk extends Component {
             return;
 		 }
 
-        console.log('Loading active account', this.state.accountId);
+		 if (this.signOut) {
+            console.log('Cannot load account if signOut');
+            return;
+		 }
+
+        console.log('LO - Loading active account', this.state.accountId);
 
         let keyStatus = this.state.keyStatus;
 
@@ -4853,12 +4898,9 @@ class Sylk extends Component {
 
 				setTimeout(() => {this.checkPendingActions()}, 10);
 
-				this.loadSylkContacts('loadAccount');
-
 			} else {
 				console.log('No account found in database');
 			}
-
 
 		}).catch((error) => {
 			console.log('SQL loadAccount error:', error);
@@ -4867,16 +4909,18 @@ class Sylk extends Component {
     
     async saveSqlAccount(account, active, password) {
 		let timestamp = new Date();
+
         let params = [active, active, account, password, this.state.sylkDomain, JSON.stringify(timestamp)];
         let query = "INSERT INTO accounts (active, verified, account, password, server, last_active_timestamp) VALUES (?, ?, ?, ?, ?, ?)"
         
         if (active == 0 || active == "0") {
+			await this.ExecuteQuery("update accounts set active = 0", []);
             params = [active, account, this.state.sylkDomain];
             query = "INSERT INTO accounts (active, account, server) VALUES (?, ?, ?)"
         }
 
 		await this.ExecuteQuery(query, params).then((result) => {
-            console.log('SQL inserted account', account, 'for server', this.state.sylkDomain);
+            console.log('LO - SQL inserted account', account, 'for server', this.state.sylkDomain);
             this.loadAccount();
 			this.loadAccounts();
         }).catch((error) => {
@@ -4895,7 +4939,7 @@ class Sylk extends Component {
         }
         
 		await this.ExecuteQuery(query, params).then((result) => {
-			console.log('SQL updated account', account, active, 'for server', this.state.sylkDomain);
+			console.log('LO - SQL updated account', account, active, 'for server', this.state.sylkDomain);
 			if (result.rowsAffected) {
 				this.loadAccounts();
 			}
@@ -5122,7 +5166,7 @@ class Sylk extends Component {
     }
 
 	setProximityChosenDevice() {
-		if (this.state.proximityEnabled) {
+		if (this.state.proximityEnabled && !this.state.hasHeadset) {
 			if (this.state.proximityNear) {
 				console.log('proximity set BUILTIN_EARPIECE')
 				if (this.useInCallManger) {
@@ -5252,7 +5296,6 @@ class Sylk extends Component {
                 if (newState === 'terminated') {
                     if (this.startedByPush) {
                         this.resetStartedByPush('terminated')
-                        this.requestSyncConversations(this.state.lastSyncId);
                     }
 
                     utils.timestampedLog("Incoming call was cancelled");
@@ -5507,7 +5550,7 @@ class Sylk extends Component {
                     server_failure = true;
                 }
                 
-                if (reason.indexOf('DTLS alert') > -1) {
+                if (typeof reason === 'string' && reason.indexOf('DTLS alert') > -1) {
 					reason = "TLS media failure";
                 }
 
@@ -5547,7 +5590,7 @@ class Sylk extends Component {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
                     this.saveSystemMessage(uri, msg, direction, missed);
 
-                    if (reason.indexOf('Payment required') > -1) {
+                    if (typeof reason === 'string' && reason.indexOf('Payment required') > -1) {
                         show_payment_message = true;
                         setTimeout(() => {
 							msg = "See https://sip2sip.info/help for how to call PSTN numbers";
@@ -5661,29 +5704,35 @@ class Sylk extends Component {
     }
 
     handleEnrollment(account) {
-        console.log('Enrollment for new account', account);
+        console.log('LO - Enrollment for new account', account);
 
 		this.signIn = true;
 
 		this.changeRoute('/ready', 'enrollment');
+
         this.setState({displayName: account.displayName, 
                        enrollment: true, 
                        email: account.email});
 
-        this.handleRegistration(account.id, account.password);
+        this.handleRegistration(account.id, account.password, 'handleEnrollment');
     }
 
     async handleSignIn(accountId, password) {
-        console.log('HandleSignIn', accountId);
+        console.log('LO - HandleSignIn', accountId);
 
         this.signOut = false;
         this.signIn = true;
 
-        this.handleRegistration(accountId, password);
+        this.handleRegistration(accountId, password, 'handleSignIn');
     }
 
-    handleRegistration(accountId, password) {
-        console.log('HandleRegistration', accountId, 'verified =', this.state.accountVerified);
+    handleRegistration(accountId, password, origin) {
+        let accountVerified = this.state.accountVerified;
+        if (!accountVerified && accountId in this.state.verifiedAccounts && this.state.verifiedAccounts[accountId]) {
+			accountVerified = true;
+        }
+    
+        console.log('LO - HandleRegistration', accountId, 'verified', accountVerified, 'origin', origin);
 
         this.setState({accountId: accountId, password: password});
     
@@ -5693,26 +5742,32 @@ class Sylk extends Component {
         }
 
         if (this.state.account !== null && this.state.registrationState === 'registered' ) {
-            //console.log('already registered');
+            console.log('already registered');
             return;
         }
-
-        if (this.state.connection === null || this.state.connection.state != 'ready') {
-			this.connectToSylkServer(true);
+        
+        if (this.state.connection === null) {
+			console.log('Must connect first...');
+			this.connectToSylkServer();
+        } else if (this.state.connection.state != 'ready') {
+			let _accounts = Object.keys(this.state.connection._accounts);
+			if (_accounts.indexOf(accountId) === -1) {
+                this.processRegistration(accountId, password);
+			} else {
+				this.connectToSylkServer(true);
+			}
 
         } else {
             if (this.state.connection.state === 'ready' && this.state.registrationState !== 'registered') {
                 utils.timestampedLog('Web socket', Object.id(this.state.connection), 'handle registration for', accountId);
                 this.processRegistration(accountId, password);
             } else if (this.state.connection.state !== 'ready') {
-                //console.log('connection is not ready');
+                console.log('connection is not ready');
                 if (this._notificationCenter) {
                     //this._notificationCenter.postSystemNotification('Waiting for Internet connection');
                 }
 
-                if (this.currentRoute === '/login') {
-
-//                if (this.currentRoute === '/login' && this.state.accountVerified) {
+                if (this.currentRoute === '/login' && this.state.accountVerified) {
                     this.changeRoute('/ready', 'start_up');
                 } else {
                     console.log('Cannot go to ready because account was not verified');
@@ -5721,16 +5776,16 @@ class Sylk extends Component {
         }
     }
 
-    connectToSylkServer(close=false) {    
-		console.log('connectToSylkServer');
+    connectToSylkServer(close=false) { 
+		console.log('LO - connectToSylkServer');
 		  
         if (close && this.state.connection !== null) {
-			console.log('Disconnecting existing connection');   
+			console.log('Disconnecting existing connection', this.state.connection );   
             this.state.connection.close();
         }
 
-		console.log('Connecting to', this.state.wsUrl);   
 		let connection = sylkrtc.createConnection({server: this.state.wsUrl});
+		console.log('Connecting to', this.state.wsUrl);   
 
 		utils.timestampedLog('Web socket', Object.id(connection), 'was opened');
 		connection.on('stateChanged', this.connectionStateChanged);
@@ -5784,6 +5839,12 @@ class Sylk extends Component {
     }
     
     processRegistration(accountId, password, displayName) {
+		console.log('LO - processRegistration');
+    
+        if (!accountId) {
+			return;
+        }
+
         if (!displayName) {
             displayName = this.state.displayName;
         }
@@ -5796,13 +5857,14 @@ class Sylk extends Component {
         }
 
         if (this.state.account && this.state.connection) {
+			console.log('LO - Remove connection account');
             this.state.connection.removeAccount(this.state.account,
                 (error) => {
                     this.setState({registrationState: null, registrationKeepalive: false});
                 }
             );
         }
-
+        
         const options = {
             account: accountId,
             password: password,
@@ -5810,18 +5872,18 @@ class Sylk extends Component {
         };
 
         if (this.state.connection._accounts.has(options.account)) {
-            //console.log('Account already exists for connection');
+            console.log('Account already exists for connection');
             return;
         }
 
         if (this.state.accountVerified) {
             this.registrationFailureTimer  = setTimeout(() => {
-                    this.showRegisterFailure('Register timeout');
-                    this.processRegistration(accountId, password);
+                this.showRegisterFailure('Register timeout');
+                this.processRegistration(accountId, password);
             }, 10000);
         }
 
-        console.log('Adding account for connection...', this.state.connection.state);
+        console.log('LO - Adding connection account', options.account);
 
         const account = this.state.connection.addAccount(options, (error, account) => {
             if (!error) {
@@ -5842,6 +5904,7 @@ class Sylk extends Component {
 
                 this.setState({account: account});
 				this._sendPushToken();
+
                 account.register();
 
 				account.checkIfKeyExists((serverKey) => {
@@ -5857,7 +5920,7 @@ class Sylk extends Component {
 				});
 
             } else {
-                //console.log('Adding account failed');
+                console.log('Adding account failed');
                 this.showRegisterFailure(408);
             }
         });
@@ -5871,7 +5934,7 @@ class Sylk extends Component {
 
         let keyStatus = this.state.keyStatus;
 
-        console.log('PGP keys generation if necessary');
+        console.log('LO - PGP keys generation if necessary');
         
         if ('existsOnServer' in keyStatus) {
             if (keyStatus.existsOnServer) {
@@ -6688,7 +6751,7 @@ class Sylk extends Component {
 		}
 
         if (this.state.accountId && this.state.accountVerified) {
-            this.handleRegistration(this.state.accountId, this.state.password);
+            this.handleRegistration(this.state.accountId, this.state.password, 'backToForeground');
         }
 
         PushNotification.popInitialNotification((notification) => {
@@ -7078,6 +7141,10 @@ class Sylk extends Component {
 			? await OpenPGP.decrypt(content, this.state.keys.private)
 			: content;
 			
+		if (!this.isMessageAllowed(contentType, msg.decryptedContent)) {
+			return;
+		}
+
 		const sylkMsg = {
 			id: id,
 			sender: {uri: from, 
@@ -7787,9 +7854,6 @@ class Sylk extends Component {
 
     resetStartedByPush(from) {
         this.startedByPush = false;
-        if (this.state.lastSyncId) {
-            this.requestSyncConversations(this.state.lastSyncId);
-        }
     }
 
     async savePublicKey(uri, key) {
@@ -7915,6 +7979,11 @@ class Sylk extends Component {
 
         console.log('--- sendMessage', uri, message._id, contentType);
         //console.log(message);
+        
+        if (!message._id) {
+		    console.log('--- sendMessage failed for missing id');
+ 			return;
+        }
 
         let renderMessages = this.state.messages;
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
@@ -8028,21 +8097,22 @@ class Sylk extends Component {
 
     canSend() {
         if (!this.state.account) {
-            //console.log('Wait for account...');
+            console.log('Wait for account...');
             return false;
         }
 
         if (!this.state.connection) {
-            //console.log('Wait for Internet connection...');
+            console.log('Wait for Internet connection...');
             return false;
         }
 
         if (this.state.connection.state !== 'ready') {
-            //console.log('Wait for Internet connection...');
+            console.log('Wait for wss connection ready...');
             return;
         }
 
         if (this.signOut) {
+            console.log('Wait because we signed out');
             return;
         }
 
@@ -8869,7 +8939,7 @@ class Sylk extends Component {
                 }
                 
                 var item = rows.item(i);
-                console.log('sendPendingMessages item', item);
+                //console.log('sendPendingMessages item', item);
 
                 if (!item.msg_id) {
                     console.log('Skip broken item without msg_id', item.rowid);
@@ -10034,6 +10104,13 @@ class Sylk extends Component {
 		this.lastLookupKey = contact.uri;
     }
 
+    isMessageAllowed(content_type, content) { 
+		if (content_type === 'text/plain' && content.indexOf('File transfer available at') > -1 && content.indexOf('/webrtcgateway/filetransfer/') > -1) {
+			return false;
+		}
+		return true;
+	}
+
 	getAllContactUris(contact) {
 		return [...new Set([
 			contact.uri,
@@ -10157,7 +10234,7 @@ class Sylk extends Component {
 		];
 
 		await this.ExecuteQuery(query, params).then(async (results) => {
-            //console.log('SQL get messages, rows =', results.rows.length);
+            console.log('SQL get messages, rows =', results.rows.length);
             let rows = results.rows;
             messages[orig_uri] = [];
             let content;
@@ -10202,7 +10279,6 @@ class Sylk extends Component {
 					if (!content) {
 						content = 'Empty message...';
 					}
-	
 
 					let timestamp;
 					last_message = null;
@@ -10231,8 +10307,12 @@ class Sylk extends Component {
 
 					const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
 
-					//console.log(" - SQL message:", timestamp, item.content_type, item.direction, content.substring(0, 20));
-								
+					//console.log(" - SQL message:", timestamp, item.content_type, item.direction, content.substring(0, 200));
+					
+					if (!this.isMessageAllowed(item.content_type, content)) {
+						continue;
+					}
+													
 					if (is_encrypted && enc !== 3) {
 						contact.totalMessages = contact.totalMessages - 1;
 						if (item.encrypted === null) {
@@ -10469,7 +10549,18 @@ class Sylk extends Component {
 						
 					}
 				} catch (e) {
-					console.log('SQL row error', e, item);
+					try {
+						console.log('SQL row error',
+							'rowid=', item && item.rowid,
+							'msg_id=', item && item.msg_id,
+							'content_type=', item && item.content_type,
+							'direction=', item && item.direction,
+							'error=', e && e.message ? e.message : e);
+					} catch (logErr) {
+						console.log('SQL row error (and log failed)', e);
+					}
+					// skip this one row, keep loading the rest
+					continue;
 				}
 			}
 
@@ -10479,8 +10570,12 @@ class Sylk extends Component {
 					// Check if the message already exists
 					const exists = messages[key].some(m => m._id === msg._id);
 					if (!exists) {
-						console.log('Added synthetic message from push');
-						messages[key].push(msg);
+					    if (msg.contentType !== 'application/sylk-file-transfer') {
+					    	if (this.isMessageAllowed(msg.content_type, msg.content)) {
+								console.log('Added synthetic message from push', key, msg);
+								messages[key].push(msg);
+							}
+						}
 					}
 				}
 			});
@@ -10492,13 +10587,20 @@ class Sylk extends Component {
 			let last_message_ts;
 			if (last_messages.length > 0) {
 				last_messages.forEach((last_item) => {
-					if (item.content_type?.startsWith('text/') && last_item.text.indexOf(' call ended ') === -1 && last_item.text.indexOf('Public key received') === -1) {
-						last_message = this.buildLastMessage(last_item);
+					try {
+						const ct = last_item && last_item.contentType;
+						const txt = (last_item && typeof last_item.text === 'string') ? last_item.text : '';
+						if (ct && typeof ct === 'string' && ct.startsWith('text/') &&
+							txt.indexOf(' call ended ') === -1 &&
+							txt.indexOf('Public key received') === -1) {
+							last_message = this.buildLastMessage(last_item);
+						}
+						last_message_id = last_item && last_item._id;
+						//console.log('new last_message_id', last_message_id);
+						last_message_ts = last_item && last_item.createdAt;
+					} catch (e) {
+						console.log('last_messages row error', e, last_item && last_item._id);
 					}
-					last_message_id = last_item._id;
-					//console.log('new last_message_id', last_message_id);
-					last_message_ts = last_item.createdAt;
-					return;
 				});
 			}
 
@@ -11856,6 +11958,10 @@ class Sylk extends Component {
         this.saveIncomingMessage(message, decryptedBody);
 
         let content = decryptedBody || message.content;
+
+        if (!this.isMessageAllowed(message.contentType, content)) {
+			return;
+		}
 
         if (!this.state.selectedContact || this.state.selectedContact.uri !== message.sender.uri) {
             if (this.state.appState === 'foreground') {
@@ -13397,7 +13503,7 @@ class Sylk extends Component {
 
         if (!isUUID && !isNumber && !utils.isEmailAddress(uri) && username !== '*') {
             console.log('Sanitize check failed for uri:', uri);
-            conferenceObject = utils.parseSylkUrl(uri);
+            conferenceObject = utils.parseSylkConferenceUrl(uri);
             if (!conferenceObject) {
 				return null;
             } else {
@@ -15077,9 +15183,11 @@ return (
     }
 
     login() {
+        //console.log('LO - login');
+
         let registerBox;
         let statusBox;
-        this.signOut = false;
+        //this.signOut = false;
 
         if (this.state.status !== null) {
             statusBox = (
@@ -15136,6 +15244,7 @@ return (
     resetState() {
         this.signOut = true;
         this.signIn = false;
+
         this.pushTokenSent = false;
         this.syncRequested = false;
         this.callKeeper.setAvailable(false);
@@ -15160,10 +15269,13 @@ return (
                        purgeMessages: [],
                        updateContacts: {},
                        });
+
+        console.log('LO - resetState');
+            
     }
 
     logout() {
-        console.log('Logout');
+        console.log('LO - Logout');
 
         this.resetState();
 
@@ -15179,12 +15291,12 @@ return (
             this.state.account.register();
             return;
         } else if (this.signOut && this.state.connection && this.state.account) {
-            console.log('Unregister');
+            console.log('LO - Unregister');
             this.state.account.unregister();
         }
 
         if (this.state.connection && this.state.account) {
-            console.log('Remove account');
+			console.log('LO - Remove connection account', 'signOut', this.signOut);
             this.state.connection.removeAccount(this.state.account, (error) => {
                 if (error) {
                     logger.debug(error);
@@ -15197,7 +15309,7 @@ return (
                        email: ''
                        });
 
-        this.signOut = false;
+        //this.signOut = false;
     }
 
     main() {

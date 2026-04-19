@@ -9,7 +9,7 @@ import debug from 'react-native-debug';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { RTCView } from 'react-native-webrtc';
-import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text } from 'react-native-paper';
+import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text, Menu } from 'react-native-paper';
 import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
@@ -108,6 +108,18 @@ const conferenceHeaderHeight = 60;
 	BLUETOOTH_SCO: 'bluetooth-audio',
 	BUILTIN_SPEAKER: 'volume-high',
   };
+
+// Audio device picker style:
+//   'cycle'    - legacy: tap cycles through available devices
+//   'menu'     - react-native-paper dropdown Menu (icon + name per row)
+//   'floating' - WhatsApp-style: extra IconButtons float below the main button
+//                (below because the conference button bar is at the top of the screen)
+const AUDIO_DEVICE_PICKER_MODE = 'floating';
+
+// Self-view style while waiting alone in a video conference:
+//   true  - fill the whole screen with the local video until someone joins
+//   false - always show the small corner rectangle (legacy behavior)
+const SOLO_SELF_FULLSCREEN = true;
 
 
 class ConferenceBox extends Component {
@@ -224,6 +236,7 @@ class ConferenceBox extends Component {
             statistics: [],
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
+			audioDevicePickerVisible: false,
 		    insets: this.props.insets,
 		    publicUrl: this.props.publicUrl
         };
@@ -1965,6 +1978,114 @@ class ConferenceBox extends Component {
 	  );
 	}
 
+	renderAudioDevicePicker(buttonSize, buttonClass) {
+		const devices = this.state.availableAudioDevices || [];
+		const selectedIcon = availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
+
+		// Variant 1: cycle through devices on tap (legacy behavior)
+		if (AUDIO_DEVICE_PICKER_MODE === 'cycle') {
+			return (
+				<View style={styles.buttonContainer} key="audioDevice">
+					<TouchableHighlight style={styles.roundshape}>
+						<IconButton
+							size={buttonSize}
+							style={buttonClass}
+							icon={selectedIcon}
+							onPress={this.toggleAudioDevice}
+							key="toggleAudioDevice"
+						/>
+					</TouchableHighlight>
+				</View>
+			);
+		}
+
+		// Variant 2: react-native-paper Menu (icon + device name per row)
+		if (AUDIO_DEVICE_PICKER_MODE === 'menu') {
+			return (
+				<View style={styles.buttonContainer} key="audioDevice">
+					<Menu
+						visible={this.state.audioDevicePickerVisible}
+						onDismiss={() => this.setState({audioDevicePickerVisible: false})}
+						anchor={
+							<TouchableHighlight style={styles.roundshape}>
+								<IconButton
+									size={buttonSize}
+									style={buttonClass}
+									icon={selectedIcon}
+									onPress={() => this.setState({audioDevicePickerVisible: true})}
+								/>
+							</TouchableHighlight>
+						}
+					>
+						{devices.map(device => {
+							const isSelected = device === this.state.selectedAudioDevice;
+							const deviceIcon = availableAudioDevicesIconsMap[device] || 'phone';
+							const deviceName = (utils.availableAudioDeviceNames && utils.availableAudioDeviceNames[device]) || device;
+							return (
+								<Menu.Item
+									key={device}
+									icon={deviceIcon}
+									title={isSelected ? `✓ ${deviceName}` : deviceName}
+									onPress={() => {
+										this.setState({audioDevicePickerVisible: false});
+										setTimeout(() => this.props.selectAudioDevice(device), 50);
+									}}
+								/>
+							);
+						})}
+					</Menu>
+				</View>
+			);
+		}
+
+		// Variant 3: WhatsApp-style floating icon buttons stacked BELOW the main
+		// button (below because the conference button bar sits at the top of
+		// the screen, not at the bottom like in audio/video call screens).
+		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
+			const otherDevices = devices.filter(d => d !== this.state.selectedAudioDevice);
+			return (
+				<View style={styles.buttonContainer} key="audioDevice">
+					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+						<View style={{
+							position: 'absolute',
+							top: '100%',
+							left: 0,
+							right: 0,
+							alignItems: 'center',
+							marginTop: 4,
+							zIndex: 100,
+							elevation: 10,
+						}}>
+							{otherDevices.map(device => (
+								<TouchableHighlight key={device} style={[styles.roundshape, {marginTop: 6}]}>
+									<IconButton
+										size={buttonSize}
+										style={buttonClass}
+										icon={availableAudioDevicesIconsMap[device] || 'phone'}
+										onPress={() => {
+											this.props.selectAudioDevice(device);
+											this.setState({audioDevicePickerVisible: false});
+										}}
+									/>
+								</TouchableHighlight>
+							))}
+						</View>
+					)}
+					<TouchableHighlight style={styles.roundshape}>
+						<IconButton
+							size={buttonSize}
+							style={buttonClass}
+							icon={selectedIcon}
+							onPress={() => this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible})}
+						/>
+					</TouchableHighlight>
+				</View>
+			);
+		}
+
+		return null;
+	}
+
     render() {
         if (this.props.call === null) {
             return (<View></View>);
@@ -2079,22 +2200,6 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
-
-        floatingButtons.push(
-          <View style={styles.buttonContainer} key="audioDevice">
-            <TouchableHighlight style={styles.roundshape}>
-            <IconButton
-                size={25}
-                style={buttonClass}
-                title="Device"
-                onPress={this.toggleAudioDevice}
-                icon={availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone'}
-                key="toggleAudioDevice"
-            />
-            </TouchableHighlight>
-          </View>
-        );
-
        }
 
      if (!this.state.videoEnabled ) {
@@ -2180,6 +2285,10 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
               </View>
             );
+        }
+
+        if (this.state.videoEnabled) {
+            floatingButtons.push(this.renderAudioDevicePicker(25, buttonClass));
         }
 
      if (this.state.videoEnabled) {
@@ -3257,16 +3366,37 @@ class ConferenceBox extends Component {
 				style={myselfContainer}
 			  >
 				<View
-				  style={{
-					position: 'absolute',
-					width: 120,
-					height: 160,
-					...corner,
-				  }}
+				  style={
+					SOLO_SELF_FULLSCREEN && !this.props.audioOnly && this.state.participants.length === 0
+					  ? {
+						  // Fill the video-grid area only — leaves the header
+						  // and button bar visible above, and the bottom edge
+						  // of the screen untouched. Matches the corners math
+						  // used for the normal self-rectangle placement.
+						  position: 'absolute',
+						  top: conferenceHeader.height + buttonsContainer.height,
+						  left: 0,
+						  right: 0,
+						  bottom: 0,
+						}
+					  : {
+						  position: 'absolute',
+						  width: 120,
+						  height: 160,
+						  ...corner,
+						}
+				  }
 				>
 				  <TouchableOpacity
 					style={{ flex: 1 }}
 					onPress={() => {
+					  // When alone, we intentionally keep the UI chrome (header
+					  // and button bar) always visible, so taps on the self
+					  // video should NOT toggle fullscreen or cycle corners —
+					  // just absorb the tap.
+					  if (SOLO_SELF_FULLSCREEN && !this.props.audioOnly && this.state.participants.length === 0) {
+						return;
+					  }
 					  const cornerOrder = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
 					  const currentIndex = cornerOrder.indexOf(this.state.myVideoCorner);
 					  const nextIndex = (currentIndex + 1) % cornerOrder.length;
@@ -3281,6 +3411,7 @@ class ConferenceBox extends Component {
 					  audioMuted={this.state.audioMuted}
 					  isLandscape={this.state.isLandscape}
 					  generatedVideoTrack={this.props.generatedVideoTrack}
+					  big={SOLO_SELF_FULLSCREEN && !this.props.audioOnly && this.state.participants.length === 0}
 					/>
 				  </TouchableOpacity>
 				</View>

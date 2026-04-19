@@ -32,7 +32,7 @@ const styles = StyleSheet.create({
     marginBottom: 50,
     paddingLeft: 20,
     paddingRight: 20,
-    justifyContent: 'flex-end', // replaces justify-self
+    justifyContent: 'center',
   },
 
   tabletPortraitButtonContainer: {
@@ -40,7 +40,7 @@ const styles = StyleSheet.create({
     marginTop: 'auto',
     bottom: 60,
     marginBottom: 40,
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
   },
 
   landscapeButtonContainer: {
@@ -48,7 +48,7 @@ const styles = StyleSheet.create({
     marginTop: 'auto',
     bottom: 30,
     marginBottom: 0,
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
   },
 
   tabletLandscapeButtonContainer: {
@@ -56,7 +56,7 @@ const styles = StyleSheet.create({
     marginTop: 'auto',
     bottom: 60,
     marginBottom: 0,
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
   },
 
   activity: {
@@ -68,6 +68,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     borderWidth: 0,
+    // Cap each slot so buttons don't drift far apart on wide screens
+    // (landscape phone, tablet). Audio has fewer buttons than video, so
+    // the cap is a bit wider here to keep some breathing room between
+    // them on narrow screens too.
+    maxWidth: 72,
   },
 
   confirmContainer: {

@@ -110,6 +110,17 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(169, 68, 66, 0.5)', // #a94442 + 0.5
   },
 
+  buttonContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    flex: 1,
+    // Cap each slot so buttons don't drift far apart on wide screens
+    // (landscape phone, tablet). On narrow screens each slot stays below
+    // this value and the buttons still fill the row; on wide screens
+    // the cluster centers itself instead of scattering.
+    maxWidth: 56,
+  },
+
   audioDeviceContainer: {
     flexDirection: 'row',
     justifyContent: 'center',   // center horizontally

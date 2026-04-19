@@ -111,8 +111,8 @@ ShareConferenceLinkModal.propTypes = {
   close: PropTypes.func.isRequired,
   conferenceUrl: PropTypes.string.isRequired,
   notificationCenter: PropTypes.func.isRequired,
-  sylkDomain: PropTypes.string.isRequired,
-  conferenceRoom: PropTypes.string.isRequired,
+  sylkDomain: PropTypes.string,
+  conferenceRoom: PropTypes.string,
 };
 
 export default ShareConferenceLinkModal;

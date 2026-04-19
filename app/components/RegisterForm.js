@@ -328,7 +328,7 @@ class RegisterForm extends Component {
 	}
 
 	helpLink() {
-		let link = 'https://sylkserver.com/documentation/sipwebrtc-messaging-server/';
+		let link = 'https://github.com/AGProjects/sylk-suite';
 		Linking.openURL(link);
 	}
 
@@ -530,7 +530,7 @@ class RegisterForm extends Component {
 			return 0;
 		});
 
-        let serverLabel = "Choose another Sylk server";
+        let serverLabel = "Choose another Sylk server?";
         if (this.state.sylkDomain != this.state.newSylkDomain) {
 			serverLabel = 'Back to current Sylk server';
         }
@@ -711,7 +711,7 @@ class RegisterForm extends Component {
                 </View>
                 : null}
 
-                {this.hasAccounts ?
+                {(this.hasAccounts && connection_state !== 'disconnected') ?
                 <Text onPress={this.helpLink} style={(this.state.domainChecked || connection_state == 'ready' || this.state.SylkServerDiscovery) ? styles.goodServer : styles.brokenServer}>
                     {this.state.SylkServerStatus || serverState}
                 </Text>
@@ -741,6 +741,14 @@ class RegisterForm extends Component {
 						})}
 					</ScrollView>
 				) : null}
+
+				{this.state.showServer ? (
+                <Text onPress={this.helpLink} style={styles.recoverLink}>
+					Install your own Sylk server?
+                </Text>
+				) : null}
+
+
 
                 <Text style={styles.wsUrl}>
                     {this.state.wsUrlVisible && false ? this.state.wsUrl : ''}

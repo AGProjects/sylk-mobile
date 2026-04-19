@@ -285,6 +285,12 @@ class CallOverlay extends React.Component {
 				marginLeft: this.state.isLandscape ? - rightInset - leftInset: 0,
 				marginTop: -topInset,
 				width: this.state.isLandscape ? width - rightInset - leftInset: width,
+				// Ensure the appbar paints (and hit-tests) above the sibling
+				// video container. On iOS the video container is shifted up by
+				// -topInset and its TouchableWithoutFeedback (toggleFullScreen)
+				// would otherwise intercept taps on BackAction/menu icons.
+				zIndex: 1000,
+				elevation: 10,
 			}
 
 			if (Platform.OS === "ios") {
