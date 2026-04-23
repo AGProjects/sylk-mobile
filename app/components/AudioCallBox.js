@@ -1,5 +1,5 @@
 import React, { Component } from 'react';
-import { View, Platform, TouchableWithoutFeedback, TouchableHighlight } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, Dimensions } from 'react-native';
 import { IconButton, Dialog, Text, ActivityIndicator, Menu } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
@@ -243,16 +243,25 @@ class AudioCallBox extends Component {
 		this.props.selectAudioDevice(nextDevice);
 	}
 
-	renderAudioDevicePicker(buttonSize, buttonStyle) {
+	renderAudioDevicePicker(buttonSize, buttonStyle, remountKey, slotStyle) {
 		const devices = this.props.availableAudioDevices || [];
 		const selectedIcon = utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
+		const _rk = remountKey || '';
+		const _slot = slotStyle || styles.buttonContainer;
+
+		// If there's only a single audio device (or none), there's nothing
+		// for the user to switch to — hide the picker entirely.
+		if (devices.length <= 1) {
+			return null;
+		}
 
 		// Variant 1: cycle through devices on tap
 		if (AUDIO_DEVICE_PICKER_MODE === 'cycle') {
 			return (
-				<View style={styles.buttonContainer}>
+				<View style={_slot}>
 					<TouchableHighlight style={styles.roundshape}>
 						<IconButton
+							key={'cb-btn-audio-' + _rk}
 							size={buttonSize}
 							style={buttonStyle}
 							icon={selectedIcon}
@@ -270,9 +279,10 @@ class AudioCallBox extends Component {
 					visible={this.state.audioDevicePickerVisible}
 					onDismiss={() => this.setState({audioDevicePickerVisible: false})}
 					anchor={
-						<View style={styles.buttonContainer}>
+						<View style={_slot}>
 							<TouchableHighlight style={styles.roundshape}>
 								<IconButton
+									key={'cb-btn-audio-' + _rk}
 									size={buttonSize}
 									style={buttonStyle}
 									icon={selectedIcon}
@@ -306,7 +316,7 @@ class AudioCallBox extends Component {
 		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
 			const otherDevices = devices.filter(d => d !== this.props.selectedAudioDevice);
 			return (
-				<View style={[styles.buttonContainer, {position: 'relative'}]}>
+				<View style={[_slot, {position: 'relative'}]}>
 					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
@@ -321,6 +331,7 @@ class AudioCallBox extends Component {
 							{otherDevices.map(device => (
 								<TouchableHighlight key={device} style={[styles.roundshape, {marginBottom: 21}]}>
 									<IconButton
+										key={'cb-btn-audio-other-' + device + '-' + _rk}
 										size={buttonSize}
 										style={buttonStyle}
 										icon={utils.availableAudioDevicesIconsMap[device] || 'phone'}
@@ -335,6 +346,7 @@ class AudioCallBox extends Component {
 					)}
 					<TouchableHighlight style={styles.roundshape}>
 						<IconButton
+							key={'cb-btn-audio-' + _rk}
 							size={buttonSize}
 							style={buttonStyle}
 							icon={selectedIcon}
@@ -454,7 +466,17 @@ class AudioCallBox extends Component {
             userIconContainerClass = styles.userIconContainer;
         }
 
-        const buttonSize = this.props.isTablet ? 40 : 34;
+        // Folded (cover display) overrides — very limited vertical room.
+        if (this.props.isFolded) {
+            buttonContainerClass = styles.foldedButtonContainer;
+        }
+
+        const buttonSize = this.props.isTablet ? 40 : (this.props.isFolded ? 32 : 34);
+
+        // Per-button slot + hangup spacer differ between folded and
+        // unfolded so buttons pack tighter on the narrow cover display.
+        const slotContainerStyle = this.props.isFolded ? styles.foldedSlotContainer : styles.buttonContainer;
+        const hangupMarginLeft = this.props.isFolded ? 24 : 30;
 
         let disableChat = false;
         if (this.state.callContact) {
@@ -467,8 +489,23 @@ class AudioCallBox extends Component {
         let hangupButtonClass        = Platform.OS === 'ios' ? styles.hangupButtoniOS        : styles.hangupButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
         
-        let userIconSize = this.state.isLandscape ? 75: 150;
-        
+        let userIconSize;
+        if (this.props.isFolded) {
+            userIconSize = 90;
+        } else {
+            userIconSize = this.state.isLandscape ? 75 : 150;
+        }
+
+        // Force-remount key for the audio call UI. Same stale-native-frame
+        // problem we hit on NavigationBar / ReadyBox: IconButtons and Text
+        // cache their measured frames at the density they were first
+        // mounted under, so we remount them when fold state or window
+        // dimensions change.
+        const { width: _cbW, height: _cbH } = Dimensions.get('window');
+        const _callRemountKey = (this.props.isFolded ? 'f' : 'u')
+            + '-' + (this.state.isLandscape ? 'l' : 'p')
+            + '-' + Math.round(_cbW) + 'x' + Math.round(_cbH);
+
         let extraStyles = {};
         let extraButtonContainerClass = {};       
         let container = styles.container;
@@ -490,6 +527,7 @@ class AudioCallBox extends Component {
                     callState={this.props.callState}
                     terminatedReason={this.state.terminatedReason}
                     isLandscape={this.state.isLandscape}
+                    isFolded={this.props.isFolded}
 					hangupCall = {this.hangupCall}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
@@ -498,50 +536,74 @@ class AudioCallBox extends Component {
 					insets = {this.state.insets}
                 />
 
-				<View style={userIconContainerClass}>
-					<UserIcon identity={remoteIdentity} size={userIconSize} active={this.state.active} />
-				</View>
+				{this.props.isFolded ? (
+					<View key={'cb-toprow-' + _callRemountKey} style={styles.foldedTopRow}>
+						<View style={styles.foldedCallerColumn}>
+							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.foldedDisplayName} numberOfLines={1}>{displayName}</Dialog.Title>
+							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+								<Text key={'cb-uri-' + _callRemountKey} style={styles.foldedUri} numberOfLines={1}>{this.state.remoteUri}</Text>
+							</TouchableWithoutFeedback>
+						</View>
+						<View style={styles.foldedStatsColumn}>
+							<TrafficStats
+								key={'cb-stats-' + _callRemountKey}
+								isTablet={this.props.isTablet}
+								isLandscape={this.state.isLandscape}
+								isFolded={this.props.isFolded}
+								data={this.state.audioGraphData}
+								media="audio"
+							/>
+						</View>
+					</View>
+				) : (
+					<>
+						<View key={'cb-usericon-wrap-' + _callRemountKey} style={userIconContainerClass}>
+							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+						</View>
 
-				<Dialog.Title style={styles.displayName}>{displayName}</Dialog.Title>
-				<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
-					<Text style={styles.uri}>{this.state.remoteUri}</Text>
-				</TouchableWithoutFeedback>
+						<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
+						<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+							<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{this.state.remoteUri}</Text>
+						</TouchableWithoutFeedback>
 
-				 {false && (
-				  <View style={styles.confirmContainer}>
-						<Text style={styles.confirm}>Please confirm...</Text>
-                        <View style={[buttonContainerClass, extraButtonContainerClass]}>
-						<View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={greenButtonClass}
-                                icon="phone"
-                                onPress={this.props.confirmStartCall}
-                            />
-                        </TouchableHighlight>
-                      </View>
-						<View style={styles.buttonContainer}>
-                          <TouchableHighlight style={styles.roundshape}>
-                            <IconButton
-                                size={buttonSize}
-                                style={hangupButtonClass}
-                                icon="phone-hangup"
-                                onPress={this.cancelCall}
-                            />
-                        </TouchableHighlight>
-                      </View>
-                      </View>
+						{false && (
+						  <View style={styles.confirmContainer}>
+								<Text style={styles.confirm}>Please confirm...</Text>
+								<View style={[buttonContainerClass, extraButtonContainerClass]}>
+								<View style={styles.buttonContainer}>
+								  <TouchableHighlight style={styles.roundshape}>
+									<IconButton
+										size={buttonSize}
+										style={greenButtonClass}
+										icon="phone"
+										onPress={this.props.confirmStartCall}
+									/>
+								</TouchableHighlight>
+							  </View>
+								<View style={styles.buttonContainer}>
+								  <TouchableHighlight style={styles.roundshape}>
+									<IconButton
+										size={buttonSize}
+										style={hangupButtonClass}
+										icon="phone-hangup"
+										onPress={this.cancelCall}
+									/>
+								</TouchableHighlight>
+							  </View>
+							  </View>
+							  </View>
+							  )}
 
-                      </View>
-                      )}
-
-                <TrafficStats
-                    isTablet={this.props.isTablet}
-                    isLandscape={this.state.isLandscape}
-                    data={this.state.audioGraphData}
-                    media="audio"
-                />
+						<TrafficStats
+							key={'cb-stats-' + _callRemountKey}
+							isTablet={this.props.isTablet}
+							isLandscape={this.state.isLandscape}
+							data={this.state.audioGraphData}
+							media="audio"
+						/>
+					</>
+				)}
 
                 {!this.state.isLandscape && this.state.reconnectingCall ?
                     <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
@@ -550,11 +612,12 @@ class AudioCallBox extends Component {
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
-                        <View style={[buttonContainerClass, extraButtonContainerClass]}>
+                        <View key={'cb-btnbar-' + _callRemountKey} style={[buttonContainerClass, extraButtonContainerClass]}>
                             {!disableChat ?
-                                <View style={styles.buttonContainer}>
+                                <View style={slotContainerStyle}>
                                     <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
+                                            key={'cb-btn-chat-' + _callRemountKey}
                                             size={buttonSize}
                                             style={disableChat ? disabledGreenButtonClass : greenButtonClass}
                                             icon="chat"
@@ -565,9 +628,10 @@ class AudioCallBox extends Component {
                                 : null}
 
                             {!disableChat ?
-                                <View style={styles.buttonContainer}>
+                                <View style={slotContainerStyle}>
                                     <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
+                                            key={'cb-btn-invite-' + _callRemountKey}
                                             size={buttonSize}
                                             style={whiteButtonClass}
                                             icon="account-plus"
@@ -576,9 +640,10 @@ class AudioCallBox extends Component {
                                     </TouchableHighlight>
                                 </View>
                                 : null}
-                            <View style={styles.buttonContainer}>
+                            <View style={slotContainerStyle}>
                                 <TouchableHighlight style={styles.roundshape}>
                                     <IconButton
+                                        key={'cb-btn-mute-' + _callRemountKey}
                                         size={buttonSize}
                                         style={whiteButtonClass}
                                         icon={this.state.audioMuted ? 'microphone-off' : 'microphone'}
@@ -586,12 +651,13 @@ class AudioCallBox extends Component {
                                 </TouchableHighlight>
                             </View>
 
-                            {this.renderAudioDevicePicker(buttonSize, whiteButtonClass)}
+                            {this.renderAudioDevicePicker(buttonSize, whiteButtonClass, _callRemountKey, slotContainerStyle)}
 
                             {isPhoneNumber ?
-                                <View style={styles.buttonContainer}>
+                                <View style={slotContainerStyle}>
                                     <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
+                                            key={'cb-btn-dtmf-' + _callRemountKey}
                                             size={buttonSize}
                                             style={whiteButtonClass}
                                             icon="dialpad"
@@ -600,9 +666,10 @@ class AudioCallBox extends Component {
                                     </TouchableHighlight>
                                 </View>
                                 : null}
-                            <View style={[styles.buttonContainer, {marginLeft: 30}]}>
+                            <View style={[slotContainerStyle, {marginLeft: hangupMarginLeft}]}>
                                 <TouchableHighlight style={styles.roundshape}>
                                     <IconButton
+                                        key={'cb-btn-hangup-' + _callRemountKey}
                                         size={buttonSize}
                                         style={hangupButtonClass}
                                         icon="phone-hangup"
@@ -612,10 +679,11 @@ class AudioCallBox extends Component {
                         </View></>
                     :
 
-                    <View style={[buttonContainerClass, extraButtonContainerClass]}>
-                      <View style={styles.buttonContainer}>
+                    <View key={'cb-btnbar-' + _callRemountKey} style={[buttonContainerClass, extraButtonContainerClass]}>
+                      <View style={slotContainerStyle}>
                           <TouchableHighlight style={styles.roundshape}>
                             <IconButton
+                                key={'cb-btn-cancel-' + _callRemountKey}
                                 size={buttonSize}
                                 style={hangupButtonClass}
                                 icon="phone-hangup"
@@ -662,6 +730,7 @@ AudioCallBox.propTypes = {
     speakerPhoneEnabled: PropTypes.bool,
     isLandscape: PropTypes.bool,
     isTablet: PropTypes.bool,
+    isFolded: PropTypes.bool,
     reconnectingCall: PropTypes.bool,
     muted: PropTypes.bool,
     showLogs: PropTypes.func,

@@ -1,8 +1,10 @@
 Sylk Mobile
 ===========
 
-Fully featured SIP client based on open standards
+iOS: Open, federated SIP messaging
+Android: Open-source messenger and video client. Like email — for real-time comms
 
+Fully featured SIP client based on open standards
 
 Description
 -----------
@@ -13,7 +15,7 @@ applications using IETF SIP protocol and WebRTC specifications.
 Sylk Mobile can place and receive audio and video calls to and from SIP
 addresses and Web browsers. File transfers are interoperable with SIP
 end-points supporting MSRP media.  Messages are encrypted end-to-end using
-OpenPGP.
+OpenPGP. Mutual location can be easily shared for meeting purposes.
 
 
 Features
@@ -23,6 +25,8 @@ Features
 * End-to-end encrypted messaging
 * Advanced file transfers
 * Support for multiple devices 
-* Multiparty conferencing
-* Portrait and landscape mode
+* Multiparty conferencing for all media
+* Portrait and landscape modes
 * Receive calls from the web
+* Location-based meetup
+

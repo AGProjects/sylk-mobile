@@ -509,9 +509,23 @@
 
         NSLog(@"[sylk_app] willPresentNotification event=%@ from=%@ to=%@", event, fromUri, toUri);
 
-  completionHandler(UNNotificationPresentationOptionAlert |
-                    UNNotificationPresentationOptionSound |
-                    UNNotificationPresentationOptionBadge);
+  // iOS 14+ split UNNotificationPresentationOptionAlert into .banner (the bubble
+  // at the top of the screen) and .list (the entry in Notification Center).
+  // Passing just .alert on iOS 14+ is deprecated and can end up as list-only on
+  // iOS 17/18/26 — the notification lands in the shade but no banner pops up.
+  // Use .banner + .list explicitly when available.
+  UNNotificationPresentationOptions options;
+  if (@available(iOS 14.0, *)) {
+      options = UNNotificationPresentationOptionBanner |
+                UNNotificationPresentationOptionList |
+                UNNotificationPresentationOptionSound |
+                UNNotificationPresentationOptionBadge;
+  } else {
+      options = UNNotificationPresentationOptionAlert |
+                UNNotificationPresentationOptionSound |
+                UNNotificationPresentationOptionBadge;
+  }
+  completionHandler(options);
 }
 
 #pragma mark - Continue user activity (e.g., CallKeep)

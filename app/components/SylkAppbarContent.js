@@ -6,6 +6,16 @@ const SylkAppbarContent = (props) => {
   const defaultTitleStyle = { color: 'white' };
   const defaultSubtitleStyle = { color: 'white' };
 
+  // Diagnostic (disabled — re-enable to debug fold remount):
+  // Log mount/unmount to verify the key-based remount cycle on
+  // fold/rotate transitions. NavigationBar changes this component's
+  // `key` on fold + window-dim change to force native re-measurement
+  // under the new display density.
+  // React.useEffect(() => {
+  //   console.log('[FoldUI] SylkAppbarContent mount');
+  //   return () => console.log('[FoldUI] SylkAppbarContent unmount');
+  // }, []);
+
   return (
     <View style={{ flex: 1 }}>
       <Text

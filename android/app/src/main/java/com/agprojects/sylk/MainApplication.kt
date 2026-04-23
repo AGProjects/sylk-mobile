@@ -32,6 +32,7 @@ class MainApplication : Application(), ReactApplication {
               add(SylkBridgePackage())
               add(ThumbnailServicePackage())
               add(CallForegroundServicePackage())
+              add(LocationForegroundServicePackage())
               add(AndroidSettingsPackage())
               add(AudioRoutePackage())
               add(UnreadPackage())

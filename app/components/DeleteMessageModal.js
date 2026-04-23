@@ -15,33 +15,47 @@ class DeleteMessageModal extends Component {
         super(props);
         autoBind(this);
 
+        // Default remoteDelete to whatever the parent says is allowed. If
+        // canDeleteRemote is false (selection contains an incoming message)
+        // the toggle stays hidden and we force the value to false so the
+        // delete-for-remote path is never taken.
+        const canDeleteRemote = this.props.canDeleteRemote !== false;
+
         this.state = {
             uri: this.props.contact ? this.props.contact.uri : null,
             username: this.props.contact && this.props.contact.uri ? this.props.contact.uri.split('@')[0] : null,
             displayName: this.props.contact ? this.props.contact.name : null,
             contact: this.props.contact,
             show: this.props.show,
-            remoteDelete: true,
+            remoteDelete: canDeleteRemote,
             afterDelete: false,
             confirm: false,
         }
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        const canDeleteRemote = nextProps.canDeleteRemote !== false;
         this.setState({show: nextProps.show,
                        uri: nextProps.contact ? nextProps.contact.uri : null,
                        username: nextProps.contact && nextProps.contact.uri ? nextProps.contact.uri.split('@')[0] : null,
                        displayName: nextProps.contact ? nextProps.contact.name : null,
                        confirm: nextProps.confirm,
                        contact: nextProps.contact,
+                       // Reset the toggle to match what's allowed each time
+                       // a new selection opens the modal.
+                       remoteDelete: canDeleteRemote,
                        });
     }
 
     deleteMessage(event) {
         if (this.state.confirm || true) {
-            this.setState({confirm: false, remoteDelete: true, afterDelete: false});
+            // Guard: never pass remoteDelete=true when the parent said the
+            // selection isn't eligible (e.g. any incoming message included).
+            const allowRemote = this.props.canDeleteRemote !== false;
+            const remoteDelete = allowRemote && this.state.remoteDelete;
+            this.setState({confirm: false, remoteDelete: allowRemote, afterDelete: false});
             for (const id of this.props.messages) {
-				this.props.deleteMessageFunc(id, this.state.uri, this.state.remoteDelete, this.state.afterDelete);
+				this.props.deleteMessageFunc(id, this.state.uri, remoteDelete, this.state.afterDelete);
 		    }
             this.props.close();
         } else {
@@ -62,7 +76,10 @@ class DeleteMessageModal extends Component {
         let deleteLabel = this.state.confirm || true ? 'Confirm': 'Delete';
         let remote_label = (this.state.displayName && this.state.displayName !== this.state.uri) ? this.state.displayName : this.state.username;
         
-        let canDeleteRemote = true;
+        // Driven by the parent: false when the selection contains any
+        // incoming message (can't instruct the remote device to delete
+        // messages it originated). Defaults to true for back-compat.
+        let canDeleteRemote = this.props.canDeleteRemote !== false;
 
         return (
         <Portal>
@@ -135,7 +152,8 @@ DeleteMessageModal.propTypes = {
     close              : PropTypes.func.isRequired,
     contact            : PropTypes.object,
     deleteMessageFunc  : PropTypes.func,
-    messages           : PropTypes.array
+    messages           : PropTypes.array,
+    canDeleteRemote    : PropTypes.bool,
 };
 
 export default DeleteMessageModal;

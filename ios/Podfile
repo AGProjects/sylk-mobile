@@ -65,6 +65,13 @@ target 'sylk' do
   pod 'Permission-Camera', :path => "#{permissions_path}/Camera"
   pod 'Permission-PhotoLibrary', :path => "#{permissions_path}/PhotoLibrary"
   pod 'Permission-MediaLibrary', :path => "#{permissions_path}/MediaLibrary"
+  # Needed so react-native-permissions' check()/request() can distinguish
+  # 'Always' from 'While Using' location authorization. Without these the
+  # JS side returns UNAVAILABLE for both LOCATION_ALWAYS and
+  # LOCATION_WHEN_IN_USE and our upfront share-location probe can't tell
+  # whether background sharing will work.
+  pod 'Permission-LocationAlways', :path => "#{permissions_path}/LocationAlways"
+  pod 'Permission-LocationWhenInUse', :path => "#{permissions_path}/LocationWhenInUse"
   pod 'FBLazyVector', :path => "../node_modules/react-native/Libraries/FBLazyVector"
   # pod 'FBReactNativeSpec', :path => "../node_modules/react-native/Libraries/FBReactNativeSpec"
   pod 'FBReactNativeSpec', :path => "../node_modules/react-native/React/FBReactNativeSpec"

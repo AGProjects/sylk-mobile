@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
+import {
+  Modal,
+  View,
+  TouchableWithoutFeedback,
+  Keyboard,
+  KeyboardAvoidingView,
+  ScrollView,
+  StyleSheet,
+  Platform,
+} from 'react-native';
 import { Text, Button, Surface, TextInput } from 'react-native-paper';
 import PropTypes from 'prop-types';
 
@@ -100,8 +109,21 @@ const AddContactModal = ({
 			  </Text>
 	
 			  <View style={styles.buttonRow}>
+					{/* Match the button pattern used in EditContactModal /
+					    DeleteHistoryModal / DeleteFileTransfers — outlined
+					    Cancel first, contained primary action second.
+					    Also gives users a guaranteed dismiss target when
+					    the tap-outside area is tiny (e.g. keyboard up). */}
 					<Button
-					  mode={uri ? 'contained' : 'flat'}
+					  mode="outlined"
+					  style={styles.button}
+					  onPress={close}
+					  accessibilityLabel="Cancel"
+					>
+					  Cancel
+					</Button>
+					<Button
+					  mode="contained"
 					  style={styles.button}
 					  disabled={!uri}
 					  onPress={handleSave}

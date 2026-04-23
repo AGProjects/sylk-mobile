@@ -561,6 +561,7 @@ class Call extends Component {
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         isLandscape = {this.state.isLandscape}
                         isTablet = {this.props.isTablet}
+                        isFolded = {this.props.isFolded}
                         reconnectingCall = {this.state.reconnectingCall}
                         muted = {this.props.muted}
                         showLogs = {this.props.showLogs}
@@ -613,6 +614,7 @@ class Call extends Component {
                             intercomDtmfTone = {this.props.intercomDtmfTone}
                             isLandscape = {this.state.isLandscape}
                             isTablet = {this.props.isTablet}
+                            isFolded = {this.props.isFolded}
                             reconnectingCall = {this.state.reconnectingCall}
                             muted = {this.props.muted}
                             showLogs = {this.props.showLogs}
@@ -693,6 +695,7 @@ class Call extends Component {
                     toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                     isLandscape = {this.state.isLandscape}
                     isTablet = {this.props.isTablet}
+                    isFolded = {this.props.isFolded}
                     reconnectingCall = {this.state.reconnectingCall}
                     muted = {this.props.muted}
                     showLogs = {this.props.showLogs}
@@ -735,6 +738,7 @@ Call.propTypes = {
     intercomDtmfTone        : PropTypes.string,
     isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
+    isFolded                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
     showLogs                : PropTypes.func,

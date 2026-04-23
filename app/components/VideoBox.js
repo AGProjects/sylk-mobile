@@ -297,6 +297,10 @@ class VideoBox extends Component {
 		const devices = this.props.availableAudioDevices || [];
 		const selectedIcon = utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
 
+		// Only one device available — there is nothing to switch to, so
+		// don't show the audio-device button at all.
+		if (devices.length <= 1) return null;
+
 		// Variant 1: cycle through devices on tap
 		if (AUDIO_DEVICE_PICKER_MODE === 'cycle') {
 			return (
@@ -621,7 +625,7 @@ class VideoBox extends Component {
         const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
-        const buttonSize = this.props.isTablet ? 40 : 20;
+        const buttonSize = this.props.isTablet ? 40 : 28;
 
         if (this.props.isTablet) {
             buttonsContainerClass = this.state.isLandscape ? styles.tabletLandscapebuttonsContainer : styles.tabletPortraitbuttonsContainer;
@@ -732,7 +736,9 @@ class VideoBox extends Component {
 
 	    const cornerOrder = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
        
-        let bottomExtraInset = this.state.isLandscape ? 0 : 100;
+        // On the cover display there isn't room for a 100px gap above
+        // the bottom buttons, so cut it down substantially when folded.
+        let bottomExtraInset = this.state.isLandscape ? 0 : (this.props.isFolded ? 40 : 100);
         let extraRightInset = 0;
          
 		let corners = {
@@ -802,10 +808,18 @@ class VideoBox extends Component {
 			}
 		}
 		
+		// Self-video thumbnail dimensions. On the Razr cover display we
+		// have very little real estate, so shrink the picture-in-picture
+		// to roughly half size. The outer wrapper (below) uses the same
+		// numbers so the surface and its hit target stay aligned.
+		const selfThumbWidth  = this.props.isFolded ? 72 : 120;
+		const selfThumbHeight = this.props.isFolded ? 96 : 160;
+		const selfSurfaceHeight = this.props.isFolded ? 54 : 90;
+
 		let mySurfaceContainer = {
 			flex: 1,
-			width: 120,
-			height: 90,
+			width: selfThumbWidth,
+			height: selfSurfaceHeight,
 			elevation: 5,
 			borderWidth: 0,
 			zIndex: 1000,
@@ -854,7 +868,17 @@ class VideoBox extends Component {
 
 			this.prevValues = values;
 		}
-							
+
+		// Force-remount key for fold/density transitions. IconButton and
+		// RTCView/Surface cache their measured frames at the density they
+		// were first mounted under; changing this key on fold/unfold and
+		// on orientation/dimension changes forces React to remount them
+		// so they re-measure at the new display metrics.
+		const _videoRemountKey = (this.props.isFolded ? 'f' : 'u')
+			+ '-' + (this.state.isLandscape ? 'l' : 'p')
+			+ '-' + Math.round(width) + 'x' + Math.round(height)
+			+ '-' + this.state.myVideoCorner;
+
         return (
             <View style={styles.container}>
                 <CallOverlay
@@ -903,13 +927,15 @@ class VideoBox extends Component {
 
                 {this.showMyself ?
 				  <View
+					key={'vb-myself-wrap-' + _videoRemountKey}
 					style={myselfContainer}
 				  >
 					<View
+					  key={'vb-myself-pos-' + _videoRemountKey}
 					  style={{
 						position: 'absolute',
-						width: 120,
-						height: 160,
+						width: selfThumbWidth,
+						height: selfThumbHeight,
 						...corner,
 					  }}
 					>
@@ -921,8 +947,9 @@ class VideoBox extends Component {
 						  this.setState({ myVideoCorner: cornerOrder[nextIndex] });
 						}}
 					  >
-					  <Surface style={mySurfaceContainer}>
+					  <Surface key={'vb-myself-surf-' + _videoRemountKey} style={mySurfaceContainer}>
 						<RTCView
+							key={'vb-myself-rtc-' + _videoRemountKey}
 							objectFit='cover'
 							style={styles.video}
 							ref={this.localVideo}
@@ -932,7 +959,7 @@ class VideoBox extends Component {
 					</Surface>
 					  </TouchableOpacity>
 					</View>
-	
+
 				  </View>
                  : null }
 
@@ -975,6 +1002,7 @@ VideoBox.propTypes = {
     intercomDtmfTone        : PropTypes.string,
     isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
+    isFolded                : PropTypes.bool,
     reconnectingCall        : PropTypes.bool,
     muted                   : PropTypes.bool,
     showLogs                : PropTypes.func,

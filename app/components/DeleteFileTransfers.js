@@ -1,13 +1,25 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { View, Platform, Text } from 'react-native';
-import { Dialog, Portal, Button, Menu, Switch, Checkbox } from 'react-native-paper';
-import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import {
+  View,
+  Platform,
+  Text,
+  Modal,
+  TouchableWithoutFeedback,
+  KeyboardAvoidingView,
+  ScrollView,
+} from 'react-native';
+import { Button, Surface, Switch, Checkbox } from 'react-native-paper';
 import UserIcon from './UserIcon';
 import utils from '../utils';
 
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+// Share the Modal + overlay + Surface shell with EditContactModal /
+// ShareLocationModal / ActiveLocationSharesModal / DeleteHistoryModal so
+// every dialog has the same rounded-corner card on a dimmed backdrop.
+// Dropped the old Paper Dialog/Portal wrapper that rendered with a
+// slightly different corner radius and elevation.
+import containerStyles from '../assets/styles/ContainerStyles';
 
 import { StyleSheet } from 'react-native';
 
@@ -206,40 +218,64 @@ class DeleteFileTransfers extends Component {
       { key: '-365', label: 'Older than one year' },
     ];
 
+    // Inline dropdown (see matching comment in DeleteHistoryModal).
+    // Paper's `Menu` popup portals to the app-root host, which on iOS
+    // sits behind the RN `<Modal>` — so the picker disappears under
+    // the dialog. Adding `Portal.Host` here would fix the layering but
+    // Paper's PortalHost wraps children in a flex:1 View that collapses
+    // the modal Surface. Rendering the options inline below the button
+    // gives us the same UX without any portal acrobatics.
+    const selected = periodOptions.find(opt => opt.key === this.state.periodFilterKey);
     return (
       <View style={{ marginVertical: 8, marginLeft: 20, marginRight: 40 }}>
-        <Menu
-          visible={this.state.menuVisible}
-          onDismiss={() => this.setState({ menuVisible: false })}
-          anchor={
-            <Button
-              mode="outlined"
-              onPress={() => this.setState({ menuVisible: true })}
-              style={{ width: '100%', justifyContent: 'space-between' }}
-              contentStyle={{ height: 50 }}
-              labelStyle={{ color: 'black' }}
-              icon="menu-down"
-            >
-              {periodOptions.find(opt => opt.key === this.state.periodFilterKey)?.label || 'Select period'}
-            </Button>
-          }
+        <Button
+          mode="outlined"
+          onPress={() => this.setState({ menuVisible: !this.state.menuVisible })}
+          style={{ width: '100%', justifyContent: 'space-between' }}
+          contentStyle={{ height: 50 }}
+          labelStyle={{ color: 'black' }}
+          icon={this.state.menuVisible ? 'menu-up' : 'menu-down'}
         >
-          {periodOptions.map(option => (
-            <Menu.Item
-              key={option.key}
-              onPress={() => {
-                let periodType = 'after';
-                const num = Number(option.key);
-                if (!isNaN(num) && num < 0) periodType = 'before';
+          {selected ? selected.label : 'Select period'}
+        </Button>
+        {this.state.menuVisible ? (
+          <View
+            style={{
+              marginTop: 4,
+              borderWidth: 1,
+              borderColor: '#ccc',
+              borderRadius: 8,
+              backgroundColor: '#fff',
+              overflow: 'hidden',
+            }}
+          >
+            {periodOptions.map(option => (
+              <Button
+                key={option.key}
+                mode="text"
+                compact
+                uppercase={false}
+                style={{ justifyContent: 'flex-start', borderRadius: 0 }}
+                contentStyle={{ justifyContent: 'flex-start', height: 40 }}
+                labelStyle={{
+                  color: option.key === this.state.periodFilterKey ? '#1976d2' : 'black',
+                  textAlign: 'left',
+                }}
+                onPress={() => {
+                  let periodType = 'after';
+                  const num = Number(option.key);
+                  if (!isNaN(num) && num < 0) periodType = 'before';
 
-                this.setState({ periodFilterKey: option.key, periodType, menuVisible: false });
-                const filter = { incoming: this.state.incoming, outgoing: this.state.outgoing, period: this.getPeriodFilterDate(option.key), periodType };
-                this.props.getTransferedFiles(this.props.uri, filter);
-              }}
-              title={option.label}
-            />
-          ))}
-        </Menu>
+                  this.setState({ periodFilterKey: option.key, periodType, menuVisible: false });
+                  const filter = { incoming: this.state.incoming, outgoing: this.state.outgoing, period: this.getPeriodFilterDate(option.key), periodType };
+                  this.props.getTransferedFiles(this.props.uri, filter);
+                }}
+              >
+                {option.label}
+              </Button>
+            ))}
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -267,109 +303,146 @@ class DeleteFileTransfers extends Component {
     const otherSize = this.props.transferedFilesSizes?.others ?? 0;
 
     return (
-      <Portal>
-        <DialogType visible={this.state.show} onDismiss={this.close}>
-          <View style={styles.titleContainer}>
-            <Dialog.Title style={styles.title}>Delete files</Dialog.Title>
-          </View>
-
-          <Text style={styles.body}>
-            Files exchanged with {remote_label}: 
-          </Text>
-
-            <View style={styles.checkBoxRow}>
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
-              ) : (
-                <Checkbox status={this.state.outgoing ? 'checked' : 'unchecked'} onPress={this.toggleOutgoing} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Outgoing</Text>
-            </View>
-
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.incoming} onValueChange={this.toggleIncoming} />
-              ) : (
-                <Checkbox status={this.state.incoming ? 'checked' : 'unchecked'} onPress={this.toggleIncoming} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Incoming</Text>
-            </View>
-
-            </View>
-
-          {this.renderPeriodDropdown()}
-
-          {photoFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deletePhotos} onValueChange={this.toggleDeletePhotos} />
-              ) : (
-                <Checkbox status={this.state.deletePhotos ? 'checked' : 'unchecked'} onPress={this.toggleDeletePhotos} />
-              )}
-              <Text style={{ marginLeft: 8 }}>{photoFiles} photos ({utils.beautySize(photoSize)})</Text>
-            </View>
-          ) : null}
-
-          {videoFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deleteVideos} onValueChange={this.toggleDeleteVideos} />
-              ) : (
-                <Checkbox status={this.state.deleteVideos ? 'checked' : 'unchecked'} onPress={this.toggleDeleteVideos} />
-              )}
-              <Text style={{ marginLeft: 8 }}>{videoFiles} videos ({utils.beautySize(videoSize)})</Text>
-            </View>
-          ) : null}
-
-          {audioFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deleteAudios} onValueChange={this.toggleDeleteAudios} />
-              ) : (
-                <Checkbox status={this.state.deleteAudios ? 'checked' : 'unchecked'} onPress={this.toggleDeleteAudios} />
-              )}
-              <Text style={{ marginLeft: 8 }}>{audioFiles} audio recordings ({utils.beautySize(audioSize)})</Text>
-            </View>
-          ) : null}
-
-          {otherFiles ? (
-            <View style={styles.checkBoxRow}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.deleteOthers} onValueChange={this.toggleDeleteOthers} />
-              ) : (
-                <Checkbox status={this.state.deleteOthers ? 'checked' : 'unchecked'} onPress={this.toggleDeleteOthers} />
-              )}
-              <Text style={{ marginLeft: 8 }}>{otherFiles} other type ({utils.beautySize(otherSize)})</Text>
-            </View>
-          ) : null}
-
-          <View style={styles.buttonRow}>
-            <Button
-              mode="contained"
-              style={[styles.button, this.state.confirm && { backgroundColor: 'red' }]}
-              onPress={this.deleteMessages}
-              icon="delete"
-              disabled={isDisabled}
-              accessibilityLabel="Delete files"
+      <Modal
+        style={containerStyles.container}
+        // Coerce to boolean. RN's Modal treats `visible={undefined}`
+        // as visible (it does NOT default to false), and the parent's
+        // initial state may not include this flag — so without `!!`
+        // the modal would pop up on cold start.
+        visible={!!this.state.show}
+        transparent
+        animationType="fade"
+        onRequestClose={this.close}
+      >
+        <TouchableWithoutFeedback onPress={this.close}>
+          <View style={containerStyles.overlay}>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
             >
-              {deleteLabel}
-            </Button>
+              {/* Block dismiss when taps land inside the card. */}
+              <TouchableWithoutFeedback onPress={() => {}}>
+                <Surface style={containerStyles.modalSurface}>
+                  <ScrollView
+                    style={{ maxHeight: 520 }}
+                    keyboardShouldPersistTaps="handled"
+                  >
+                    <View style={styles.titleContainer}>
+                      <Text style={containerStyles.title}>Delete files</Text>
+                    </View>
+
+                    <Text style={styles.body}>
+                      Files exchanged with {remote_label}:
+                    </Text>
+
+                    <View style={styles.checkBoxRow}>
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
+                        ) : (
+                          <Checkbox status={this.state.outgoing ? 'checked' : 'unchecked'} onPress={this.toggleOutgoing} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>Outgoing</Text>
+                      </View>
+
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.incoming} onValueChange={this.toggleIncoming} />
+                        ) : (
+                          <Checkbox status={this.state.incoming ? 'checked' : 'unchecked'} onPress={this.toggleIncoming} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>Incoming</Text>
+                      </View>
+                    </View>
+
+                    {this.renderPeriodDropdown()}
+
+                    {photoFiles ? (
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.deletePhotos} onValueChange={this.toggleDeletePhotos} />
+                        ) : (
+                          <Checkbox status={this.state.deletePhotos ? 'checked' : 'unchecked'} onPress={this.toggleDeletePhotos} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>{photoFiles} photos ({utils.beautySize(photoSize)})</Text>
+                      </View>
+                    ) : null}
+
+                    {videoFiles ? (
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.deleteVideos} onValueChange={this.toggleDeleteVideos} />
+                        ) : (
+                          <Checkbox status={this.state.deleteVideos ? 'checked' : 'unchecked'} onPress={this.toggleDeleteVideos} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>{videoFiles} videos ({utils.beautySize(videoSize)})</Text>
+                      </View>
+                    ) : null}
+
+                    {audioFiles ? (
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.deleteAudios} onValueChange={this.toggleDeleteAudios} />
+                        ) : (
+                          <Checkbox status={this.state.deleteAudios ? 'checked' : 'unchecked'} onPress={this.toggleDeleteAudios} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>{audioFiles} audio recordings ({utils.beautySize(audioSize)})</Text>
+                      </View>
+                    ) : null}
+
+                    {otherFiles ? (
+                      <View style={styles.checkBoxRow}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.deleteOthers} onValueChange={this.toggleDeleteOthers} />
+                        ) : (
+                          <Checkbox status={this.state.deleteOthers ? 'checked' : 'unchecked'} onPress={this.toggleDeleteOthers} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>{otherFiles} other type ({utils.beautySize(otherSize)})</Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.buttonRow}>
+                      {/* Explicit Cancel — the tap-outside-to-dismiss
+                          area on this card is tiny on phones, especially
+                          with many file-type rows expanded. Give users
+                          an obvious escape that's nowhere near the red
+                          Delete action. */}
+                      <Button
+                        mode="outlined"
+                        style={styles.button}
+                        onPress={this.close}
+                        accessibilityLabel="Cancel"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        mode="contained"
+                        style={[styles.button, this.state.confirm && { backgroundColor: 'red' }]}
+                        onPress={this.deleteMessages}
+                        icon="delete"
+                        disabled={isDisabled}
+                        accessibilityLabel="Delete files"
+                      >
+                        {deleteLabel}
+                      </Button>
+                    </View>
+                    {canDeleteRemote && !isDisabled ? (
+                      <View style={[styles.checkBoxRow, {borderTop: 0.5}]}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
+                        ) : (
+                          <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={this.toggleRemoteDelete} />
+                        )}
+                        <Text style={{ marginLeft: 8 }}>Also delete remotely</Text>
+                      </View>
+                    ) : null}
+                  </ScrollView>
+                </Surface>
+              </TouchableWithoutFeedback>
+            </KeyboardAvoidingView>
           </View>
-          {canDeleteRemote && !isDisabled ? (
-            <View style={[styles.checkBoxRow, {borderTop: 0.5}]}>
-              {Platform.OS === 'ios' ? (
-                <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
-              ) : (
-                <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={this.toggleRemoteDelete} />
-              )}
-              <Text style={{ marginLeft: 8 }}>Also delete remotely</Text>
-            </View>
-          ) : null}
-
-
-        </DialogType>
-      </Portal>
+        </TouchableWithoutFeedback>
+      </Modal>
     );
   }
 }

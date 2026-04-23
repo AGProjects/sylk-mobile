@@ -35,6 +35,13 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
 
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Required on Android 10+ (API 29) so watchPosition keeps firing while
+         Sylk is in the background. On API 30+ this can't be granted via a
+         runtime prompt — the user must pick "Allow all the time" from the
+         system Settings page, which we deep-link to from the share flow. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission-sdk-23 android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS"/>
@@ -44,6 +51,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <!-- Required on Android 14+ (API 34) for the LocationForegroundService
+         to declare foregroundServiceType="location". Without this the
+         service fails to start on modern devices. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
@@ -67,6 +78,14 @@
       android:theme="@style/AppTheme"
       android:requestLegacyExternalStorage="true">
 
+      <!-- Foldable support: tells the OS the app correctly handles size changes
+           (e.g. Razr fold/unfold, cover↔main display transitions). Combined with
+           android:resizeableActivity="true" on MainActivity and the expanded
+           configChanges list, this prevents the activity from being destroyed
+           and recreated when the display flips, which would otherwise kill the
+           active call and restart the RN bridge. -->
+      <meta-data android:name="android.supports_size_changes" android:value="true" />
+
 <receiver android:name=".IncomingCallActionReceiver" android:exported="true"/>
 
 <service
@@ -81,7 +100,16 @@
     android:name=".CallForegroundService"
     android:exported="false"
     android:foregroundServiceType="microphone" />
-    
+
+<!-- Keeps the process promoted (and location callbacks flowing) while the
+     user has an active "Share location" session. Started from JS via the
+     LocationForegroundServiceModule bridge when sharing begins; stopped
+     when the share ends, expires, or the user revokes permission. -->
+<service
+    android:name=".LocationForegroundService"
+    android:exported="false"
+    android:foregroundServiceType="location" />
+
 <service android:name=".ThumbnailService"
          android:exported="false" />
     
@@ -107,7 +135,8 @@
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
-        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|density|fontScale|layoutDirection|navigation"
+        android:resizeableActivity="true"
         android:windowSoftInputMode="adjustResize"
         android:exported="true"
         android:launchMode="singleTask"

@@ -293,6 +293,15 @@ class CallOverlay extends React.Component {
 				elevation: 10,
 			}
 
+			// Remount key — same stale-native-frame fix as NavigationBar /
+			// ReadyBox. SylkAppbarContent's Text + Appbar.Action IconButtons
+			// cache their measured frame at the density they were first
+			// mounted under, so a fold transition must change this key to
+			// force re-measurement.
+			const _overlayRemountKey = (this.props.isFolded ? 'f' : 'u')
+				+ '-' + (this.state.isLandscape ? 'l' : 'p')
+				+ '-' + Math.round(width) + 'x' + Math.round(height);
+
 			if (Platform.OS === "ios") {
 				//appBarContainer.marginTop = 0;
 				if (this.state.isLandscape) {
@@ -306,11 +315,12 @@ class CallOverlay extends React.Component {
 			}
         
 			header = (
-				<Appbar.Header style={[appBarContainer]}
+				<Appbar.Header key={'co-header-' + _overlayRemountKey} style={[appBarContainer]}
 						dark={true}
 						>
-					<Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
+					<Appbar.BackAction key={'co-back-' + _overlayRemountKey} onPress={() => {this.props.goBackFunc()}} />
 					<SylkAppbarContent
+						key={'co-content-' + _overlayRemountKey}
 						title={mediaLabel} subtitle={callDetail}
 					/>
 
@@ -320,6 +330,7 @@ class CallOverlay extends React.Component {
                     anchor={
                     <View style={{ marginLeft: 50}}>
                         <Appbar.Action
+                            key={'co-menu-' + _overlayRemountKey}
                             ref={this.menuRef}
                             color="white"
                             icon="menu"
@@ -405,6 +416,7 @@ CallOverlay.propTypes = {
     goBackFunc: PropTypes.func,
     callState : PropTypes.object,
     isLandscape: PropTypes.bool,
+    isFolded: PropTypes.bool,
     toggleMyVideo: PropTypes.func,
     swapVideo: PropTypes.func,
     enableMyVideo: PropTypes.bool,

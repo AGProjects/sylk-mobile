@@ -32,6 +32,7 @@ import RenderHTML from 'react-native-render-html';
 import * as Progress from 'react-native-progress';
 
 import ChatBubble from './ChatBubble';
+import LocationBubble from './LocationBubble';
 import ThumbnailGrid from './ThumbnailGrid';
 
 import moment from 'moment';
@@ -2331,19 +2332,77 @@ class ContactsListBox extends Component {
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
         }
-        
+
+        // Live-location messages are a different beast from text/file
+        // messages: they carry no user-authored body, their content updates
+        // in place (each tick rewrites the bubble), and they expire on a
+        // schedule. Reply/Pin/Forward/Share/Email all assume a static,
+        // shareable payload, which a tick-by-tick location stream doesn't
+        // have — forwarding a single tick would mislead the recipient,
+        // sharing via Email would leak a URL that stops updating, etc.
+        // Gate those actions so only the universally-safe ones (Copy,
+        // Delete, Info, …) show up on the sheet.
+        const isLiveLocation =
+            currentMessage.contentType === 'application/sylk-live-location';
+
+        // An incoming "Until we meet" meeting-request bubble: an incoming
+        // live-location bubble whose metadata carries meeting_request:true.
+        // We show an "Accept meeting request" option only if the request
+        // hasn't already been accepted on this device and hasn't expired —
+        // the predicate is supplied by app.js as a prop.
+        const mdForMeeting = currentMessage.metadata || {};
+        const meetingReqId =
+            (isLiveLocation
+                && currentMessage.direction === 'incoming'
+                && mdForMeeting.meeting_request === true)
+            ? (mdForMeeting.messageId || currentMessage._id)
+            : null;
+        const meetingExpiresAt = meetingReqId
+            ? (typeof mdForMeeting.expires === 'number'
+                ? mdForMeeting.expires
+                : (mdForMeeting.expires ? Date.parse(mdForMeeting.expires) : null))
+            : null;
+        const meetingFromUri = meetingReqId
+            ? (mdForMeeting.author
+                || (currentMessage.user && currentMessage.user._id)
+                || this.state.targetUri)
+            : null;
+        const canAcceptMeeting = !!meetingReqId
+            && typeof this.props.isMeetingRequestAcceptable === 'function'
+            && this.props.isMeetingRequestAcceptable(meetingReqId, meetingExpiresAt);
+        if (isLiveLocation) {
+            console.log('[meeting] kebab: location bubble long-press',
+                'isIncoming=', currentMessage.direction === 'incoming',
+                'meeting_request=', mdForMeeting.meeting_request === true,
+                'meetingReqId=', meetingReqId,
+                'meetingExpiresAt=', meetingExpiresAt,
+                'hasPredicate=', typeof this.props.isMeetingRequestAcceptable === 'function',
+                'canAcceptMeeting=', canAcceptMeeting);
+        }
+
         let icons = [];
         //console.log('---- currentMessage', currentMessage);
         if (currentMessage && currentMessage.text) {
 
             let options = []
+
+            // Surface this at the top of the sheet: if the user dismissed
+            // the modal, tapping the bubble's kebab is now their only way
+            // back into the acceptance flow.
+            if (canAcceptMeeting) {
+                options.push('Accept meeting request');
+                icons.push(<Icon name="handshake" size={20} />);
+            }
+
             //if (currentMessage.direction == 'incoming' && !this.hideItem) {
-            if (!this.hideItem) {
+            if (!this.hideItem && !isLiveLocation) {
 				options.push('Reply');
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
 
-			if (this.isMessageEditable(currentMessage)) {
+			// Edit is meaningless for live-location bubbles — their body is
+			// auto-generated (a tick timestamp), not user-authored text.
+			if (this.isMessageEditable(currentMessage) && !isLiveLocation) {
 				options.push('Edit');
 				icons.push(<Icon name="file-document-edit" size={20} />);
 			}
@@ -2388,26 +2447,28 @@ class ContactsListBox extends Component {
 
             if (this.state.targetUri.indexOf('@videoconference') === -1) {
                 if (currentMessage.direction === 'outgoing') {
-                    if (showResend && !this.hideItem) {
+                    if (showResend && !this.hideItem && !isLiveLocation) {
                         options.push('Resend')
                         icons.push(<Icon name="send" size={20} />);
                     }
                 }
             }
 
-            if (currentMessage.pinned) {
-                options.push('Unpin');
-                icons.push(<Icon name="pin-off" size={20} />);
-            } else {
-                if (!currentMessage.metadata.error) {
-                    options.push('Pin');
-                    icons.push(<Icon name="pin" size={20} />);
+            if (!isLiveLocation) {
+                if (currentMessage.pinned) {
+                    options.push('Unpin');
+                    icons.push(<Icon name="pin-off" size={20} />);
+                } else {
+                    if (!currentMessage.metadata.error) {
+                        options.push('Pin');
+                        icons.push(<Icon name="pin" size={20} />);
+                    }
                 }
             }
 
-            if (!currentMessage.metadata.error && !this.hideItem) {
+            if (!currentMessage.metadata.error && !this.hideItem && !isLiveLocation) {
 				if (currentMessage.image) {
-					if (!(currentMessage._id in this.state.imageGroups)) {  
+					if (!(currentMessage._id in this.state.imageGroups)) {
 						options.push('Forward');
 						icons.push(<Icon name="arrow-right" size={20} />);
 						options.push('Share');
@@ -2428,11 +2489,11 @@ class ContactsListBox extends Component {
 					icons.push(<Icon name="share" size={20} />);
 				}
             }
-            if  (currentMessage && currentMessage.metadata && !this.hideItem) {
+            if  (currentMessage && currentMessage.metadata && !this.hideItem && !isLiveLocation) {
 				//console.log('mesage metadata:', currentMessage.metadata);
 				if (currentMessage.metadata.filename) {
 
-					if (!currentMessage.metadata.local_url) {					
+					if (!currentMessage.metadata.local_url) {
 						options.push('Download');
 						icons.push(<Icon name="cloud-download" size={20} />);
 					} else {
@@ -2461,15 +2522,62 @@ class ContactsListBox extends Component {
                 let action = options[buttonIndex];
                 if (action === 'Cancel') {
                     this.setState({actionSheetDisplayed: false});
+                } else if (action === 'Accept meeting request') {
+                    // Re-enter the acceptance flow from outside the modal.
+                    // app.js owns the guards (already-accepted / expired /
+                    // NavigationBar-not-ready) so we just forward the args.
+                    console.log('[meeting] kebab: Accept meeting request tapped',
+                        'fromUri=', meetingFromUri,
+                        'requestId=', meetingReqId,
+                        'expiresAt=', meetingExpiresAt,
+                        'hasHandler=', typeof this.props.acceptMeetingRequest === 'function');
+                    this.setState({actionSheetDisplayed: false});
+                    if (typeof this.props.acceptMeetingRequest === 'function') {
+                        this.props.acceptMeetingRequest({
+                            fromUri: meetingFromUri,
+                            requestId: meetingReqId,
+                            expiresAt: meetingExpiresAt,
+                        });
+                    } else {
+                        console.warn('[meeting] kebab: acceptMeetingRequest prop missing!');
+                    }
                 } else if (action === 'Copy') {
-                    Clipboard.setString(currentMessage.text);
+                    // Location bubbles carry a stringified JSON metadata blob
+                    // in `text` (action/messageId/value/expires/…). Copying
+                    // that to the clipboard is useless — what the user wants
+                    // is the actual coordinates, pasteable into Maps, a
+                    // message, or a note. Fall through to the raw text for
+                    // every other bubble type.
+                    const meta = currentMessage && currentMessage.metadata;
+                    const val = meta && meta.value;
+                    if (isLiveLocation
+                        && val
+                        && typeof val.latitude === 'number'
+                        && typeof val.longitude === 'number') {
+                        Clipboard.setString(`${val.latitude}, ${val.longitude}`);
+                    } else {
+                        Clipboard.setString(currentMessage.text);
+                    }
                 } else if (action === 'Delete') {
                     let messagesToDelete = [currentMessage._id];
-					if (currentMessage._id in this.state.imageGroups) {  
+					if (currentMessage._id in this.state.imageGroups) {
 						messagesToDelete = this.state.selectedImages;
 					}
-                    this.setState({messagesToDelete: messagesToDelete});
-                    this.setState({showDeleteMessageModal: true});
+                    // Only outgoing messages can be deleted for the remote party.
+                    // Incoming messages live on the sender's device and we have no
+                    // authority to remove them — so hide the "Also delete for X"
+                    // toggle unless every selected message is outgoing.
+                    const allMsgs = this.state.renderMessages || [];
+                    const msgsById = new Map(allMsgs.map(m => [m._id, m]));
+                    const canDeleteRemote = messagesToDelete.every((id) => {
+                        const m = msgsById.get(id);
+                        return m && m.direction === 'outgoing';
+                    });
+                    this.setState({
+                        messagesToDelete: messagesToDelete,
+                        canDeleteRemote: canDeleteRemote,
+                        showDeleteMessageModal: true,
+                    });
                 } else if (action === 'Pin') {
                     this.props.pinMessage(currentMessage._id);
                 } else if (action === 'Unpin') {
@@ -2617,7 +2725,24 @@ class ContactsListBox extends Component {
 	get mediaRotations() {
 		return this.getMetadataByAction('rotation');
 	}
-	
+
+	// Latest live-location metadata keyed by the origin tick's _id. Unlike
+	// the other getters (which return a single value per message), this one
+	// returns the full metadataContent object because the LocationBubble
+	// needs `value`, `expires`, `timestamp` and `author` together.
+	get locationData() {
+		const mm = this.state.messagesMetadata;
+		if (!mm) return {};
+		const result = {};
+		Object.entries(mm).forEach(([msgId, arr]) => {
+			if (!Array.isArray(arr)) return;
+			// Find the newest 'location' entry for this message.
+			const last = [...arr].reverse().find(e => e.action === 'location');
+			if (last) result[msgId] = last;
+		});
+		return result;
+	}
+
 	componentDidUpdate(prevProps, prevState) {
       if (prevState.renderMessages !== this.state.renderMessages) {
 	      //console.log('renderMessages did change', this.state.renderMessages.length);
@@ -2790,21 +2915,45 @@ class ContactsListBox extends Component {
 			//console.log('CL mediaLabels:', mediaLabels);
 			const mediaRotations = this.mediaRotations;
 			const replyMessages = this.replyMessages;
-		
+			const locationData = this.locationData;
+
 			const updatedMessages = this.state.renderMessages.map(msg => {
 				const id = msg.messageId || msg._id;
-		
+
 				const newLabel = mediaLabels[id];
 				const newRotation = mediaRotations[id];
 				const newReplyId = replyMessages[id];
-		
+
+				// Live location: when this message is a rendered location
+				// bubble and a newer tick landed, bump `text` (a field
+				// ChatBubble's memo comparator watches) and refresh the
+				// embedded metadata so the LocationBubble renders the new
+				// coords. We intentionally leave `_id` and `createdAt`
+				// untouched so the bubble stays in its chronological slot.
+				const newLocation = msg.contentType === 'application/sylk-live-location'
+					? locationData?.[msg._id]
+					: null;
+
+				if (newLocation) {
+					const tickMarker = newLocation.timestamp
+						? String(new Date(newLocation.timestamp).getTime())
+						: String(Date.now());
+					if (tickMarker !== msg.text || newLocation !== msg.metadata) {
+						return {
+							...msg,
+							text: tickMarker,
+							metadata: newLocation,
+						};
+					}
+				}
+
 				// Only update if something actually changed
 				if (
 					newLabel ||
 					newRotation !== undefined ||
 					newReplyId !== undefined
 				) {
-		
+
 					return {
 						...msg,
 						text: newLabel || msg.text,
@@ -2812,7 +2961,7 @@ class ContactsListBox extends Component {
 						replyId: newReplyId !== undefined ? newReplyId : msg.value
 					};
 				}
-		
+
 				//console.log(`→ No change for message ${id}`);
 				return msg;
 			});
@@ -3113,6 +3262,21 @@ class ContactsListBox extends Component {
 
     renderMessageText(props) {
         const { currentMessage } = props;
+
+        // Live location: dedicated bubble. Latest coords come from
+        // messagesMetadata (tick N); fallback to the embedded metadata
+        // that was carried on the origin message itself.
+        if (currentMessage.contentType === 'application/sylk-live-location') {
+            const latest = this.locationData?.[currentMessage._id]
+                || currentMessage.metadata;
+            return (
+                <LocationBubble
+                    currentMessage={currentMessage}
+                    metadata={latest}
+                    onLongPress={this.onLongMessagePress}
+                />
+            );
+        }
 
         let extraStyles = currentMessage.replyId ? {minWidth: 120} : {};
         // todo
@@ -4635,7 +4799,28 @@ scrollToMessage(id) {
                 extraData={items}
                 renderItem={this.renderContactItem}
                 listKey={item => item.id}
-                key={this.props.orientation}
+                /*
+                  Key must change whenever numColumns changes, otherwise
+                  FlatList throws "Changing numColumns on the fly is not
+                  supported". `columns` depends on both orientation AND
+                  isTablet (which now flips on fold/unfold via
+                  _detectOrientation's minSide rule), so key on the
+                  computed column count directly — it's the only value
+                  that really matters to FlatList here.
+
+                  We also fold rounded window width/height into the key so
+                  that a pure density change (e.g. Razr cover display
+                  toggling between Android's "Default View" and "Full
+                  Screen" modes — same orientation, same columns, but
+                  different density/window dims) still remounts the list
+                  and its Paper <Text>/<Card> children. Without this, the
+                  native TextView's cached line-metrics carried the pre-
+                  transition density, leaving contact-row fonts visually
+                  oversized on the cover display.
+                */
+                key={this.props.orientation + '-c' + columns
+                    + '-' + Math.round(Dimensions.get('window').width)
+                    + 'x' + Math.round(Dimensions.get('window').height)}
                 loadEarlier={false}
              />
              }
@@ -4891,6 +5076,7 @@ scrollToMessage(id) {
                 contact={this.state.selectedContact}
                 deleteMessageFunc={this.props.deleteMessage}
                 messages={this.state.messagesToDelete}
+                canDeleteRemote={this.state.canDeleteRemote}
             />
 
             <MessageInfoModal

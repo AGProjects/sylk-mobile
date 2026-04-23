@@ -1,0 +1,559 @@
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/5fd5da69d4657b661df5899d728abb26/results.bin b/node_modules/react-native-callkeep/android/build/.transforms/5fd5da69d4657b661df5899d728abb26/results.bin
+new file mode 100644
+index 0000000..0d259dd
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/.transforms/5fd5da69d4657b661df5899d728abb26/results.bin
+@@ -0,0 +1 @@
++o/classes
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/5fd5da69d4657b661df5899d728abb26/transformed/classes/classes_dex/classes.dex b/node_modules/react-native-callkeep/android/build/.transforms/5fd5da69d4657b661df5899d728abb26/transformed/classes/classes_dex/classes.dex
+new file mode 100644
+index 0000000..d8a701d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/5fd5da69d4657b661df5899d728abb26/transformed/classes/classes_dex/classes.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/results.bin b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/results.bin
+new file mode 100644
+index 0000000..e1640c9
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/results.bin
+@@ -0,0 +1 @@
++o/bundleLibRuntimeToDirRelease
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/BuildConfig.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/BuildConfig.dex
+new file mode 100644
+index 0000000..e9283e0
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/BuildConfig.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/Constants.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/Constants.dex
+new file mode 100644
+index 0000000..8e41b2d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/Constants.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/MapUtils$1.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/MapUtils$1.dex
+new file mode 100644
+index 0000000..6fe8f78
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/MapUtils$1.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/MapUtils.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/MapUtils.dex
+new file mode 100644
+index 0000000..7a3ce77
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/MapUtils.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.dex
+new file mode 100644
+index 0000000..564bdc4
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$1.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$1.dex
+new file mode 100644
+index 0000000..48aecb3
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$1.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$CallStateListener.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$CallStateListener.dex
+new file mode 100644
+index 0000000..a90860d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$CallStateListener.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.dex
+new file mode 100644
+index 0000000..819d182
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.dex
+new file mode 100644
+index 0000000..a34f3ac
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule.dex
+new file mode 100644
+index 0000000..24ed947
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepModule.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepPackage.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepPackage.dex
+new file mode 100644
+index 0000000..1a0b834
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/RNCallKeepPackage.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConference.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConference.dex
+new file mode 100644
+index 0000000..2679885
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConference.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnection$1.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnection$1.dex
+new file mode 100644
+index 0000000..0d1032b
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnection$1.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnection.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnection.dex
+new file mode 100644
+index 0000000..73f3477
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnection.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$1.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$1.dex
+new file mode 100644
+index 0000000..38f8547
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$1.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$2.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$2.dex
+new file mode 100644
+index 0000000..4b73d0d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$2.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$3.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$3.dex
+new file mode 100644
+index 0000000..15508f1
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$3.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$4.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$4.dex
+new file mode 100644
+index 0000000..b2e17fa
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService$4.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService.dex b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService.dex
+new file mode 100644
+index 0000000..e4e813e
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/bundleLibRuntimeToDirRelease_dex/io/wazo/callkeep/VoiceConnectionService.dex differ
+diff --git a/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/desugar_graph.bin b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/desugar_graph.bin
+new file mode 100644
+index 0000000..dbb49bb
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/8cc061b90a199773d19d467e212ef21a/transformed/bundleLibRuntimeToDirRelease/desugar_graph.bin differ
+diff --git a/node_modules/react-native-callkeep/android/build/generated/source/buildConfig/release/io/wazo/callkeep/BuildConfig.java b/node_modules/react-native-callkeep/android/build/generated/source/buildConfig/release/io/wazo/callkeep/BuildConfig.java
+new file mode 100644
+index 0000000..da9b1a4
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/generated/source/buildConfig/release/io/wazo/callkeep/BuildConfig.java
+@@ -0,0 +1,10 @@
++/**
++ * Automatically generated file. DO NOT MODIFY
++ */
++package io.wazo.callkeep;
++
++public final class BuildConfig {
++  public static final boolean DEBUG = false;
++  public static final String LIBRARY_PACKAGE_NAME = "io.wazo.callkeep";
++  public static final String BUILD_TYPE = "release";
++}
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/aapt_friendly_merged_manifests/release/processReleaseManifest/aapt/AndroidManifest.xml b/node_modules/react-native-callkeep/android/build/intermediates/aapt_friendly_merged_manifests/release/processReleaseManifest/aapt/AndroidManifest.xml
+new file mode 100644
+index 0000000..4889152
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/aapt_friendly_merged_manifests/release/processReleaseManifest/aapt/AndroidManifest.xml
+@@ -0,0 +1,14 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++    package="io.wazo.callkeep" >
++
++    <uses-sdk android:minSdkVersion="24" />
++
++    <uses-permission android:name="android.permission.CALL_PHONE" />
++    <uses-permission
++        android:name="android.permission.READ_PHONE_STATE"
++        android:maxSdkVersion="29" />
++    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
++    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
++
++</manifest>
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/aapt_friendly_merged_manifests/release/processReleaseManifest/aapt/output-metadata.json b/node_modules/react-native-callkeep/android/build/intermediates/aapt_friendly_merged_manifests/release/processReleaseManifest/aapt/output-metadata.json
+new file mode 100644
+index 0000000..5984c46
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/aapt_friendly_merged_manifests/release/processReleaseManifest/aapt/output-metadata.json
+@@ -0,0 +1,18 @@
++{
++  "version": 3,
++  "artifactType": {
++    "type": "AAPT_FRIENDLY_MERGED_MANIFESTS",
++    "kind": "Directory"
++  },
++  "applicationId": "io.wazo.callkeep",
++  "variantName": "release",
++  "elements": [
++    {
++      "type": "SINGLE",
++      "filters": [],
++      "attributes": [],
++      "outputFile": "AndroidManifest.xml"
++    }
++  ],
++  "elementType": "File"
++}
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/aar_metadata/release/writeReleaseAarMetadata/aar-metadata.properties b/node_modules/react-native-callkeep/android/build/intermediates/aar_metadata/release/writeReleaseAarMetadata/aar-metadata.properties
+new file mode 100644
+index 0000000..1211b1e
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/aar_metadata/release/writeReleaseAarMetadata/aar-metadata.properties
+@@ -0,0 +1,6 @@
++aarFormatVersion=1.0
++aarMetadataVersion=1.0
++minCompileSdk=1
++minCompileSdkExtension=0
++minAndroidGradlePluginVersion=1.0.0
++coreLibraryDesugaringEnabled=false
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/annotation_processor_list/release/javaPreCompileRelease/annotationProcessors.json b/node_modules/react-native-callkeep/android/build/intermediates/annotation_processor_list/release/javaPreCompileRelease/annotationProcessors.json
+new file mode 100644
+index 0000000..9e26dfe
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/annotation_processor_list/release/javaPreCompileRelease/annotationProcessors.json
+@@ -0,0 +1 @@
++{}
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/compile_library_classes_jar/release/bundleLibCompileToJarRelease/classes.jar b/node_modules/react-native-callkeep/android/build/intermediates/compile_library_classes_jar/release/bundleLibCompileToJarRelease/classes.jar
+new file mode 100644
+index 0000000..046aec5
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/compile_library_classes_jar/release/bundleLibCompileToJarRelease/classes.jar differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/compile_r_class_jar/release/generateReleaseRFile/R.jar b/node_modules/react-native-callkeep/android/build/intermediates/compile_r_class_jar/release/generateReleaseRFile/R.jar
+new file mode 100644
+index 0000000..169bdf6
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/compile_r_class_jar/release/generateReleaseRFile/R.jar differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/compile_symbol_list/release/generateReleaseRFile/R.txt b/node_modules/react-native-callkeep/android/build/intermediates/compile_symbol_list/release/generateReleaseRFile/R.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/mergeReleaseJniLibFolders/merger.xml b/node_modules/react-native-callkeep/android/build/intermediates/incremental/mergeReleaseJniLibFolders/merger.xml
+new file mode 100644
+index 0000000..3a72033
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/mergeReleaseJniLibFolders/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/jniLibs"/></dataSet><dataSet config="release" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/release/jniLibs"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/mergeReleaseShaders/merger.xml b/node_modules/react-native-callkeep/android/build/intermediates/incremental/mergeReleaseShaders/merger.xml
+new file mode 100644
+index 0000000..6159d24
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/mergeReleaseShaders/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/shaders"/></dataSet><dataSet config="release" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/release/shaders"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/packageReleaseAssets/merger.xml b/node_modules/react-native-callkeep/android/build/intermediates/incremental/packageReleaseAssets/merger.xml
+new file mode 100644
+index 0000000..edebf59
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/packageReleaseAssets/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/assets"/></dataSet><dataSet config="release" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/release/assets"/></dataSet><dataSet config="generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/build/intermediates/shader_assets/release/compileReleaseShaders/out"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/compile-file-map.properties b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/compile-file-map.properties
+new file mode 100644
+index 0000000..78cb18b
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/compile-file-map.properties
+@@ -0,0 +1 @@
++#Fri Feb 06 16:56:06 UYT 2026
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/merger.xml b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/merger.xml
+new file mode 100644
+index 0000000..28b4cb9
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="main$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="main" generated-set="main$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="release$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/release/res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="release" generated-set="release$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/release/res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="generated$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/build/generated/res/resValues/release"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="generated" generated-set="generated$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/build/generated/res/resValues/release"/></dataSet><mergedItems/></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/BuildConfig.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/BuildConfig.class
+new file mode 100644
+index 0000000..36607ff
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/BuildConfig.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/Constants.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/Constants.class
+new file mode 100644
+index 0000000..1431c43
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/Constants.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/MapUtils$1.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/MapUtils$1.class
+new file mode 100644
+index 0000000..2edfdd4
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/MapUtils$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/MapUtils.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/MapUtils.class
+new file mode 100644
+index 0000000..41dc2a1
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/MapUtils.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.class
+new file mode 100644
+index 0000000..135262e
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$1.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$1.class
+new file mode 100644
+index 0000000..5d16482
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$CallStateListener.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$CallStateListener.class
+new file mode 100644
+index 0000000..fac5f49
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$CallStateListener.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.class
+new file mode 100644
+index 0000000..f96d7ff
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.class
+new file mode 100644
+index 0000000..7508b23
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule.class
+new file mode 100644
+index 0000000..8161c41
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepModule.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepPackage.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepPackage.class
+new file mode 100644
+index 0000000..a53c172
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/RNCallKeepPackage.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConference.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConference.class
+new file mode 100644
+index 0000000..be38a83
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConference.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnection$1.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnection$1.class
+new file mode 100644
+index 0000000..de9749e
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnection$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnection.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnection.class
+new file mode 100644
+index 0000000..bf89219
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnection.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$1.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$1.class
+new file mode 100644
+index 0000000..3af0dbe
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$2.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$2.class
+new file mode 100644
+index 0000000..f0c485d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$2.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$3.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$3.class
+new file mode 100644
+index 0000000..d27d5cf
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$3.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$4.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$4.class
+new file mode 100644
+index 0000000..87119b1
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService$4.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService.class b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService.class
+new file mode 100644
+index 0000000..104d3e9
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes/io/wazo/callkeep/VoiceConnectionService.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/local_only_symbol_list/release/parseReleaseLocalResources/R-def.txt b/node_modules/react-native-callkeep/android/build/intermediates/local_only_symbol_list/release/parseReleaseLocalResources/R-def.txt
+new file mode 100644
+index 0000000..78ac5b8
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/local_only_symbol_list/release/parseReleaseLocalResources/R-def.txt
+@@ -0,0 +1,2 @@
++R_DEF: Internal format may change without notice
++local
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/manifest_merge_blame_file/release/processReleaseManifest/manifest-merger-blame-release-report.txt b/node_modules/react-native-callkeep/android/build/intermediates/manifest_merge_blame_file/release/processReleaseManifest/manifest-merger-blame-release-report.txt
+new file mode 100644
+index 0000000..792ce20
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/manifest_merge_blame_file/release/processReleaseManifest/manifest-merger-blame-release-report.txt
+@@ -0,0 +1,23 @@
++1<?xml version="1.0" encoding="utf-8"?>
++2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++3    package="io.wazo.callkeep" >
++4
++5    <uses-sdk android:minSdkVersion="24" />
++6
++7    <uses-permission android:name="android.permission.CALL_PHONE" />
++7-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:4:5-69
++7-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:4:22-66
++8    <uses-permission
++8-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:5:5-6:51
++9        android:name="android.permission.READ_PHONE_STATE"
++9-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:5:22-72
++10        android:maxSdkVersion="29" />
++10-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:6:22-48
++11    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
++11-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:7:5-77
++11-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:7:22-74
++12    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
++12-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:8:5-75
++12-->/Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:8:22-72
++13
++14</manifest>
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/merged_manifest/release/processReleaseManifest/AndroidManifest.xml b/node_modules/react-native-callkeep/android/build/intermediates/merged_manifest/release/processReleaseManifest/AndroidManifest.xml
+new file mode 100644
+index 0000000..4889152
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/merged_manifest/release/processReleaseManifest/AndroidManifest.xml
+@@ -0,0 +1,14 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++    package="io.wazo.callkeep" >
++
++    <uses-sdk android:minSdkVersion="24" />
++
++    <uses-permission android:name="android.permission.CALL_PHONE" />
++    <uses-permission
++        android:name="android.permission.READ_PHONE_STATE"
++        android:maxSdkVersion="29" />
++    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
++    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
++
++</manifest>
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/navigation_json/release/extractDeepLinksRelease/navigation.json b/node_modules/react-native-callkeep/android/build/intermediates/navigation_json/release/extractDeepLinksRelease/navigation.json
+new file mode 100644
+index 0000000..0637a08
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/navigation_json/release/extractDeepLinksRelease/navigation.json
+@@ -0,0 +1 @@
++[]
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/nested_resources_validation_report/release/generateReleaseResources/nestedResourcesValidationReport.txt b/node_modules/react-native-callkeep/android/build/intermediates/nested_resources_validation_report/release/generateReleaseResources/nestedResourcesValidationReport.txt
+new file mode 100644
+index 0000000..08f4ebe
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/nested_resources_validation_report/release/generateReleaseResources/nestedResourcesValidationReport.txt
+@@ -0,0 +1 @@
++0 Warning/Error
+\ No newline at end of file
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/BuildConfig.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/BuildConfig.class
+new file mode 100644
+index 0000000..36607ff
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/BuildConfig.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/Constants.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/Constants.class
+new file mode 100644
+index 0000000..1431c43
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/Constants.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/MapUtils$1.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/MapUtils$1.class
+new file mode 100644
+index 0000000..2edfdd4
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/MapUtils$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/MapUtils.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/MapUtils.class
+new file mode 100644
+index 0000000..41dc2a1
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/MapUtils.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.class
+new file mode 100644
+index 0000000..135262e
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepBackgroundMessagingService.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$1.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$1.class
+new file mode 100644
+index 0000000..5d16482
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$CallStateListener.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$CallStateListener.class
+new file mode 100644
+index 0000000..fac5f49
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$CallStateListener.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.class
+new file mode 100644
+index 0000000..f96d7ff
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$LegacyCallStateListener.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.class
+new file mode 100644
+index 0000000..7508b23
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule$VoiceBroadcastReceiver.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule.class
+new file mode 100644
+index 0000000..8161c41
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepModule.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepPackage.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepPackage.class
+new file mode 100644
+index 0000000..a53c172
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/RNCallKeepPackage.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConference.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConference.class
+new file mode 100644
+index 0000000..be38a83
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConference.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnection$1.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnection$1.class
+new file mode 100644
+index 0000000..de9749e
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnection$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnection.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnection.class
+new file mode 100644
+index 0000000..bf89219
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnection.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$1.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$1.class
+new file mode 100644
+index 0000000..3af0dbe
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$1.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$2.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$2.class
+new file mode 100644
+index 0000000..f0c485d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$2.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$3.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$3.class
+new file mode 100644
+index 0000000..d27d5cf
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$3.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$4.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$4.class
+new file mode 100644
+index 0000000..87119b1
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService$4.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService.class b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService.class
+new file mode 100644
+index 0000000..104d3e9
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_dir/release/bundleLibRuntimeToDirRelease/io/wazo/callkeep/VoiceConnectionService.class differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_jar/release/bundleLibRuntimeToJarRelease/classes.jar b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_jar/release/bundleLibRuntimeToJarRelease/classes.jar
+new file mode 100644
+index 0000000..a7b905b
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/intermediates/runtime_library_classes_jar/release/bundleLibRuntimeToJarRelease/classes.jar differ
+diff --git a/node_modules/react-native-callkeep/android/build/intermediates/symbol_list_with_package_name/release/generateReleaseRFile/package-aware-r.txt b/node_modules/react-native-callkeep/android/build/intermediates/symbol_list_with_package_name/release/generateReleaseRFile/package-aware-r.txt
+new file mode 100644
+index 0000000..7612bfd
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/intermediates/symbol_list_with_package_name/release/generateReleaseRFile/package-aware-r.txt
+@@ -0,0 +1 @@
++io.wazo.callkeep
+diff --git a/node_modules/react-native-callkeep/android/build/outputs/logs/manifest-merger-release-report.txt b/node_modules/react-native-callkeep/android/build/outputs/logs/manifest-merger-release-report.txt
+new file mode 100644
+index 0000000..bfa56fa
+--- /dev/null
++++ b/node_modules/react-native-callkeep/android/build/outputs/logs/manifest-merger-release-report.txt
+@@ -0,0 +1,35 @@
++-- Merging decision tree log ---
++manifest
++ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:2:1-9:12
++INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:2:1-9:12
++	package
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:2:70-96
++		INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
++	xmlns:android
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:2:11-69
++uses-permission#android.permission.CALL_PHONE
++ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:4:5-69
++	android:name
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:4:22-66
++uses-permission#android.permission.READ_PHONE_STATE
++ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:5:5-6:51
++	android:maxSdkVersion
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:6:22-48
++	android:name
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:5:22-72
++uses-permission#android.permission.READ_PHONE_NUMBERS
++ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:7:5-77
++	android:name
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:7:22-74
++uses-permission#android.permission.MANAGE_OWN_CALLS
++ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:8:5-75
++	android:name
++		ADDED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml:8:22-72
++uses-sdk
++INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
++INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
++INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
++	android:targetSdkVersion
++		INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
++	android:minSdkVersion
++		INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileReleaseJavaWithJavac/previous-compilation-data.bin b/node_modules/react-native-callkeep/android/build/tmp/compileReleaseJavaWithJavac/previous-compilation-data.bin
+new file mode 100644
+index 0000000..3fcd98f
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileReleaseJavaWithJavac/previous-compilation-data.bin differ
+diff --git a/node_modules/react-native-callkeep/ios/.DS_Store b/node_modules/react-native-callkeep/ios/.DS_Store
+new file mode 100644
+index 0000000..85fce3b
+Binary files /dev/null and b/node_modules/react-native-callkeep/ios/.DS_Store differ
+diff --git a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
+index 786045f..f81c66e 100644
+--- a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
++++ b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
+@@ -370,6 +370,11 @@ + (void)setup:(NSDictionary *)options {
+ #ifdef DEBUG
+     NSLog(@"[RNCallKeep][endCall] uuidString = %@", uuidString);
+ #endif
++    [[NSNotificationCenter defaultCenter]
++     postNotificationName:@"RNCallKeepCallEnded"
++                   object:nil
++                 userInfo:@{ @"uuid": uuidString }];
++
+     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+     CXEndCallAction *endCallAction = [[CXEndCallAction alloc] initWithCallUUID:uuid];
+     CXTransaction *transaction = [[CXTransaction alloc] initWithAction:endCallAction];
+@@ -1080,6 +1085,10 @@ - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAct
+ #ifdef DEBUG
+     NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performAnswerCallAction]");
+ #endif
++    [[NSNotificationCenter defaultCenter]
++     postNotificationName:@"RNCallKeepCallAnswered"
++                   object:nil
++                 userInfo:@{ @"uuid": action.callUUID.UUIDString }];
+     [self configureAudioSession];
+     [self sendEventWithNameWrapper:RNCallKeepPerformAnswerCallAction body:@{ @"callUUID": [action.callUUID.UUIDString lowercaseString] }];
+     [action fulfill];
+@@ -1091,6 +1100,11 @@ - (void)provider:(CXProvider *)provider performEndCallAction:(CXEndCallAction *)
+ #ifdef DEBUG
+     NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performEndCallAction]");
+ #endif
++    [[NSNotificationCenter defaultCenter]
++     postNotificationName:@"RNCallKeepCallEnded"
++                   object:nil
++                 userInfo:@{ @"uuid": action.callUUID.UUIDString }];
++
+     [self sendEventWithNameWrapper:RNCallKeepPerformEndCallAction body:@{ @"callUUID": [action.callUUID.UUIDString lowercaseString] }];
+     [action fulfill];
+ }

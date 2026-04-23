@@ -421,6 +421,20 @@ const getTotalPrettyStorage = (entity) => {
                     )}
 
                     <View style={styles.buttonRow}>
+                      {/* Matches the DeleteHistoryModal / DeleteFileTransfers
+                          button pattern: outlined Cancel on the left,
+                          contained primary action on the right. Keeps the
+                          whole modal family consistent so the destructive
+                          (or save) action is always in the same visual
+                          slot. */}
+                      <Button
+                        mode="outlined"
+                        style={styles.button}
+                        onPress={close}
+                        accessibilityLabel="Cancel"
+                      >
+                        Cancel
+                      </Button>
                       <Button
                         mode="contained"
                         style={styles.button}
@@ -429,14 +443,6 @@ const getTotalPrettyStorage = (entity) => {
                         icon="content-save"
                       >
                         Save
-                      </Button>
-                      <Button
-                        mode="contained"
-                        style={styles.button}
-                        onPress={close}
-                        icon="cancel"
-                      >
-                        Close
                       </Button>
                     </View>
 

@@ -191,6 +191,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'red',
   },
 
+  // "Share location" chat-header button background (Android). Purple
+  // (#8E44AD @ 0.9) distinguishes it from green call buttons and the blue
+  // record/file-transfer buttons. Pin icon is rendered white via the
+  // IconButton `color` prop.
+  purpleButton: {
+    backgroundColor: 'rgba(142, 68, 173, 0.9)',
+  },
+
   categoryButton: {
     backgroundColor: 'gray',
   },
@@ -219,6 +227,12 @@ const styles = StyleSheet.create({
 
   redButtoniOS: {
     backgroundColor: 'red',
+  },
+
+  // iOS twin of purpleButton — same colour; kept separate to mirror the
+  // existing iOS/Android split the other buttons use.
+  purpleButtoniOS: {
+    backgroundColor: 'rgba(142, 68, 173, 0.9)',
   },
 
   disabledBlueButtoniOS: {

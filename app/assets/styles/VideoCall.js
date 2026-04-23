@@ -118,7 +118,7 @@ const styles = StyleSheet.create({
     // (landscape phone, tablet). On narrow screens each slot stays below
     // this value and the buttons still fill the row; on wide screens
     // the cluster centers itself instead of scattering.
-    maxWidth: 56,
+    maxWidth: 54,
   },
 
   audioDeviceContainer: {

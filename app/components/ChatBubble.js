@@ -320,7 +320,7 @@ const ChatBubble = memo(
 			console.log(`[Bubble ${id}] RERENDER → progress skip negative changed (${prevProgress} → ${nextProgress})`);
 			return true;
 	    } 
-		console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
+		//console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
 		return false;
 	  }
 		
@@ -364,7 +364,7 @@ const ChatBubble = memo(
 		        // don't empty existing content 
 				return true;
 		    } 
-			console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
+			//console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
 			return false;
 		  }
 		}

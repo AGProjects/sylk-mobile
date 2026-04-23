@@ -1,0 +1,2 @@
+Fixed unread messages counter
+Added throttle for incoming notifications per user 

@@ -170,6 +170,13 @@
     background-color: red;
 }
 
+// Used by the "Share location" chat-header button (map-marker icon).
+// Distinct from the call buttons' green so the location action reads as
+// its own category in the row. Alpha matches greenButton for visual weight.
+.purpleButton {
+    background-color: rgba(#8E44AD, .9);
+}
+
 .disabledBlueButton {
     background-color: rgba(#2E4C6F, 0.5);
 }
@@ -188,6 +195,10 @@
 
 .redButtoniOS {
     background-color: red;
+}
+
+.purpleButtoniOS {
+    background-color: rgba(#8E44AD, .9);
 }
 
 .disabledBlueButtoniOS {

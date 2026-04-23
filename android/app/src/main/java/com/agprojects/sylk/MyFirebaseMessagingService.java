@@ -53,6 +53,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	public static final Set<String> incomingCalls = new HashSet<>();
 	private static final String PREF_NAME = "SylkPrefs";
 
+	// Throttle message notifications per sender: at most one visible
+	// notification per THROTTLE_NOTIFICATION_MS milliseconds.
+	private static final long THROTTLE_NOTIFICATION_MS = 60_000L;
+	private static final String LAST_NOTIF_PREFIX = "last_notif_";
+
 	private void createNotificationChannel() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 			String channelId = "rejected_calls_channel";
@@ -366,6 +371,33 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		return launchIntent.getComponent().getClassName();
 	}
 
+	private boolean isAppInForeground() {
+		android.app.ActivityManager.RunningAppProcessInfo appProcessInfo =
+				new android.app.ActivityManager.RunningAppProcessInfo();
+		android.app.ActivityManager.getMyMemoryState(appProcessInfo);
+		return appProcessInfo.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+				|| appProcessInfo.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+	}
+
+	private long getLastNotificationTime(String uri) {
+		SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+		return prefs.getLong(LAST_NOTIF_PREFIX + uri, 0L);
+	}
+
+	private void setLastNotificationTime(String uri, long timestamp) {
+		SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+		prefs.edit().putLong(LAST_NOTIF_PREFIX + uri, timestamp).apply();
+	}
+
+	private boolean shouldThrottleNotification(String uri) {
+		long last = getLastNotificationTime(uri);
+		if (last == 0L) {
+			return false;
+		}
+		long elapsed = System.currentTimeMillis() - last;
+		return elapsed < THROTTLE_NOTIFICATION_MS;
+	}
+
 	private int getUnreadForContact(String uri) {
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
 		return prefs.getInt("unread_chat_" + uri, 0);
@@ -393,14 +425,18 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	public static void resetUnreadForContact(Context context, String uri) {
 		SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
 		Log.d("[SYLK]", "resetUnreadForContact " + uri);
-	
-		// Reset unread counter
-		prefs.edit().putInt("unread_chat_" + uri, 0).apply();
-	
+
+		// Reset unread counter and clear the notification throttle so the next
+		// incoming message from this sender produces a notification immediately.
+		prefs.edit()
+				.putInt("unread_chat_" + uri, 0)
+				.remove(LAST_NOTIF_PREFIX + uri)
+				.apply();
+
 		// Cancel notification
 		int notificationId = uri.hashCode();
 		NotificationManagerCompat.from(context).cancel(notificationId);
-	
+
 		// Remove dynamic shortcut
 		String shortcutId = "chat_" + uri.replaceAll("[^a-zA-Z0-9_]", "_");
 		ShortcutManagerCompat.removeDynamicShortcuts(context, Collections.singletonList(shortcutId));
@@ -675,11 +711,33 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			    Log.d("[SYLK]", "No active chat");
 			}
 
-			// increase unread badge counter
-			incrementUnreadForContact(fromUri);
-			int unreadCount = getTotalUnreadCount();
+			// Skip increment if app is in foreground — JS side will count this
+			// message via setUnreadForContact and we would otherwise double-count.
+			boolean appInForeground = isAppInForeground();
+			int unreadCount;
+			if (appInForeground) {
+				Log.d("[SYLK]", "App in foreground, JS handles unread counter for " + fromUri);
+				unreadCount = getTotalUnreadCount();
+			} else {
+				// increase unread badge counter
+				incrementUnreadForContact(fromUri);
+				unreadCount = getTotalUnreadCount();
+			}
 			Log.d("[SYLK]", "Badge unread counter:" + unreadCount);
-			
+
+			// Throttle the alert for visible notifications: if we showed a
+			// notification for this sender less than THROTTLE_NOTIFICATION_MS
+			// ago we still update the existing notification (so the launcher
+			// badge reflects the new count) but we do it silently — no sound,
+			// no vibration, no heads-up banner.
+			boolean throttled = shouldThrottleNotification(fromUri);
+			if (throttled) {
+				long elapsed = System.currentTimeMillis() - getLastNotificationTime(fromUri);
+				Log.d("[SYLK]", "Throttling notification alert for " + fromUri
+						+ " (last alerted " + elapsed + "ms ago, window "
+						+ THROTTLE_NOTIFICATION_MS + "ms) — updating count silently");
+			}
+
 			String content = data.get("content");
 			String contentType = data.get("content_type");
 
@@ -775,17 +833,41 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 							.setContentText("Message from " + displayName) // second line
 							.setAutoCancel(true)
 							.setNumber(unreadCount)
-							.setPriority(NotificationCompat.PRIORITY_HIGH)
+							.setPriority(throttled
+									? NotificationCompat.PRIORITY_LOW
+									: NotificationCompat.PRIORITY_HIGH)
 							.setStyle(style)
 							.setContentIntent(tapIntent)
 							.setBubbleMetadata(bubbleData)
 							.setShortcutId(shortcutId)
 							.setCategory(NotificationCompat.CATEGORY_MESSAGE)
 							.setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
-			
+
+			// When throttling, suppress sound / vibration / heads-up banner but
+			// still post so Android updates the launcher badge (setNumber).
+			if (throttled) {
+				builder.setOnlyAlertOnce(true);
+				builder.setDefaults(0);
+				builder.setSound(null);
+				builder.setVibrate(new long[]{0L});
+				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+					builder.setSilent(true);
+				}
+			}
+
 			// ----- SEND -----
 			int nid = fromUri.hashCode();
 			NotificationManagerCompat.from(this).notify(nid, builder.build());
+
+			if (throttled) {
+				Log.d("[SYLK]", "Silent notification update for " + fromUri
+						+ " (count=" + unreadCount + ")");
+			} else {
+				setLastNotificationTime(fromUri, System.currentTimeMillis());
+				Log.d("[SYLK]", "Notification alerted for " + fromUri
+						+ " (count=" + unreadCount + "), next throttle window "
+						+ THROTTLE_NOTIFICATION_MS + "ms");
+			}
 
         } else {
             Log.d(LOG_TAG, "Unhandled event: " + event);

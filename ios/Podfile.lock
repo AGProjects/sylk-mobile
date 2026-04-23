@@ -213,6 +213,10 @@ PODS:
     - RNPermissions
   - Permission-Contacts (3.1.0):
     - RNPermissions
+  - Permission-LocationAlways (3.1.0):
+    - RNPermissions
+  - Permission-LocationWhenInUse (3.1.0):
+    - RNPermissions
   - Permission-MediaLibrary (3.1.0):
     - RNPermissions
   - Permission-Microphone (3.1.0):
@@ -1120,6 +1124,10 @@ PODS:
     - glog
     - RCT-Folly (= 2022.05.16.00)
     - React-Core
+  - react-native-geolocation (3.4.0):
+    - glog
+    - RCT-Folly (= 2022.05.16.00)
+    - React-Core
   - react-native-get-random-values (1.7.2):
     - React-Core
   - react-native-image-picker (6.0.0):
@@ -1426,6 +1434,8 @@ DEPENDENCIES:
   - OpenSSL-Universal (= 1.1.1100)
   - Permission-Camera (from `../node_modules/react-native-permissions/ios/Camera`)
   - Permission-Contacts (from `../node_modules/react-native-permissions/ios/Contacts`)
+  - Permission-LocationAlways (from `../node_modules/react-native-permissions/ios/LocationAlways`)
+  - Permission-LocationWhenInUse (from `../node_modules/react-native-permissions/ios/LocationWhenInUse`)
   - Permission-MediaLibrary (from `../node_modules/react-native-permissions/ios/MediaLibrary`)
   - Permission-Microphone (from `../node_modules/react-native-permissions/ios/Microphone`)
   - Permission-PhotoLibrary (from `../node_modules/react-native-permissions/ios/PhotoLibrary`)
@@ -1462,6 +1472,7 @@ DEPENDENCIES:
   - react-native-create-thumbnail (from `../node_modules/react-native-create-thumbnail`)
   - react-native-document-picker (from `../node_modules/react-native-document-picker`)
   - react-native-fast-openpgp (from `../node_modules/react-native-fast-openpgp`)
+  - "react-native-geolocation (from `../node_modules/@react-native-community/geolocation`)"
   - react-native-get-random-values (from `../node_modules/react-native-get-random-values`)
   - react-native-image-picker (from `../node_modules/react-native-image-picker`)
   - react-native-image-resizer (from `../node_modules/react-native-image-resizer`)
@@ -1576,6 +1587,10 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-permissions/ios/Camera"
   Permission-Contacts:
     :path: "../node_modules/react-native-permissions/ios/Contacts"
+  Permission-LocationAlways:
+    :path: "../node_modules/react-native-permissions/ios/LocationAlways"
+  Permission-LocationWhenInUse:
+    :path: "../node_modules/react-native-permissions/ios/LocationWhenInUse"
   Permission-MediaLibrary:
     :path: "../node_modules/react-native-permissions/ios/MediaLibrary"
   Permission-Microphone:
@@ -1642,6 +1657,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-document-picker"
   react-native-fast-openpgp:
     :path: "../node_modules/react-native-fast-openpgp"
+  react-native-geolocation:
+    :path: "../node_modules/@react-native-community/geolocation"
   react-native-get-random-values:
     :path: "../node_modules/react-native-get-random-values"
   react-native-image-picker:
@@ -1796,6 +1813,8 @@ SPEC CHECKSUMS:
   OpenSSL-Universal: ebc357f1e6bc71fa463ccb2fe676756aff50e88c
   Permission-Camera: 4c3cefe3dc1378cc0125bcc81acafce0d315fa8d
   Permission-Contacts: f5273202e256a3edc82d435cc86ff58b5e663f02
+  Permission-LocationAlways: 5d0b6428994309bd028c01099ea27a97e8c1c660
+  Permission-LocationWhenInUse: acaf6581d3873ed724c3e80055cb29cd96fffb42
   Permission-MediaLibrary: 21385c6f8c757091f1e8c80f7054bda95a08ea4f
   Permission-Microphone: 4dd04b92bd054f79089542d9aa498b63dd8d2a34
   Permission-PhotoLibrary: 4cfce006b6a362c43f2bca461cd76a240b963530
@@ -1830,6 +1849,7 @@ SPEC CHECKSUMS:
   react-native-create-thumbnail: 733160dca9a548262e1030e7fcdae90a93d203ca
   react-native-document-picker: b34afcc048d3c6aeecc5bbe007bf7e4f7019696c
   react-native-fast-openpgp: a88817558063d0f66584497459d963051b00d7f2
+  react-native-geolocation: 49ea939d13f095705a71891555cc76215e63ec6a
   react-native-get-random-values: c89ae16e7b9bb5c06dfe77225556df584344293a
   react-native-image-picker: c083dc5ccaaf45994b18bde99b24b7e02ca29cf4
   react-native-image-resizer: 17b2d73c030975b6543395c7e7368bc8774c5efa
@@ -1893,6 +1913,6 @@ SPEC CHECKSUMS:
   SwiftAudioEx: f6aa653770f3a0d3851edaf8d834a30aee4a7646
   Yoga: a813a6d82538ccba91c54406404e3ed80b48a692
 
-PODFILE CHECKSUM: 321f6676371975236cd06b9f7aa1cbd15856aaa3
+PODFILE CHECKSUM: e0992e8886b57847010f261af3f8bd132dcb3153
 
 COCOAPODS: 1.16.2

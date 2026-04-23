@@ -16,6 +16,7 @@
 
 package com.agprojects.sylk;
 
+import android.app.Activity;
 import android.content.Context;
 import android.media.AudioManager;
 import android.media.AudioDeviceInfo;
@@ -26,9 +27,22 @@ import android.os.Looper;
 import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.view.Display;
 
+import androidx.core.content.ContextCompat;
+import androidx.core.util.Consumer;
+import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter;
+import androidx.window.layout.DisplayFeature;
+import androidx.window.layout.FoldingFeature;
+import androidx.window.layout.WindowInfoTracker;
+import androidx.window.layout.WindowLayoutInfo;
 
 import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -39,6 +53,8 @@ import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.ReadableMapKeySetIterator;
 
 import com.facebook.react.modules.core.DeviceEventManagerModule;
+
+import java.util.concurrent.Executor;
 
 import android.media.AudioFocusRequest;
 import android.media.AudioAttributes;
@@ -58,8 +74,8 @@ import java.util.Map;
 import com.agprojects.sylk.BluetoothScoManager;
 
 
-public class AudioRouteModule extends ReactContextBaseJavaModule {
-        
+public class AudioRouteModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
+
     private final ReactApplicationContext reactContext;
     private BroadcastReceiver headsetReceiver;
     public static AudioRouteModule instance;
@@ -83,12 +99,45 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
     // device here and apply it as soon as SCO audio connects.
     private Map<String, String> pendingBtDevice = null;
 
+    // [FoldDiag] Jetpack WindowManager observer — emits a log when the device posture
+    // changes (FLAT / HALF_OPENED). Needs an Activity, so we wire it up via
+    // LifecycleEventListener.onHostResume() and tear it down on onHostPause().
+    private WindowInfoTrackerCallbackAdapter windowInfoTracker;
+    private Consumer<WindowLayoutInfo> foldStateCallback;
+    private Executor mainExecutor;
+    private Activity foldObservedActivity;
+    // Cached posture so the [AudioDiag] emit line can include it in its one-liner.
+    private volatile String lastFoldState = "NONE";
+    private volatile String lastFoldOrientation = "NONE";
+
+    // [FoldDiag] Hinge angle sensor (API 30+). Gives us the actual hinge angle
+    // in degrees — FoldingFeature only exposes FLAT / HALF_OPENED which is too
+    // coarse to pick a "hide earpiece" threshold (on Razr the audible speaker
+    // takeover happens ~60° open, well inside HALF_OPENED).
+    private SensorManager sensorManager;
+    private Sensor hingeSensor;
+    private SensorEventListener hingeListener;
+    private volatile float lastHingeAngle = Float.NaN;      // latest raw value
+    private float lastLoggedHingeAngle = Float.NaN;         // last value we logged
+
+    // Angle below which we consider the device "folded closed enough" to hide
+    // the earpiece. Empirically derived on Razr 60 Ultra: half-open is ~90°,
+    // inner display turns off around 76°, HAL forces speaker around 60°. 85°
+    // gives the UI time to react while earpiece still physically works.
+    private static final float FOLDED_THRESHOLD_DEGREES = 85f;
+    private volatile boolean lastIsFolded = false;
+    // Tracks the last non-NONE FoldingFeature state so we can detect the
+    // "HALF_OPENED -> NONE" transition as a fallback for devices without
+    // a TYPE_HINGE_ANGLE sensor.
+    private volatile String lastNonNoneFoldState = "NONE";
+
     public AudioRouteModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
         this.audioManager = (AudioManager) reactContext.getSystemService(Context.AUDIO_SERVICE);
         instance = this;
         registerReceivers();
+        reactContext.addLifecycleEventListener(this);
         Log.d(TAG, "AudioRouteModule init");
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -97,7 +146,228 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "Communication device listener not supported on this Android version");
         }
     }
-    
+
+    // ---- Fold observer (LifecycleEventListener) -------------------------------
+
+    @Override
+    public void onHostResume() {
+        startFoldObserver();
+        startHingeSensor();
+    }
+
+    @Override
+    public void onHostPause() {
+        stopFoldObserver();
+        stopHingeSensor();
+    }
+
+    @Override
+    public void onHostDestroy() {
+        stopFoldObserver();
+        stopHingeSensor();
+    }
+
+    private void startFoldObserver() {
+        Activity activity = getCurrentActivity();
+        if (activity == null) {
+            Log.d(TAG, "[FoldDiag] startFoldObserver: no activity yet");
+            return;
+        }
+        if (windowInfoTracker != null && foldObservedActivity == activity) {
+            return; // already observing this activity
+        }
+        stopFoldObserver(); // clear any previous observer
+
+        try {
+            windowInfoTracker = new WindowInfoTrackerCallbackAdapter(
+                    WindowInfoTracker.getOrCreate(activity));
+            mainExecutor = ContextCompat.getMainExecutor(activity);
+            foldObservedActivity = activity;
+
+            foldStateCallback = new Consumer<WindowLayoutInfo>() {
+                @Override
+                public void accept(WindowLayoutInfo info) {
+                    String state = "NONE";
+                    String orientation = "NONE";
+                    String occlusion = "NONE";
+                    boolean isSeparating = false;
+
+                    for (DisplayFeature feature : info.getDisplayFeatures()) {
+                        if (feature instanceof FoldingFeature) {
+                            FoldingFeature fold = (FoldingFeature) feature;
+                            state = fold.getState().toString();
+                            orientation = fold.getOrientation().toString();
+                            occlusion = fold.getOcclusionType().toString();
+                            isSeparating = fold.isSeparating();
+                            break;
+                        }
+                    }
+
+                    // Cache for inclusion in [AudioDiag] emit one-liners
+                    lastFoldState = state;
+                    lastFoldOrientation = orientation;
+                    if (!"NONE".equals(state)) {
+                        lastNonNoneFoldState = state;
+                    }
+
+                    Display display = foldObservedActivity != null
+                            ? foldObservedActivity.getWindowManager().getDefaultDisplay()
+                            : null;
+
+                    Log.d(TAG, "[FoldDiag] layout"
+                            + " state=" + state
+                            + " orientation=" + orientation
+                            + " occlusion=" + occlusion
+                            + " separating=" + isSeparating
+                            + " features=" + info.getDisplayFeatures().size()
+                            + " display=" + (display != null ? (display.getDisplayId() + "(" + display.getName() + ")") : "null"));
+
+                    updateFoldStateAndMaybeEmit();
+                }
+            };
+
+            windowInfoTracker.addWindowLayoutInfoListener(activity, mainExecutor, foldStateCallback);
+            Log.d(TAG, "[FoldDiag] observer started for activity=" + activity.getClass().getSimpleName());
+        } catch (Throwable t) {
+            // Safety net: don't let a Jetpack/WindowManager issue crash the audio module.
+            Log.e(TAG, "[FoldDiag] failed to start fold observer", t);
+            windowInfoTracker = null;
+            foldObservedActivity = null;
+        }
+    }
+
+    private void stopFoldObserver() {
+        if (windowInfoTracker != null && foldStateCallback != null) {
+            try {
+                windowInfoTracker.removeWindowLayoutInfoListener(foldStateCallback);
+            } catch (Throwable t) {
+                Log.w(TAG, "[FoldDiag] error removing listener: " + t.getMessage());
+            }
+        }
+        windowInfoTracker = null;
+        foldStateCallback = null;
+        mainExecutor = null;
+        foldObservedActivity = null;
+    }
+
+    // ---- Hinge angle sensor (TYPE_HINGE_ANGLE, API 30+) -----------------------
+    //
+    // FoldingFeature only exposes coarse buckets (FLAT / HALF_OPENED). On the
+    // Razr the audible speaker takeover happens around 60° open — well inside
+    // HALF_OPENED — so we can't pick a precise "hide earpiece" threshold from
+    // that alone. TYPE_HINGE_ANGLE gives us the continuous angle in degrees
+    // (0.0 = fully closed, 180.0 = fully open) on devices that support it.
+    //
+    // We throttle logging to "≥ 2° change since last log" so we don't flood
+    // logcat while the user slowly folds/unfolds the device.
+
+    private void startHingeSensor() {
+        if (hingeListener != null) return; // already listening
+
+        try {
+            if (sensorManager == null) {
+                sensorManager = (SensorManager) reactContext.getSystemService(Context.SENSOR_SERVICE);
+            }
+            if (sensorManager == null) {
+                Log.w(TAG, "[FoldDiag] no SensorManager available");
+                return;
+            }
+
+            // TYPE_HINGE_ANGLE constant exists on API 30+; getDefaultSensor() safely
+            // returns null on devices without the sensor, so no SDK_INT guard needed
+            // beyond a simple try/catch on older runtime classes.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                Log.d(TAG, "[FoldDiag] hinge sensor not supported on this Android version");
+                return;
+            }
+
+            hingeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE);
+            if (hingeSensor == null) {
+                Log.d(TAG, "[FoldDiag] no TYPE_HINGE_ANGLE sensor on this device");
+                return;
+            }
+
+            hingeListener = new SensorEventListener() {
+                @Override
+                public void onSensorChanged(SensorEvent event) {
+                    if (event.values == null || event.values.length == 0) return;
+                    float angle = event.values[0];
+                    lastHingeAngle = angle;
+
+                    // Per-sample angle logging disabled — too noisy in normal
+                    // operation. The [AudioDiag] emit line still carries the
+                    // latest hinge value, and [FoldDiag] isFolded transitions
+                    // are still logged. Re-enable here if more granular data
+                    // is needed.
+
+                    // Recompute folded state every sample (cheap); the helper
+                    // only fires an event on actual transition.
+                    updateFoldStateAndMaybeEmit();
+                }
+
+                @Override
+                public void onAccuracyChanged(Sensor sensor, int accuracy) {
+                    Log.d(TAG, "[FoldDiag] hinge accuracy=" + accuracy);
+                }
+            };
+
+            boolean registered = sensorManager.registerListener(
+                    hingeListener, hingeSensor, SensorManager.SENSOR_DELAY_NORMAL);
+            Log.d(TAG, "[FoldDiag] hinge sensor registered=" + registered
+                    + " name=" + hingeSensor.getName()
+                    + " vendor=" + hingeSensor.getVendor()
+                    + " maxRange=" + hingeSensor.getMaximumRange());
+        } catch (Throwable t) {
+            Log.e(TAG, "[FoldDiag] failed to start hinge sensor", t);
+            hingeListener = null;
+            hingeSensor = null;
+        }
+    }
+
+    private void stopHingeSensor() {
+        try {
+            if (sensorManager != null && hingeListener != null) {
+                sensorManager.unregisterListener(hingeListener);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "[FoldDiag] error unregistering hinge listener: " + t.getMessage());
+        }
+        hingeListener = null;
+        hingeSensor = null;
+        // Keep sensorManager reference — it's cheap, and onHostResume() may re-register.
+    }
+
+    /**
+     * Decide whether the device should be treated as "folded closed enough to
+     * hide the earpiece". Prefers the continuous hinge sensor when available;
+     * falls back to the coarse FoldingFeature posture for devices without
+     * TYPE_HINGE_ANGLE.
+     */
+    private boolean computeIsFolded() {
+        // Primary signal: hinge angle below the threshold.
+        if (!Float.isNaN(lastHingeAngle)) {
+            return lastHingeAngle < FOLDED_THRESHOLD_DEGREES;
+        }
+        // Fallback: FoldingFeature reports NONE (no feature visible) after we
+        // had just been in HALF_OPENED. On Razr-style flips this is what
+        // fires when the inner display turns off, i.e. the device is closed.
+        return "NONE".equals(lastFoldState) && "HALF_OPENED".equals(lastNonNoneFoldState);
+    }
+
+    /**
+     * Recompute `lastIsFolded`; if it changed, push a CommunicationsDevicesChanged
+     * event so JS can react immediately (hide earpiece, auto-flip UI selection).
+     */
+    private void updateFoldStateAndMaybeEmit() {
+        boolean isFolded = computeIsFolded();
+        if (isFolded == lastIsFolded) return;
+        lastIsFolded = isFolded;
+        Log.d(TAG, "[FoldDiag] isFolded -> " + isFolded
+                + " (hinge=" + (Float.isNaN(lastHingeAngle) ? "NA" : lastHingeAngle)
+                + " fold=" + lastFoldState + "/" + lastFoldOrientation + ")");
+        sendReactNativeEvent();
+    }
+
     @Override
     public String getName() {
         return "AudioRouteModule";
@@ -653,29 +923,76 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
             }
 
             WritableMap event = Arguments.createMap();
-            
-            WritableArray inputs = getAudioInputs();
-            event.putArray("inputs", inputs);
 
+            WritableArray inputs = getAudioInputs();
             WritableArray outputs = getAudioOutputs();
             Map<String, String> selectedInfo = getCurrentRouteInfo();
-            
+
             String selectedType = selectedInfo.get("type");
             WritableMap selectedMap = Arguments.createMap();
-            
+
             for (Map.Entry<String, String> entry : selectedInfo.entrySet()) {
                 selectedMap.putString(entry.getKey(), entry.getValue());
             }
-            
+
+            int mode = audioManager.getMode();
+
+            // [AudioDiag] Build the type-list strings BEFORE event.putArray() below —
+            // putArray() transfers ownership of the WritableArray to the event, after
+            // which outputs.size()/getMap() return 0/null and the log would show
+            // "outputs=[]". Snapshot the types here while the arrays are still ours.
+            StringBuilder outTypes = new StringBuilder();
+            for (int i = 0; i < outputs.size(); i++) {
+                if (i > 0) outTypes.append(",");
+                ReadableMap m = outputs.getMap(i);
+                outTypes.append(m != null ? m.getString("type") : "null");
+            }
+            StringBuilder inTypes = new StringBuilder();
+            for (int i = 0; i < inputs.size(); i++) {
+                if (i > 0) inTypes.append(",");
+                ReadableMap m = inputs.getMap(i);
+                inTypes.append(m != null ? m.getString("type") : "null");
+            }
+            // Display context — on Razr-style flip phones the app can migrate to
+            // the cover display when folded closed. Log the active display so we
+            // can spot that in the [AudioDiag] stream even without a fold event.
+            String displayDesc = "null";
+            try {
+                Activity act = getCurrentActivity();
+                if (act != null) {
+                    Display d = act.getWindowManager().getDefaultDisplay();
+                    if (d != null) {
+                        displayDesc = d.getDisplayId() + "(" + d.getName() + ")";
+                    }
+                }
+            } catch (Throwable ignored) { /* best-effort */ }
+
+            String hingeDesc = Float.isNaN(lastHingeAngle)
+                    ? "NA"
+                    : String.format("%.1f", lastHingeAngle);
+
+            Log.d(TAG, "[AudioDiag] emit"
+                    + " mode=" + getAudioModeDescription(mode)
+                    + " selected=" + (selectedType != null ? selectedType : "NONE")
+                    + "(" + (selectedInfo.get("name") != null ? selectedInfo.get("name") : "-") + ")"
+                    + " currentRoute=" + (currentRoute != null ? currentRoute : "null")
+                    + " outputs=[" + outTypes + "]"
+                    + " inputs=[" + inTypes + "]"
+                    + " scoOn=" + audioManager.isBluetoothScoOn()
+                    + " speakerOn=" + audioManager.isSpeakerphoneOn()
+                    + " fold=" + lastFoldState + "/" + lastFoldOrientation
+                    + " hinge=" + hingeDesc
+                    + " folded=" + lastIsFolded
+                    + " display=" + displayDesc);
+
             // Always send all available output devices so the UI can show the full
             // device list regardless of which device is currently selected.
             // (The previous BT-only filter was hiding earpiece/speaker when BT was active.)
+            event.putArray("inputs", inputs);
             event.putArray("outputs", outputs);
-
             event.putMap("selected", selectedMap);
-    
-            int mode = audioManager.getMode();
             event.putString("mode", getAudioModeDescription(mode));
+            event.putBoolean("folded", lastIsFolded);
 
             //Log.d(TAG, "--- AudioDevicesChanged payload ---");
             //logWritableArray("Inputs", inputs);
@@ -908,18 +1225,18 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
 
     private Map<String, String> getCurrentRouteInfo() {
         Map<String, String> info = new HashMap<>();
-    
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12+
             AudioDeviceInfo device = audioManager.getCommunicationDevice();
-    
+
             if (device != null) {
                 String typeName = getDeviceTypeName(device.getType());
                 String productName = device.getProductName() != null
                         ? device.getProductName().toString()
                         : "UNKNOWN";
-    
+
                 String deviceId = String.valueOf(device.getId());
-    
+
                 info.put("name", productName);
                 info.put("id", deviceId);
                 info.put("type", typeName);
@@ -927,10 +1244,23 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
                 Log.d(TAG, "Current device: " + deviceId + " " + productName + " " + typeName);
                 return info;
             }
+
+            // [AudioDiag] getCommunicationDevice() returned null on Android 12+.
+            // This is the signal that the UI will show no checkmark next to any
+            // device. On Motorola Razr (folded) and similar OEMs the HAL can force
+            // a route (e.g. speaker) without updating the CommunicationDevice.
+            // Log the mode and a few quick HAL flags so we can reason about what
+            // the system actually thinks the route is.
+            Log.w(TAG, "[AudioDiag] getCommunicationDevice()=null"
+                    + " mode=" + getAudioModeDescription(audioManager.getMode())
+                    + " speakerOn=" + audioManager.isSpeakerphoneOn()
+                    + " scoOn=" + audioManager.isBluetoothScoOn()
+                    + " wiredHeadsetOn=" + audioManager.isWiredHeadsetOn()
+                    + " currentRouteCached=" + (currentRoute != null ? currentRoute : "null"));
         }
-    
+
         // No device routed
-        return info;  
+        return info;
     }
 
     @ReactMethod
@@ -1048,6 +1378,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule {
             reactContext.unregisterReceiver(headsetReceiver);
             headsetReceiver = null;
         }
+        stopFoldObserver();
+        stopHingeSensor();
+        sensorManager = null;
+        try {
+            reactContext.removeLifecycleEventListener(this);
+        } catch (Throwable ignored) { /* best-effort */ }
     }
 }
 

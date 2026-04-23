@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions} from 'react-native';
+import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox } from 'react-native-paper';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import SoundLevel from "react-native-sound-level";
@@ -37,6 +37,15 @@ class ReadyBox extends Component {
         autoBind(this);
 
         this.recordingStopTimer = null;
+
+        // Drives the pulsing opacity on the chat-header "Share location"
+        // pin when the current contact has an active live share. Matches
+        // the NavBar indicator's breathe pattern (700ms sine-in-out,
+        // 1.0 → 0.35) so the two feel like the same signal — except only
+        // one of them is visible at a time (the NavBar one hides while
+        // we're inside the chat; see NavigationBar render).
+        this._locationSharePulse = new Animated.Value(1);
+        this._locationSharePulseLoop = null;
 
         this.state = {
             targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
@@ -145,15 +154,74 @@ class ReadyBox extends Component {
 
     async componentDidMount() {
         this.ended = false;
+        // Kick off the pulse immediately if we landed here already sharing
+        // (e.g. user switched chats, or app reloaded mid-share). All the
+        // "start/stop on change" logic lives in componentDidUpdate; this
+        // covers the initial-render case.
+        if (this._isSharingCurrentContact(this.props)) {
+            this._startLocationSharePulse();
+        }
     }
 
     componentWillUnmount() {
         this.ended = true;
+        this._stopLocationSharePulse();
+    }
+
+    _isSharingCurrentContact(props) {
+        const shares = (props && props.activeLocationShares) || {};
+        const uri = props && props.selectedContact && props.selectedContact.uri;
+        return !!(uri && shares[uri]);
+    }
+
+    _startLocationSharePulse() {
+        if (this._locationSharePulseLoop) return;
+        this._locationSharePulseLoop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(this._locationSharePulse, {
+                    toValue: 0.35,
+                    duration: 700,
+                    easing: Easing.inOut(Easing.sin),
+                    useNativeDriver: true,
+                }),
+                Animated.timing(this._locationSharePulse, {
+                    toValue: 1,
+                    duration: 700,
+                    easing: Easing.inOut(Easing.sin),
+                    useNativeDriver: true,
+                }),
+            ])
+        );
+        this._locationSharePulseLoop.start();
+    }
+
+    _stopLocationSharePulse() {
+        if (this._locationSharePulseLoop) {
+            this._locationSharePulseLoop.stop();
+            this._locationSharePulseLoop = null;
+        }
+        this._locationSharePulse.setValue(1);
     }
     
 	componentDidUpdate(prevProps, prevState) {
+	  // Pulse the chat-header pin whenever the currently-selected contact
+	  // has an active live-location share. Two triggers matter here:
+	  //   (a) the user starts/stops a share (activeLocationShares map
+	  //       identity changes — NavigationBar spreads a new object on
+	  //       every mutation so a referential compare is enough);
+	  //   (b) the user switches chats — the same share that shouldn't
+	  //       pulse for contact A should pulse for contact B if B is
+	  //       the one they're sharing with.
+	  const wasSharing = this._isSharingCurrentContact(prevProps);
+	  const isSharing = this._isSharingCurrentContact(this.props);
+	  if (!wasSharing && isSharing) {
+	      this._startLocationSharePulse();
+	  } else if (wasSharing && !isSharing) {
+	      this._stopLocationSharePulse();
+	  }
+
 	  if (prevState.searchMessages !== this.state.searchMessages && !this.state.searchMessages) {
-            this.setState({sortOrder: 'desc', 
+            this.setState({sortOrder: 'desc',
                            orderBy: 'timestamp',
                            messagesCategoryFilter: null
                            });
@@ -355,6 +423,14 @@ class ReadyBox extends Component {
         if (this.props.call || this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.props.shareToContacts) {
             return false;
         }
+        // On foldables, hide the above-chat call buttons (audio + video)
+        // when the device is folded onto the cover display. The cover is
+        // too narrow to sensibly host call buttons above the chat area,
+        // and the user can still initiate a call from the contact row
+        // or from within the chat.
+        if (this.props.isFolded) {
+            return false;
+        }
         return true;
     }
 
@@ -396,26 +472,81 @@ class ReadyBox extends Component {
 	    if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@guest') > -1) {
             return false;
         }
-        
+
         if (this.props.selectedContact) {
 			const els = this.props.selectedContact.uri.split('@');
 			const username = els[0];
 			const isNumber = utils.isPhoneNumber(username);
-			
+
 			if (isNumber && (username.startsWith('0') || username.startsWith('+'))) {
 				return false;
 			}
 		}
 
-	 
+
         if (this.state.recordingFile) {
             return false;
         }
- 
+
         if (this.state.playRecording) {
             return false;
         }
- 
+
+        return true;
+    }
+
+    // Visibility gate for the chat-header "Share location" button.
+    //
+    // Mirrors `showAudioRecordButton`'s shape (not in a call, selected
+    // contact is a real 1:1 peer — not a videoconference room, not an
+    // anonymous @guest, not a phone number), and adds the PGP gate that
+    // NavigationBar already enforces on the kebab menu item: without the
+    // contact's public key we can't encrypt the live-location payload, so
+    // there's no plaintext fallback and the button must stay hidden.
+    //
+    // We intentionally do NOT hide this when a share is already active —
+    // the user needs a way to STOP. (NavigationBar's handleMenu auto-
+    // toggles between start and stop based on activeLocationShares.) The
+    // icon stays static because that toggle-state lives in NavigationBar.
+    // If we ever want state-aware iconography here we'd need to lift
+    // `activeLocationShares` up to app.js.
+    get showLocationShareButton() {
+        if (!this.props.selectedContact) {
+            return false;
+        }
+
+        if (this.props.call) {
+            return false;
+        }
+
+        if (this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
+            return false;
+        }
+
+        if (this.props.selectedContact.uri.indexOf('@guest') > -1) {
+            return false;
+        }
+
+        const els = this.props.selectedContact.uri.split('@');
+        const username = els[0];
+        const isNumber = utils.isPhoneNumber(username);
+        if (isNumber && (username.startsWith('0') || username.startsWith('+'))) {
+            return false;
+        }
+
+        // PGP key required — same rule as NavigationBar's menu item.
+        if (!this.props.selectedContact.publicKey) {
+            return false;
+        }
+
+        // While recording / previewing audio, keep the row uncluttered.
+        if (this.state.recordingFile) {
+            return false;
+        }
+        if (this.state.playRecording) {
+            return false;
+        }
+
         return true;
     }
 
@@ -650,6 +781,19 @@ class ReadyBox extends Component {
             this.props.startConference(uri, {audio: true, video: true});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
+        }
+    }
+
+    // Chat-header "Share location" button. The heavy lifting (modal, origin
+    // tick, watchdog, AsyncStorage handshake bookkeeping) already lives in
+    // NavigationBar.handleMenu('shareLocation'), which is both start- and
+    // stop-aware. We just delegate, via the `startLocationShare` prop that
+    // app.js wires to navigationBarRef.current.handleMenu('shareLocation').
+    // Keeping the logic in one place avoids drift between the kebab menu
+    // item and this quick-access button.
+    handleShareLocation() {
+        if (this.props.startLocationShare) {
+            this.props.startLocationShare();
         }
     }
 
@@ -975,52 +1119,96 @@ class ReadyBox extends Component {
         let title = object.item.title;
         let key = object.item.key;
         let icon = object.item.icon;
-        
+
         let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
         let iconStyle = object.item.selected ? styles.categoryButtonSelected : styles.categoryButton;
 
+        // Diagnostic: log once at startup, then only when the bottom-bar
+        // button font-size / isTablet actually changes (fold/unfold).
+        // Paper's Button uses its default label size (~14pt) unless an
+        // explicit labelStyle is supplied.
+        const _bbFontSize = (buttonStyle && buttonStyle.fontSize) || 'paper-default(~14)';
+        const _bbIsTablet = !!this.props.isTablet;
+        const _bbIsFolded = !!this.props.isFolded;
+        // Diagnostic (disabled — re-enable to debug bottom-bar fold/font issues):
+        // if (this._loggedBBFontSize !== _bbFontSize
+        //     || this._loggedBBIsTablet !== _bbIsTablet
+        //     || this._loggedBBIsFolded !== _bbIsFolded) {
+        //     console.log('[FoldUI] BottomBar font-size',
+        //                 this._loggedBBFontSize === undefined ? 'init' : 'change',
+        //                 'isFolded=', _bbIsFolded,
+        //                 'isTablet=', _bbIsTablet,
+        //                 'buttonFontSize=', _bbFontSize);
+        //     this._loggedBBFontSize = _bbFontSize;
+        //     this._loggedBBIsTablet = _bbIsTablet;
+        //     this._loggedBBIsFolded = _bbIsFolded;
+        // }
+
+        // Remount key so Paper's <Button> / <IconButton> (which cache
+        // their measured frame at the density they were first mounted
+        // under) re-measure under the current display density after a
+        // fold / unfold transition on foldables like the Razr 60 Ultra.
+        // Without this, labels rendered at inner-display density stay
+        // visually oversized on the cover display until some unrelated
+        // prop change forces an unmount.
+        //
+        // We include rounded window width/height in the key (matching
+        // NavigationBar._navRemountKey) because isFolded + orientation
+        // alone did not always change when Android toggled the cover
+        // display between "Default View" and "Full Screen" modes — both
+        // happen inside the same orientation and isFolded value, yet
+        // they change the effective density the bar was measured under.
+        // Keying on window dimensions forces a remount on every such
+        // transition.
+        const _bbWin = Dimensions.get('window');
+        const _bbRemountKey = 'bb-' + key
+            + '-' + (_bbIsFolded ? 'f' : 'u')
+            + '-' + (this.props.orientation || '?')
+            + '-' + Math.round(_bbWin.width) + 'x' + Math.round(_bbWin.height);
+
         if (key === "hideQRCodeScanner") {
-            return (<Button style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
         }
 
         if (key === "deleteAudio") {
-            return (<Button style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
         }
 
         if (key === "previewAudio") {
-            return (<Button style={buttonStyle} onPress={() => {this.previewAudio()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.previewAudio()}}>{title}</Button>);
         }
 
         if (key === "sendAudio") {
-            return (<Button style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
         }
 
         if (key === "orderByTime") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
         }
 
         if (key === "orderBySize") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
         }
 
         if (key === "orderAscending") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
         }
 
         if (key === "orderDescending") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
         }
-        
-        if (icon) {                                    
- 			return (<IconButton 
- 			         icon={icon} 
+
+        if (icon) {
+ 			return (<IconButton
+ 			         key={_bbRemountKey}
+ 			         icon={icon}
 					 size={18}
- 			         style={iconStyle} 
+ 			         style={iconStyle}
  			         onPress={() => {this.filterHistory(key)}}
  			         />);
         }
 
-        return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
+        return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
     renderOrderItem(object) {
@@ -1340,8 +1528,17 @@ class ReadyBox extends Component {
 		let containerWidth = width - marginRight;
 		let containerHeight = height;
 		
+		// Recents-bar wrapper. In folded mode the app-level bottom margin
+		// is intentionally 0 (so dark_linen doesn't show a gray strip
+		// below the bar on the Razr cover display). That would let the
+		// Android system/gesture bar draw on top of our buttons, so we
+		// pad the bar's wrapper by the bottom inset to lift the buttons
+		// above the system overlay. Folded cover display has heavy camera
+		// cutouts that already obscure the upper portion, so the bar
+		// sitting slightly higher is acceptable.
 		let navigationContainer = {borderWidth: 0,
-						   borderColor: 'blue'
+						   borderColor: 'blue',
+						   paddingBottom: this.props.isFolded ? bottomInset : 0
 						   }
 	
 		let containerExtraStyles = {
@@ -1377,6 +1574,10 @@ class ReadyBox extends Component {
         let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
         let blueButtonClass          = Platform.OS === 'ios' ? styles.blueButtoniOS              : styles.blueButton;
         let redButtonClass           = Platform.OS === 'ios' ? styles.redButtoniOS               : styles.redButton;
+        // Purple dot = "Share location" — visually distinct from the green
+        // call buttons and the blue record/file-transfer buttons so the new
+        // action doesn't get mistaken for a call or a file share.
+        let purpleButtonClass        = Platform.OS === 'ios' ? styles.purpleButtoniOS            : styles.purpleButton;
         let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS     : styles.disabledGreenButton;
         let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
         let recordIcon               = this.state.recording ? 'pause' : 'microphone';
@@ -1495,6 +1696,13 @@ class ReadyBox extends Component {
                                     >{backButtonTitle}
                                 </Button>
                             </View>
+                            : this.props.isFolded ?
+                            // On foldables, hide the whole call/action
+                            // button row (audio, video, mic, delete, share,
+                            // etc.) when on the cover display. The Back-to-
+                            // call branch above still runs when a call is in
+                            // progress, so nothing important is lost.
+                            null
                             :
 
                             <View style={[buttonGroupClass, {borderWidth: 0, borderColor: 'white'}]}>
@@ -1527,7 +1735,7 @@ class ReadyBox extends Component {
 
                                   : null }
 
-                                  {this.showCallButtons? 
+                                  {this.showCallButtons?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -1565,6 +1773,56 @@ class ReadyBox extends Component {
                                         onPress={this.recordAudio}
                                         icon={recordIcon}
                                     />
+                                    </TouchableHighlight>
+                                  </View>
+                                  : null }
+
+                                  {/* "Share location" button — sits AFTER the
+                                      Record-audio button so the three comm
+                                      actions (Audio call, Video call, Record
+                                      audio) stay grouped, with the location
+                                      share as a distinct category on the
+                                      right. Purple fill further separates it
+                                      visually from the green call buttons and
+                                      the blue record button. Delegates to the
+                                      same NavigationBar toggle that the kebab
+                                      menu's "Share location..." item uses
+                                      (via the startLocationShare prop, wired
+                                      in app.js). Gated on the contact having
+                                      a PGP public key, because location
+                                      metadata ships encrypted with no
+                                      plaintext fallback. */}
+                                  {this.showLocationShareButton?
+                                  <View style={styles.buttonContainer}>
+                                      {/* While a share is live for the
+                                          currently-selected chat, swap the
+                                          purple pin for a red pulsing
+                                          map-marker-radius. That makes the
+                                          in-chat indicator unmistakable
+                                          (matching the NavBar one the user
+                                          sees from other screens) and lets
+                                          the tap drop them into the
+                                          Stop-sharing dialog via the same
+                                          pin handler. The Animated.View
+                                          wraps the button so the pulse
+                                          applies to the whole circle, not
+                                          just the glyph. */}
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <Animated.View style={this._isSharingCurrentContact(this.props) ? { opacity: this._locationSharePulse } : null}>
+                                            <IconButton
+                                                style={this._isSharingCurrentContact(this.props) ? [purpleButtonClass, { backgroundColor: 'rgba(220, 53, 69, 0.95)' }] : purpleButtonClass}
+                                                size={32}
+                                                // Paper v5 renamed the glyph-tint
+                                                // prop from `color` → `iconColor`;
+                                                // `color` is silently ignored, which
+                                                // is why the pin was still rendering
+                                                // in the default dark theme tint.
+                                                iconColor="white"
+                                                onPress={this.handleShareLocation}
+                                                icon={this._isSharingCurrentContact(this.props) ? "map-marker-radius" : "map-marker"}
+                                                accessibilityLabel={this._isSharingCurrentContact(this.props) ? "Location sharing active — tap to stop" : "Share location"}
+                                            />
+                                        </Animated.View>
                                     </TouchableHighlight>
                                   </View>
                                   : null }
@@ -1832,6 +2090,8 @@ class ReadyBox extends Component {
 						messagesMetadata = {this.props.messagesMetadata}
 						contactStartShare = {this.props.contactStartShare}
 						contactStopShare = {this.props.contactStopShare}
+						acceptMeetingRequest = {this.props.acceptMeetingRequest}
+						isMeetingRequestAcceptable = {this.props.isMeetingRequestAcceptable}
 						setFullScreen = {this.props.setFullScreen}
 						fullScreen = {this.props.fullScreen}
 						transferProgress = {this.props.transferProgress}
@@ -1855,7 +2115,20 @@ class ReadyBox extends Component {
                     }
 
                     {this.showNavigationBar && !this.props.selectedContact ?
-                    <View style={navigationContainer}>
+                    // Keying the wrapper on isFolded + orientation + window
+                    // dims forces the Recents-bar FlatList (and all its Paper
+                    // <Button>s, which cache their measured frame at the
+                    // density they were first mounted under) to remount when
+                    // the device folds/unfolds or Android toggles Default /
+                    // Full Screen on the cover display. extraData={this.state}
+                    // alone was insufficient because neither data nor state
+                    // changed reference on a pure prop change.
+                    <View
+                        key={'recents-' + (this.props.isFolded ? 'f' : 'u')
+                            + '-' + (this.props.orientation || '?')
+                            + '-' + Math.round(width) + 'x' + Math.round(height)}
+                        style={navigationContainer}
+                    >
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
                             ref={(ref) => { this.navigationRef = ref; }}
@@ -1906,6 +2179,11 @@ ReadyBox.propTypes = {
     callHistoryUrl  : PropTypes.string,
     startCall       : PropTypes.func.isRequired,
     startConference : PropTypes.func.isRequired,
+    startLocationShare: PropTypes.func,
+    // { [uri]: expiresAtMs } — mirrored from NavigationBar. Drives the
+    // chat-header pin's pulse + red tint while the current chat is
+    // sharing. Optional; treated as empty if not passed.
+    activeLocationShares: PropTypes.object,
     orientation     : PropTypes.string,
     isTablet        : PropTypes.bool,
     isLandscape     : PropTypes.bool,
@@ -1985,6 +2263,8 @@ ReadyBox.propTypes = {
     contactStartShare: PropTypes.func,
     contactStopShare: PropTypes.func,
 	contactIsSharing: PropTypes.bool,
+    acceptMeetingRequest: PropTypes.func,
+    isMeetingRequestAcceptable: PropTypes.func,
     setFullScreen: PropTypes.func,
     fullScreen: PropTypes.bool,
     transferProgress: PropTypes.object,

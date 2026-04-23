@@ -8,7 +8,7 @@ import styles from '../assets/styles/blink/_TrafficStats.scss';
 
 
 const TrafficStats = (props) => {
-    const { data, isTablet, isLandscape } = props;
+    const { data, isTablet, isLandscape, isFolded } = props;
 
     if (!data || !Array.isArray(data) || data.length === 0) {
         return <View style={styles.container} />;
@@ -22,9 +22,15 @@ const TrafficStats = (props) => {
         return <View style={styles.container} />;
     }
 
-    if (!isTablet && isLandscape) {
+    // Folded cover display renders the stats in a narrow right-hand
+    // column — keep them visible regardless of orientation bookkeeping.
+    if (!isFolded && !isTablet && isLandscape) {
         return <View style={styles.container} />;
     }
+
+    // Make bar chart shorter when folded so both bars + labels fit the
+    // available vertical room on the cover display.
+    const chartHeight = isFolded ? 40 : 60;
 
     const showLoss = packetLossQueue.some(val => val > 0);
 
@@ -64,7 +70,7 @@ const TrafficStats = (props) => {
     return (
         <View style={styles.container}>
             <BarChart
-                style={{ height: 60 }}
+                style={{ height: chartHeight }}
                 data={latencyQueue}
                 svg={{ fill: latencyColor }}
                 contentInset={{ top: 5, bottom: 5 }}
@@ -72,7 +78,7 @@ const TrafficStats = (props) => {
             <Text style={styles.text}>{audioCodec.charAt(0).toUpperCase()  + audioCodec.slice(1) } - Latency {latency} ms</Text>
 
             <BarChart
-                style={{ height: 60 }}
+                style={{ height: chartHeight }}
                 data={packetLossQueue}
                 svg={{ fill: lossColor }}
                 contentInset={{ top: 5, bottom: 5 }}
@@ -85,6 +91,7 @@ const TrafficStats = (props) => {
 TrafficStats.propTypes = {
     isLandscape: PropTypes.bool,
     isTablet: PropTypes.bool,
+    isFolded: PropTypes.bool,
     media: PropTypes.string,
     data: PropTypes.array.isRequired
 };
