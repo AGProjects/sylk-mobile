@@ -68,6 +68,18 @@ Push a new beta build to Google Play Store
 
 Push a new beta build to Google Play Store
 
+### android play_status
+
+```sh
+[bundle exec] fastlane android play_status
+```
+
+Check the current status of releases on a Google Play track (production / beta / alpha / internal)
+
+Usage: fastlane android play_status            # defaults to production
+
+       fastlane android play_status track:beta
+
 ### android build_aab
 
 ```sh

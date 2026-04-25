@@ -133,7 +133,15 @@ class ConferenceParticipantSelf extends Component {
             );
         }
         
-        let shiftX = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+        // Previously this applied translateX: -48 on Android landscape, a
+        // magic-number hack to nudge the self-view thumbnail. It was
+        // matched only by the old asymmetric corner math in ConferenceBox
+        // (left: aRightInset / right: -aRightInset) and only cancelled
+        // correctly when rightInset happened to equal 48. With corners
+        // now symmetric at 0/0 and the PIP container extended to the
+        // screen edges on Android landscape, the shift just pushes every
+        // thumbnail 48px to the left of where it belongs.
+        let shiftX = 0;
         let shiftY = this.state.isLandscape ? 0 : 0;
         
 		// Conditional style: top-right in portrait, shifted in landscape
@@ -157,7 +165,7 @@ class ConferenceParticipantSelf extends Component {
 
 ConferenceParticipantSelf.propTypes = {
     visible: PropTypes.bool,
-    stream: PropTypes.object.isRequired,
+    stream: PropTypes.object,
     identity: PropTypes.object.isRequired,
     audioMuted: PropTypes.bool.isRequired,
     generatedVideoTrack: PropTypes.bool,

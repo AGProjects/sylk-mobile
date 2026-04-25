@@ -1,4 +1,4 @@
-import React, { memo, useContext } from 'react';
+import React, { memo, useContext, useEffect, useRef } from 'react';
 import {
     View,
     TouchableOpacity,
@@ -258,24 +258,59 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress }) => {
     const chatContext = useContext(GiftedChatContext);
 
     const meta = metadata || currentMessage?.metadata;
-    if (!meta || !meta.value) return null;
 
-    const { latitude, longitude, accuracy } = meta.value;
-    if (typeof latitude !== 'number' || typeof longitude !== 'number') {
-        return null;
-    }
+    // Compute peer-coords derived values with null-safe guards so the
+    // hooks below can run unconditionally (rules-of-hooks — we cannot
+    // early-return before the useRef/useEffect pair).
+    const metaValue = meta && meta.value ? meta.value : null;
+    const peerCoordsSafe = meta && meta.peerCoords ? meta.peerCoords : null;
+    const peerLatitudeSafe =
+        peerCoordsSafe && typeof peerCoordsSafe.latitude === 'number' ? peerCoordsSafe.latitude : null;
+    const peerLongitudeSafe =
+        peerCoordsSafe && typeof peerCoordsSafe.longitude === 'number' ? peerCoordsSafe.longitude : null;
+    const hasPeerSafe = peerLatitudeSafe != null && peerLongitudeSafe != null;
+
+    // [meet] diagnostic — log once whenever peer-pin visibility changes for
+    // this bubble. Helps isolate the iOS single-pin bug: if Android logs
+    // "peer pin ON" and iOS never does for the same session, the stamp is
+    // failing or the bubble is rendering off a stale metadata snapshot.
+    const prevHasPeerRef = useRef(null);
+    const bubbleId = currentMessage?._id;
+    useEffect(() => {
+        if (prevHasPeerRef.current === hasPeerSafe) return;
+        const prev = prevHasPeerRef.current;
+        prevHasPeerRef.current = hasPeerSafe;
+        const short = bubbleId ? String(bubbleId).slice(0, 8) : '?';
+        if (hasPeerSafe) {
+            console.log('[meet] LocationBubble peer pin ON — bubble', short,
+                'peer=', peerLatitudeSafe.toFixed(5) + ',' + peerLongitudeSafe.toFixed(5),
+                'distance=', meta && meta.distanceMeters);
+        } else if (prev === true) {
+            console.log('[meet] LocationBubble peer pin OFF — bubble', short);
+        }
+    }, [hasPeerSafe, bubbleId, peerLatitudeSafe, peerLongitudeSafe, meta && meta.distanceMeters]);
+
+    if (!meta || !metaValue) return null;
+
+    const { latitude, longitude, accuracy } = metaValue;
+    // `hasCoords` gates the real map render. The sender fires the origin
+    // tick immediately with null lat/lng (to avoid a 10–15s black-hole
+    // wait on the GPS cold start), so the first render of this bubble
+    // can legitimately have no coordinates yet. We render a "Locating…"
+    // placeholder card in that case; the same bubble is updated in place
+    // once the follow-up tick lands with real coords.
+    const hasCoords =
+        typeof latitude === 'number' && typeof longitude === 'number';
 
     // Meeting-session pairing data injected by app.js's
     // _propagatePeerCoordsForSession. Present only when this bubble is
     // part of an "Until we meet" share AND the peer side's latest tick
     // has been received on this device. Either field may be missing
     // independently.
-    const peerCoords = meta.peerCoords || null;
-    const peerLatitude =
-        peerCoords && typeof peerCoords.latitude === 'number' ? peerCoords.latitude : null;
-    const peerLongitude =
-        peerCoords && typeof peerCoords.longitude === 'number' ? peerCoords.longitude : null;
-    const hasPeer = peerLatitude != null && peerLongitude != null;
+    const peerCoords = peerCoordsSafe;
+    const peerLatitude = peerLatitudeSafe;
+    const peerLongitude = peerLongitudeSafe;
+    const hasPeer = hasPeerSafe;
     const distanceLabel = hasPeer ? formatDistance(meta.distanceMeters) : null;
 
     const tickAt =
@@ -289,6 +324,11 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress }) => {
     const subColor = isIncoming ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.7)';
 
     const openMap = () => {
+        // Guard: without coords (placeholder "Locating…" state) there's
+        // nothing to hand off to the maps app. The footer button is
+        // disabled in that state too, but double-check here in case
+        // something else (long-press accelerator, etc.) calls us.
+        if (!hasCoords) return;
         const ios = `maps://?ll=${latitude},${longitude}&q=${latitude},${longitude}`;
         const android =
             `geo:${latitude},${longitude}?q=${latitude},${longitude}(Shared%20location)`;
@@ -334,19 +374,41 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress }) => {
                 delayLongPress={300}
                 accessibilityLabel="Shared location"
             >
-                <StaticMap
-                    latitude={latitude}
-                    longitude={longitude}
-                    peerLatitude={peerLatitude}
-                    peerLongitude={peerLongitude}
-                />
+                {hasCoords ? (
+                    <StaticMap
+                        latitude={latitude}
+                        longitude={longitude}
+                        peerLatitude={peerLatitude}
+                        peerLongitude={peerLongitude}
+                    />
+                ) : (
+                    // No coords yet — sender fired an origin tick
+                    // immediately with placeholder lat/lng while waiting
+                    // for the first GPS fix. Render a grey frame with a
+                    // spinner-ish icon and "Locating…" label so the user
+                    // has immediate visual confirmation that the share
+                    // started. The same bubble will rerender as the
+                    // StaticMap branch once the follow-up tick lands.
+                    <View style={[styles.mapFrame, styles.placeholderFrame]}>
+                        <Icon
+                            name="crosshairs-gps"
+                            size={32}
+                            color="#888"
+                        />
+                        <Text style={styles.placeholderText}>
+                            Locating…
+                        </Text>
+                    </View>
+                )}
 
                 <View style={styles.info}>
                     <Text
                         style={[styles.title, { color: textColor }]}
                         numberOfLines={1}
                     >
-                        {isExpired ? 'Location (expired)' : 'Live location'}
+                        {isExpired
+                            ? 'Location (expired)'
+                            : (hasCoords ? 'Live location' : 'Live location (acquiring)')}
                     </Text>
                     {/* Coords used to be shown as "lat, lng ± accuracy" but
                         the raw numbers aren't actually useful to the user —
@@ -414,11 +476,17 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress }) => {
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     accessibilityLabel="Open shared location in Maps"
                     style={styles.footerButton}
+                    // Open-in-Maps is meaningless in the "Locating…"
+                    // placeholder state (no coords to hand off). Dim
+                    // and disable until the real coords arrive and the
+                    // map renders above.
+                    disabled={!hasCoords}
                 >
                     <Icon
                         name="map-search-outline"
                         size={20}
                         color={textColor}
+                        style={!hasCoords ? { opacity: 0.35 } : null}
                     />
                 </TouchableOpacity>
             </View>
@@ -437,6 +505,19 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         overflow: 'hidden',
         backgroundColor: '#e9ecef',
+    },
+    // Used while waiting for the first GPS fix — replaces the tile
+    // grid with a flat grey card centered on an icon + "Locating…"
+    // label. Shares mapFrame's dimensions so the bubble doesn't
+    // resize when real coords arrive.
+    placeholderFrame: {
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    placeholderText: {
+        marginTop: 6,
+        fontSize: 13,
+        color: '#555',
     },
     pin: {
         position: 'absolute',
@@ -458,10 +539,16 @@ const styles = StyleSheet.create({
         fontSize: 12,
         marginTop: 2,
     },
+    // Attribution: required by OSM (ODbL) and CartoDB's terms, but
+    // visually softened so it reads as a legal footnote rather than a
+    // UI element. 8px + 0.35 opacity is the smallest we can reasonably
+    // go while still satisfying the providers' "visible and legible"
+    // attribution rules — anyone looking for it can find it, but it
+    // doesn't compete with the actual map content.
     attribution: {
-        fontSize: 10,
-        marginTop: 4,
-        opacity: 0.7,
+        fontSize: 8,
+        marginTop: 2,
+        opacity: 0.35,
     },
     // Lower action bar beneath the map + info. Kept visually subtle (thin
     // divider above, no fill) so it reads as a footer rather than a

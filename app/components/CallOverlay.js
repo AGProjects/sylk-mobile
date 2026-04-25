@@ -305,8 +305,25 @@ class CallOverlay extends React.Component {
 			if (Platform.OS === "ios") {
 				//appBarContainer.marginTop = 0;
 				if (this.state.isLandscape) {
-					appBarContainer.marginLeft = -leftInset;
-					//appBarContainer.width = navBarWidth - 200;
+					// Paper's Appbar.Header renders an outer wrapper
+					// View that applies paddingHorizontal:
+					// Math.max(left, right) from real safe-area insets
+					// (see AppbarHeader.tsx). The style we pass here
+					// ends up on the INNER Appbar that lives inside
+					// that padded content box.
+					//
+					// Unlike ConferenceBox (whose container View is
+					// pulled to device x=0 via its own negative
+					// marginLeft), CallOverlay is rendered directly
+					// inside the app-level SafeAreaView, so its
+					// natural origin is at device x=leftInset. We must
+					// compensate for BOTH the SafeAreaView left inset
+					// AND Paper's paddingHorizontal to reach x=0, then
+					// give the inner Appbar the window's full width so
+					// it spans edge-to-edge.
+					const paperPad = Math.max(leftInset, rightInset);
+					appBarContainer.marginLeft = -(leftInset + paperPad);
+					appBarContainer.width = width;
 				}
 			} else {
 				if (Platform.Version < 34) {

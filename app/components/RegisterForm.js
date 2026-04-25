@@ -175,6 +175,7 @@ class RegisterForm extends Component {
         this.state = {
             accountId: '',
             password: '',
+            passwordVisible: false,
             registering: false,   // login in progress
             remember: false,
             showEnrollmentModal: false,
@@ -363,7 +364,14 @@ class RegisterForm extends Component {
 			const accountObject = this.state.serversAccounts[this.state.newSylkDomain];
 			new_account = accountObject.account || '';
 			new_password = accountObject.password || '';
-	    }
+			console.log('[serverswitch] serversAccounts[', this.state.newSylkDomain, '] =',
+				'account=', JSON.stringify(accountObject.account),
+				'passwordLen=', (accountObject.password ? accountObject.password.length : 0),
+				'rawKeys=', Object.keys(accountObject));
+	    } else {
+			console.log('[serverswitch] serversAccounts has NO entry for', this.state.newSylkDomain,
+				'; available keys=', Object.keys(this.state.serversAccounts));
+		}
 	    
 		if (!this.state.domainChecked) {
 			this.props.lookupSylkServer(this.state.newSylkDomain, true);
@@ -620,8 +628,22 @@ class RegisterForm extends Component {
                         value={this.state.password}
                         onChangeText={this.handlePasswordChange}
                         onSubmitEditing={this.handleSubmit}
-                        secureTextEntry
+                        secureTextEntry={!this.state.passwordVisible}
                         ref={(ref) => { this.passwordInput = ref; }}
+                        right={
+                            <TextInput.Icon
+                                icon={this.state.passwordVisible ? 'eye-off' : 'eye'}
+                                forceTextInputFocus={false}
+                                accessibilityLabel={
+                                    this.state.passwordVisible ? 'Hide password' : 'Show password'
+                                }
+                                onPress={() =>
+                                    this.setState(({ passwordVisible }) => ({
+                                        passwordVisible: !passwordVisible
+                                    }))
+                                }
+                            />
+                        }
                     />
                 </View>
                 : null}

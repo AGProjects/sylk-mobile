@@ -196,12 +196,33 @@ const ChatBubble = memo(
       content = (
         <Bubble
           {...bubbleProps}
-          wrapperStyle={{
-            left: { ...leftWrapper, backgroundColor: 'transparent', borderColor: 'white', borderWidth: 0.5 },
-            right: { ...rightWrapper, backgroundColor: 'transparent', borderColor: 'white', borderWidth: 0.5 },
-          }}
+          // Suppress single-tap on the audio bubble: GiftedChat's Bubble
+          // wrapper fires onPress regardless of whether inner controls
+          // claimed the touch, so any tap inside (slider, play button,
+          // padding) would otherwise pop the contextual menu. Long-press
+          // is left intact — that's the reliable way to open the menu
+          // from an audio bubble.
+          onPress={() => {}}
           textProps={{ style: { color: position === 'left' ? '#fff' : '#fff' } }}
           textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+          wrapperStyle={{
+            left: {
+              ...leftWrapper,
+              backgroundColor: 'transparent',
+              borderColor: 'white',
+              borderWidth: 0.5,
+              alignSelf: 'stretch',
+              marginRight: 24,
+            },
+            right: {
+              ...rightWrapper,
+              backgroundColor: 'transparent',
+              borderColor: 'white',
+              borderWidth: 0.5,
+              alignSelf: 'stretch',
+              marginLeft: 24,
+            },
+          }}
         />
       );
     } else if (originalMessage) {
@@ -267,14 +288,23 @@ const ChatBubble = memo(
 	(prev, next) => {
 	  const p = prev.currentMessage;
 	  const n = next.currentMessage;
-	
+
 	  if (!p || !n) {
 		//console.log(`[Bubble ${p?._id || '??'}] RERENDER → missing message`);
 		return false;
 	  }
-	
+
 	  const id = p._id;
-	
+
+	  // Location-bubble-only trace. Fires on every memo-compare call for
+	  // live-location rows so we can see which branch below ends the
+	  // comparator. `return true` = SKIP re-render (bubble stays stale);
+	  // `return false` = re-render. Kept as a no-op helper so the call
+	  // sites below don't have to be touched — the diagnostic body was
+	  // removed once the location-memo behaviour was settled; reinstate
+	  // the console.log inside if you need to trace a memo regression.
+	  const locTrace = () => {};
+
 		// ==== Reply messages ====
 		const currentId = p._id;
 		
@@ -283,74 +313,85 @@ const ChatBubble = memo(
 		
 		if (prevLabel !== nextLabel) {
 		  if ( nextLabel === undefined) {
+			  locTrace(true, 'mediaLabels: next undefined');
 			  return true;
 		  }
-	
+
 		  //console.log(`[Bubble ${currentId}] RERENDER → mediaLabels changed ${prevLabel} -> ${nextLabel}`);
+		  locTrace(false, 'mediaLabels changed');
 		  return false;
 		}
-		
+
 		// ==== Media rotation ====
 		const prevRotation = prev.mediaRotations?.[currentId];
 		const nextRotation = next.mediaRotations?.[currentId];
-		
+
 		if (prevRotation !== nextRotation) {
 		  console.log(`[Bubble ${currentId}] RERENDER → mediaRotation changed ${prevRotation} -> ${nextRotation}`);
+		  locTrace(false, 'mediaRotation changed');
 		  return false; // re-render
 		}
-	
+
 		const prevReply = prev.replyMessages?.[currentId] ?? false;
 		const nextReply = next.replyMessages?.[currentId] ?? false;
-		
+
 		if (prevReply !== nextReply) {
 		  //console.log(`[Bubble ${currentId}] RERENDER → replyMessages changed from ${prevReply} to ${nextReply}`);
+		  locTrace(false, 'replyMessages changed');
 		  return false; // trigger re-render
 		}
-	
+
 	  if (prev.fullSize != next.fullSize) {
 		//console.log(`[Bubble ${id}] RERENDER → fullSize changed`);
+		locTrace(false, 'fullSize changed');
 		return false;
 	  }
-	
+
 	  // ==== Transfer progress ====
 	  const prevProgress = prev.transferProgress?.[id]?.progress ?? 0;
 	  const nextProgress = next.transferProgress?.[id]?.progress ?? 0;
 	  if (prevProgress !== nextProgress) {
 	    if (prevProgress && nextProgress !== 0 && prevProgress > nextProgress) {
 			console.log(`[Bubble ${id}] RERENDER → progress skip negative changed (${prevProgress} → ${nextProgress})`);
+			locTrace(true, 'progress regressed');
 			return true;
-	    } 
+	    }
 		//console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
+		locTrace(false, 'progress changed');
 		return false;
 	  }
-		
+
 	  // ==== Image loading state ====
 	  const prevImgState = prev.imageLoadingState?.[id] ?? null;
 	  const nextImgState = next.imageLoadingState?.[id] ?? null;
 	  if (prevImgState !== nextImgState) {
 		//console.log(`[Bubble ${id}] RERENDER → image state changed ${prevImgState} -> ${nextImgState}`);
+		locTrace(true, 'imgState changed (skip)');
 		return true;
 	  }
 
     if (prev.thumbnailGridSize !== next.thumbnailGridSize) {
 	  //console.log(`[Bubble ${id}] RERENDER → thumbnailGridSize changed`);
+	  locTrace(false, 'thumbnailGridSize changed');
 	  return false;
     }
-	
+
 	// ==== Thumbnail / video meta ====
 	const prevThumb = prev.videoMetaCache?.[id]?.thumbnail;
 	const nextThumb = next.videoMetaCache?.[id]?.thumbnail;
-	
+
 	// Treat undefined and null as the same
 	if ((prevThumb ?? null) !== (nextThumb ?? null)) {
 	  //console.log(`[Bubble ${id}] RERENDER → video thumbnail changed ${prevThumb} -> ${nextThumb}`);
+	  locTrace(false, 'video thumb changed');
 	  return false;
 	}
-	
+
 	if (
 	  prev.focusedMessageId === id ||
 	  next.focusedMessageId === id
 	) {
+	  locTrace(false, 'focused');
 	  return false; // only re-render affected bubble
 	}
 
@@ -361,54 +402,62 @@ const ChatBubble = memo(
 		  const newVal = n[f] ?? null;  // convert undefined to null
 		  if (oldVal !== newVal) {
 		    if (oldVal && !newVal) {
-		        // don't empty existing content 
+		        // don't empty existing content
+				locTrace(true, `content '${f}' emptied (skip)`);
 				return true;
-		    } 
+		    }
 			//console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
+			locTrace(false, `content '${f}' changed ${oldVal} -> ${newVal}`);
 			return false;
 		  }
 		}
-	
+
 		// ==== Status flags ====
 		const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label'];
 		let defaultFalse = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing'];
 
 		for (let f of flags) {
-		    
+
 		    const defValue = defaultFalse.indexOf(f) > -1 ? false: null;
 			const oldValue = p[f] !== undefined ? p[f] : defValue;
 			const newValue = n[f] !== undefined ? n[f] : defValue;
-		
+
 			// Only trigger if they actually differ
-		
+
 			if ( f == 'consumed' && oldValue && newValue && newValue < oldValue) {
+				locTrace(true, 'consumed regressed (skip)');
 				return true;
 			}
-	
+
 			if ( f == 'rotation' || f == 'position') {
 				if (oldValue == null && newValue == 0) {
+					locTrace(true, `${f} null->0 (skip)`);
 					return true;
 				}
-	
+
 				if (newValue == null) {
+					locTrace(true, `${f} new null (skip)`);
 					return true;
 				}
 			}
-	
+
 			if (oldValue != null && newValue == null) {
 				// ignore transient disappearance
+				locTrace(true, `${f} transient disappearance (skip)`);
 				return true;
 			}
-	
+
 			//console.log(`[Bubble ${id}] RERENDER → status '${f}' : ${oldValue} -> ${newValue}`);
-			
+
 			if (oldValue !== newValue) {
 				//console.log(`[Bubble ${id}] RERENDER → status '${f}' changed: ${oldValue} -> ${newValue}`);
+				locTrace(false, `status '${f}' changed`);
 				return false;
 			}
 		}
-	
-	  // nothing relevant has changed  
+
+	  // nothing relevant has changed
+	  locTrace(true, 'nothing changed');
 	  return true;
 	}
 

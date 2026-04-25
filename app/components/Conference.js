@@ -292,6 +292,13 @@ class Conference extends React.Component {
     }
 
     showSaveDialog() {
+        // Remnant of an old "Save conference?" feature that popped up a
+        // confirmation dialog after hangup. The feature is disabled — the
+        // dialog no longer appears at the end of a conference. Kept here
+        // (returning false) in case we ever want to resurrect it.
+        return false;
+
+        /*
         if (!this.userHangup) {
             return false;
         }
@@ -330,6 +337,7 @@ class Conference extends React.Component {
             return true;
         }
         return true;
+        */
     }
 
     saveConference() {

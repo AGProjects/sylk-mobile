@@ -794,13 +794,24 @@ class VideoBox extends Component {
 					remoteVideoContainer.marginLeft = -leftInset;
 					remoteVideoContainer.height = height;
 				} else {
+					// Non-fullscreen landscape: stretch the video
+					// edge-to-edge just like fullscreen does, but keep
+					// the header bar visible at the top. Pull left by
+					// -leftInset to reach device x=0 and let width
+					// carry it all the way to the right device edge.
+					// PIP thumbnails mirror the fullscreen layout and
+					// push out to the device edges (negative insets)
+					// so they sit in the notch-area corners — only
+					// the top edges are bumped down under the navbar.
 					corners = {
-						topLeft: { top: headerBarHeight, left: 0},
-						topRight: { top: headerBarHeight, right: extraRightInset},
-						bottomRight: { bottom: -bottomInset, right: extraRightInset},
-						bottomLeft: { bottom: -bottomInset, left: 0},
+						topLeft: { top: headerBarHeight, left: -leftInset},
+						topRight: { top: headerBarHeight, right: -rightInset},
+						bottomRight: { bottom: -bottomInset, right: -rightInset},
+						bottomLeft: { bottom: -bottomInset, left: -leftInset},
 						id: 'init'
 					};
+					remoteVideoContainer.marginLeft = -leftInset;
+					remoteVideoContainer.width = width;
 				}
 			} else {
 				remoteVideoContainer.marginTop = -topInset;

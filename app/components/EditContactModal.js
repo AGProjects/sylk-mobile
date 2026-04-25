@@ -47,8 +47,11 @@ const EditContactModal = ({
   toggleRejectAnonymous,
   chatSounds,
   toggleChatSounds,
+  readReceipts,
+  toggleReadReceipts,
   storageUsage,
-  deleteAccountUrl
+  deleteAccountUrl,
+  openDeleteAccount
 }) => {
   const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
@@ -201,7 +204,8 @@ const getTotalPrettyStorage = (entity) => {
 		removeTags: ['bypassdnd']
 	  },
 	  noread: {
-		description: 'No read receipts'
+		description: 'Read receipts',
+		invert: true
 	  }
 	};
 
@@ -309,6 +313,23 @@ const getTotalPrettyStorage = (entity) => {
                       >
                         Copy
                       </Button>
+                      {/* Debug helper: drop the cached public key for this
+                          contact so the next chat-open re-runs lookupPublicKey
+                          and re-triggers the cross-domain handshake. Two-tap
+                          confirm pattern (handleDeletePublicKey toggles the
+                          `confirm` state on first press, performs the delete
+                          on the second) so an accidental tap is recoverable. */}
+                      {!myself && deletePublicKeyProp && (
+                        <Button
+                          mode={confirm ? 'contained' : 'outlined'}
+                          style={styles.button}
+                          onPress={handleDeletePublicKey}
+                          icon="delete"
+                          color="#c62828"
+                        >
+                          {confirm ? 'Tap to confirm' : 'Delete'}
+                        </Button>
+                      )}
                     </View>
 
                     <Text style={styles.small}>Checksum: {checksum}</Text>
@@ -354,23 +375,35 @@ const getTotalPrettyStorage = (entity) => {
 						<View style={{ marginTop: 0 }}>
 						  {Object.entries(editableTags).map(([tagKey, info]) => {
 							if (!isTagVisible(tagKey)) return null;  // ← hide if needed
-						
-							const isSelected = tags.includes(tagKey);
-						
+
+							const tagPresent = tags.includes(tagKey);
+							let displayValue = info.invert ? !tagPresent : tagPresent;
+							// Per-contact "Read receipts" must follow the global setting:
+							// if the account-level Read receipts is off, gray out the
+							// per-contact override since it has no effect, and force
+							// the displayed value to false regardless of the saved tag.
+							const isDisabled = tagKey === 'noread' && readReceipts === false;
+							if (isDisabled) {
+								displayValue = false;
+							}
+							const rowOpacity = isDisabled ? 0.4 : 1;
+
 							return (
-							  <View key={tagKey} style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
+							  <View key={tagKey} style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0, opacity: rowOpacity}]}>
 								{Platform.OS === 'ios' ? (
 								  <Switch
-									value={isSelected}
+									value={displayValue}
 									onValueChange={() => toggleTag(tagKey)}
+									disabled={isDisabled}
 								  />
 								) : (
 								  <Checkbox
-									status={isSelected ? 'checked' : 'unchecked'}
+									status={displayValue ? 'checked' : 'unchecked'}
 									onPress={() => toggleTag(tagKey)}
+									disabled={isDisabled}
 								  />
 								)}
-								<Text> {info.description}</Text>
+								<Text> {isDisabled ? 'Read receipts disabled for account' : info.description}</Text>
 							  </View>
 							);
 						  })}
@@ -410,13 +443,24 @@ const getTotalPrettyStorage = (entity) => {
                     )}
 
                     {myself && (
-                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 0: 0}]}>
+                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
                         {Platform.OS === 'ios' ? (
                           <Switch value={chatSounds} onValueChange={toggleChatSounds} />
                         ) : (
                           <Checkbox status={chatSounds ? 'checked' : 'unchecked'} onPress={toggleChatSounds} />
                         )}
                         <Text> Chat sounds</Text>
+                      </View>
+                    )}
+
+                    {myself && (
+                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 0: 0}]}>
+                        {Platform.OS === 'ios' ? (
+                          <Switch value={readReceipts} onValueChange={toggleReadReceipts} />
+                        ) : (
+                          <Checkbox status={readReceipts ? 'checked' : 'unchecked'} onPress={toggleReadReceipts} />
+                        )}
+                        <Text> Read receipts</Text>
                       </View>
                     )}
 
@@ -457,6 +501,29 @@ const getTotalPrettyStorage = (entity) => {
                       selectedContact?.prettyStorage && !keyboardVisible && (
                         <Text style={styles.small}>Storage usage: {selectedContact.prettyStorage}</Text>
                       )
+                    )}
+
+                    {/*
+                        Small "Delete account" link pinned to the bottom-right.
+                        Deliberately less prominent than Save (no Button chrome,
+                        smaller text, muted-destructive colour) so it does not
+                        compete visually with the primary save action but is
+                        still discoverable. Tapping it hands control to the
+                        host (NavigationBar), which opens DeleteAccountModal
+                        for a two-step confirmation before firing the real
+                        destructive action via app.deleteAccount().
+                    */}
+                    {myself && openDeleteAccount && !keyboardVisible && (
+                      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingTop: 4, paddingBottom: 10, paddingRight: 10 }}>
+                        <Text
+                          onPress={openDeleteAccount}
+                          accessibilityRole="button"
+                          accessibilityLabel="Delete account"
+                          style={{ fontSize: 12, color: '#c62828', textDecorationLine: 'underline' }}
+                        >
+                          Delete account
+                        </Text>
+                      </View>
                     )}
 
                     {!myself && false && !keyboardVisible && (
@@ -502,8 +569,11 @@ EditContactModal.propTypes = {
   toggleRejectAnonymous: PropTypes.func,
   chatSounds: PropTypes.bool,
   toggleChatSounds: PropTypes.func,
+  readReceipts: PropTypes.bool,
+  toggleReadReceipts: PropTypes.func,
   storageUsage: PropTypes.array,
   deleteAccountUrl: PropTypes.string,
+  openDeleteAccount: PropTypes.func,
 };
 
 export default EditContactModal;

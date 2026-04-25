@@ -1,0 +1,6 @@
+Implement global and per contact read receipts setting
+Added controls for audio recordings playback
+Improve location meetup sharing
+Improve inter-domain PGP key exchange logic
+Improve QR code parsing of call urls
+Improve layout of video calls

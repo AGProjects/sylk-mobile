@@ -2975,13 +2975,23 @@ class ConferenceBox extends Component {
 			flex: 1,
 			flexDirection: 'column',
 			borderWidth: debugBorderWidth,
-			borderColor: 'red',
+			borderColor: 'red',         // red    = container (outer)
 		};
 
+		// Video render: the header and buttons bar both float as
+		// overlays on top of the video grid so the video fills the
+		// entire parent view (no reserved strip at the top). This
+		// matches typical video-call UIs (Zoom / Meet) and behaves
+		// the same in portrait and landscape.
 		conferenceHeader = {
+		  position: 'absolute',
+		  top: 0,
+		  left: 0,
+		  right: 0,
 		  height: conferenceHeaderHeight,
+		  zIndex: 2000,
 		  borderWidth: debugBorderWidth,
-		  borderColor: 'white'		  
+		  borderColor: 'yellow'         // yellow = conferenceHeader (floating)
 		};
 
 		buttonsContainer = {
@@ -2993,9 +3003,12 @@ class ConferenceBox extends Component {
 			flexDirection: 'row',
 			justifyContent: 'center',
 			alignItems: 'center',
-			zIndex: 1000,
+			zIndex: 1500,                    // above myselfContainer (1000) so the floating
+			                                 // control bar stays visible & tappable when
+			                                 // the solo self-view fills the whole parent.
+			backgroundColor: 'transparent',  // float: only the buttons render; bar is see-through
 			borderWidth: debugBorderWidth,
-			borderColor: 'pink'
+			borderColor: 'magenta'      // magenta = buttonsContainer (floating)
 		};
 
 		conferenceContainer = {
@@ -3019,8 +3032,8 @@ class ConferenceBox extends Component {
 		  height:  '100%',
 		  width: '100%',
 		  borderWidth: debugBorderWidth,
-		  borderColor: 'white',
-		};	
+		  borderColor: 'lime',          // lime   = mediaContainer (absolute 100%)
+		};
 					
 		let top = 0;
 	    //console.log('width', width);
@@ -3054,6 +3067,8 @@ class ConferenceBox extends Component {
 					};
 
 		        } else {
+				    // Landscape: call buttons live inline in the navbar,
+				    // so the PIP self-view only needs to clear the header.
 				    corners = {
 						  topLeft: { top: conferenceHeader.height, left: 0 },
 						  topRight: { top: conferenceHeader.height, right: 0 },
@@ -3062,30 +3077,40 @@ class ConferenceBox extends Component {
 						  id: 'ios-landscape'
 						};
 
+					// Stretch the container across the full window
+					// width so there is no empty black space on the
+					// left or right. marginLeft: -leftInset cancels
+					// the native iOS left-notch offset so content
+					// reaches x=0, and width: width carries it all
+					// the way to the right device edge (the parent
+					// SafeAreaView's right padding is allowed to
+					// overflow — no visual clipping).
 					container = {
-						width: width - rightInset,
+						width: width,
 						height: height,
+						marginLeft: -leftInset,
 						marginBottom: marginBottom,
 						borderWidth: debugBorderWidth,
 						borderColor: 'blue'
 					};
 
+					// Header is now an absolute overlay, so the
+					// conferenceContainer fills the full parent height.
 					conferenceContainer = {
 					  flexDirection: 'row',
 					  alignContent: 'flex-start',
 					  justifyContent: 'flex-start',
-					  height: height - conferenceHeader.height,
-					  width: width - rightInset,
+					  height: height,
+					  width: width,
 					  borderColor: 'green',
 					  borderWidth: debugBorderWidth,
 					};
 
-					mediaContainer = {
-					  width: this.state.isLandscape ? videoWidth : '100%',
-					  height: height - topInset + 30,
-					  borderColor: 'red',
-					  borderWidth: debugBorderWidth,
-					};
+					// Leave mediaContainer at the shared default
+					// (position: absolute, height: 100%, width: 100%) so
+					// the video fills the container edge-to-edge with
+					// the same sizing scheme used in fullscreen — no
+					// vertical jump when toggling, no overflow.
 				}
 
 			} else {
@@ -3097,27 +3122,35 @@ class ConferenceBox extends Component {
 					  id: 'ios-portrait'
 				  };
 
+				// iOS portrait. In fullscreen we want the video to cover
+				// the entire screen edge-to-edge (including the camera
+				// cutout area at the top), so we simply shift the whole
+				// view up by the top inset — undoing the app-level
+				// SafeAreaView top padding. The height stays equal to
+				// the window height, so the container bottom still lands
+				// exactly at the screen's bottom edge and the PIP
+				// thumbnails' `bottom: 0` positions correctly.
 				container = {
 				  ...(this.fullScreen ? {} : {flex: 1}),  // adds flex:1 only if fullScreen
 				  top: 0,
 				  left: 0,
 				  flexDirection: 'column',
-				  //marginTop: this.fullScreen ? 0: -topInset,
 				  width: width,
-				  height: this.fullScreen ? height: '100%',
-				  marginBottom: marginBottom,
+				  height: this.fullScreen ? height : '100%',
+				  marginTop: this.fullScreen ? -topInset : 0,
+				  marginBottom: this.fullScreen ? 0 : marginBottom,
 				  borderWidth: debugBorderWidth,
 				  borderColor: 'green',
 				};
-  
+
 				mediaContainer = {
 				  position: 'absolute',
 				  resizeMode: 'cover',
-				  height: this.fullScreen ? height: '100%',
+				  height: this.fullScreen ? height : '100%',
 				  width: width,
-				  borderWidth: debugBorderWidth, 
+				  borderWidth: debugBorderWidth,
 				  borderColor: 'white'
-				};		
+				};
 			}
 		} else {
 		    // android
@@ -3133,13 +3166,30 @@ class ConferenceBox extends Component {
 						  bottomLeft: { bottom: 0, left: aRightInset},
 						  id: 'android-landscape-fs'
 					};
-		
+
 				} else {
+				    // Landscape: call buttons live inline in the navbar,
+				    // so the PIP self-view only needs to clear the header.
+				    // Corners are symmetric and flush with the container
+				    // edges — the previous asymmetric aRightInset offsets
+				    // made the left corners sit inward by ~rightInset
+				    // while the right corners extended past the container,
+				    // which visually read as all thumbnails being shifted
+				    // left relative to their intended corners.
+				    //
+				    // In non-fullscreen the Android nav bar is visible and
+				    // interactive, so we let mediaContainer keep its default
+				    // width:100% and size to the safe-area-clamped parent.
+				    // The video grid therefore stops at the safe-area edge
+				    // just like the PIP thumbnails — nothing important sits
+				    // under the nav bar. (Fullscreen hides the nav bar, so
+				    // the container itself is responsible for spanning the
+				    // whole screen when that mode is enabled.)
 				    corners = {
-						  topLeft: { top: conferenceHeader.height, left: aRightInset },
-						  topRight: { top: conferenceHeader.height, right: -aRightInset },
-						  bottomRight: { bottom: 0, right: -aRightInset},
-						  bottomLeft: { bottom: 0, left: aRightInset},
+						  topLeft: { top: conferenceHeader.height, left: 0 },
+						  topRight: { top: conferenceHeader.height, right: 0 },
+						  bottomRight: { bottom: 0, right: 0 },
+						  bottomLeft: { bottom: 0, left: 0 },
 						  id: 'android-landscape'
 					};
 				}
@@ -3172,11 +3222,29 @@ class ConferenceBox extends Component {
 					
         const gridLayoutContainer = this.getVideoLayout().container;
         const videoObjectsCount = videos.length;
+        // myselfContainer is the positioning "canvas" for the floating
+        // self-view PIP. On Android SDK >= 34 landscape the outer
+        // MainContainer is inset by leftInset/rightInset for the
+        // translucent nav bar.
+        //
+        // In FULLSCREEN the nav bar is hidden, so we extend the canvas
+        // past the safe-area margins — corner:0 then lands at the true
+        // screen edges where the edge-to-edge solo self-video reaches.
+        //
+        // In NON-FULLSCREEN the nav bar is visible and interactive; the
+        // canvas stays inside the safe area so the right-edge PIPs don't
+        // slide under the nav bar and become partially obscured. The
+        // video grid below still extends to the screen edges via the
+        // mediaContainer override — the PIPs intentionally stop short.
+        const extendMyselfPastInsets =
+            Platform.OS === 'android' && this.state.isLandscape && this.fullScreen;
+        const myselfExtendLeft = extendMyselfPastInsets ? -leftInset : 0;
+        const myselfExtendRight = extendMyselfPastInsets ? -rightInset : 0;
         const myselfContainer = {
 				  position: 'absolute',
 				  top: 0,
-				  left: 0,
-				  right: 0,
+				  left: myselfExtendLeft,
+				  right: myselfExtendRight,
 				  bottom: 0,
 				  zIndex: 1000,
 				  pointerEvents: 'box-none'
@@ -3273,16 +3341,13 @@ class ConferenceBox extends Component {
 				: null}
 
 				{!this.fullScreen && !this.props.isLandscape && !this.state.showDrawer ?
-				<View style={buttonsContainer}>
+				<View style={buttonsContainer} pointerEvents="box-none">
 					{buttons.bottom}
-					<View style={styles.buttonsContainer}>
-					{this.renderAudioDeviceButtons()}
-					</View>
 				</View>
 				: null}
 
 				<View style={conferenceContainer}>
-				   {!this.state.keyboardVisible && !this.state.chatView?  // videos show up here 
+				   {!this.state.keyboardVisible && !this.state.chatView?  // videos show up here
 					<TouchableWithoutFeedback onPress={this.toggleFullScreen}>
 						<View style={[mediaContainer]}>
 							<View style={[videoGridContainer, gridLayoutContainer]}>
@@ -3366,18 +3431,29 @@ class ConferenceBox extends Component {
 				style={myselfContainer}
 			  >
 				<View
+				  // In solo-fullscreen the self-video covers the whole parent,
+				  // which would otherwise intercept taps and hide the floating
+				  // control bar that lives behind it in tree order. We set
+				  // pointerEvents="none" so taps fall through to the button bar
+				  // (and header), keeping the controls tappable and persistent.
+				  pointerEvents={
+					SOLO_SELF_FULLSCREEN && !this.props.audioOnly && this.state.participants.length === 0
+					  ? 'none'
+					  : 'auto'
+				  }
 				  style={
 					SOLO_SELF_FULLSCREEN && !this.props.audioOnly && this.state.participants.length === 0
 					  ? {
-						  // Fill the video-grid area only — leaves the header
-						  // and button bar visible above, and the bottom edge
-						  // of the screen untouched. Matches the corners math
-						  // used for the normal self-rectangle placement.
+						  // Fill the entire parent edge-to-edge. Parent
+						  // (myselfContainer) is already extended past the
+						  // safe area on Android landscape, so a simple
+						  // 0/0/0/0 rectangle reaches the actual screen
+						  // edges on iOS and Android alike.
 						  position: 'absolute',
-						  top: conferenceHeader.height + buttonsContainer.height,
+						  top: 0,
+						  bottom: 0,
 						  left: 0,
 						  right: 0,
-						  bottom: 0,
 						}
 					  : {
 						  position: 'absolute',

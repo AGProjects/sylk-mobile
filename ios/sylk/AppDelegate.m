@@ -491,6 +491,30 @@
        NSString *fromUri = [[data[@"from_uri"] lowercaseString] copy];
        NSString *toUri   = [[data[@"to_uri"] lowercaseString] copy];
 
+       // Meeting proximity banners ("You are close to each other",
+       // "Nice to meet you!") must always present, even if the user is
+       // currently in the peer's chat. They are not message notifications
+       // — they are session milestones that only fire once per meeting,
+       // and suppressing them defeats their whole purpose. They also fall
+       // through shouldDisplayMessageFromPayload below (unknown event ->
+       // returns NO), so we short-circuit with a banner here.
+       BOOL isMeetingProximity = ([event isEqualToString:@"meeting_proximity_near"] ||
+                                  [event isEqualToString:@"meeting_proximity_met"]);
+       if (isMeetingProximity) {
+           NSLog(@"[sylk_app] presenting meeting proximity banner event=%@ from=%@", event, fromUri);
+           UNNotificationPresentationOptions mpOptions;
+           if (@available(iOS 14.0, *)) {
+               mpOptions = UNNotificationPresentationOptionBanner |
+                           UNNotificationPresentationOptionList |
+                           UNNotificationPresentationOptionSound;
+           } else {
+               mpOptions = UNNotificationPresentationOptionAlert |
+                           UNNotificationPresentationOptionSound;
+           }
+           completionHandler(mpOptions);
+           return;
+       }
+
        NSString *activeChat = [[NSUserDefaults standardUserDefaults] stringForKey:@"activeChatJID"];
        if (activeChat != nil && [fromUri isEqualToString:[activeChat lowercaseString]]) {
            NSLog(@"[sylk_app] Skip notification for active chat with %@", fromUri);

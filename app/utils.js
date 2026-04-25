@@ -38,11 +38,15 @@ function getPartialDownloadPath(taskId) {
 }
 
 function log2file(text) {
-    // append to logfile
+    // Log to console synchronously FIRST so timestampedLog output interleaves
+    // in chronological order with plain console.log calls from the same JS
+    // frame. The file-append goes through the native bridge asynchronously,
+    // and previously we only console.logged after its promise resolved —
+    // which is why Metro showed `Registration state changed:` and similar
+    // messages out of order relative to surrounding console.log lines.
+    console.log(text);
+
     RNFS.appendFile(logfile, text + '\r\n', 'utf8')
-      .then((success) => {
-        console.log(text);
-      })
       .catch((err) => {
         console.log(err.message);
       });
@@ -262,6 +266,39 @@ function parseSylkConferenceUrl(url) {
     };
   } catch (e) {
     console.log('parse error:', e);
+    return null;
+  }
+}
+
+function parseSylkCallUrl(url) {
+  // Recognizes https://<host>[:<port>]/call/<sip-uri> and returns the SIP URI.
+  // Example: https://dune.sylk.link:60000/call/paul@dune.sylk.link -> paul@dune.sylk.link
+  try {
+    if (!url || typeof url !== 'string') return null;
+
+    const match = url.match(/^https?:\/\/[^/]+\/call\/(.+)$/i);
+    if (!match) return null;
+
+    let target = match[1];
+
+    // Strip query string and fragment if present
+    target = target.split('?')[0].split('#')[0];
+
+    // Strip trailing slashes
+    target = target.replace(/\/+$/, '');
+
+    if (!target) return null;
+
+    // Decode URI-encoded characters (e.g. %40 -> @)
+    try {
+      target = decodeURIComponent(target);
+    } catch (e) {
+      // keep target as-is if decoding fails
+    }
+
+    return target;
+  } catch (e) {
+    console.log('parseSylkCallUrl error:', e);
     return null;
   }
 }
@@ -1030,6 +1067,13 @@ async function getFolderSize(folderPath, log=false) {
   let totalSize = 0;
   let dirSize = 0;
   try {
+    // Probe existence first — a missing folder is an expected case for
+    // callers tallying file-transfer disk usage (the folder may have been
+    // cleaned up already). Skip silently so we don't spam the logs with
+    // "doesn't exist" errors for rows the caller already tolerates.
+    const exists = await RNFS.exists(folderPath);
+    if (!exists) return 0;
+
     const items = await RNFS.readDir(folderPath);
 	if (log) {
 		console.log('Found', items.length, 'items');
@@ -1043,13 +1087,19 @@ async function getFolderSize(folderPath, log=false) {
       } else if (item.isDirectory()) {
 		dirSize = await getFolderSize(item.path, log);
         if (log) {
-			console.log('log dir', item.path, 'with size', dirSize); 
+			console.log('log dir', item.path, 'with size', dirSize);
 		}
         totalSize += dirSize;
       }
     }
   } catch (error) {
-    console.error(`Error calculating size for ${folderPath}:`, error);
+    // Still log unexpected errors (permission denied, I/O faults, etc.)
+    const msg = error && (error.message || String(error));
+    if (msg && /doesn't exist|ENOENT|No such file/i.test(msg)) {
+      // swallow — expected for already-cleaned folders
+    } else {
+      console.error(`Error calculating size for ${folderPath}:`, error);
+    }
   }
   return totalSize;
 }
@@ -1215,6 +1265,7 @@ exports.availableAudioDeviceNames = availableAudioDeviceNames;
 exports.getFolderSize = getFolderSize;
 exports.cleanHtml = cleanHtml;
 exports.parseSylkConferenceUrl = parseSylkConferenceUrl;
+exports.parseSylkCallUrl = parseSylkCallUrl;
 
 
 

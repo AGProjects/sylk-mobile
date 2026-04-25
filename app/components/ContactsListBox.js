@@ -34,6 +34,7 @@ import * as Progress from 'react-native-progress';
 import ChatBubble from './ChatBubble';
 import LocationBubble from './LocationBubble';
 import ThumbnailGrid from './ThumbnailGrid';
+import AudioProgressSlider from './AudioProgressSlider';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -272,7 +273,6 @@ class ContactsListBox extends Component {
 
         if ('messagesMetadata' in nextProps) {
 			 this.setState({messagesMetadata: nextProps.messagesMetadata});
-			 //console.log('CL messagesMetadata', nextProps.messagesMetadata);
         }
         
         if ('composerHeight' in nextProps) {
@@ -322,9 +322,7 @@ class ContactsListBox extends Component {
 			// === INITIAL LOAD ===
 			if (oldMessages.length === 0 && newMessages.length > 0) {
 			  this.exitFocusMode();
-			  
-			  //console.log('update renderMessages initial');
-	
+
 			  this.setState({
 				renderMessages: newMessages,
 				scrollToBottom: true,
@@ -358,13 +356,27 @@ class ContactsListBox extends Component {
 			
 			// Detect individual changes
 			const changedIds = [];
-			
+
 			if (idsEqual) {
 			  for (let i = 0; i < newMessages.length; i++) {
 				const a = oldMessages[i];
 				const b = newMessages[i];
-			
+				// For live-location bubbles, `text` and `metadata` are
+				// locally synthesized in componentDidUpdate from
+				// messagesMetadata (see tickMarker logic below). The
+				// parent's state.messages[uri] still holds the bubble
+				// stamped by _injectLocationBubble with the ORIGINAL
+				// (placeholder) tick's timestamp, and never updates —
+				// follow-up ticks flow through messagesMetadata instead.
+				// If we treated `text` as a change here, every prop
+				// update that re-emits messages[uri] would revert the
+				// bubble's text to the placeholder and the map would
+				// visibly flicker between "Locating…" and the real
+				// position on every tick.
+				const isLocBubble = a
+					&& a.contentType === 'application/sylk-live-location';
 				for (const f of fields) {
+				  if (isLocBubble && (f === 'text')) continue;
 				  if (!equalNullish(a[f], b[f])) {
 					changedIds.push(a._id);
 					break; // no need to check other fields
@@ -382,9 +394,9 @@ class ContactsListBox extends Component {
 						const idx = oldMessages.findIndex(m => m._id === id);
 						const oldMsg = oldMessages[idx];
 						const newMsg = newMessages[idx];
-					
+
 						const diff = {};
-					
+
 						fields.forEach(key => {
 						  if (oldMsg[key] !== newMsg[key]) {
 							diff[key] = {
@@ -393,16 +405,47 @@ class ContactsListBox extends Component {
 							};
 						  }
 						});
-					
+
 						//console.log(` MSG ID ${id}:`, diff);
 					  });
 				}
-		
-			  // Merge shallowly to preserve refs
-			  const merged = newMessages.map((m, i) =>
-				idsEqual && !changedIds.includes(m._id) ? oldMessages[i] : m
-			  );
-			  
+
+			  // Merge shallowly to preserve refs.
+			  // For live-location bubbles we ALWAYS preserve the
+			  // locally-synthesized `text` and `metadata` fields coming
+			  // from oldMessages — the parent's bubble in state.messages[uri]
+			  // stays at the original placeholder-tick text forever, but
+			  // componentDidUpdate bumps them on every new tick via the
+			  // locationData getter. Without this preservation the next
+			  // prop update (e.g. a contact-timestamp bump or SQL save)
+			  // would revert the bubble to the stale placeholder and the
+			  // LocationBubble would flicker between "Locating…" and the
+			  // real coords on every tick.
+			  const merged = newMessages.map((m, i) => {
+				if (idsEqual && !changedIds.includes(m._id)) {
+				  return oldMessages[i];
+				}
+				if (m && m.contentType === 'application/sylk-live-location') {
+				  const old = idsEqual
+					? oldMessages[i]
+					: oldMessages.find(o => o && o._id === m._id);
+				  if (old
+					  && old.contentType === 'application/sylk-live-location') {
+					return {
+					  ...m,
+					  text: old.text,
+					  metadata: old.metadata,
+					};
+				  }
+				}
+				return m;
+			  });
+
+			  try {
+				// intentionally no-op — merge diagnostic logs removed once
+				// the live-location bubble merge behaviour stabilised.
+			  } catch (e) { /* noop */ }
+
 			  this.setState({
 				renderMessages: merged
 			  });
@@ -537,13 +580,23 @@ class ContactsListBox extends Component {
     }
 
 	  getAudioDuration = (filePath, messageId) => {
+		// Prevent kicking off duplicate loads for the same message — both
+		// renderMessageAudio and renderTime ask for the duration, and they
+		// can run many times before the async callback resolves.
+		if (!this._audioDurationsInFlight) this._audioDurationsInFlight = new Set();
+		if (this._audioDurationsInFlight.has(messageId)) return;
+		if (this.state.audioDurations && messageId in this.state.audioDurations) return;
+		this._audioDurationsInFlight.add(messageId);
+
 		const Sound = require('react-native-sound'); // import dynamically
 		const sound = new Sound(filePath, '', (error) => {
 		  if (error) {
 			console.log('Failed to load the audio', error);
+			this._audioDurationsInFlight.delete(messageId);
 			return;
 		  }
 		  let duration = Math.floor(sound.getDuration());
+		  this._audioDurationsInFlight.delete(messageId);
 		  this.setState((prevState) => ({
 			audioDurations: {
 			  ...prevState.audioDurations,
@@ -1190,6 +1243,20 @@ class ContactsListBox extends Component {
 
 		//console.log('startAudioPlayer', id, 'at position', message.metadata.position)
 
+		// Send IMDN "displayed" FIRST — before any other work — the moment
+		// the recipient presses Play. Doing this before stopAudioPlayer() and
+		// audioRecorderPlayer.startPlayer() ensures the network notification
+		// is queued in the JS event loop ahead of any blocking native calls
+		// the player might do, so the sender sees "displayed" immediately
+		// rather than after playback finishes.
+		if (message.direction === 'incoming' && this.props.markAudioMessageDisplayedFunc) {
+			try {
+				this.props.markAudioMessageDisplayedFunc(message);
+			} catch (e) {
+				console.log('markAudioMessageDisplayedFunc error', e);
+			}
+		}
+
 		this.stopAudioPlayer();
 
 		if (this.state.audioRecordingStatus && this.state.audioRecordingStatus.metadata && this.state.audioRecordingStatus.metadata.transfer_id == id) {
@@ -1199,7 +1266,7 @@ class ContactsListBox extends Component {
 		this.props.startAudioPlayerFunc();
 
 		const path = message.audio.startsWith('file://') ? message.audio : 'file://' + message.audio;
-		
+
 		try {
 		    /*
 			if (Platform.OS === 'android') {
@@ -1208,40 +1275,112 @@ class ContactsListBox extends Component {
 			    await AudioRouteModule.setAudioMode(0); // MODE_NORMAL
 			}
 			*/
-			
 
 			await audioRecorderPlayer.startPlayer(path);
 
-			// Mark this audio as playing
-
+			// Heuristic state for detecting "playback actually finished" even
+			// when the underlying player gets stuck a few hundred ms before
+			// the reported duration (observed on Android: currentPosition
+			// caps out at ~3780 of 3840 and never fires the final tick).
 			let hasSeeked = false;
-			audioRecorderPlayer.addPlayBackListener((e) => {		
+			// After the seek is issued, the underlying player can briefly
+			// report currentPosition=0 (or anything below the target) for one
+			// or two ticks while it catches up. We swallow those ticks so the
+			// slider doesn't jump backward to 0 and then forward again — the
+			// resume should look like a continuous forward motion only.
+			let seekTargetMs = 0;
+			let seekSettled = false;
+			let playStartWall = Date.now();
+			let lastCurrent = 0;
+			let lastTickWall = Date.now();
+			this.currentAudioDurationMs = 0;
+			this.currentAudioMessage = message;
+
+			audioRecorderPlayer.addPlayBackListener((e) => {
 				if (!e.duration || e.duration <= 0) return;
-	
+
 				const current = Math.floor(e.currentPosition);
 				const duration = Math.floor(e.duration);
-	
+				this.currentAudioDurationMs = duration;
+
 				if (!message.metadata.position || message.metadata.position === 100) {
 					message.metadata.position = 0;
 				}
-	
+
 				if (!message.metadata.consumed) {
 					message.metadata.consumed = 0;
 				}
-	
+
 				this.props.updateFileTransferMetadata(message.metadata, 'playing', true);
-				
+
 				if (!hasSeeked) {
 					const seekPosition = (message.metadata.position / 100) * duration;
 					console.log('Seek to', seekPosition, 'of total', e.duration);
 					audioRecorderPlayer.seekToPlayer(seekPosition);
 					hasSeeked = true;
+					seekTargetMs = Math.floor(seekPosition);
+					seekSettled = seekTargetMs <= 0;
+					// Pre-publish the resume position to the slider so it
+					// stays where the user paused/seeked to instead of
+					// snapping back to 0 while the player settles.
+					const seekPct = duration > 0
+						? Math.max(0, Math.min(100, Math.floor((seekPosition / duration) * 100)))
+						: 0;
+					this.setState({
+						audioRecordingStatus: {
+						  metadata: message.metadata,
+						  duration: audioRecorderPlayer.mmssss(duration),
+						  position: seekPct,
+						},
+					});
+					// Reset the wall-clock baseline using how much of the
+					// clip is still expected to play, so the elapsed-time
+					// finish heuristic doesn't fire too early when resuming.
+					const remainingMs = Math.max(0, duration - seekPosition);
+					playStartWall = Date.now() - (duration - remainingMs);
+					lastCurrent = Math.floor(seekPosition);
+					lastTickWall = Date.now();
 					return;
 				}
-	
+
+				// Swallow ticks that arrive before the player has actually
+				// jumped to the seek target — they would briefly drag the
+				// slider backwards. Once we see a tick at/after the target
+				// (with a small tolerance) we mark seek as settled and let
+				// updates flow through normally.
+				if (!seekSettled) {
+					if (current + 100 >= seekTargetMs) {
+						seekSettled = true;
+					} else {
+						return;
+					}
+				}
+
 				let percentage = Math.floor((current / duration) * 100); // Integer between 0 and 100
 				console.log('e.currentPosition', e.currentPosition, 'e.duration', e.duration, 'percentage', percentage );
-				const isFinished = (e.duration - e.currentPosition) <= 300 || percentage >= 99;	
+
+				// Track tick advancement for the "stuck near end" heuristic.
+				const now = Date.now();
+				if (current > lastCurrent) {
+					lastCurrent = current;
+					lastTickWall = now;
+				}
+
+				const elapsedWall = now - playStartWall;
+				const remainingMs = duration - current;
+
+				// Multiple ways to declare "finished":
+				//   1. Player got within 300ms of the end (original check).
+				//   2. Percentage clamped to >=99% (original check).
+				//   3. Wall-clock time since start exceeds duration + 250ms
+				//      grace (handles players that stop ticking before 100%).
+				//   4. We've been within 500ms of the end for >750ms with no
+				//      further position advancement (stuck-near-end guard).
+				const isFinished =
+					remainingMs <= 300 ||
+					percentage >= 99 ||
+					elapsedWall >= duration + 250 ||
+					(remainingMs <= 500 && (now - lastTickWall) > 750 && percentage >= 90);
 
 				if (isFinished) {
 					// Playback finished
@@ -1250,7 +1389,6 @@ class ContactsListBox extends Component {
 					  {
 						audioRecordingStatus: {
 						  metadata: message.metadata,
-						  position: audioRecorderPlayer.mmssss(current),
 						  duration: audioRecorderPlayer.mmssss(duration),
 						  position: percentage,
 						},
@@ -1264,16 +1402,39 @@ class ContactsListBox extends Component {
 					this.setState({
 						audioRecordingStatus: {
 						  metadata: message.metadata,
-						  position: audioRecorderPlayer.mmssss(current),
 						  duration: audioRecorderPlayer.mmssss(duration),
 						  position: percentage,
 						}});
 				}
 			});
-	
+
 		} catch (e) {
 			console.log('startAudioPlayer error', e);
 		}
+	}
+
+	pauseAudioForScrub(message) {
+		// Called the moment the user touches the slider. If this audio is
+		// currently playing, pause it so it doesn't keep advancing under the
+		// drag — the user has to press Play again to resume from the new
+		// position.
+		const status = this.state.audioRecordingStatus;
+		const isCurrent =
+			status && status.metadata && status.metadata.transfer_id === message.metadata.transfer_id;
+		if (isCurrent) {
+			this.stopAudioPlayer();
+		}
+	}
+
+	async seekAudioMessage(message, percentage) {
+		// Called on slider release. percentage is 0..100. We always just
+		// persist the new position — playback was paused on touch start, so
+		// the user must press Play to resume from the new position. The
+		// existing seek-on-start logic in startAudioPlayer will jump to
+		// metadata.position when Play is pressed.
+		const pct = Math.max(0, Math.min(100, Math.round(percentage)));
+		message.metadata.position = pct;
+		this.props.updateFileTransferMetadata(message.metadata, 'position', pct);
 	}
 	
     async stopAudioPlayer() {
@@ -1304,6 +1465,8 @@ class ContactsListBox extends Component {
 		}
 
 		this.setState({audioRecordingStatus: {}});
+		this.currentAudioDurationMs = 0;
+		this.currentAudioMessage = null;
 	}
 
     setTargetUri(uri, contact) {
@@ -1822,21 +1985,21 @@ class ContactsListBox extends Component {
 	renderMessageAudio = (props) => {
 	  const { currentMessage } = props;
 	  const { audioDurations } = this.state;
-	  
+
 	  if (this.state.orderBy === 'size') {
 		  return null;
 	  }
-	
+
 	  // Load duration if not already loaded
 	  if (currentMessage.audio && !audioDurations[currentMessage._id]) {
-		// this.getAudioDuration(currentMessage.audio, currentMessage._id);
+		this.getAudioDuration(currentMessage.audio, currentMessage._id);
 	  }
-	
+
 	  // Get duration string
 	  const durationLabel = audioDurations[currentMessage._id]
 		? `Recording of ${audioDurations[currentMessage._id]}s`
 		: 'Recording';
-	
+
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const labelPadding =  isIncoming ? {paddingLeft: 10} : {paddingLeft: 0};
 
@@ -1845,81 +2008,94 @@ class ContactsListBox extends Component {
 	  const isCurrent = status?.metadata?.transfer_id === currentMessage.metadata.transfer_id;
 
 	  let position = currentMessage.position || 0;
+	  // Reflect live playback position on the bubble that is currently playing.
+	  if (isCurrent && typeof status?.position === 'number') {
+		  position = status.position;
+	  }
 
 	  if (!isCurrent || currentMessage.position == 100) {
 		  isPlaying = false;
 	  }
-	  
+
+	  // Compute a slider width that fits within the audio bubble while
+	  // leaving room for the play/pause button and the same side margins
+	  // GiftedChat applies to other bubbles (avatar gutter, bubble padding,
+	  // play button ~48, slider side gap, end margin).
+	  const windowWidth = Dimensions.get('window').width;
+	  const sliderWidth = Math.max(160, Math.min(windowWidth - 200, 520));
+
 	  //console.log('current audio message', currentMessage.metadata);
+
+	  const playButton = (
+		<TouchableHighlight
+		  // Claim the responder for the entire play-button area (including
+		  // padding around the IconButton). Without an onPress on this
+		  // wrapper, taps that land in the padding fall through to the
+		  // parent Bubble's onPress and open the contextual menu.
+		  onPress={() =>
+			isPlaying
+			  ? this.stopAudioPlayer()
+			  : this.startAudioPlayer(currentMessage)
+		  }
+		  underlayColor="transparent"
+		  style={[
+			styles.roundshape,
+			isIncoming ? {marginLeft: 10} : {marginRight: 10},
+			{marginTop: 0},
+		  ]}>
+		  <IconButton
+			size={28}
+			onPress={() =>
+			  isPlaying
+				? this.stopAudioPlayer()
+				: this.startAudioPlayer(currentMessage)
+			}
+			style={styles.playAudioButton}
+			icon={isPlaying ? 'pause' : 'play'}
+		  />
+		</TouchableHighlight>
+	  );
 
 	  return (
 		<View
 		  style={[
-			{ flexDirection: 'column', alignItems: 'center'},
-		  ]}
-		>
-
-		<View
-		  style={[
 			styles.audioContainer,
-			{ flexDirection: 'row', alignItems: 'center', justifyContent: !isIncoming ? 'flex-end' : 'flex-start'},
+			{
+			  flexDirection: 'row',
+			  alignItems: 'center',
+			  justifyContent: isIncoming ? 'flex-start' : 'flex-end',
+			  paddingVertical: 6,
+			},
 		  ]}
 		>
-		  {/* Icon on left for incoming, right for outgoing */}
-		  {isIncoming && (
-			<TouchableHighlight style={[styles.roundshape, {marginLeft: 10, marginTop: 10}]}>
-			  <IconButton
-				size={28}
-				onPress={() =>
-				  isPlaying
-					? this.stopAudioPlayer()
-					: this.startAudioPlayer(currentMessage)
-				}
-				style={styles.playAudioButton}
-				icon={isPlaying? 'pause' : 'play'}
-			  />
-			</TouchableHighlight>
+		  {isIncoming && playButton}
 
-		  )}
-	
-		  {/* Text grows naturally */}
-		  <Text
-			style={[
-			  styles.audioLabel,
-			  { marginHorizontal: 8, flexShrink: 1},
-			  labelPadding
-			  , // prevents overflow
-			]}
-		  >
-			{durationLabel}
-		  </Text>
+		  <View style={{ flexDirection: 'column', alignItems: isIncoming ? 'flex-start' : 'flex-end', justifyContent: 'center', flex: 1, paddingLeft: isIncoming ? 18 : 8, paddingRight: isIncoming ? 8 : 18 }}>
+			<Text
+			  style={[
+				styles.audioLabel,
+				{ marginBottom: 2, marginTop: 0, alignSelf: isIncoming ? 'flex-start' : 'flex-end' },
+				labelPadding,
+			  ]}
+			  numberOfLines={1}
+			>
+			  {durationLabel}
+			</Text>
+			<AudioProgressSlider
+			  progress={position}
+			  width={sliderWidth}
+			  height={4}
+			  knobWidth={6}
+			  knobHeight={20}
+			  color={"orange"}
+			  unfilledColor="rgba(255,255,255,0.4)"
+			  knobColor={"orange"}
+			  onSeekStart={() => this.pauseAudioForScrub(currentMessage)}
+			  onSeek={(pct) => this.seekAudioMessage(currentMessage, pct)}
+			/>
+		  </View>
 
-		  {!isIncoming && (
-			<TouchableHighlight style={[styles.roundshape, {marginRight: 10, marginTop: 10}]}>
-			  <IconButton
-				size={28}
-				onPress={() =>
-				  isPlaying
-					? this.stopAudioPlayer()
-					: this.startAudioPlayer(currentMessage)
-				}
-				style={[styles.playAudioButton]}
-				icon={isPlaying ? 'pause' : 'play'}
-			  />
-			</TouchableHighlight>
-		  )}
-
-		</View>
-			  <Progress.Bar
-					progress={position / 100}
-					width={150}         // smaller width for inline look
-					height={6}
-					borderRadius={3}
-					borderWidth={0}
-					color={"orange"}
-					unfilledColor="white"
-					style={{ marginLeft: 40, marginTop: 0 }}  // small gap from label
-				  />
+		  {!isIncoming && playButton}
 		</View>
 	  );
 	};
@@ -2231,6 +2407,33 @@ class ContactsListBox extends Component {
 
     noChatInputToolbar () {
         return null;
+    }
+
+    // Input-toolbar replacement used when the active account has no local
+    // private key. Sending requires a key, so the composer is swapped for
+    // this read-only banner pointing users to the menu path where they can
+    // restore or generate one. Styled in the same warning red as the
+    // ReadyBox banner so the two read as one signal.
+    noKeyInputToolbar () {
+        return (
+            <View
+                accessibilityRole="alert"
+                style={{
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                    backgroundColor: '#c62828',
+                    borderTopWidth: 1,
+                    borderTopColor: '#8e0000',
+                }}
+            >
+                <Text style={{color: 'white', fontWeight: 'bold', fontSize: 13, marginBottom: 2}}>
+                    Cannot send messages
+                </Text>
+                <Text style={{color: 'white', fontSize: 12}}>
+                    No private key on this device. Go to Menu {'>'} My private key to restore or generate one.
+                </Text>
+            </View>
+        );
     }
 
     onMessagePress(context, message) {
@@ -2910,7 +3113,7 @@ class ContactsListBox extends Component {
 			console.log("old", JSON.stringify(prevState.messagesMetadata, null, 2));
 			console.log("new", JSON.stringify(this.state.messagesMetadata, null, 2));
 			*/
-		
+
 			const mediaLabels = this.mediaLabels;
 			//console.log('CL mediaLabels:', mediaLabels);
 			const mediaRotations = this.mediaRotations;
@@ -2935,10 +3138,30 @@ class ContactsListBox extends Component {
 					: null;
 
 				if (newLocation) {
-					const tickMarker = newLocation.timestamp
+					// Include peerCoords in the tickMarker signature. Without
+					// this, _propagatePeerCoordsForSession stamps peerCoords
+					// onto an existing location entry WITHOUT changing its
+					// timestamp — so tickMarker stays identical, `msg.text`
+					// never bumps, and GiftedChat's ChatBubble memo comparator
+					// (which watches `text`) short-circuits the re-render.
+					// Result: peerCoords land in state but the second pin
+					// never shows on either side. Appending a short peer
+					// signature forces `text` to change whenever the peer
+					// pin becomes available (or moves), which cascades a
+					// proper re-render into LocationBubble.
+					const basePart = newLocation.timestamp
 						? String(new Date(newLocation.timestamp).getTime())
 						: String(Date.now());
-					if (tickMarker !== msg.text || newLocation !== msg.metadata) {
+					const pc = newLocation.peerCoords;
+					const peerPart = pc
+							&& typeof pc.latitude === 'number'
+							&& typeof pc.longitude === 'number'
+						? '|' + pc.latitude.toFixed(4) + ',' + pc.longitude.toFixed(4)
+						: '';
+					const tickMarker = basePart + peerPart;
+					const textChanged = tickMarker !== msg.text;
+					const metaChanged = newLocation !== msg.metadata;
+					if (textChanged || metaChanged) {
 						return {
 							...msg,
 							text: tickMarker,
@@ -3961,16 +4184,34 @@ class ContactsListBox extends Component {
 	  const timeString = currentMessage.createdAt
 		? dayjs(currentMessage.createdAt).format('h:mm A')
 		: '';
-	
-	  let text = hasFileSize
-		? `${formatFileSize(currentMessage.metadata.filesize)}  •  ${timeString}`
-		: timeString;
-	
-	  if (isIncoming) {
-		text = hasFileSize
-		  ? `${timeString} • ${formatFileSize(currentMessage.metadata.filesize)}`
-		  : timeString;
+
+	  // Build duration string for audio messages (e.g. "0:42")
+	  let durationString = '';
+	  if (currentMessage.audio) {
+		const secs = this.state.audioDurations?.[currentMessage._id];
+		if (typeof secs === 'number' && secs > 0) {
+		  const m = Math.floor(secs / 60);
+		  const s = Math.floor(secs % 60);
+		  durationString = `${m}:${s < 10 ? '0' : ''}${s}`;
+		} else {
+		  // Kick off the duration load if it hasn't been loaded yet, so the
+		  // footer updates without requiring the user to press play first.
+		  this.getAudioDuration(currentMessage.audio, currentMessage._id);
+		}
 	  }
+
+	  // Compose footer parts in order, then join with separators
+	  const parts = [];
+	  if (isIncoming) {
+		parts.push(timeString);
+		if (hasFileSize) parts.push(formatFileSize(currentMessage.metadata.filesize));
+		if (durationString) parts.push(durationString);
+	  } else {
+		if (durationString) parts.push(durationString);
+		if (hasFileSize) parts.push(formatFileSize(currentMessage.metadata.filesize));
+		parts.push(timeString);
+	  }
+	  let text = parts.filter(Boolean).join('  •  ');
 
 	  let consumed = currentMessage.consumed || 0;
 	  const showProgress = !isIncoming && consumed > 0;
@@ -4447,7 +4688,17 @@ scrollToMessage(id) {
 
        let chatInputClass = this.customInputToolbar;
 
-        if (this.state.selectedContact) {
+        // No local private key → messages can't be encrypted/sent, so the
+        // composer is replaced with a static warning banner pointing to
+        // Menu > My private key. This check takes priority over the other
+        // overrides below so the user sees the "why" instead of a blank
+        // row. `state.keys` is null when no key is loaded; any truthy
+        // object means we have at least the public key locally.
+        const hasPrivateKey = !!(this.state.keys && this.state.keys.private);
+
+        if (!hasPrivateKey) {
+            chatInputClass = this.noKeyInputToolbar;
+        } else if (this.state.selectedContact) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                chatInputClass = this.noChatInputToolbar;
            }
@@ -5179,6 +5430,7 @@ ContactsListBox.propTypes = {
     gettingSharedAsset: PropTypes.bool,
 	startAudioPlayerFunc: PropTypes.func,
 	stopAudioPlayerFunc: PropTypes.func,
+	markAudioMessageDisplayedFunc: PropTypes.func,
 	playRecording: PropTypes.bool,
 	updateFileTransferMetadata: PropTypes.func,
 	isAudioRecording: PropTypes.bool,

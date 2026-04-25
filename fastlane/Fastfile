@@ -185,6 +185,61 @@ platform :android do
 end
 
 platform :android do
+  desc "Check the current status of releases on a Google Play track (production / beta / alpha / internal)"
+  desc "Usage: fastlane android play_status            # defaults to production"
+  desc "       fastlane android play_status track:beta"
+  lane :play_status do |options|
+    track = options[:track] || 'production'
+
+    UI.header("Google Play status for track: #{track}")
+
+    # Basic info via the public supply actions (they read package_name / json_key_file from the Appfile)
+    version_codes = google_play_track_version_codes(track: track)
+    release_names = google_play_track_release_names(track: track)
+
+    UI.message("Active version codes: #{version_codes.inspect}")
+    UI.message("Release names:        #{release_names.inspect}")
+
+    # Detailed info (release status, staged rollout fraction) via the Supply client.
+    # The public actions above don't expose `status` or `userFraction`, so we query
+    # the Android Publisher API edit directly.
+    require 'supply'
+    require 'supply/client'
+
+    Supply.config = FastlaneCore::Configuration.create(
+      Supply::Options.available_options,
+      {
+        package_name: 'com.agprojects.sylk',
+        json_key: File.expand_path('sylk-8f7a1-17d9c4ec91f8.json', __dir__),
+        track: track
+      }
+    )
+
+    client = Supply::Client.make_from_config
+    client.begin_edit(package_name: 'com.agprojects.sylk')
+
+    begin
+      track_obj = client.tracks(track).first
+      if track_obj.nil? || track_obj.releases.nil? || track_obj.releases.empty?
+        UI.important("No releases found on track '#{track}'.")
+      else
+        track_obj.releases.each_with_index do |release, idx|
+          UI.success("Release ##{idx + 1}")
+          UI.message("  Name:           #{release.name}")
+          UI.message("  Status:         #{release.status}")
+          UI.message("  Version codes:  #{Array(release.version_codes).join(', ')}")
+          UI.message("  User fraction:  #{release.user_fraction}") if release.user_fraction
+        end
+        UI.important("Note: Google Play's API does not expose an 'In Review' state. " \
+                     "A submitted release will appear as 'completed' or 'inProgress' here even while it is still under review.")
+      end
+    ensure
+      client.abort_current_edit
+    end
+  end
+end
+
+platform :android do
   desc "Push a new beta build to Google Play Store"
   lane :build_aab do
 

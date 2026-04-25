@@ -37,6 +37,7 @@ import CallMeMaybeModal from './CallMeMaybeModal';
 import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
+import DeleteAccountModal from './DeleteAccountModal';
 import GenerateKeysModal from './GenerateKeysModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
@@ -75,6 +76,10 @@ class NavigationBar extends Component {
             keyMenuVisible: false,
             showDeleteFileTransfers: false,
             showEditContactModal: false,
+            // Opened from the EditContactModal "Delete account" link when
+            // myself=true. Confirms & then calls props.deleteAccount() to
+            // wipe this account from the device and sign out.
+            showDeleteAccountModal: false,
 			showGenerateKeysModal: false,
 			showExportPrivateKeyModal: false,
             privateKeyPassword: null,
@@ -174,6 +179,51 @@ class NavigationBar extends Component {
 	componentDidUpdate(prevProps, prevState) {
 	    if (this.state.menuVisible != prevState.menuVisible && this.state.menuVisible) {
 		    Keyboard.dismiss();
+		}
+
+		// Self-heal drift between activeLocationShares (React state that
+		// drives the chat-header + NavBar pulse) and locationTimers (the
+		// instance ref that holds the real intervalId / watchId / expiry
+		// timer). locationTimers is the source of truth: if there's no
+		// entry there, no tick is firing and no share is actually active.
+		// Previously these two could drift whenever a cleanup setState
+		// was pre-empted by a concurrent setState that spread a stale
+		// snapshot of activeLocationShares (e.g. a meeting_end arriving
+		// while an optimistic start-share write was still in flight, or
+		// a deleteMessage teardown racing with stopLocationSharing's
+		// re-entry guard). The result was a pin that kept pulsing after
+		// the share had truly ended — even after the user deleted the
+		// origin bubble. We reconcile here on every commit: any uri in
+		// activeLocationShares that isn't backed by a timer AND isn't
+		// currently mid-startup (guarded by _startingShares, which spans
+		// the full startLocationSharing async chain) is dropped. This
+		// makes the pulse state eventually-consistent with the actual
+		// share state regardless of which cleanup path missed.
+		const sharesMap = this.state.activeLocationShares || {};
+		const sharesUris = Object.keys(sharesMap);
+		if (sharesUris.length > 0) {
+			let reconciled = null;
+			const staleUris = [];
+			sharesUris.forEach((uri) => {
+				const hasTimer = !!this.locationTimers[uri];
+				const starting = !!(this._startingShares && this._startingShares.has(uri));
+				if (!hasTimer && !starting) {
+					if (!reconciled) reconciled = {...sharesMap};
+					delete reconciled[uri];
+					staleUris.push(uri);
+				}
+			});
+			if (reconciled) {
+				console.log('[location] NB cDU reconcile: dropping stale activeLocationShares',
+					staleUris);
+				this.setState({activeLocationShares: reconciled});
+				// Bail out — the subsequent setState triggers another cDU
+				// where the count-based pulse toggle below will run with
+				// the corrected map. Doing the toggle here with the stale
+				// currCount would falsely keep the pulse running for one
+				// extra frame.
+				return;
+			}
 		}
 
 		// Drive the pulsing marker indicator: start the loop on the
@@ -809,28 +859,64 @@ class NavigationBar extends Component {
             // started / stopped / cancelled / completed vocabulary, plain
             // timed shares keep the more literal "sharing" wording.
             const wasMeeting = !!(entry && entry.meetingSessionId);
+            // Has the peer accepted yet? Drives the vocabulary of the
+            // system note: before acceptance the session is still a
+            // "Meeting request" (the peer hasn't responded); once either
+            // side has accepted, it's just a "Meeting" — the "request"
+            // qualifier no longer fits because both sides are actively
+            // sharing. The 'requester-deleted' and 'peer-stopped' paths
+            // can only fire when the peer was actively sharing (they
+            // imply the handshake completed), so we treat those as
+            // post-acceptance unconditionally.
+            const sessionId = entry && entry.meetingSessionId;
+            const meetingAccepted = !!(
+                typeof this.props.isMeetingSessionAccepted === 'function'
+                && this.props.isMeetingSessionAccepted(sessionId)
+            );
+            const postAcceptance = meetingAccepted
+                || reason === 'requester-deleted'
+                || reason === 'peer-stopped';
             let note;
             if (wasMeeting) {
                 switch (reason) {
                     case 'expired':
-                        // Timer ran its course — we take this as "the
-                        // meeting happened" rather than a cancellation.
-                        note = 'Meeting completed';
+                        // Timer ran its course without a proximity-met
+                        // event firing. If proximity HAD fired, the
+                        // session was torn down via _wipeMeetingSession
+                        // → stopLocationSharing({silent:true, reason:'expired'}),
+                        // which skips this note entirely. So reaching
+                        // this branch non-silently means: the two parties
+                        // never actually met within the window.
+                        note = 'Meeting expired';
                         break;
                     case 'deleted':
                         // We (the local user) cancelled the session.
-                        note = 'Meeting request cancelled';
+                        note = postAcceptance
+                            ? 'Meeting cancelled'
+                            : 'Meeting request cancelled';
                         break;
                     case 'requester-deleted':
-                        // The remote party deleted a leg of the session —
-                        // tag it so the user can tell local vs remote cancels
-                        // apart in the transcript.
-                        note = 'Meeting request cancelled by remote';
+                        // The remote party deleted a leg of the session.
+                        // Always post-acceptance — only the accepter's
+                        // stopLocationSharing gets this reason, and the
+                        // accepter by definition has accepted.
+                        note = 'Meeting cancelled by remote party';
                         break;
                     case 'peer-stopped':
+                        // Peer tapped Stop — orderly end, after both
+                        // parties were actively sharing. Always
+                        // post-acceptance.
+                        note = 'Meeting stopped by remote party';
+                        break;
                     default:
-                        // Either side tapped Stop — orderly end.
-                        note = 'Meeting request stopped';
+                        // Local user tapped Stop (no explicit reason
+                        // supplied — the pin modal's stopShare calls us
+                        // with no opts). An orderly, locally-initiated
+                        // end. Post-acceptance → "Meeting stopped";
+                        // before acceptance we would have hit 'deleted'
+                        // via the origin-bubble delete path, not this
+                        // default, so the wording here is safe.
+                        note = 'Meeting stopped';
                         break;
                 }
             } else {
@@ -1058,6 +1144,34 @@ class NavigationBar extends Component {
         if (!uri) {
             return;
         }
+        // Synchronous re-entry guard. Two failure modes to block:
+        //
+        //   (a) An active share already exists for this peer. The chat
+        //       should never host two concurrent sharing sessions — a
+        //       second tap must be a no-op, not a silent replacement and
+        //       not a second parallel session.
+        //
+        //   (b) A previous call to this function is still awaiting its
+        //       permission-prompt / alert chain. The permission checks
+        //       below are all async; a rapid double-tap on the "Meet up"
+        //       button previously let both calls clear the await barrier
+        //       before either wrote to locationTimers, producing two
+        //       origin ticks to the same peer (and two modals on the
+        //       accepter side). The in-flight Set catches that race
+        //       window synchronously at the top of the function.
+        //
+        // Both tests run before the first await so JS's single-threaded
+        // event loop guarantees the second caller sees the first caller's
+        // guard.
+        if (!this._startingShares) {
+            this._startingShares = new Set();
+        }
+        if (this._startingShares.has(uri) || this.locationTimers[uri]) {
+            console.log('[location] startLocationSharing: ignoring duplicate — share already active or in-flight for', uri);
+            return;
+        }
+        this._startingShares.add(uri);
+      try {
         const kind = opts.kind || 'fixed';
         const inReplyTo = opts.inReplyTo || null;
         const tickExtras = {
@@ -1079,6 +1193,104 @@ class NavigationBar extends Component {
         if (kind === 'meetingAccept' && inReplyTo) {
             meetingSessionId = inReplyTo;
         }
+
+        // === IMMEDIATE USER FEEDBACK (pre-permission) ===
+        //
+        // The user tapped "Meet up"/"Confirm". Until we know otherwise
+        // we treat that as commitment and surface evidence of the tap
+        // synchronously, before any await — because the permission
+        // chain below, OS prompts, and first-GPS-fix can each add
+        // perceptible latency.
+        //
+        // Two bits of feedback fire here:
+        //
+        //   1. Optimistic activeLocationShares entry. NavigationBar's
+        //      share/pin indicator reads this map; flipping the entry
+        //      now makes the icon start pulsing on the same frame as
+        //      the tap. If permission is later denied/blocked/cancelled
+        //      we roll it back in the finally path (see
+        //      rollbackOptimistic() below).
+        //
+        //   2. Announcement text message ("I want to meet up with you",
+        //      etc.). Previously this was sent AFTER the permission
+        //      chain — meaning on an unlucky path the user waited 10 s
+        //      before their own outgoing invitation appeared in chat.
+        //      Sending it now gives the sender immediate proof that
+        //      the invitation went out; the bubble (origin tick) can
+        //      still take a moment to follow.
+        //
+        // Computing an interim expiresAt here duplicates the math
+        // later at ~line 1250; the later computation overrides this
+        // one once we know the share is definitely starting.
+        const optimisticNow = Date.now();
+        const optimisticExpiresAt = (typeof opts.expiresAt === 'number'
+                                     && opts.expiresAt > optimisticNow)
+            ? opts.expiresAt
+            : optimisticNow + durationMs;
+        const hadActiveShareForUri = this.state.activeLocationShares[uri] !== undefined;
+        if (!hadActiveShareForUri) {
+            this.setState({
+                activeLocationShares: {
+                    ...this.state.activeLocationShares,
+                    [uri]: optimisticExpiresAt,
+                },
+            });
+        }
+
+        // Announcement text — build and ship NOW. Keep the id so we
+        // can surgically delete the message if the permission chain
+        // ultimately fails and we abandon this share attempt.
+        let announcementMessageId = null;
+        if (this.props.sendMessage) {
+            let announcementText;
+            if (kind === 'meetingRequest') {
+                announcementText = 'I want to meet up with you';
+            } else if (kind === 'meetingAccept') {
+                announcementText = 'I want to meet with you, too!';
+            } else {
+                announcementText = `I am sharing the location with you for ${periodLabel}`;
+            }
+            announcementMessageId = uuid.v4();
+            const textTs = new Date();
+            const textMessage = {
+                _id: announcementMessageId,
+                key: announcementMessageId,
+                createdAt: textTs,
+                text: announcementText,
+                metadata: {locationAnnouncement: true},
+                // GiftedChat requires a `user` field on every message.
+                user: {},
+            };
+            this.props.sendMessage(uri, textMessage);
+        }
+
+        // Single place to unwind the optimistic UI state + invitation
+        // message if the permission chain denies us. Must be safe to
+        // call multiple times — several early-return branches below
+        // all funnel through this.
+        const rollbackOptimistic = () => {
+            if (!hadActiveShareForUri
+                && this.state.activeLocationShares[uri] !== undefined
+                && !this.locationTimers[uri]) {
+                const next = {...this.state.activeLocationShares};
+                delete next[uri];
+                this.setState({activeLocationShares: next});
+            }
+            if (announcementMessageId
+                && typeof this.props.deleteMessage === 'function') {
+                try {
+                    // Local-only removal (third arg true) — no peer
+                    // echo needed because we want to undo a UI message
+                    // that never should have shipped, not record a
+                    // deletion of a real-message history.
+                    this.props.deleteMessage(announcementMessageId, uri, true);
+                } catch (e) {
+                    console.log('[location] rollback deleteMessage failed',
+                        e && e.message ? e.message : e);
+                }
+                announcementMessageId = null;
+            }
+        };
 
         // Upfront capability probe. We want to *tell the user* — before we
         // fire a single tick — whether their current OS-level permission
@@ -1103,6 +1315,7 @@ class NavigationBar extends Component {
             // The user has previously tapped "Don't Allow" (iOS) or "Don't
             // ask again" (Android). Any request() call is a no-op — only
             // Settings can flip this back.
+            rollbackOptimistic();
             Alert.alert(
                 'Location access blocked',
                 Platform.OS === 'ios'
@@ -1118,6 +1331,7 @@ class NavigationBar extends Component {
         }
 
         if (permState === 'unavailable') {
+            rollbackOptimistic();
             Alert.alert(
                 'Location unavailable',
                 'Location services are not available on this device.',
@@ -1143,7 +1357,10 @@ class NavigationBar extends Component {
                     {cancelable: true, onDismiss: () => resolve(false)}
                 );
             });
-            if (!proceed) return;
+            if (!proceed) {
+                rollbackOptimistic();
+                return;
+            }
             // Fall through to the normal start path — ensureLocationPermission
             // below will re-confirm the OS-level permission and start ticks.
         }
@@ -1168,12 +1385,58 @@ class NavigationBar extends Component {
                     {cancelable: true, onDismiss: () => resolve(false)}
                 );
             });
-            if (!proceed) return;
+            if (!proceed) {
+                rollbackOptimistic();
+                return;
+            }
         }
 
-        const hasPermission = await this.ensureLocationPermission();
+        // Fast-path around ensureLocationPermission when we already know
+        // from the upfront probe that the OS-level permission is granted.
+        //
+        // Why this matters: on iOS, Geolocation.requestAuthorization()
+        // only fires its success callback via CLLocationManagerDelegate's
+        // didChangeAuthorization — and that delegate ONLY fires on actual
+        // authorization *changes*. If the user has already granted Always
+        // (or WhenInUse), calling requestAuthorization is a no-op at the
+        // CoreLocation layer: no change → no delegate callback → the
+        // Promise wrapping it in ensureLocationPermission sits unresolved
+        // until its 10 000 ms `setTimeout(settle(true), 10000)` safety
+        // net fires. That ten-second stall is exactly the delay users
+        // see between tapping "Meet up"/"Confirm" and their placeholder
+        // bubble rendering — nothing after this await runs, including
+        // the origin tick that draws the bubble on both sides.
+        //
+        // We still need setConfiguration to run (it flips the library's
+        // authorizationLevel and enables background updates), but that
+        // call is synchronous, so we do it inline here and skip the
+        // hanging requestAuthorization.
+        let hasPermission;
+        const iosAlreadyGranted = Platform.OS === 'ios'
+            && (permState === 'always' || permState === 'whenInUse');
+        const androidAlreadyGranted = Platform.OS === 'android'
+            && (permState === 'always' || permState === 'foregroundOnly');
+        if (iosAlreadyGranted) {
+            try {
+                if (Geolocation && typeof Geolocation.setConfiguration === 'function') {
+                    Geolocation.setConfiguration({
+                        authorizationLevel: 'always',
+                        enableBackgroundLocationUpdates: true,
+                    });
+                }
+            } catch (e) { /* noop */ }
+            hasPermission = true;
+        } else if (androidAlreadyGranted) {
+            // On Android PermissionsAndroid.request() for an already-granted
+            // permission resolves quickly, but there's no need to incur the
+            // round-trip at all — skip straight to tick emission.
+            hasPermission = true;
+        } else {
+            hasPermission = await this.ensureLocationPermission();
+        }
         if (!hasPermission) {
             console.log('Location permission denied; cannot share location');
+            rollbackOptimistic();
             Alert.alert(
                 'Location permission required',
                 Platform.OS === 'ios'
@@ -1201,52 +1464,75 @@ class NavigationBar extends Component {
 
         // If there's already an active share for this uri, replace it with
         // the new one (new duration supersedes the old one). Silent because
-        // we're about to emit a fresh "started sharing" note below.
-        this.stopLocationSharing(uri, {silent: true, reason: 'replaced'});
-
-        // 1st message: a plain-text announcement of the share. Tagged via
-        // metadata.locationAnnouncement so buildLastMessage can keep the
-        // Contacts-list preview from being overwritten by this auto-text.
-        //
-        // Sent for plain timed shares AND for meetingRequest because
-        // server-side push notifications only fire on text/plain traffic
-        // — metadata-only payloads (sendLocationUpdate's origin tick,
-        // meeting_request handshake) don't wake a backgrounded peer, so
-        // without this pinger the accepter never sees the
-        // MeetingRequestModal until they manually open the app.
-        //
-        // Skipped for meetingAccept: the requester is already awake
-        // (they initiated the handshake and their app is foregrounded
-        // on the acceptance modal), so no push is needed, and a
-        // chat-visible line here would just be duplicate noise next to
-        // the local "Meeting request accepted" system note.
-        if (this.props.sendMessage && kind !== 'meetingAccept') {
-            let announcementText;
-            if (kind === 'meetingRequest') {
-                announcementText = 'I want to meet up with you';
-            } else {
-                announcementText = `I am sharing the location with you for ${periodLabel}`;
-            }
-            const textId = uuid.v4();
-            const textTs = new Date();
-            const textMessage = {
-                _id: textId,
-                key: textId,
-                createdAt: textTs,
-                text: announcementText,
-                metadata: {locationAnnouncement: true},
-                // GiftedChat requires a `user` field on every message.
-                user: {},
-            };
-            this.props.sendMessage(uri, textMessage);
+        // we're about to emit a fresh "started sharing" note below. Skip
+        // this entirely when the pre-permission re-entry guard noticed no
+        // existing share (hadActiveShareForUri === false) — the
+        // stopLocationSharing() call is a no-op in that case but also
+        // happens to race with the optimistic activeLocationShares entry
+        // we set above, so we don't want to even think about touching
+        // state we're mid-way through populating.
+        if (hadActiveShareForUri) {
+            this.stopLocationSharing(uri, {silent: true, reason: 'replaced'});
         }
+
+        // NOTE: the plain-text announcement that used to live here was
+        // moved to the top of this function (pre-permission block) so
+        // the invitation shows up in the chat the moment the user taps
+        // Confirm, not after the permission / OS-prompt round-trip. See
+        // rollbackOptimistic() above for how we undo it if permission
+        // is ultimately denied.
 
         // 2nd message (origin tick, metadataId: null) — the first metadata
         // message carrying coordinates + expiration. Its _id becomes the
         // anchor every subsequent tick points back to. For "Until we meet"
         // the origin tick carries meeting_request:true; for acceptance
         // every tick carries in_reply_to pointing at the original request.
-        const originMetadataId = await this.sendLocationUpdate(uri, expiresIso, null, tickExtras);
+        //
+        // We ship the origin tick IMMEDIATELY with a placeholder `value`
+        // (null lat/lng, acquiring:true) instead of blocking on a fresh
+        // GPS fix. getCurrentPosition can take 10–15s on a cold start,
+        // and during that wait the sender sees no feedback at all — no
+        // bubble in their chat, no visible proof the tap did anything.
+        // By firing the placeholder synchronously the bubble renders on
+        // both devices right away; LocationBubble shows a "Locating…"
+        // card for the placeholder and swaps in the map once real
+        // coordinates arrive via the follow-up update tick below.
+        const placeholderCoords = {
+            latitude: null,
+            longitude: null,
+            accuracy: null,
+            timestamp: Date.now(),
+            acquiring: true,
+        };
+        const originMetadataId = this.sendLocationMetadata(
+            uri, placeholderCoords, expiresIso, null, tickExtras
+        );
+
+        // Kick off the real GPS fetch in the background. When the fix
+        // lands we emit a metadataId=originMetadataId update tick so the
+        // receiver replaces the placeholder card in-place with the live
+        // map. We don't await this — startLocationSharing's watch /
+        // interval arming below must run synchronously so the tear-down
+        // path (timers, session state) is consistent regardless of how
+        // long the first fix takes.
+        if (originMetadataId) {
+            this.getCurrentCoordinates().then((coords) => {
+                // Session may have been stopped between placeholder send
+                // and GPS resolve (user hit Stop, or meeting handshake
+                // tore it down). Nothing to update in that case — the
+                // placeholder bubble was already removed or is about to
+                // be, and sending an update tick would re-inject it.
+                if (!this.locationTimers[uri]) {
+                    return;
+                }
+                this.sendLocationMetadata(
+                    uri, coords, expiresIso, originMetadataId, tickExtras
+                );
+            }).catch((err) => {
+                console.log('[location] initial getCurrentCoordinates failed',
+                    err && err.message ? err.message : err);
+            });
+        }
 
         // For the requester side the session id is the origin tick's _id
         // (the same id the accepter will echo back in in_reply_to).
@@ -1282,9 +1568,14 @@ class NavigationBar extends Component {
                 // stopSharesForMeetingSession to react to the peer's signal.
                 meetingSessionId,
                 // Last wall-clock ms we actually emitted a tick. Seeded with
-                // `now` because we just sent the origin tick above — no need
-                // to emit another one the instant watchPosition fires.
-                lastSentMs: now,
+                // 0 so the very first watchPosition callback passes the
+                // LOCATION_REPEAT_MS throttle and emits a real-coords update
+                // immediately. The origin tick we just sent carried
+                // placeholder coords (see placeholderCoords above) — the
+                // receiver's bubble is stuck on "Locating…" until we ship
+                // one with real lat/lng, so we want that to happen at the
+                // first opportunity, not 60 s from now.
+                lastSentMs: 0,
             };
             this.locationTimers[uri] = entry;
 
@@ -1451,7 +1742,12 @@ class NavigationBar extends Component {
             this.locationTimers[uri] = {intervalId, expiresAt, originMetadataId, inReplyTo, meetingSessionId};
         }
 
-        // Reflect in React state so the menu renders "Stop sharing location".
+        // Reflect the final (authoritative) expiresAt in React state.
+        // The pre-permission block up top seeded activeLocationShares with
+        // an optimistic expiresAt so the NavigationBar icon could start
+        // pulsing at tap time; that value was computed ~milliseconds
+        // earlier and is off by a tiny amount. Overwrite it now with the
+        // canonical one so countdown UI and stop-timer math agree.
         this.setState({
             activeLocationShares: {
                 ...this.state.activeLocationShares,
@@ -1463,34 +1759,40 @@ class NavigationBar extends Component {
         // system=1, then renders it live). Only emitted if the origin tick
         // actually went out — otherwise a permission/network failure would
         // leave the user with a false "started" record on disk.
+        //
+        // Meeting-kind shares (meetingRequest / meetingAccept) DON'T get
+        // a system note anymore: we already ship a chat-visible text
+        // message on both legs of the handshake ("I want to meet up with
+        // you" from the requester, "I want to meet with you, too!" from
+        // the accepter — see the pre-permission announcement block up
+        // top). The old "Meeting request started" / "Meeting request
+        // accepted" system lines duplicated the same information one row
+        // above the real text. Plain timed shares keep the "started
+        // sharing at HH:MM" note — that one isn't redundant because
+        // plain shares have no comparable chat-visible text marker.
+        const isMeeting = kind === 'meetingRequest' || kind === 'meetingAccept';
         if (originMetadataId
+            && !isMeeting
             && typeof this.props.saveSystemMessage === 'function') {
-            // Meeting sessions ("Until we meet") get their own vocabulary
-            // — the pair started/stopped/cancelled/completed reads more
-            // naturally than "sharing live location". Plain timed shares
-            // keep the more literal wording with the period label.
-            const isMeeting = kind === 'meetingRequest' || kind === 'meetingAccept';
-            let note;
-            if (isMeeting) {
-                // Differentiate the two legs of the handshake:
-                //   • requester: "Meeting request started"
-                //   • accepter:  "Meeting request accepted"
-                note = kind === 'meetingAccept'
-                    ? 'Meeting request accepted'
-                    : 'Meeting request started';
-            } else {
-                // Wall-clock time the share began — same HH:MM format
-                // as the stop note so the two bracket the sharing
-                // window visibly.
-                const startedAt = new Date().toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                });
-                const label = periodLabel ? ` for ${periodLabel}` : '';
-                note = `\uD83D\uDCCD Started sharing location at ${startedAt}${label}`;
-            }
+            // Wall-clock time the share began — same HH:MM format as the
+            // stop note so the two bracket the sharing window visibly.
+            const startedAt = new Date().toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+            });
+            const label = periodLabel ? ` for ${periodLabel}` : '';
+            const note = `\uD83D\uDCCD Started sharing location at ${startedAt}${label}`;
             this.props.saveSystemMessage(uri, note, 'outgoing');
         }
+      } finally {
+        // Paired with the this._startingShares.add(uri) at function
+        // entry. Always release the in-flight flag so a later (legitimate)
+        // call to start a new share — after this one has either fully
+        // set up or been torn down — isn't blocked by a lingering guard.
+        if (this._startingShares) {
+          this._startingShares.delete(uri);
+        }
+      }
     }
 
     onShareLocationConfirmed({durationMs, periodLabel, kind}) {
@@ -1576,6 +1878,28 @@ class NavigationBar extends Component {
         this.setState({showEditContactModal: false,
                        showPublicKey: false
                        });
+    }
+
+    // Open the destructive confirmation dialog. We close the My-Account
+    // modal first so the user clearly transitions from "edit" context to
+    // "delete" context — otherwise two stacked modals with different
+    // primary actions sit on top of each other and the intent is muddied.
+    openDeleteAccountModal() {
+        this.setState({showEditContactModal: false, showDeleteAccountModal: true});
+    }
+
+    closeDeleteAccountModal() {
+        this.setState({showDeleteAccountModal: false});
+    }
+
+    // Fired by DeleteAccountModal after the user confirms twice. Hands the
+    // actual destructive work off to the App via props.deleteAccount —
+    // SQL deletes, folder unlink, unregister, resetState, route to /login.
+    confirmDeleteAccount() {
+        if (typeof this.props.deleteAccount === 'function') {
+            this.props.deleteAccount();
+        }
+        this.setState({showDeleteAccountModal: false});
     }
 
     handleDnd () {
@@ -1745,21 +2069,42 @@ class NavigationBar extends Component {
 		  return str[0].toUpperCase() + str.slice(1);
 		}
 
+		// Keep in lockstep with ContactCard.prettifyName. The contacts list
+		// titles run through this same transform, and if the navbar header
+		// doesn't match, selecting a contact produces two different-looking
+		// names — the regression the user reported. Replaces `._-`
+		// separators with spaces, title-cases each word
+		// (e.g. 'john.doe' -> 'John Doe', 'blue_owl' -> 'Blue Owl'), and
+		// skips strings that are URIs or phone numbers.
+		function prettifyName(str) {
+		  if (!str) return "";
+		  if (str.indexOf('@') > -1) return capitalizeFirstLetter(str);
+		  if (/^[+\d][\d\s()-]*$/.test(str)) return str; // phone — leave as-is
+		  const cleaned = str.replace(/[._-]+/g, ' ').trim();
+		  if (!cleaned) return capitalizeFirstLetter(str);
+		  return cleaned.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+		}
+
         if (this.props.selectedContact) {
 			if (isConference) {
-				title = capitalizeFirstLetter(this.props.selectedContact.uri.split('@')[0]);
+				title = prettifyName(this.props.selectedContact.uri.split('@')[0]);
 				subtitle = 'Conference room';
 			} else {
+				// Match ContactCard's two-step: pick the name (or username
+				// fallback when name == uri / missing), then run it through
+				// prettifyName so the navbar title matches the list row.
+				let raw;
 			    if (this.props.selectedContact.name && this.props.selectedContact.name != this.props.selectedContact.uri) {
-					title = this.props.selectedContact.name;
+					raw = this.props.selectedContact.name;
 			    } else {
-					title = capitalizeFirstLetter(this.props.selectedContact.uri.split('@')[0]);
+					raw = this.props.selectedContact.uri.split('@')[0];
 			    }
+				title = prettifyName(raw);
 				subtitle = this.props.selectedContact.uri;
 			}
-			
+
 			if (this.props.selectedContact.uri.indexOf('@guest.') > -1) {
-				title = 'Anonymous caller';			
+				title = 'Anonymous caller';
 			}
 
 		}
@@ -2322,7 +2667,7 @@ class NavigationBar extends Component {
                         {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
                         {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
                         {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
-                        {(this.props.devMode && !this.props.inCall) ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
+                        {(!this.props.inCall) ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
 
                         {this.props.publicKey ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
@@ -2413,8 +2758,18 @@ class NavigationBar extends Component {
  				    toggleRejectAnonymous={this.props.toggleRejectAnonymous}
 					chatSounds={this.props.chatSounds}
  				    toggleChatSounds={this.props.toggleChatSounds}
+					readReceipts={this.props.readReceipts}
+ 				    toggleReadReceipts={this.props.toggleReadReceipts}
  				    storageUsage={this.props.storageUsage}
  				    deleteAccountUrl={this.props.deleteAccountUrl}
+ 				    openDeleteAccount={this.openDeleteAccountModal}
+                />
+
+                <DeleteAccountModal
+                    show={this.state.showDeleteAccountModal}
+                    close={this.closeDeleteAccountModal}
+                    onConfirm={this.confirmDeleteAccount}
+                    accountId={this.props.accountId}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -2574,6 +2929,9 @@ NavigationBar.propTypes = {
     rejectAnonymous: PropTypes.bool,
     toggleRejectAnonymous: PropTypes.func,
     toggleChatSounds: PropTypes.func,
+    chatSounds: PropTypes.bool,
+    readReceipts: PropTypes.bool,
+    toggleReadReceipts: PropTypes.func,
     rejectNonContacts: PropTypes.bool,
     toggleRejectNonContacts: PropTypes.func,
     toggleSearchMessages: PropTypes.func,
@@ -2584,6 +2942,7 @@ NavigationBar.propTypes = {
     publicUrl: PropTypes.string,
     serverSettingsUrl: PropTypes.string,
 	deleteAccountUrl: PropTypes.string,
+	deleteAccount: PropTypes.func,
 	insets: PropTypes.object,
 	call: PropTypes.object,
 	storageUsage: PropTypes.array,

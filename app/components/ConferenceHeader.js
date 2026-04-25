@@ -256,8 +256,6 @@ class ConferenceHeader extends React.Component {
 		
 		let appBarContainer = {
 			backgroundColor: 'rgba(34,34,34,.7)',
-			borderWidth : 0,
-			borderColor: 'red',
 			height: 60,
 			marginLeft: this.state.isLandscape ? - rightInset - leftInset: 0,
 			marginTop: -topInset,
@@ -267,8 +265,19 @@ class ConferenceHeader extends React.Component {
 		if (Platform.OS === "ios") {
 			//appBarContainer.marginTop = 0;
 			if (this.state.isLandscape) {
-				appBarContainer.marginLeft = -leftInset;
-				appBarContainer.width = appBarContainer.width;
+				// Paper's Appbar.Header renders an outer wrapper
+				// View that applies paddingHorizontal:
+				// Math.max(left, right) from real safe-area insets
+				// (see AppbarHeader.tsx). The style we pass here
+				// ends up on the INNER Appbar that lives inside
+				// that padded content box. To make the inner
+				// Appbar span the full window width edge-to-edge,
+				// we pull it left by the actual padding Paper
+				// applied (Math.max) and give it the parent's
+				// full width.
+				const paperPad = Math.max(leftInset, rightInset);
+				appBarContainer.marginLeft = -paperPad;
+				appBarContainer.width = width;
 			}
         } else {
 			if (Platform.Version < 34) {
@@ -282,7 +291,7 @@ class ConferenceHeader extends React.Component {
 			  dark={true}
 			>
 			  <Appbar.BackAction onPress={this.goBack} color="white" />
-			
+
 			  {/* Title + Subtitle */}
 			  <View style={{ flexDirection: 'column', justifyContent: 'center', flex: 1 }}>
 				<Text style={{ fontSize: 16, fontWeight: 'bold', color: 'white' }}
@@ -299,9 +308,13 @@ class ConferenceHeader extends React.Component {
 				  {callDetail}
 				</Text>
 			  </View>
-			
+
 			  {/* Right-aligned buttons */}
 			  <View style={{ flexDirection: 'row', alignItems: 'center'}}>
+				{/* In landscape, the call-control buttons live inline in
+				    the navbar (space is tight). In portrait they render
+				    as a floating overlay in ConferenceBox, below the
+				    navbar. */}
 				{this.state.isLandscape &&
 				  this.props.buttons.bottom?.map((btn, idx) => (
 					<View key={idx} style={{ marginLeft: 2 }}>

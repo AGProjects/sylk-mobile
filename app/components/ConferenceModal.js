@@ -142,14 +142,10 @@ const ConferenceModal = ({
                       value={targetUri}
                       onChangeText={setTargetUri}
                     />
-					<TextInput
-					  mode="flat"
-					  autoCapitalize="none"
-					  label="Sylk Domain"
-					  placeholder="domain"
-					  value={domain}
-					  onChangeText={setDomain}
-					/>
+                    {/* Sylk Domain input was an experiment — hidden for now.
+                        The conference URI is composed from defaultConferenceDomain
+                        and the `domain` state is still tracked internally so any
+                        downstream code that reads it keeps working. */}
                     </View>
 
                   ) : (

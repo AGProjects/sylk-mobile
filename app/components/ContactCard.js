@@ -243,6 +243,18 @@ class ContactCard extends Component {
 			  if (!str) return ""; // Handle empty string
 			  return str[0].toUpperCase() + str.slice(1);
 			}
+
+			// Replace '.', '_', '-' separators with spaces and title-case each word
+			// (e.g. 'blue_owl' -> 'Blue Owl', 'john.doe' -> 'John Doe').
+			// Skips the transformation for strings that look like a full URI or a phone number.
+			function prettifyName(str) {
+			  if (!str) return "";
+			  if (str.indexOf('@') > -1) return capitalizeFirstLetter(str);
+			  if (/^[+\d][\d\s()-]*$/.test(str)) return str; // phone number - leave as-is
+			  const cleaned = str.replace(/[._-]+/g, ' ').trim();
+			  if (!cleaned) return capitalizeFirstLetter(str);
+			  return cleaned.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+			}
 	
 	
 	  // Determine title and subtitle
@@ -252,7 +264,7 @@ class ContactCard extends Component {
 		  title = contact.name;
 	  }
 	
-		title = capitalizeFirstLetter(title);
+		title = prettifyName(title);
 	  let subtitle = contact.uri;
 	
 	  if (uri.indexOf('@guest.') > -1) {

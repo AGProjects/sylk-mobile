@@ -67,9 +67,21 @@ class ReadyBox extends Component {
 			showOrderBar: false,
 			playRecording: false,
 			level: 0,
+			// Gated by a timer so the red "no private key" banner doesn't
+			// flash on the main screen behind the ImportPrivateKeyModal the
+			// moment keyStatus arrives. It only flips true after the modal
+			// has been closed AND a short grace period has passed, giving
+			// the modal time to animate out. See componentDidUpdate for the
+			// transitions that arm/disarm this.
+			showNoPrivateKeyWarning: false,
         };
 
         this.ended = false;
+        this._noPrivateKeyWarningTimer = null;
+        // Grace period between "modal closed / existsLocal still false"
+        // and showing the banner. Matches the modal's fade-out roughly so
+        // the banner reveals cleanly after the dialog finishes hiding.
+        this._noPrivateKeyWarningDelay = 600;
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -166,6 +178,56 @@ class ReadyBox extends Component {
     componentWillUnmount() {
         this.ended = true;
         this._stopLocationSharePulse();
+        this._clearNoPrivateKeyWarningTimer();
+    }
+
+    _clearNoPrivateKeyWarningTimer() {
+        if (this._noPrivateKeyWarningTimer) {
+            clearTimeout(this._noPrivateKeyWarningTimer);
+            this._noPrivateKeyWarningTimer = null;
+        }
+    }
+
+    // Manage the "no private key" banner visibility in response to prop
+    // changes. Called from componentDidUpdate. The banner must never be
+    // visible while the ImportPrivateKeyModal is shown (they'd stack) and
+    // must never appear on the very first render — the user has to be
+    // given a chance to see/act on the modal first. After the modal
+    // closes, we start a short timer; if keyStatus.existsLocal is still
+    // false when the timer fires, we reveal the banner.
+    _syncNoPrivateKeyWarning() {
+        if (this.ended) return;
+
+        const keyStatus = this.props.keyStatus || {};
+        const modalVisible = !!this.props.showImportPrivateKeyModal;
+        const noLocalKey = keyStatus.existsLocal === false;
+
+        // Modal is up, or we have a key, or we don't yet know: banner is
+        // definitely not allowed. Clear any pending timer and hide.
+        if (modalVisible || !noLocalKey) {
+            this._clearNoPrivateKeyWarningTimer();
+            if (this.state.showNoPrivateKeyWarning) {
+                this.setState({ showNoPrivateKeyWarning: false });
+            }
+            return;
+        }
+
+        // Conditions to show the banner are met (modal hidden, no local
+        // key). If it's already visible we're done. Otherwise arm the
+        // grace-period timer once.
+        if (this.state.showNoPrivateKeyWarning) return;
+        if (this._noPrivateKeyWarningTimer) return;
+
+        this._noPrivateKeyWarningTimer = setTimeout(() => {
+            this._noPrivateKeyWarningTimer = null;
+            // Re-check conditions at fire-time — the modal may have
+            // re-opened or a key may have arrived while we waited.
+            const ks = this.props.keyStatus || {};
+            if (this.ended) return;
+            if (this.props.showImportPrivateKeyModal) return;
+            if (ks.existsLocal !== false) return;
+            this.setState({ showNoPrivateKeyWarning: true });
+        }, this._noPrivateKeyWarningDelay);
     }
 
     _isSharingCurrentContact(props) {
@@ -218,6 +280,18 @@ class ReadyBox extends Component {
 	      this._startLocationSharePulse();
 	  } else if (wasSharing && !isSharing) {
 	      this._stopLocationSharePulse();
+	  }
+
+	  // Arm/disarm the "no private key" banner whenever the relevant
+	  // props change. This covers: modal closing (arm timer), modal
+	  // re-opening (cancel + hide), and keyStatus.existsLocal going
+	  // true (cancel + hide).
+	  const prevModal = !!prevProps.showImportPrivateKeyModal;
+	  const nowModal = !!this.props.showImportPrivateKeyModal;
+	  const prevExistsLocal = (prevProps.keyStatus || {}).existsLocal;
+	  const nowExistsLocal = (this.props.keyStatus || {}).existsLocal;
+	  if (prevModal !== nowModal || prevExistsLocal !== nowExistsLocal) {
+	      this._syncNoPrivateKeyWarning();
 	  }
 
 	  if (prevState.searchMessages !== this.state.searchMessages && !this.state.searchMessages) {
@@ -539,7 +613,19 @@ class ReadyBox extends Component {
             return false;
         }
 
-        // While recording / previewing audio, keep the row uncluttered.
+        // While recording / previewing / playing back an audio note, keep
+        // the row uncluttered. The four states cover the full recording
+        // lifecycle:
+        //   • recording       — mic is live right now
+        //   • previewRecording — finished, user hasn't confirmed/cancelled yet
+        //   • recordingFile    — captured file exists (review/send state)
+        //   • playRecording    — user is listening back to the take
+        if (this.state.recording) {
+            return false;
+        }
+        if (this.state.previewRecording) {
+            return false;
+        }
         if (this.state.recordingFile) {
             return false;
         }
@@ -1248,7 +1334,15 @@ class ReadyBox extends Component {
         //console.log('QR code object:', e);
         console.log('QR code data:', e.data);
         this.props.toggleQRCodeScannerFunc();
-        this.handleSearch(e.data);
+
+        let data = e.data;
+        const sipUri = utils.parseSylkCallUrl(data);
+        if (sipUri) {
+            console.log('QR code call URL parsed to SIP URI:', sipUri);
+            data = sipUri;
+        }
+
+        this.handleSearch(data);
     }
 
     get showContactsList() {
@@ -1607,9 +1701,44 @@ class ReadyBox extends Component {
             }
         }
 
+        // Permanent warning when we know the account has no local private
+        // key. The ImportPrivateKeyModal offers restore/generate options on
+        // first login but users can dismiss it without acting, which leaves
+        // them on an effectively useless messaging screen. The banner is
+        // state-gated (see _syncNoPrivateKeyWarning) so it only appears
+        // after the modal has been dismissed AND a short grace period has
+        // passed — never stacked underneath the modal, never flashed at
+        // login. Render also hides it while inside a selected chat so the
+        // main list is the only surface that shows it.
+        const showNoPrivateKeyWarning = (
+            this.state.showNoPrivateKeyWarning &&
+            this.props.account &&
+            !this.props.showImportPrivateKeyModal &&
+            !this.props.selectedContact
+        );
+
         return (
             <Fragment>
                 <View style={[styles.container, containerExtraStyles]}>
+                    {showNoPrivateKeyWarning ?
+                    <View
+                        accessibilityRole="alert"
+                        style={{
+                            backgroundColor: '#c62828',
+                            paddingHorizontal: 14,
+                            paddingVertical: 10,
+                            borderBottomWidth: 1,
+                            borderBottomColor: '#8e0000',
+                        }}
+                    >
+                        <Text style={{color: 'white', fontWeight: 'bold', fontSize: 14, marginBottom: 2}}>
+                            No private key on this device
+                        </Text>
+                        <Text style={{color: 'white', fontSize: 13}}>
+                            To use messaging, you need a private key. Go to Menu {'>'} My private key and select an option to restore or generate a private key.
+                        </Text>
+                    </View>
+                    : null}
                     <View>
                     {this.showCategoryBar?
                     <View style={navigationContainer}>
@@ -2100,6 +2229,7 @@ class ReadyBox extends Component {
 						gettingSharedAsset = {this.state.gettingSharedAsset}
 						startAudioPlayerFunc = {this.startAudioPlayer}
 						stopAudioPlayerFunc = {this.stopAudioPlayer}
+						markAudioMessageDisplayedFunc = {this.props.markAudioMessageDisplayed}
 						playRecording = {this.state.playRecording}
 						updateFileTransferMetadata = {this.props.updateFileTransferMetadata}
 						isAudioRecording = {this.state.recording}
@@ -2237,6 +2367,8 @@ ReadyBox.propTypes = {
     toggleQRCodeScannerFunc: PropTypes.func,
     allContacts: PropTypes.array,
     keys            : PropTypes.object,
+    keyStatus       : PropTypes.object,
+    showImportPrivateKeyModal : PropTypes.bool,
     downloadFile    : PropTypes.func,
     uploadFile: PropTypes.func,
     decryptFunc     : PropTypes.func,
