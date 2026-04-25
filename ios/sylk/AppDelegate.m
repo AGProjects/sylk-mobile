@@ -491,17 +491,26 @@
        NSString *fromUri = [[data[@"from_uri"] lowercaseString] copy];
        NSString *toUri   = [[data[@"to_uri"] lowercaseString] copy];
 
-       // Meeting proximity banners ("You are close to each other",
-       // "Nice to meet you!") must always present, even if the user is
-       // currently in the peer's chat. They are not message notifications
-       // — they are session milestones that only fire once per meeting,
-       // and suppressing them defeats their whole purpose. They also fall
+       // Meeting milestone banners ("You are close to each other",
+       // "Nice to meet you!", "Meeting point reached: <peer> arrived")
+       // must always present, even when the user is currently in the
+       // peer's chat. They are not message notifications — they are
+       // session milestones that fire at most once per meeting, and
+       // suppressing them defeats their whole purpose. They also fall
        // through shouldDisplayMessageFromPayload below (unknown event ->
        // returns NO), so we short-circuit with a banner here.
-       BOOL isMeetingProximity = ([event isEqualToString:@"meeting_proximity_near"] ||
-                                  [event isEqualToString:@"meeting_proximity_met"]);
-       if (isMeetingProximity) {
-           NSLog(@"[sylk_app] presenting meeting proximity banner event=%@ from=%@", event, fromUri);
+       //
+       // Keep this list in sync with the JS side: any `event` value
+       // sent through sendLocalNotification with bypass-throttle in
+       // app.js should be exempt here too, otherwise active-chat
+       // suppression silently swallows the banner.
+       BOOL isMeetingMilestone = ([event isEqualToString:@"meeting_proximity_near"] ||
+                                  [event isEqualToString:@"meeting_proximity_met"] ||
+                                  [event isEqualToString:@"meeting_arrived"] ||
+                                  [event isEqualToString:@"meeting_succeeded"] ||
+                                  [event isEqualToString:@"meeting_proximity_alert"]);
+       if (isMeetingMilestone) {
+           NSLog(@"[sylk_app] presenting meeting milestone banner event=%@ from=%@", event, fromUri);
            UNNotificationPresentationOptions mpOptions;
            if (@available(iOS 14.0, *)) {
                mpOptions = UNNotificationPresentationOptionBanner |

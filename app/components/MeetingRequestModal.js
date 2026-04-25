@@ -6,6 +6,7 @@ import { Text, Button, Surface } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/blink/_DeleteMessageModal.scss';
+import PrivacyRadiusSlider from './PrivacyRadiusSlider';
 
 // Receiver-side prompt for an incoming "Until we meet" location share.
 // Shown exactly once per request _id (the caller persists a "handled"
@@ -19,16 +20,39 @@ class MeetingRequestModal extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        this.state = { show: props.show };
+        this.state = {
+            show: props.show,
+            // Privacy radius (metres). Same semantics as the sender
+            // side — 0 disables the gate, 500 / 2000 are the user-
+            // visible stops. The accepter's first GPS fix is the
+            // "starting point" they're hiding from the requester.
+            excludeOriginRadiusMeters: 0,
+        };
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({ show: nextProps.show });
+        // Reset the slider to "Off" each time the modal re-opens so a
+        // previous prompt's choice doesn't carry over to the next
+        // request.
+        if (nextProps.show && !this.state.show) {
+            this.setState({show: true, excludeOriginRadiusMeters: 0});
+        } else {
+            this.setState({show: nextProps.show});
+        }
+    }
+
+    setRadiusStop(meters) {
+        this.setState({excludeOriginRadiusMeters: meters});
     }
 
     onAccept() {
         if (typeof this.props.onAccept === 'function') {
-            this.props.onAccept();
+            // Forward the chosen radius to the parent so it can flow
+            // into NavigationBar.startLocationSharing through the same
+            // path the sender modal uses.
+            this.props.onAccept({
+                excludeOriginRadiusMeters: Number(this.state.excludeOriginRadiusMeters) || 0,
+            });
         }
         this.props.close();
     }
@@ -96,6 +120,21 @@ class MeetingRequestModal extends Component {
                                             + (expiry ? ` ${expiry}` : '')
                                             + ', and all data will be removed from both devices after meeting.'}
                                     </Text>
+
+                                    {/* Privacy-radius slider — same widget
+                                        as the sender modal. Lets the
+                                        accepter hide their own starting
+                                        point (often home) for the first
+                                        500 m / 2 km of the journey. The
+                                        chosen value is forwarded through
+                                        onAccept so app.js can pass it
+                                        into NavigationBar's acceptance
+                                        path. */}
+                                    <PrivacyRadiusSlider
+                                        value={this.state.excludeOriginRadiusMeters}
+                                        onChange={this.setRadiusStop}
+                                        title="Hide my starting location until I move:"
+                                    />
 
                                     {/* Extra bottom padding so Cancel/Accept
                                         don't sit flush against the Surface's

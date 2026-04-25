@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform } from 'react-native';
 import { Text, Button, Surface, RadioButton } from 'react-native-paper';
+import PrivacyRadiusSlider from './PrivacyRadiusSlider';
 
 // Match EditContactModal's look (Modal + Surface with borderRadius: 10)
 // so the dialog corners are subtly rounded instead of the pronounced
@@ -25,11 +26,15 @@ import styles from '../assets/styles/blink/_DeleteMessageModal.scss';
 // realistic "meet up" intent.
 const DURATION_OPTIONS = [
     {value: 4 * 60 * 60 * 1000,    label: 'Until we meet', periodLabel: 'until we meet', kind: 'meetingRequest'},
-    {value: 2 * 60 * 60 * 1000,    label: '2 hours',  periodLabel: '2 hours',  kind: 'fixed'},
+    // One-shot: a single GPS fix is acquired and a single location
+    // message ships. No timer, no follow-up ticks, no live-update
+    // semantics. Receiver renders a static "Shared location" bubble.
+    {value: 0,                     label: 'Once',     periodLabel: 'now',      kind: 'once'},
     {value: 4 * 60 * 60 * 1000,    label: '4 hours',  periodLabel: '4 hours',  kind: 'fixed'},
     {value: 8 * 60 * 60 * 1000,    label: '8 hours',  periodLabel: '8 hours',  kind: 'fixed'},
     {value: 24 * 60 * 60 * 1000,   label: '24 hours', periodLabel: '24 hours', kind: 'fixed'},
 ];
+
 
 class ShareLocationModal extends Component {
     constructor(props) {
@@ -37,17 +42,32 @@ class ShareLocationModal extends Component {
         autoBind(this);
         this.state = {
             show: props.show,
-            // Index into DURATION_OPTIONS. We can't key off `value` here
-            // because "Until we meet" and "8 hours" share 8h durations but
-            // differ in semantics (meeting handshake vs plain timed share).
-            selectedIndex: 0,
+            // Index into DURATION_OPTIONS. Default to "Once" (a
+            // single-shot share is the lowest-commitment option and
+            // the most common day-to-day case — "send my current
+            // location" without any live tracking). The previous
+            // default was "Until we meet" at index 0; keep that
+            // option in the list at index 0 but pre-select index 1.
+            // We can't key off `value` here because "Until we meet"
+            // and one of the fixed shares can collide on duration but
+            // differ in semantics.
+            selectedIndex: 1,
+            // Privacy radius (metres). Only meaningful for the
+            // "Until we meet" path. 0 disables the gate; non-zero values
+            // tell NavigationBar to swallow every outgoing location tick
+            // whose coordinates are within `excludeOriginRadiusMeters`
+            // of the user's first GPS fix. Ticks resume the moment the
+            // user moves past the radius. Default 0 so the share
+            // behaves exactly as before unless the user picks a non-Off
+            // stop. Picked from PRIVACY_RADIUS_STOPS.
+            excludeOriginRadiusMeters: 0,
         };
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        // When the modal is re-opened, reset to the default ("Until we meet").
+        // When the modal is re-opened, reset to the default ("Once").
         if (nextProps.show && !this.state.show) {
-            this.setState({show: true, selectedIndex: 0});
+            this.setState({show: true, selectedIndex: 1, excludeOriginRadiusMeters: 0});
         } else {
             this.setState({show: nextProps.show});
         }
@@ -55,6 +75,14 @@ class ShareLocationModal extends Component {
 
     onConfirm() {
         const option = DURATION_OPTIONS[this.state.selectedIndex] || DURATION_OPTIONS[0];
+        // Privacy radius only applies to the meeting-handshake path; for
+        // any plain timed share we ship 0 regardless of the slider
+        // state so the option can't accidentally bleed across semantic
+        // kinds (the slider is only rendered when the meetingRequest
+        // option is selected anyway, but defensive belt).
+        const excludeOriginRadiusMeters = option.kind === 'meetingRequest'
+            ? Number(this.state.excludeOriginRadiusMeters) || 0
+            : 0;
         // Let the parent drive the side-effects (sending messages, starting
         // the periodic timer, etc.). We just report the chosen option —
         // including `kind` so the caller knows whether to stamp
@@ -63,8 +91,13 @@ class ShareLocationModal extends Component {
             durationMs: option.value,
             periodLabel: option.periodLabel,
             kind: option.kind,
+            excludeOriginRadiusMeters,
         });
         this.props.close();
+    }
+
+    setRadiusStop(meters) {
+        this.setState({excludeOriginRadiusMeters: meters});
     }
 
     onCancel() {
@@ -164,7 +197,7 @@ class ShareLocationModal extends Component {
                                             </View>
                                             <View style={{ flex: 1 }}>
                                                 {DURATION_OPTIONS.map((opt, idx) => (
-                                                    opt.kind === 'fixed' ? (
+                                                    (opt.kind === 'once' || opt.kind === 'fixed') ? (
                                                         <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
                                                             <RadioButton.Android
                                                                 value={String(idx)}
@@ -178,6 +211,27 @@ class ShareLocationModal extends Component {
                                         </View>
                                     </RadioButton.Group>
 
+                                    {/* Privacy-radius slider — only shown
+                                        when the "Until we meet" handshake is
+                                        selected. For plain timed shares
+                                        (2h / 4h / 8h / 24h) the user already
+                                        knows they're broadcasting their
+                                        location for the full window, so a
+                                        "hide my origin" control would just
+                                        be confusing; the meetup case is the
+                                        one where the starting point is
+                                        commonly home and the user wants to
+                                        surface the journey, not the origin. */}
+                                    {DURATION_OPTIONS[this.state.selectedIndex]
+                                        && DURATION_OPTIONS[this.state.selectedIndex].kind === 'meetingRequest'
+                                        ? (
+                                        <PrivacyRadiusSlider
+                                            value={this.state.excludeOriginRadiusMeters}
+                                            onChange={this.setRadiusStop}
+                                            title="Hide my starting location until I move:"
+                                        />
+                                    ) : null}
+
                                     {/* Single consolidated disclosure. Three
                                         original disclaimers (PGP, stop-at-any-
                                         time, retention) are joined into one
@@ -188,11 +242,24 @@ class ShareLocationModal extends Component {
                                         and the 7-day fixed-share policy based
                                         on which radio option is selected. */}
                                     <Text style={[styles.body, { marginTop: 4, paddingTop: 4, paddingBottom: 4, fontSize: 12, opacity: 0.75 }]}>
-                                        {'Location data is encrypted end-to-end between devices, no intermediary server can decrypt it. Sharing can be stopped at any time by clicking on the location icon. '
-                                            + (DURATION_OPTIONS[this.state.selectedIndex]
-                                                && DURATION_OPTIONS[this.state.selectedIndex].kind === 'meetingRequest'
-                                                ? 'Location data will be destroyed on both devices after meetup.'
-                                                : 'Only the last learned GPS position is stored in the devices for maximum 7 days and can be removed from both devices by deleting the message.')}
+                                        {(() => {
+                                            const sel = DURATION_OPTIONS[this.state.selectedIndex];
+                                            const head = 'Location data is encrypted end-to-end between devices, no intermediary server can decrypt it. ';
+                                            if (sel && sel.kind === 'meetingRequest') {
+                                                return head
+                                                    + 'Sharing can be stopped at any time by clicking on the location icon. '
+                                                    + 'Location data will be destroyed on both devices after meetup.';
+                                            }
+                                            if (sel && sel.kind === 'once') {
+                                                return head
+                                                    + 'A single GPS fix is sent and not updated afterwards. '
+                                                    + 'The location data can be deleted from both devices.';
+                                            }
+                                            return head
+                                                + 'Sharing can be stopped at any time by clicking on the location icon. '
+                                                + 'Only the last learned GPS position is stored in the devices for maximum 7 days. '
+                                                + 'The location data can be deleted from both devices.';
+                                        })()}
                                     </Text>
 
                                     {/* Extra bottom padding so the Confirm /

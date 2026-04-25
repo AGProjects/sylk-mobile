@@ -30,6 +30,47 @@ const LocationForegroundServiceModule =
         ? (NativeModules && NativeModules.LocationForegroundServiceModule) || null
         : null;
 
+// =====================================================================
+// DEBUG: meet-up convergence simulator.
+//
+// When ENABLE_MEET_SIMULATION is true, an extra "Simulate convergence" /
+// "Stop simulation" entry appears in the chat-header kebab menu while a
+// meet share is active for the selected contact. Tapping it replaces the
+// real GPS source with a synthetic walker that steps toward a
+// convergence target every SIM_STEP_INTERVAL_MS, advancing
+// SIM_STEP_METERS each tick. The target is the peer's last known
+// coordinate (resolved through props.getPeerCoordsForActiveShare); if
+// the peer hasn't shipped any coords yet, we fall back to ~500 m due
+// north of our own start so the user still sees motion. Both devices
+// running the simulator concurrently converge as their respective
+// targets keep updating to the latest peer fix.
+//
+// Production builds: flip ENABLE_MEET_SIMULATION to false. The const is
+// a single off-switch — the menu item disappears, simulateConvergence
+// no-ops, and no synthetic ticks are emitted. The methods stay defined
+// so accidental call sites still compile.
+//
+// SIM_TICKS_TO_CONVERGE controls how fast the simulated walker reaches
+// the destination: at sim activation, step size is computed as
+// (initial distance to destination) / SIM_TICKS_TO_CONVERGE so each
+// side arrives in exactly that many ticks regardless of how far away
+// it started. SIM_STEP_METERS is the fallback step used only when no
+// destination is known yet (the per-side per-tick "I'm not sure where
+// I'm going" walk that synthesises a target on the fly).
+//
+// SIM_STEP_INTERVAL_MS sets the wall-clock gap between successive
+// synthetic ticks. 10 s gives the chat enough breathing room for
+// each new bubble update to land as a distinct visual event
+// (instead of a burst of rapid-fire updates that read as network
+// retries). With the default 5 ticks-to-converge, the full meet-up
+// cycle lands in ~50 s — long enough to watch the pins march, short
+// enough that no one loses patience in a test session.
+// =====================================================================
+const ENABLE_MEET_SIMULATION = false;
+const SIM_STEP_INTERVAL_MS = 10000;
+const SIM_STEP_METERS = 50;
+const SIM_TICKS_TO_CONVERGE = 5;
+
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
 import AboutModal from './AboutModal';
@@ -292,6 +333,28 @@ class NavigationBar extends Component {
                     } else {
                         this.showShareLocationModal();
                     }
+                }
+                break;
+            case 'requestLocation':
+                {
+                    const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                    if (_uri) {
+                        this.requestPeerLocation(_uri);
+                    }
+                }
+                break;
+            case 'simulateMeet':
+                // DEBUG: see ENABLE_MEET_SIMULATION at top of file.
+                {
+                    const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                    if (!_uri) break;
+                    if (this.isSimulating(_uri)) {
+                        this.stopSimulation(_uri);
+                    } else {
+                        this.simulateConvergence(_uri);
+                    }
+                    // Re-render so the menu item swaps title.
+                    this.setState({menuVisible: false});
                 }
                 break;
             case 'pinLocation':
@@ -612,11 +675,41 @@ class NavigationBar extends Component {
                             // error handler is our safety net.
                             settle(true);
                         }
-                        // Safety timeout: if iOS never delivers a change
-                        // (e.g. status stayed NotDetermined because the
-                        // user dismissed the dialog without choosing),
-                        // don't hang the sharing flow forever.
-                        setTimeout(() => settle(true), 10000);
+                        // Safety timeout. Used to optimistically settle
+                        // to TRUE if iOS never delivered a change — the
+                        // theory was "don't hang the sharing flow if
+                        // the dialog never produced an event". In
+                        // practice that path landed users in a silent
+                        // bug: on a fresh install, if the system
+                        // permission dialog was suppressed for any
+                        // reason (dismissed during our RN-Modal close
+                        // animation, queued behind another alert,
+                        // user backgrounded the app before answering),
+                        // requestAuthorization's callback never fires,
+                        // we returned TRUE, the share started with no
+                        // permission, and getCurrentCoordinates
+                        // silently failed — so the user saw a
+                        // "started sharing" UI with no actual location
+                        // ever shipping.
+                        //
+                        // Now: on timeout we RE-PROBE the OS-level
+                        // permission and decide based on what's
+                        // actually granted. If the dialog landed but
+                        // the callback got lost, the probe sees
+                        // 'always' / 'whenInUse' and we still return
+                        // true. If nothing was granted, we return
+                        // false so startLocationSharing can surface
+                        // the "Location permission required" Alert
+                        // instead of a no-coord share.
+                        setTimeout(async () => {
+                            if (settled) return;
+                            try {
+                                const probe = await this.getLocationPermissionStatus();
+                                settle(probe === 'always' || probe === 'whenInUse');
+                            } catch (e) {
+                                settle(false);
+                            }
+                        }, 10000);
                     });
                     return granted;
                 }
@@ -692,16 +785,55 @@ class NavigationBar extends Component {
             uri: uri,
         };
 
-        // "Until we meet" handshake fields. Only stamped on the origin tick
-        // of a meeting request (meeting_request:true) or on every tick of
-        // an acceptance stream (in_reply_to → original request _id). See
-        // ShareLocationModal.DURATION_OPTIONS and the acceptance flow in
-        // app.js for how these propagate.
-        if (extras.meetingRequest && !originMetadataId) {
+        // "Until we meet" handshake fields, stamped on every outgoing
+        // tick of a meeting request (meeting_request:true) and every
+        // tick of an acceptance stream (in_reply_to → original request
+        // _id). See ShareLocationModal.DURATION_OPTIONS and the
+        // acceptance flow in app.js for how these propagate.
+        //
+        // NOTE: `meeting_request:true` used to be stamped only on the
+        // origin tick (`!originMetadataId`). That broke restore-from-
+        // SQL on the receiver: every follow-up tick UPDATEs the origin
+        // row's `content` column in place (saveOutgoingMessageSql
+        // location-update branch in app.js), so the persisted content
+        // was the LATEST tick — which didn't carry the flag. On chat
+        // reopen the bubble's metadata had `meeting_request === undefined`
+        // and the kebab's "Accept meeting request" option vanished.
+        // Stamping on every tick keeps the persisted content
+        // self-describing without further machinery. Receiver-side
+        // handlers (`_noteIncomingMeetingRequest`, etc.) are already
+        // idempotent on the requestId, so re-firing them on each
+        // update tick is a no-op.
+        if (extras.meetingRequest) {
             metadataContent.meeting_request = true;
         }
         if (extras.inReplyTo) {
             metadataContent.in_reply_to = extras.inReplyTo;
+        }
+        // Optional shared meeting destination, encoded as
+        // {latitude, longitude}. Today only set by the convergence
+        // simulator (debug; see ENABLE_MEET_SIMULATION) so both
+        // devices can walk toward the same point. Future use case is
+        // a real "pick where to meet on a map" UI for the inviting
+        // party — receiver's map view can render the same pin on both
+        // ends. Sender stamps it once it knows the destination; the
+        // field is harmless to ignore for clients that don't render
+        // it.
+        if (extras.destination
+                && typeof extras.destination.latitude === 'number'
+                && typeof extras.destination.longitude === 'number') {
+            metadataContent.destination = {
+                latitude: extras.destination.latitude,
+                longitude: extras.destination.longitude,
+            };
+        }
+        // One-shot flag — set by shareLocationOnce. Tells the receiver
+        // this is a static location share, not a live one: no
+        // follow-up ticks will arrive and the bubble should drop the
+        // live-share UI affordances (no "expires in", no peer-distance
+        // label, etc.).
+        if (extras.oneShot) {
+            metadataContent.one_shot = true;
         }
 
         const metadataMessage = {
@@ -728,20 +860,711 @@ class NavigationBar extends Component {
         const acc = coords && typeof coords.accuracy === 'number'
             ? ` ±${Math.round(coords.accuracy)}m` : '';
         console.log(`[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})`);
+        // Record the just-reported coords on the timer entry so
+        // _shouldSendUpdateTick's stationary gate can compare future
+        // ticks against this baseline. Only meaningful when this is
+        // a real coord (placeholder origin ticks land here too with
+        // null lat/lng — those shouldn't poison the baseline).
+        const liveEntry = this.locationTimers && this.locationTimers[uri];
+        if (liveEntry
+                && coords
+                && typeof coords.latitude === 'number'
+                && typeof coords.longitude === 'number') {
+            liveEntry.lastReportedCoords = {
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+            };
+        }
+        // Fire the destination-arrival heads-up if this tick's coords
+        // landed within DEST_ARRIVAL_THRESHOLD_M of the shared meeting
+        // destination. Once-per-session, gated on the entry flag.
+        this._maybeFireDestinationArrival(uri, coords);
         return mId;
+    }
+
+    // ===== Destination arrival heads-up =====
+    //
+    // Fired on the first outgoing tick whose coords are within
+    // DEST_ARRIVAL_THRESHOLD_M of the shared meeting destination
+    // (the green pin). Independent of proximity-met: that one waits
+    // for both phones to be near each other, this one watches a
+    // single party reach the chosen meeting point — useful when
+    // one party arrives early so the still-walking party knows
+    // their friend is already there.
+    //
+    // Behaviour on the ARRIVING device:
+    //   • Single line in the user-visible log.
+    //   • Chat message to the peer ("<MyName> arrived at the meeting
+    //     point") with metadata.meetingArrival = true. Flows through
+    //     the standard PGP text path.
+    // No local push to ourselves — we ARE at the meeting point, we
+    // know. The peer's app.js detects the incoming meetingArrival
+    // text on its side and fires the heads-up push there (see
+    // handleIncomingMessage). That way only the still-walking
+    // side gets a banner.
+    //
+    // Once-per-session via entry.destinationArrivalFired.
+    _maybeFireDestinationArrival(uri, coords) {
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (!entry) return;
+        if (entry.destinationArrivalFired) return;
+        const dest = entry.tickExtras && entry.tickExtras.destination;
+        if (!dest) return;
+        if (!coords
+                || typeof coords.latitude !== 'number'
+                || typeof coords.longitude !== 'number') {
+            // Placeholder origin tick (null lat/lng) — wait for real
+            // coords.
+            return;
+        }
+        const dist = this._haversineMeters(coords, dest);
+        if (!Number.isFinite(dist)) return;
+        const DEST_ARRIVAL_THRESHOLD_M = 30;
+        if (dist > DEST_ARRIVAL_THRESHOLD_M) return;
+
+        entry.destinationArrivalFired = true;
+
+        const myDisplayName = this.props.myDisplayName || 'I';
+
+        // 1. Visible log line on this device.
+        try {
+            const utils = require('../utils');
+            utils.timestampedLog(
+                `[meet] ARRIVED at meeting point (${Math.round(dist)} m from destination) — ${uri}`
+            );
+        } catch (e) { /* noop */ }
+
+        // 2. Chat message to the peer. The peer's handleIncomingMessage
+        //    sees metadata.meetingArrival on this and fires the
+        //    arrival push on THEIR side (and suppresses the default
+        //    "New message" banner so we don't double-buzz).
+        if (typeof this.props.sendMessage === 'function') {
+            try {
+                const msgId = uuid.v4();
+                const announceText = `${myDisplayName} arrived at the meeting point`;
+                const textMessage = {
+                    _id: msgId,
+                    key: msgId,
+                    createdAt: new Date(),
+                    text: announceText,
+                    metadata: {meetingArrival: true},
+                    user: {},
+                };
+                this.props.sendMessage(uri, textMessage);
+            } catch (e) {
+                console.log('[location] arrival announcement send failed',
+                    e && e.message ? e.message : e);
+            }
+        }
     }
 
     // Send one location metadata update. Fetches a fresh fix every time
     // so each tick carries the user's current position. Returns the _id
     // of the tick that was sent (so the first call can record the origin).
+    //
+    // When `excludeOriginRadius` is enabled on the session, this method
+    // honours the privacy gate via `_shouldSendUpdateTick`: the very
+    // first fresh fix is captured as the session's origin point and
+    // swallowed (returns null), and any subsequent fix that's still
+    // within 1 km of that origin is also swallowed. Ticks resume the
+    // moment the user has moved past the radius.
     async sendLocationUpdate(uri, expiresAt, originMetadataId = null, extras = {}) {
         try {
-            const coords = await this.getCurrentCoordinates();
+            // Race fence: see the long comment on
+            // entry.awaitingSimulatedPosition in startLocationSharing.
+            // While the accepter's synthetic-position setup is still
+            // in flight (Nominatim land-check), skip the tick rather
+            // than ship a real-GPS one that would mistakenly pair
+            // both phones at ~1 m and trip proximity-met.
+            const entryNow = this.locationTimers && this.locationTimers[uri];
+            if (entryNow
+                    && entryNow.awaitingSimulatedPosition
+                    && !entryNow.simulatedPosition) {
+                return null;
+            }
+            const realCoords = await this.getCurrentCoordinates();
+            // Synthetic-position override (debug; see
+            // ENABLE_MEET_SIMULATION). When an entry.simulatedPosition
+            // is armed, that's what we report; real GPS is ignored
+            // for this session.
+            const coords = this._effectiveCoordinatesForSession(uri, realCoords);
+            if (!this._shouldSendUpdateTick(uri, coords)) {
+                return null;
+            }
             return this.sendLocationMetadata(uri, coords, expiresAt, originMetadataId, extras);
         } catch (err) {
             console.log('sendLocationUpdate: failed to read location', err && err.message ? err.message : err);
             return null;
         }
+    }
+
+    // Privacy-radius gate consulted by every tick-emission path
+    // (initial-fix, iOS watchPosition, Android sendLocationUpdate).
+    //
+    // Behaviour:
+    //   - If the session for `uri` doesn't have a positive
+    //     `excludeOriginRadiusMeters`, returns true unconditionally
+    //     (no gate).
+    //   - On the first call with valid coords, captures them as
+    //     `originPoint` and returns false (silently swallows the tick).
+    //     This is the "first location" the user told us to exclude.
+    //   - On subsequent calls, computes the haversine distance from
+    //     the captured origin and returns false while it's below the
+    //     configured radius (500 m / 2 km — set by the modal slider).
+    //   - Once the user crosses the radius, flips
+    //     `originRadiusCleared` (one-time flag) so we log it exactly
+    //     once and return true thereafter.
+    //
+    // Coordinates that aren't usable numbers (e.g. the placeholder tick's
+    // null lat/lng) are treated as "not yet" — the gate doesn't capture
+    // them as the origin point and continues to suppress ticks.
+    _shouldSendUpdateTick(uri, coords) {
+        const entry = this.locationTimers[uri];
+        // Caller already verified the timer entry exists, but defend
+        // against late-arriving callbacks racing tear-down.
+        if (!entry) {
+            return true;
+        }
+        // Stationary gate. If we already shipped a real-coords tick
+        // for this session and the new fix is within 10 m of the
+        // last reported one, swallow the tick: it doesn't carry new
+        // information for the receiver, just adds a chat-bubble
+        // refresh and burns network. 10 m is well inside consumer-GPS
+        // noise, so a stationary phone reporting drift gets filtered;
+        // a real walk of 10 m is a meaningful step that gets through.
+        // Placeholder ticks (null lat/lng) are gated separately by
+        // the privacy-radius branch below and don't update
+        // lastReportedCoords, so they don't poison this comparison.
+        const STILL_THRESHOLD_M = 10;
+        if (entry.lastReportedCoords
+                && coords
+                && typeof coords.latitude === 'number'
+                && typeof coords.longitude === 'number') {
+            const moved = this._haversineMeters(entry.lastReportedCoords, coords);
+            if (Number.isFinite(moved) && moved < STILL_THRESHOLD_M) {
+                return false;
+            }
+        }
+        const radiusMeters = Number(entry.excludeOriginRadiusMeters) || 0;
+        if (radiusMeters <= 0) {
+            return true;
+        }
+        const lat = coords && typeof coords.latitude === 'number' ? coords.latitude : null;
+        const lng = coords && typeof coords.longitude === 'number' ? coords.longitude : null;
+        if (lat == null || lng == null) {
+            // Placeholder / no-fix coords. Don't capture as origin and
+            // don't emit a tick — wait for a real fix.
+            return false;
+        }
+        if (!entry.originPoint) {
+            entry.originPoint = {latitude: lat, longitude: lng};
+            const radiusLabel = radiusMeters >= 1000
+                ? `${(radiusMeters / 1000).toFixed(radiusMeters % 1000 === 0 ? 0 : 1)} km`
+                : `${Math.round(radiusMeters)} m`;
+            const utils = require('../utils');
+            try {
+                utils.timestampedLog(
+                    `[meet] privacy radius active for ${uri} — your starting point will be hidden until you move ${radiusLabel} away`
+                );
+            } catch (e) {
+                console.log('[location] origin point captured for', uri,
+                    'lat=', lat.toFixed(5), 'lng=', lng.toFixed(5),
+                    `(privacy radius ${radiusLabel} active)`);
+            }
+            return false;
+        }
+        const meters = this._haversineMeters(entry.originPoint, {latitude: lat, longitude: lng});
+        if (meters < radiusMeters) {
+            // Inside the privacy circle — swallow.
+            return false;
+        }
+        if (!entry.originRadiusCleared) {
+            entry.originRadiusCleared = true;
+            const utils = require('../utils');
+            try {
+                utils.timestampedLog(
+                    `[meet] privacy radius cleared for ${uri} (${Math.round(meters)} m from origin) — your live location is now being shared`
+                );
+            } catch (e) {
+                console.log('[location] privacy radius cleared for', uri,
+                    'distance=', Math.round(meters), 'm');
+            }
+        }
+        return true;
+    }
+
+    // Great-circle distance in metres between two {latitude, longitude}
+    // points. Returns Infinity if either input is missing a numeric
+    // coordinate so the caller treats it as "outside the radius" rather
+    // than silently passing the gate. Mean Earth radius (6 371 008 m)
+    // is accurate to better than ~0.5 % anywhere on the surface, which
+    // is well below our 1 km radius granularity.
+    _haversineMeters(a, b) {
+        const lat1 = a && typeof a.latitude === 'number' ? a.latitude : null;
+        const lon1 = a && typeof a.longitude === 'number' ? a.longitude : null;
+        const lat2 = b && typeof b.latitude === 'number' ? b.latitude : null;
+        const lon2 = b && typeof b.longitude === 'number' ? b.longitude : null;
+        if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) {
+            return Infinity;
+        }
+        const R = 6371008;
+        const toRad = (deg) => deg * Math.PI / 180;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const sLat1 = Math.sin(dLat / 2);
+        const sLon1 = Math.sin(dLon / 2);
+        const h = sLat1 * sLat1
+            + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * sLon1 * sLon1;
+        return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    }
+
+    // ===== DEBUG: synthetic-position override =====
+    //
+    // Returns the coordinates that should ride on this session's next
+    // outgoing tick. When ENABLE_MEET_SIMULATION is on AND the entry
+    // has a simulatedPosition installed (today: accepter side gets one
+    // on share start, set 10 km from real GPS), real GPS is bypassed
+    // and the synthetic position is reported instead. The simulator
+    // mutates entry.simulatedPosition as it walks toward the
+    // destination, so all natural tick paths (initial fix, iOS
+    // watchPosition, Android interval) and the simulator's own emits
+    // see the same moving point.
+    //
+    // When the entry doesn't have a simulatedPosition the real GPS
+    // fix passed in is returned untouched — production builds with
+    // ENABLE_MEET_SIMULATION=false fall straight through this helper.
+    _effectiveCoordinatesForSession(uri, realCoords) {
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (entry && entry.simulatedPosition) {
+            return {
+                latitude: entry.simulatedPosition.latitude,
+                longitude: entry.simulatedPosition.longitude,
+                accuracy: typeof entry.simulatedPosition.accuracy === 'number'
+                    ? entry.simulatedPosition.accuracy : 5,
+                timestamp: Date.now(),
+            };
+        }
+        return realCoords;
+    }
+
+    // ===== DEBUG: meet-up convergence simulator =====
+    //
+    // Public entry. Spins up a per-uri walker that steps toward the
+    // shared meeting destination stored on entry.tickExtras.destination
+    // (set by the requester when they pick a 4 km random offset from
+    // their first real GPS fix, then propagated to the accepter via
+    // the metadata.destination field on outgoing ticks and the
+    // acceptance opts plumbing in app.js). Both devices walk to the
+    // same fixed point so they converge at it deterministically.
+    //
+    // Each tick advances SIM_STEP_METERS toward the destination every
+    // SIM_STEP_INTERVAL_MS and emits through sendLocationMetadata
+    // exactly like a real GPS fix would, including running through
+    // the privacy-radius gate (_shouldSendUpdateTick). Idempotent: a
+    // second call replaces any in-flight sim for the same uri.
+    //
+    // Bootstraps the start coord from the most recent real GPS fix so
+    // the first synthetic tick lands on a plausible position. If GPS
+    // is unavailable we fall back to a fixed default (Amsterdam city
+    // centre) so the simulator still works in environments without a
+    // location service (CI, simulator, etc.).
+    //
+    // If no destination is known yet (accepter hasn't received one,
+    // or requester somehow skipped the auto-pick), we synthesise a
+    // 4 km random offset from the start coord and stamp it onto
+    // tickExtras.destination so subsequent outgoing ticks broadcast
+    // it. That guarantees a usable target without blocking on the
+    // peer.
+
+    // Pick a coordinate `kilometers` km away from `start` in a random
+    // bearing. Approximate spherical math — good enough for testing
+    // (the simulator just needs *some* fixed-but-shareable target).
+    // 1° latitude ≈ 111 km; longitude scales with cos(latitude).
+    _pickMeetingDestinationKm(start, kilometers) {
+        if (!start
+                || typeof start.latitude !== 'number'
+                || typeof start.longitude !== 'number'
+                || !Number.isFinite(kilometers)
+                || kilometers <= 0) {
+            return null;
+        }
+        const bearing = Math.random() * 2 * Math.PI;
+        const dLat = (kilometers / 111) * Math.cos(bearing);
+        const cosLat = Math.cos(start.latitude * Math.PI / 180) || 1;
+        const dLng = (kilometers / (111 * cosLat)) * Math.sin(bearing);
+        return {
+            latitude: start.latitude + dLat,
+            longitude: start.longitude + dLng,
+        };
+    }
+
+    // Reverse-geocode `coord` against OpenStreetMap's Nominatim and
+    // decide whether the point is on land. Used by the simulator's
+    // destination picker so a random 4 km bearing doesn't drop the
+    // meet-up point in the middle of the North Sea (or any other
+    // body of water). Free public service — usage is rate-limited at
+    // 1 req/s and asks for a descriptive User-Agent. We send a
+    // Sylk-specific agent and only call this from the debug
+    // simulator path (gated on ENABLE_MEET_SIMULATION) so the
+    // request load stays comfortably inside the policy.
+    //
+    // Returns true on land, false on water, throws on network /
+    // parse error so the caller can decide to accept the candidate
+    // anyway rather than block on a flaky network.
+    async _isPointOnLand(coord) {
+        if (!coord
+                || typeof coord.latitude !== 'number'
+                || typeof coord.longitude !== 'number') {
+            return true; // Be permissive on malformed input.
+        }
+        const url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2'
+            + `&lat=${coord.latitude.toFixed(6)}`
+            + `&lon=${coord.longitude.toFixed(6)}`
+            + '&zoom=10&addressdetails=1';
+        const resp = await fetch(url, {
+            headers: {
+                // Nominatim's usage policy requires a descriptive
+                // User-Agent identifying the application.
+                'User-Agent': 'Sylk-Mobile/meet-sim (https://sylk.com)',
+                'Accept': 'application/json',
+            },
+        });
+        if (!resp.ok) {
+            throw new Error('nominatim status ' + resp.status);
+        }
+        const data = await resp.json();
+        // Water-body indicators in the Nominatim payload:
+        //   • address.water is set (lake, reservoir, etc.).
+        //   • address has no country (open ocean — Nominatim returns
+        //     just an empty/minimal address for sea points).
+        //   • class === 'natural' AND type ∈ {water, bay, strait,
+        //     coastline, beach, reef}.
+        //   • class === 'waterway' (rivers, canals, streams).
+        // Anything else we treat as land.
+        const cls = data && data.class;
+        const typ = data && data.type;
+        const addr = (data && data.address) || {};
+        if (addr.water) return false;
+        if (cls === 'waterway') return false;
+        if (cls === 'natural'
+                && /^(water|bay|strait|coastline|beach|reef|sea|ocean)$/i.test(typ || '')) {
+            return false;
+        }
+        if (!addr.country && !addr.country_code
+                && !addr.state && !addr.city
+                && !addr.town && !addr.village
+                && !addr.hamlet && !addr.county
+                && !addr.suburb && !addr.neighbourhood) {
+            // No administrative region at all — almost certainly
+            // open water.
+            return false;
+        }
+        return true;
+    }
+
+    // Async wrapper around _pickMeetingDestinationKm: keeps re-rolling
+    // the random bearing until Nominatim agrees the candidate is on
+    // land or until `retries` attempts have been spent. Network or
+    // parse errors short-circuit and accept the current candidate
+    // (don't block the simulator on a flaky link). When all retries
+    // come back as water we fall through to a final pick — the
+    // simulator must produce *some* destination, even if it's wet,
+    // so the test session still progresses.
+    async _pickMeetingDestinationKmOnLand(start, kilometers, retries = 5) {
+        for (let i = 0; i < retries; i++) {
+            const candidate = this._pickMeetingDestinationKm(start, kilometers);
+            if (!candidate) return null;
+            let onLand;
+            try {
+                onLand = await this._isPointOnLand(candidate);
+            } catch (e) {
+                // Network/parse hiccup — accept this candidate so we
+                // don't stall the meeting sim. Real product use would
+                // either back off and retry, or skip the check.
+                console.log('[sim] land-check failed; accepting candidate as-is',
+                    e && e.message ? e.message : e);
+                return candidate;
+            }
+            if (onLand) return candidate;
+            try {
+                const utils = require('../utils');
+                utils.timestampedLog(
+                    `[sim] candidate at ${candidate.latitude.toFixed(5)},${candidate.longitude.toFixed(5)} is in water — re-rolling (attempt ${i + 1}/${retries})`
+                );
+            } catch (e) { /* noop */ }
+            // Light spacing to be polite to Nominatim's 1 req/s policy.
+            await new Promise((r) => setTimeout(r, 1100));
+        }
+        // Exhausted — return whatever the next plain pick gives us.
+        return this._pickMeetingDestinationKm(start, kilometers);
+    }
+
+    simulateConvergence(uri, opts = {}) {
+        if (!ENABLE_MEET_SIMULATION) return;
+        if (!uri) return;
+        const entry = this.locationTimers[uri];
+        if (!entry) {
+            console.log('[sim] simulateConvergence: no active share for', uri);
+            return;
+        }
+        const stepMeters = (opts && opts.stepMeters) || SIM_STEP_METERS;
+        const intervalMs = (opts && opts.intervalMs) || SIM_STEP_INTERVAL_MS;
+
+        if (!this._simStates) this._simStates = {};
+
+        const startTimer = () => {
+            // Stop any previous sim for this uri.
+            const prev = this._simStates[uri];
+            if (prev && prev.timerId) {
+                clearInterval(prev.timerId);
+            }
+            // Compute the per-step distance so this side reaches the
+            // destination in exactly SIM_TICKS_TO_CONVERGE ticks
+            // (default 5). Each side computes independently from its
+            // own starting point, so the requester (~4 km away) and
+            // the accepter (~10 km away from the synthetic seed) both
+            // arrive at the same time even though their distances
+            // differ. If the destination isn't known yet we fall back
+            // to SIM_STEP_METERS — the in-tick synthesised target
+            // path will recompute when a real one shows up.
+            let perStepMeters = stepMeters;
+            const destNow0 = entry.tickExtras && entry.tickExtras.destination;
+            const startCoord0 = entry.simulatedPosition;
+            if (destNow0 && startCoord0) {
+                const initDist = this._haversineMeters(startCoord0, destNow0);
+                if (Number.isFinite(initDist) && initDist > 0) {
+                    perStepMeters = Math.max(initDist / SIM_TICKS_TO_CONVERGE, 1);
+                }
+            }
+            this._simStates[uri] = {
+                stepMeters: perStepMeters,
+                intervalMs,
+                timerId: setInterval(() => {
+                    this._tickSimulation(uri);
+                }, intervalMs),
+            };
+            try {
+                const utils = require('../utils');
+                const startCoord = entry.simulatedPosition;
+                if (startCoord) {
+                    const startLat = startCoord.latitude.toFixed(5);
+                    const startLng = startCoord.longitude.toFixed(5);
+                    const startUrl = `https://maps.google.com/?q=${startLat},${startLng}`;
+                    utils.timestampedLog(
+                        `[sim] START checkpoint for ${uri} → ${startLat},${startLng} (${startUrl})`
+                        + ` step=${perStepMeters.toFixed(0)} m every ${intervalMs / 1000}s`
+                        + ` (target ${SIM_TICKS_TO_CONVERGE} ticks ≈ ${(SIM_TICKS_TO_CONVERGE * intervalMs / 1000).toFixed(0)}s)`
+                    );
+                    const destNow = entry.tickExtras && entry.tickExtras.destination;
+                    if (destNow) {
+                        const dLat = destNow.latitude.toFixed(5);
+                        const dLng = destNow.longitude.toFixed(5);
+                        const distKm = (this._haversineMeters(startCoord, destNow) / 1000).toFixed(2);
+                        const dUrl = `https://maps.google.com/?q=${dLat},${dLng}`;
+                        utils.timestampedLog(
+                            `[sim] DESTINATION for ${uri} → ${dLat},${dLng} (${dUrl}) distance from start=${distKm} km`
+                        );
+                    } else {
+                        utils.timestampedLog(
+                            `[sim] DESTINATION for ${uri} → not yet known; tick fallback will synthesise one on first step`
+                        );
+                    }
+                }
+            } catch (e) { /* noop */ }
+            // Fire one tick right away so the user sees motion without
+            // waiting a full interval for the first synthetic position.
+            this._tickSimulation(uri);
+        };
+
+        // entry.simulatedPosition is the canonical synthetic position
+        // for this session. The accepter side already has one armed
+        // at share start (real GPS + 10 km random offset, set inside
+        // startLocationSharing's first-fix callback), so we just kick
+        // off the timer and walk it. The requester side hasn't been
+        // seeded yet — fetch real GPS once, install it, then start.
+        if (entry.simulatedPosition) {
+            startTimer();
+            return;
+        }
+
+        const seed = (coord) => {
+            const e = this.locationTimers[uri];
+            if (!e) return;
+            e.simulatedPosition = {
+                latitude: coord.latitude,
+                longitude: coord.longitude,
+                accuracy: 5,
+                timestamp: Date.now(),
+            };
+            startTimer();
+        };
+
+        if (Geolocation && typeof Geolocation.getCurrentPosition === 'function') {
+            Geolocation.getCurrentPosition(
+                (pos) => {
+                    const c = pos && pos.coords ? pos.coords : {};
+                    if (typeof c.latitude === 'number' && typeof c.longitude === 'number') {
+                        seed({latitude: c.latitude, longitude: c.longitude});
+                    } else {
+                        seed({latitude: 52.379189, longitude: 4.899431});
+                    }
+                },
+                () => seed({latitude: 52.379189, longitude: 4.899431}),
+                {timeout: 3000, maximumAge: 60000, enableHighAccuracy: false}
+            );
+        } else {
+            seed({latitude: 52.379189, longitude: 4.899431});
+        }
+    }
+
+    // Internal — fired every SIM_STEP_INTERVAL_MS while a sim is
+    // active. Walks entry.simulatedPosition (the single source of
+    // truth for the synthetic walker) one step toward the shared
+    // destination, snaps when within a step of the target, then emits
+    // a tick through the regular sendLocationMetadata pipeline.
+    _tickSimulation(uri) {
+        const sim = this._simStates && this._simStates[uri];
+        if (!sim) return;
+        const entry = this.locationTimers[uri];
+        // Share was torn down (user stopped, expiration, peer cancelled).
+        // Auto-stop the simulator so a stale interval doesn't keep
+        // firing and burning a sendMessage every couple of seconds.
+        if (!entry || !entry.simulatedPosition) {
+            if (sim.timerId) clearInterval(sim.timerId);
+            delete this._simStates[uri];
+            return;
+        }
+
+        // Resolve target from the shared destination on tickExtras.
+        // Both sides walk to the same point so they converge there.
+        let target = entry.tickExtras && entry.tickExtras.destination;
+        if (!target
+                || typeof target.latitude !== 'number'
+                || typeof target.longitude !== 'number') {
+            // No destination known on this side yet — synthesise a
+            // 4 km random offset from our current position and stamp
+            // it onto tickExtras so subsequent outgoing ticks
+            // broadcast it.
+            target = this._pickMeetingDestinationKm(entry.simulatedPosition, 4);
+            if (!target) return;
+            if (entry.tickExtras) {
+                entry.tickExtras.destination = target;
+            }
+            try {
+                const utils = require('../utils');
+                utils.timestampedLog(
+                    `[sim] no shared destination yet — synthesised ${target.latitude.toFixed(5)},${target.longitude.toFixed(5)} (~4 km from current position)`
+                );
+            } catch (e) { /* noop */ }
+        }
+
+        const dist = this._haversineMeters(entry.simulatedPosition, target);
+        // Did this step land on (or past) the target? If so, snap to
+        // exact destination coords and remember to tear the timer
+        // down after this final tick goes out — there's nothing more
+        // to simulate, and emitting the same coords every interval
+        // is just chat noise (and wasted battery on the watching
+        // device). The very last tick still ships so the receiver
+        // sees the snap and the arrival-push gate has its trigger
+        // moment.
+        const arrivedThisStep = !Number.isFinite(dist) || dist <= sim.stepMeters;
+        if (arrivedThisStep) {
+            entry.simulatedPosition = {
+                latitude: target.latitude,
+                longitude: target.longitude,
+                accuracy: 5,
+                timestamp: Date.now(),
+            };
+        } else {
+            const ratio = sim.stepMeters / dist;
+            entry.simulatedPosition = {
+                latitude: entry.simulatedPosition.latitude
+                    + (target.latitude - entry.simulatedPosition.latitude) * ratio,
+                longitude: entry.simulatedPosition.longitude
+                    + (target.longitude - entry.simulatedPosition.longitude) * ratio,
+                accuracy: 5,
+                timestamp: Date.now(),
+            };
+        }
+
+        // Emit through the same gate the real-GPS path uses so the
+        // privacy-radius logic still applies during simulated walks.
+        if (this._shouldSendUpdateTick(uri, entry.simulatedPosition)) {
+            const tickExtras = {
+                meetingRequest: false,
+                inReplyTo: entry.inReplyTo,
+                destination: entry.tickExtras && entry.tickExtras.destination,
+            };
+            this.sendLocationMetadata(
+                uri,
+                {...entry.simulatedPosition},
+                new Date(entry.expiresAt).toISOString(),
+                entry.originMetadataId,
+                tickExtras
+            );
+        }
+
+        if (arrivedThisStep) {
+            // Walker reached the destination — kill the timer so the
+            // simulator stops emitting redundant "still at dest" ticks.
+            // sendLocationMetadata above already fired the arrival
+            // push via _maybeFireDestinationArrival; the proximity-
+            // met logic on app.js's side will end the session
+            // shortly once the peer's arrival lands too.
+            if (sim.timerId) clearInterval(sim.timerId);
+            delete this._simStates[uri];
+            try {
+                const utils = require('../utils');
+                utils.timestampedLog(
+                    `[sim] convergence reached destination — stopping walker for ${uri}`
+                );
+            } catch (e) { /* noop */ }
+        }
+    }
+
+    stopSimulation(uri) {
+        if (!this._simStates || !this._simStates[uri]) return;
+        if (this._simStates[uri].timerId) {
+            clearInterval(this._simStates[uri].timerId);
+        }
+        delete this._simStates[uri];
+        try {
+            const utils = require('../utils');
+            utils.timestampedLog(`[sim] convergence stopped for ${uri}`);
+        } catch (e) { /* noop */ }
+    }
+
+    isSimulating(uri) {
+        return !!(this._simStates && this._simStates[uri]);
+    }
+
+    // Public: stamp a shared meeting destination onto an active
+    // share's tickExtras so subsequent outgoing ticks carry it AND
+    // the simulator (if/when started) walks toward it. Called by
+    // app.js when an incoming meeting tick carries
+    // metadata.destination (typically the requester's broadcast
+    // landing on the accepter side, but symmetric — either side can
+    // publish). Keeps the first destination it sees; later updates
+    // are ignored to avoid mid-session flips.
+    setMeetingDestination(uri, destination) {
+        if (!uri || !destination
+                || typeof destination.latitude !== 'number'
+                || typeof destination.longitude !== 'number') {
+            return;
+        }
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (!entry || !entry.tickExtras) return;
+        if (entry.tickExtras.destination) return;
+        entry.tickExtras.destination = {
+            latitude: destination.latitude,
+            longitude: destination.longitude,
+        };
+        try {
+            const utils = require('../utils');
+            utils.timestampedLog(
+                `[sim] received shared meeting destination at ${destination.latitude.toFixed(5)},${destination.longitude.toFixed(5)} for ${uri}`
+            );
+        } catch (e) { /* noop */ }
     }
 
     // opts.silent — suppress the in-chat system note (used by
@@ -1174,9 +1997,40 @@ class NavigationBar extends Component {
       try {
         const kind = opts.kind || 'fixed';
         const inReplyTo = opts.inReplyTo || null;
+        // Privacy radius — distance in metres. When > 0, every
+        // outgoing tick is gated by `_shouldSendUpdateTick` against
+        // the first real GPS fix we recorded for this session. The
+        // first fix is captured silently (no tick sent) and stored on
+        // the timer entry as `originPoint`; thereafter any tick whose
+        // haversine distance to that origin point is below the radius
+        // is dropped on the floor, so the receiver keeps seeing the
+        // "Locating…" placeholder bubble until the user has physically
+        // moved past the perimeter. Only honoured for the meeting-
+        // handshake kinds (the modal already enforces this client-
+        // side, but we re-coerce here in case a future caller forgets).
+        // Negative or non-numeric inputs collapse to 0 (off).
+        const rawRadius = Number(opts.excludeOriginRadiusMeters);
+        const excludeOriginRadiusMeters =
+            (kind === 'meetingRequest' || kind === 'meetingAccept')
+                && Number.isFinite(rawRadius) && rawRadius > 0
+                ? rawRadius
+                : 0;
+        // Shared meeting destination. For the simulator we may set
+        // this lazily (after the first real GPS fix) — initial value
+        // is whatever the caller supplied (e.g. an accepter receiving
+        // a destination embedded in the meeting_request the requester
+        // already broadcast). The value lives on the locationTimers
+        // entry so any path that emits a tick can stamp it; tickExtras
+        // is rebuilt at each send site (see _buildTickExtras below).
+        const initialDestination = (opts.destination
+                && typeof opts.destination.latitude === 'number'
+                && typeof opts.destination.longitude === 'number')
+            ? {latitude: opts.destination.latitude, longitude: opts.destination.longitude}
+            : null;
         const tickExtras = {
             meetingRequest: kind === 'meetingRequest',
             inReplyTo,
+            destination: initialDestination,
         };
         // Shared identifier both sides use to refer to the same "Until we
         // meet" session. For the requester it's the _id of their origin
@@ -1516,7 +2370,7 @@ class NavigationBar extends Component {
         // path (timers, session state) is consistent regardless of how
         // long the first fix takes.
         if (originMetadataId) {
-            this.getCurrentCoordinates().then((coords) => {
+            this.getCurrentCoordinates().then(async (coords) => {
                 // Session may have been stopped between placeholder send
                 // and GPS resolve (user hit Stop, or meeting handshake
                 // tore it down). Nothing to update in that case — the
@@ -1525,8 +2379,102 @@ class NavigationBar extends Component {
                 if (!this.locationTimers[uri]) {
                     return;
                 }
+                // DEBUG: meet-up convergence simulator. The requester
+                // picks the destination (4 km random offset) lazily
+                // on the first real GPS fix; the accepter has a
+                // *synthetic starting position* installed (real GPS
+                // + 10 km random offset) so the two phones aren't
+                // sitting on top of each other when the meet starts.
+                // Both candidates are validated against Nominatim so
+                // we don't randomly pick a point in the middle of a
+                // sea / ocean / lake / river — re-rolling the bearing
+                // up to 5 times if we land in water. Both fields
+                // ride on tickExtras / entry from this point onward
+                // and every emission path reads through them.
+                if (ENABLE_MEET_SIMULATION
+                        && kind === 'meetingRequest'
+                        && !tickExtras.destination) {
+                    const dest = await this._pickMeetingDestinationKmOnLand(coords, 4);
+                    if (dest) {
+                        tickExtras.destination = dest;
+                        try {
+                            const utils = require('../utils');
+                            utils.timestampedLog(
+                                `[sim] picked random meeting destination at ${dest.latitude.toFixed(5)},${dest.longitude.toFixed(5)} (~4 km from start, on land)`
+                            );
+                        } catch (e) { /* noop */ }
+                    }
+                }
+                // Accepter side, simulation mode: replace real GPS
+                // with a synthetic position 10 km away from where we
+                // actually are, so we have visible distance to the
+                // destination even when both phones are sitting on
+                // the same desk. Stored on entry.simulatedPosition;
+                // every other tick path consults it via
+                // _effectiveCoordinatesForSession.
+                const entryNow = this.locationTimers[uri];
+                if (ENABLE_MEET_SIMULATION
+                        && kind === 'meetingAccept'
+                        && entryNow
+                        && !entryNow.simulatedPosition) {
+                    const synthetic = await this._pickMeetingDestinationKmOnLand(coords, 10);
+                    if (synthetic) {
+                        // Re-fetch entry — the await opened a window
+                        // for the share to be torn down underneath us.
+                        const entryAfter = this.locationTimers[uri];
+                        if (entryAfter && !entryAfter.simulatedPosition) {
+                            entryAfter.simulatedPosition = {
+                                latitude: synthetic.latitude,
+                                longitude: synthetic.longitude,
+                                accuracy: 5,
+                                timestamp: Date.now(),
+                            };
+                            // Drop the race fence — subsequent
+                            // watchPosition / interval fires will
+                            // pick up the synthetic position via
+                            // _effectiveCoordinatesForSession.
+                            entryAfter.awaitingSimulatedPosition = false;
+                            try {
+                                const utils = require('../utils');
+                                const u = `https://maps.google.com/?q=${synthetic.latitude.toFixed(5)},${synthetic.longitude.toFixed(5)}`;
+                                utils.timestampedLog(
+                                    `[sim] accepter synthetic position armed for ${uri} → ${synthetic.latitude.toFixed(5)},${synthetic.longitude.toFixed(5)} (${u}) — ~10 km from real GPS, on land`
+                                );
+                            } catch (e) { /* noop */ }
+                        }
+                    } else {
+                        // Pick failed entirely (rare — _pickMeeting…
+                        // OnLand falls back to a plain pick on
+                        // exhausted retries). Drop the fence anyway
+                        // so the share can keep running on real GPS;
+                        // staying gated forever would be worse than
+                        // a degraded test setup.
+                        const entryAfter = this.locationTimers[uri];
+                        if (entryAfter) {
+                            entryAfter.awaitingSimulatedPosition = false;
+                        }
+                    }
+                }
+                // Re-check the timer entry — both awaits above could
+                // have spanned a tear-down window.
+                if (!this.locationTimers[uri]) {
+                    return;
+                }
+                // From here on, the first update tick reports the
+                // synthetic position when simulation is in play.
+                // Otherwise it reports the real GPS fix as before.
+                const effective = this._effectiveCoordinatesForSession(uri, coords);
+                // _shouldSendUpdateTick captures this fix as the
+                // session's `originPoint` when the privacy radius is
+                // enabled and returns `false` — so the receiver stays
+                // on "Locating…" until the user moves past the
+                // 1 km perimeter. When the radius is OFF this just
+                // returns true and the tick goes out as before.
+                if (!this._shouldSendUpdateTick(uri, effective)) {
+                    return;
+                }
                 this.sendLocationMetadata(
-                    uri, coords, expiresIso, originMetadataId, tickExtras
+                    uri, effective, expiresIso, originMetadataId, tickExtras
                 );
             }).catch((err) => {
                 console.log('[location] initial getCurrentCoordinates failed',
@@ -1576,6 +2524,41 @@ class NavigationBar extends Component {
                 // one with real lat/lng, so we want that to happen at the
                 // first opportunity, not 60 s from now.
                 lastSentMs: 0,
+                // Privacy-radius state. `excludeOriginRadiusMeters` is
+                // fixed at session start (from the modal slider — 0
+                // means disabled, 500 / 2000 are the user-visible
+                // stops); `originPoint` is captured on the first valid
+                // GPS fix by _shouldSendUpdateTick; `originRadiusCleared`
+                // flips exactly once when the user crosses the
+                // perimeter so the "now sharing" log fires once instead
+                // of on every subsequent tick.
+                excludeOriginRadiusMeters,
+                originPoint: null,
+                originRadiusCleared: false,
+                // Reference to the same tickExtras object the iOS
+                // watchPosition closure captured. Mutating
+                // entry.tickExtras.destination here flows through to
+                // every subsequent tick automatically — used by the
+                // simulator to publish a destination after the first
+                // real GPS fix without re-arming the watch.
+                tickExtras,
+                // Race fence (debug): when the accepter's share
+                // starts in simulation mode the synthetic 10 km
+                // position is set up asynchronously inside the first
+                // getCurrentCoordinates().then() callback (because it
+                // awaits Nominatim land-checks). The iOS watchPosition
+                // callback below — and the equivalent Android
+                // interval — can fire before that async work
+                // completes; without a fence they'd ship a real-GPS
+                // tick first, the receiver pairs both phones at ~1 m,
+                // and proximity-met fires erroneously. Setting this
+                // flag synchronously here gates every tick path until
+                // the async setup clears it. Set only when we
+                // actually need it; production builds with
+                // ENABLE_MEET_SIMULATION=false leave it false and
+                // skip the gate entirely.
+                awaitingSimulatedPosition:
+                    ENABLE_MEET_SIMULATION && kind === 'meetingAccept',
             };
             this.locationTimers[uri] = entry;
 
@@ -1602,14 +2585,48 @@ class NavigationBar extends Component {
                             if (nowMs - current.lastSentMs < this.LOCATION_REPEAT_MS) {
                                 return;
                             }
+                            // Race fence: the accepter's synthetic
+                            // 10 km position is armed asynchronously
+                            // (inside the initial getCurrentCoordinates
+                            // .then(); awaits Nominatim). The iOS
+                            // watch can fire before that completes —
+                            // skip the tick until the synthetic is
+                            // actually in place, otherwise we'd leak
+                            // real GPS as the first reported coord
+                            // and the proximity-met logic would
+                            // mistake the two phones (sitting on the
+                            // same desk) for "you've arrived".
+                            if (current.awaitingSimulatedPosition && !current.simulatedPosition) {
+                                return;
+                            }
                             current.lastSentMs = nowMs;
                             const c = position && position.coords ? position.coords : {};
-                            const coords = {
+                            const realCoords = {
                                 latitude: c.latitude,
                                 longitude: c.longitude,
                                 accuracy: c.accuracy,
                                 timestamp: position.timestamp,
                             };
+                            // Honour any synthetic position that's
+                            // armed for this session. Today the
+                            // accepter side gets one installed on
+                            // share start (10 km from real GPS) and
+                            // the simulator walks it from there. When
+                            // simulation is off this returns realCoords
+                            // unchanged.
+                            const coords = this._effectiveCoordinatesForSession(uri, realCoords);
+                            // Privacy radius gate. When the user opted
+                            // in to "Exclude my current location (1km)"
+                            // and the fresh fix is still inside the
+                            // 1 km circle around the session's origin
+                            // point, swallow the tick. The throttle
+                            // bump above still ran so we won't busy-
+                            // loop on every CLLocationManager callback;
+                            // we just no-op the actual emission until
+                            // the user moves out of the radius.
+                            if (!this._shouldSendUpdateTick(uri, coords)) {
+                                return;
+                            }
                             this.sendLocationMetadata(uri, coords, expiresIso, originMetadataId, tickExtras);
                         },
                         (error) => {
@@ -1739,7 +2756,27 @@ class NavigationBar extends Component {
                 this.sendLocationUpdate(uri, expiresIso, originMetadataId, tickExtras);
             }, this.LOCATION_REPEAT_MS);
 
-            this.locationTimers[uri] = {intervalId, expiresAt, originMetadataId, inReplyTo, meetingSessionId};
+            this.locationTimers[uri] = {
+                intervalId,
+                expiresAt,
+                originMetadataId,
+                inReplyTo,
+                meetingSessionId,
+                // Privacy-radius state — same shape as the iOS entry so
+                // _shouldSendUpdateTick / sendLocationUpdate work the
+                // same way on either platform. See the iOS branch above
+                // for what each field does.
+                excludeOriginRadiusMeters,
+                originPoint: null,
+                originRadiusCleared: false,
+                // Same tickExtras object the BackgroundTimer interval
+                // captures via closure — mutation here propagates.
+                tickExtras,
+                // Same race fence as the iOS branch above — see the
+                // long comment there for what this gates and why.
+                awaitingSimulatedPosition:
+                    ENABLE_MEET_SIMULATION && kind === 'meetingAccept',
+            };
         }
 
         // Reflect the final (authoritative) expiresAt in React state.
@@ -1795,19 +2832,204 @@ class NavigationBar extends Component {
       }
     }
 
-    onShareLocationConfirmed({durationMs, periodLabel, kind}) {
+    onShareLocationConfirmed({durationMs, periodLabel, kind, excludeOriginRadiusMeters}) {
         const uri = this.props.selectedContact && this.props.selectedContact.uri;
         if (!uri) {
             return;
         }
-        this.startLocationSharing(uri, durationMs, periodLabel, {kind});
+        if (kind === 'once') {
+            this.shareLocationOnce(uri);
+            return;
+        }
+        this.startLocationSharing(uri, durationMs, periodLabel, {kind, excludeOriginRadiusMeters});
+    }
+
+    // One-shot location share — acquire a single GPS fix and ship a
+    // single sylk-message-metadata tick with action='location' and
+    // one_shot:true. No timer, no follow-up ticks, no peerCoords
+    // pairing, no destination, no proximity logic. Receiver renders
+    // a static "Shared location" bubble (LocationBubble keys off
+    // metadata.one_shot to drop the live-share affordances).
+    //
+    // Permission errors fall through to the same Alert prompts the
+    // live-share path uses — there's no value in inventing a
+    // separate copy for the one-shot path.
+    // opts.inReplyTo — when this one-shot is answering a peer's
+    //   `location_request` (action='location_request' / messageId=<reqId>),
+    //   pass that reqId here. The outgoing tick stamps in_reply_to so
+    //   the peer can dedupe and any of OUR sibling devices on the same
+    //   account see the replicated tick and mirror "this request is
+    //   answered" — closing their LocationRequestModal automatically
+    //   (see app.js _noteSiblingAnsweredLocationRequest).
+    async shareLocationOnce(uri, opts = {}) {
+        if (!uri) return;
+        if (!this.props.sendMessage) {
+            console.log('[location] shareLocationOnce: sendMessage prop not wired');
+            return;
+        }
+        let hasPermission;
+        try {
+            hasPermission = await this.ensureLocationPermission();
+        } catch (e) {
+            hasPermission = false;
+        }
+        if (!hasPermission) {
+            // Same "Open Settings" deep-link the live-share alert
+            // uses (see startLocationSharing's openSettingsFn). On
+            // iOS we hop into the app's own pane via the
+            // app-settings: scheme; on Android react-native-permissions
+            // exposes openSettings() which lands directly on the
+            // app's Permissions screen — same destination as the
+            // "Permissions" item in the global kebab menu.
+            const openSettingsFn = () => {
+                try {
+                    if (Platform.OS === 'ios') {
+                        Linking.openURL('app-settings:');
+                    } else {
+                        try { openSettings(); }
+                        catch (e) { Linking.openSettings && Linking.openSettings(); }
+                    }
+                } catch (e) { /* noop */ }
+            };
+            Alert.alert(
+                'Location permission required',
+                Platform.OS === 'ios'
+                    ? "Open Settings → Sylk → Location to allow location access."
+                    : 'Sylk needs location access to share your location with your contact. Open Settings to enable it.',
+                [
+                    {text: 'Cancel', style: 'cancel'},
+                    {text: 'Open Settings', onPress: openSettingsFn},
+                ],
+                {cancelable: true}
+            );
+            return;
+        }
+        // Memory-only "we're working on it" note. GPS cold-start can
+        // take 5–15 s, and without any visible feedback the user
+        // wonders whether the tap registered. Use renderSystemMessage
+        // (no SQL INSERT, no replication) so the note disappears on
+        // the next chat reload and doesn't clutter restored history.
+        if (typeof this.props.renderSystemMessage === 'function') {
+            try {
+                this.props.renderSystemMessage(
+                    uri,
+                    '📍 Location will be shared as soon as it is acquired…',
+                    'outgoing',
+                    new Date(),
+                    true
+                );
+            } catch (e) { /* noop */ }
+        }
+        try {
+            const coords = await this.getCurrentCoordinates();
+            // 24 h expires_at is generous — a one-shot location is
+            // useful for a long time after it's sent (you might be
+            // showing it to someone the next morning), and the
+            // bubble's expiry-aware UI is suppressed for one_shot
+            // anyway. The expires field still gates the SQL row's
+            // 7-day cleanup, so we don't end up with stale forever
+            // rows.
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+            const extras = {oneShot: true};
+            if (opts && opts.inReplyTo) {
+                extras.inReplyTo = opts.inReplyTo;
+            }
+            this.sendLocationMetadata(uri, coords, expiresAt, null, extras);
+            if (typeof this.props.saveSystemMessage === 'function') {
+                const at = new Date().toLocaleTimeString([], {
+                    hour: '2-digit', minute: '2-digit',
+                });
+                this.props.saveSystemMessage(uri,
+                    `📍 Shared current location at ${at}`,
+                    'outgoing');
+            }
+        } catch (err) {
+            console.log('[location] shareLocationOnce failed',
+                err && err.message ? err.message : err);
+        }
+    }
+
+    // Send a "please share your current location" request to the peer.
+    // Symmetric to the meet-up handshake: we ship a single
+    // sylk-message-metadata with action='location_request' (no coords
+    // — we're asking, not sharing). The receiver's app.js detects the
+    // action and pops a small Yes/No modal; on Yes the peer fires
+    // shareLocationOnce back our way.
+    //
+    // No timer, no follow-up ticks, no expiry-driven cleanup — the
+    // request expires on its own (24 h is generous: long enough for
+    // the user to be away from the phone for most of a day before
+    // they'd reasonably want a fresh ask), and the receiver's
+    // pendingLocationRequests entry is silently dropped past expiry.
+    requestPeerLocation(uri) {
+        if (!uri) return;
+        if (!this.props.sendMessage) {
+            console.log('[location] requestPeerLocation: sendMessage prop not wired');
+            return;
+        }
+        try {
+            const reqId = uuid.v4();
+            const now = new Date();
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+            // Announcement text — a plain `text/plain` chat message
+            // sent alongside the metadata payload. Routes through the
+            // server's standard push pipeline, which is what wakes a
+            // sleeping iPhone / Android. Without it the metadata
+            // message lands silently when the receiver's app is in
+            // background or terminated, and they never see the
+            // request until they happen to open Sylk. The companion
+            // metadata still drives the modal — this text is just
+            // the wake-up.
+            try {
+                const announceId = uuid.v4();
+                const announceText = 'Could you share your current location, please?';
+                this.props.sendMessage(uri, {
+                    _id: announceId,
+                    key: announceId,
+                    createdAt: now,
+                    text: announceText,
+                    metadata: {locationRequestAnnouncement: true},
+                    user: {},
+                });
+            } catch (e) {
+                console.log('[location] requestPeerLocation announcement send failed',
+                    e && e.message ? e.message : e);
+            }
+
+            const metadataContent = {
+                action: 'location_request',
+                messageId: reqId,
+                timestamp: now,
+                uri: uri,
+                expires: expiresAt,
+            };
+            const metadataMessage = {
+                _id: reqId,
+                key: reqId,
+                createdAt: now,
+                metadata: metadataContent,
+                text: JSON.stringify(metadataContent),
+                user: {},
+            };
+            this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+            // No "Requested current location at HH:MM" system note —
+            // the polite announcement text we shipped above ("Could
+            // you share your current location, please?") already
+            // serves as the chat-visible breadcrumb. A redundant
+            // system line right next to it just clutters the
+            // conversation.
+        } catch (e) {
+            console.log('[location] requestPeerLocation failed',
+                e && e.message ? e.message : e);
+        }
     }
 
     // Public entry point used by app.js when the local user taps "Accept"
     // on an incoming meeting request. Starts a location share whose ticks
     // carry in_reply_to pointing at the original request, with the same
     // expiresAt the requester chose so both sides tear down in sync.
-    startMeetingAcceptance(uri, {requestId, expiresAt, periodLabel}) {
+    startMeetingAcceptance(uri, {requestId, expiresAt, periodLabel, excludeOriginRadiusMeters, destination}) {
         if (!uri || !requestId || typeof expiresAt !== 'number') {
             console.log('[location] startMeetingAcceptance: missing required args',
                 uri, requestId, expiresAt);
@@ -1823,7 +3045,23 @@ class NavigationBar extends Component {
             uri,
             durationMs,
             periodLabel || 'until we meet',
-            {kind: 'meetingAccept', inReplyTo: requestId, expiresAt}
+            {
+                kind: 'meetingAccept',
+                inReplyTo: requestId,
+                expiresAt,
+                // Mirror the requester-side privacy radius: the
+                // accepter's "starting point" is the location they
+                // were at when they tapped Accept, and the slider on
+                // MeetingRequestModal lets them hide that exactly the
+                // same way the sender modal does.
+                excludeOriginRadiusMeters,
+                // Shared meeting destination — accepter inherits
+                // whatever the requester broadcast (today: simulator
+                // pick; tomorrow: user map-picker). Stamped on every
+                // outgoing tick so the view layer / future map UI on
+                // the requester's side gets a reciprocal echo.
+                destination,
+            }
         );
     }
 
@@ -2472,6 +3710,13 @@ class NavigationBar extends Component {
                     <Menu
                         visible={this.state.menuVisible}
                         onDismiss={() => this.setState({menuVisible: !this.state.menuVisible, keyMenuVisible: false})}
+                        // Push the dropdown down by the device's top
+                        // safe-area inset so the topmost items don't
+                        // get eclipsed by the camera cutout / notch /
+                        // dynamic island. Paper's Menu anchors near
+                        // the top of the screen on Android and would
+                        // otherwise render right under the camera.
+                        style={topInset ? {marginTop: topInset} : null}
                         anchor={
                             <Appbar.Action
                                 ref={this.menuRef}
@@ -2502,6 +3747,14 @@ class NavigationBar extends Component {
                         {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
 
+                        {/* Location group — Share location, Request
+                            location. Bracketed by Dividers so the two
+                            location-related items read as a single
+                            grouped section in the kebab. The group is
+                            gated on the same contact-state predicates
+                            as the original Share-location item; if
+                            none of the items would render, we render
+                            nothing (no orphaned Dividers). */}
                         {tags.indexOf('blocked') === -1 && !isConference && !isAnonymous && !this.myself && this.props.canSend && this.props.canSend() ?
                         (() => {
                             const _uri = this.props.selectedContact && this.props.selectedContact.uri;
@@ -2522,15 +3775,60 @@ class NavigationBar extends Component {
                             );
                             if (!sharing && !hasContactKey) return null;
                             return (
-                                <Menu.Item
-                                    onPress={() => this.handleMenu('shareLocation')}
-                                    icon={sharing ? "map-marker-off" : "map-marker"}
-                                    title={sharing ? "Stop sharing location" : "Share location..."}
-                                />
+                                <React.Fragment>
+                                    <Divider />
+                                    <Menu.Item
+                                        onPress={() => this.handleMenu('shareLocation')}
+                                        icon={sharing ? "map-marker-off" : "map-marker"}
+                                        title={sharing ? "Stop sharing location" : "Share location..."}
+                                    />
+                                    {/* Request location is only useful
+                                        when there's no live share in
+                                        flight — once we're already
+                                        sharing, the peer has our
+                                        position; asking for theirs
+                                        instead is a separate flow. */}
+                                    {!sharing ? (
+                                        <Menu.Item
+                                            onPress={() => this.handleMenu('requestLocation')}
+                                            icon="map-marker-question"
+                                            title="Request location..."
+                                        />
+                                    ) : null}
+                                    <Divider />
+                                </React.Fragment>
                             );
                         })()
                         : null}
-                                                
+
+                        {/* DEBUG: meet-up convergence simulator. Single
+                            off-switch via ENABLE_MEET_SIMULATION at the
+                            top of this file — flip to false to remove
+                            this entry from production builds entirely.
+                            Only visible while a share for the selected
+                            contact is active. */}
+                        {ENABLE_MEET_SIMULATION
+                                && tags.indexOf('blocked') === -1
+                                && !isConference
+                                && !isAnonymous
+                                && !this.myself
+                                && this.props.canSend
+                                && this.props.canSend()
+                            ? (() => {
+                                const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                                const sharing = !!(_uri && this.state.activeLocationShares[_uri]);
+                                if (!sharing) return null;
+                                const simming = this.isSimulating(_uri);
+                                return (
+                                    <Menu.Item
+                                        onPress={() => this.handleMenu('simulateMeet')}
+                                        icon={simming ? "stop" : "play"}
+                                        title={simming ? "Stop simulation" : "Simulate convergence"}
+                                    />
+                                );
+                            })()
+                            : null}
+
                         { !this.props.searchMessages && this.hasMessages && !this.props.inCall && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item
                             onPress={() => this.handleMenu('deleteMessages')}
@@ -2593,6 +3891,9 @@ class NavigationBar extends Component {
                     <Menu
                         visible={this.state.menuVisible}
                         onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                        // See the marginTop comment on the contact-
+                        // mode menu above — same camera-cutout fix.
+                        style={topInset ? {marginTop: topInset} : null}
                         anchor={
                             <Appbar.Action
                                 ref={this.menuRef}
@@ -2654,6 +3955,10 @@ class NavigationBar extends Component {
                      <Menu
                         visible={this.state.keyMenuVisible}
                         onDismiss={() => this.setState({keyMenuVisible: !this.state.keyMenuVisible})}
+                        // Same camera-cutout offset as the parent
+                        // menu — keeps the nested key submenu from
+                        // peeking out under the notch.
+                        style={topInset ? {marginTop: topInset} : null}
 						anchor={
 							<Menu.Item
 								title="My private key..."

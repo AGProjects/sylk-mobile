@@ -3159,13 +3159,35 @@ class ContactsListBox extends Component {
 						? '|' + pc.latitude.toFixed(4) + ',' + pc.longitude.toFixed(4)
 						: '';
 					const tickMarker = basePart + peerPart;
+					// Preserve origin-only fields when overlaying an
+					// update tick's content. `meeting_request: true`
+					// (and the destination chosen for the meet-up)
+					// only appear on the ORIGIN tick — update ticks
+					// don't restamp them. Without this carry-forward
+					// the kebab's "Accept meeting request" option
+					// disappears the moment the first update tick
+					// lands on the receiver (the gate reads
+					// currentMessage.metadata.meeting_request), even
+					// though the request is still perfectly acceptable.
+					const origin = msg.metadata || {};
+					const stickyFromOrigin = {};
+					if (origin.meeting_request === true) {
+						stickyFromOrigin.meeting_request = true;
+					}
+					if (origin.destination
+							&& !newLocation.destination) {
+						stickyFromOrigin.destination = origin.destination;
+					}
+					const mergedMetadata = Object.keys(stickyFromOrigin).length > 0
+						? {...newLocation, ...stickyFromOrigin}
+						: newLocation;
 					const textChanged = tickMarker !== msg.text;
-					const metaChanged = newLocation !== msg.metadata;
+					const metaChanged = mergedMetadata !== msg.metadata;
 					if (textChanged || metaChanged) {
 						return {
 							...msg,
 							text: tickMarker,
-							metadata: newLocation,
+							metadata: mergedMetadata,
 						};
 					}
 				}
@@ -3497,6 +3519,10 @@ class ContactsListBox extends Component {
                     currentMessage={currentMessage}
                     metadata={latest}
                     onLongPress={this.onLongMessagePress}
+                    ownerName={this.props.myDisplayName}
+                    peerName={this.props.selectedContact
+                        && (this.props.selectedContact.name
+                            || this.props.selectedContact.uri)}
                 />
             );
         }

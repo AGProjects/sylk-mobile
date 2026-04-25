@@ -66,6 +66,7 @@ import StatusBox from './components/StatusBox';
 import ImportPrivateKeyModal from './components/ImportPrivateKeyModal';
 import RestoreKeyModal from './components/RestoreKeyModal';
 import MeetingRequestModal from './components/MeetingRequestModal';
+import LocationRequestModal from './components/LocationRequestModal';
 import IncomingCallModal from './components/IncomingCallModal';
 import LogsModal from './components/LogsModal';
 import NotificationCenter from './components/NotificationCenter';
@@ -738,6 +739,23 @@ class Sylk extends Component {
             requestId: null,
             expiresAt: null,
         };
+
+        // "Please share your current location" prompt — symmetric to
+        // meetingRequestModal but a one-shot Yes/No: on Yes we ship a
+        // single location bubble back via NavBar.shareLocationOnce.
+        this.state.locationRequestModal = {
+            show: false,
+            fromUri: null,
+            requestId: null,
+            expiresAt: null,
+        };
+        // Ids of incoming location requests we've already presented
+        // (modal shown or expired). Memory-only — restoring across
+        // restarts isn't worth the AsyncStorage round-trip for a
+        // throwaway prompt.
+        this.handledLocationRequestIds = new Set();
+        // Per-peer pending request, keyed by sender uri.
+        this.pendingLocationRequests = {};
 
         this.myParticipants = {};
         this.outgoingJournalEntries = {};
@@ -2369,7 +2387,18 @@ class Sylk extends Component {
 					 //console.log('selectedContact is the same', this.state.selectedContact?.id);
 	                 // no change
 	             } else {
-					 console.log('selectedContact changed', this.state.selectedContact.uri, this.state.selectedContact.timestamp);
+					 // Log whether the newly-selected contact has a
+					 // PGP public key cached, so the chat-load flow's
+					 // "is encryption available?" branch is observable
+					 // from a single line. Useful when debugging "my
+					 // outgoing message landed as ciphertext" or
+					 // "received metadata didn't decrypt" reports —
+					 // the answer often hinges on whether the
+					 // public-key lookup completed before the user
+					 // started typing / sharing.
+					 console.log('selectedContact changed', this.state.selectedContact.uri,
+						 this.state.selectedContact.timestamp,
+						 'hasPublicKey=', !!this.state.selectedContact.publicKey);
 					 
 					 this.setState({messageZoomFactor: 1});
 
@@ -4537,28 +4566,47 @@ class Sylk extends Component {
 
 	sendLocalNotification(title, body, userInfo) {
 		console.log('sendLocalNotification', userInfo);
-	
+
 		const from = userInfo.from_uri;
 
 		if (!from) {
 			return;
 		}
-	
+
 		const now = Date.now();
 		const THROTTLE_MS = 60 * 1000; // 60 seconds
 
 		const last = this.outgoingNotifications[from];
-	
+
+		// Some event types are once-per-session and timing-critical —
+		// they must not be silenced just because a chat-message
+		// notification landed in the same throttle window. The
+		// arrival heads-up ("You reached the meeting destination")
+		// is the canonical case: it fires when the simulator (or
+		// real GPS) lands inside 30 m of the meeting point, gated
+		// by entry.destinationArrivalFired so it's strictly
+		// once-per-session. The proximity-met "Meeting succeeded"
+		// path shares the property. Bypass the per-uri throttle for
+		// these explicitly-marked events.
+		const event = userInfo && userInfo.event;
+		const bypassThrottle = event === 'meeting_arrived'
+			|| event === 'meeting_succeeded'
+			|| event === 'meeting_proximity_alert';
+
 		// Check throttle
-		if (last && (now - last.timestamp < THROTTLE_MS)) {
+		if (!bypassThrottle && last && (now - last.timestamp < THROTTLE_MS)) {
 			console.log(
 				`[sendLocalNotification] Throttled notifications for ${from}. ` +
 				`Last was ${Math.round((now - last.timestamp)/1000)}s ago.`
 			);
 			return; // Skip
 		}
-	
-		// Update timestamp for this sender
+
+		// Always record the timestamp on a successful delivery —
+		// bypass-throttle events still consume the slot so a regular
+		// chat-message banner that lands a few seconds later (the
+		// underlying text body of a meeting_arrived announcement, for
+		// example) doesn't double-buzz on the same notification.
 		this.outgoingNotifications[from] = { timestamp: now };
 
 		console.log(
@@ -4953,6 +5001,12 @@ class Sylk extends Component {
 		if (chatContact && chatContact.uri && this.pendingMeetingRequests[chatContact.uri]) {
 			setTimeout(() => this._presentMeetingRequestForUri(chatContact.uri), 0);
 		}
+		// Same drain for one-shot location requests.
+		if (chatContact && chatContact.uri
+				&& this.pendingLocationRequests
+				&& this.pendingLocationRequests[chatContact.uri]) {
+			setTimeout(() => this._presentLocationRequestModalForUri(chatContact.uri), 0);
+		}
 	}
 
     selectContact(contact, origin='') {
@@ -4980,6 +5034,12 @@ class Sylk extends Component {
 		// handled before showing, so an immediate re-call is safe.
 		if (contact && contact.uri && this.pendingMeetingRequests[contact.uri]) {
 			setTimeout(() => this._presentMeetingRequestForUri(contact.uri), 0);
+		}
+		// Same drain for the one-shot location-request prompt.
+		if (contact && contact.uri
+				&& this.pendingLocationRequests
+				&& this.pendingLocationRequests[contact.uri]) {
+			setTimeout(() => this._presentLocationRequestModalForUri(contact.uri), 0);
 		}
     }
 
@@ -5428,12 +5488,12 @@ class Sylk extends Component {
 			for (let i = 0; i < rows.length; i++) {
 				var item = rows.item(i);
 				accounts[item.account] = item.server;
-				console.log('[loadAccounts] row #', i,
-					'account=', item.account,
-					'server=', item.server,
-					'active=', item.active,
-					'passwordLen=', (item.password ? String(item.password).length : 0),
-					'last_active_timestamp=', item.last_active_timestamp);
+				// console.log('[loadAccounts] row #', i,
+				// 	'account=', item.account,
+				// 	'server=', item.server,
+				// 	'active=', item.active,
+				// 	'passwordLen=', (item.password ? String(item.password).length : 0),
+				// 	'last_active_timestamp=', item.last_active_timestamp);
 
 				if (item.active == "1" || item.active == 1) {
 					init_active_account = true;
@@ -8889,7 +8949,6 @@ class Sylk extends Component {
 			if (message.metadata
 				&& message.metadata.action === 'location'
 				&& !message.metadata.metadataId) {
-				console.log('[location] sendMessage: bumping contact timestamp for origin tick', uri);
 				this.saveOutgoingChatUri(uri, message);
 				if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
 					const bumped = {
@@ -11642,8 +11701,9 @@ class Sylk extends Component {
 								};
 								if (orig_uri in messages
 									&& !messages[orig_uri].some(m => m._id === locBubble._id)) {
-									console.log('[location] Restoring live-location bubble from SQL',
-										item.msg_id, 'direction=', direction);
+									// Restored a live-location bubble from SQL.
+									// Logged once per restored bubble per chat
+									// open — silenced now that it works.
 									messages[orig_uri].push(locBubble);
 								}
 							}
@@ -13409,6 +13469,38 @@ class Sylk extends Component {
 			return;
 		}
 
+        // Meet-up arrival announcement detector. The arriving party
+        // emits a plain text message ending in "arrived at the
+        // meeting point" (sent by NavigationBar's
+        // _maybeFireDestinationArrival). Fire a dedicated heads-up
+        // push to the still-walking party here — bypass-throttle
+        // so a recent chat banner doesn't squelch it, and consume
+        // the throttle slot so the regular "New message" banner
+        // about the same text body doesn't double-buzz a moment
+        // later when notifyIncomingMessage runs.
+        if (message.contentType === 'text/plain'
+                && typeof content === 'string'
+                && /arrived at the meeting point\s*$/i.test(content)) {
+            try {
+                const fromUri = message.sender && message.sender.uri;
+                if (fromUri) {
+                    this.sendLocalNotification(
+                        'Meeting point reached',
+                        content,
+                        {
+                            from_uri: fromUri,
+                            event: 'meeting_arrived',
+                            message_id: message.id,
+                            origin: 'reactNative',
+                        }
+                    );
+                }
+            } catch (e) {
+                console.log('[meet] arrival push fire failed',
+                    e && e.message ? e.message : e);
+            }
+        }
+
         // -----------------------------------------------------------------
         // Classify metadata messages before firing any notifications.
         //
@@ -13609,6 +13701,18 @@ class Sylk extends Component {
 			return;
 		}
 
+		// "Please share your current location" request from a peer.
+		// Symmetric to meeting_request, but a one-shot ask: receiver
+		// sees a Yes/No modal and on Yes ships shareLocationOnce
+		// back. We ignore our own outgoing echoes (no `author`) — the
+		// sender doesn't need a modal asking themselves.
+		if (metadataContent.action === 'location_request') {
+			if (author) {
+				this._noteIncomingLocationRequest(author, metadataContent);
+			}
+			return;
+		}
+
 		// Peer ended their side of an "Until we meet" session (user tap,
 		// message deleted, permission lost). Route straight to NavigationBar
 		// so it can walk its locationTimers map and stop any share that was
@@ -13692,16 +13796,33 @@ class Sylk extends Component {
 			if (author && metadataContent.in_reply_to) {
 				this._noteIncomingAcceptanceTick(author, metadataContent);
 			}
+			// Multi-device sync for the meeting handshake AND the
+			// one-shot location-request handshake. Both ride on
+			// outgoingMessage replication (no `author`, in_reply_to
+			// set), and we differentiate by the one_shot flag:
+			//
+			//   • one_shot:true  → sibling answered a location_request.
+			//     Close any open LocationRequestModal on this device,
+			//     mark requestId handled.
+			//   • otherwise      → sibling accepted a meet-up request.
+			//     Existing acceptedMeetingRequestIds mirror.
+			if (!author && metadataContent.in_reply_to) {
+				if (metadataContent.one_shot) {
+					this._noteSiblingAnsweredLocationRequest(
+						metadataContent.in_reply_to, uri);
+				} else if (metadataContent.meeting_request !== true) {
+					this._noteSiblingAcceptedMeetingRequest(
+						metadataContent.in_reply_to, uri);
+				}
+			}
 			preGatePair = this._updateMeetingSessionCoords(metadataContent, uri);
 		}
 
 		if (!this.state.selectedContact || this.state.selectedContact.uri !== uri) {
-			if (metadataContent.action === 'location') {
-				console.log('[location] handleMessageMetadata: skipping live update — selectedContact is',
-					this.state.selectedContact ? this.state.selectedContact.uri : '(none)',
-					'but metadata is for', uri,
-					'(author=', author || '(local)', ', metadata.uri=', metadataContent.uri, ')');
-			}
+			// Per-tick noise; silenced now that the meet flow is
+			// stable. Background ticks for non-selected chats fall
+			// through this gate every interval and there's nothing
+			// to learn from logging them once it works.
 			return;
 		}
 
@@ -14000,13 +14121,27 @@ class Sylk extends Component {
 			'peer=', fromUri, '(both sides sharing)');
 	}
 
-	_reportMeetingDistance(sessionId, meters) {
+	_reportMeetingDistance(sessionId, meters, ownCoords, destinationCoords) {
 		if (meters == null || !isFinite(meters)) return;
 		const band = this._meetDistanceBand(meters);
 		const prev = this._meetLastDistanceBand[sessionId];
 		if (prev === band) return;
 		this._meetLastDistanceBand[sessionId] = band;
-		utils.timestampedLog('[meet] Distance: ~' + this._meetFormatDistance(meters),
+		// Optional "and how far am *I* from the destination?" suffix.
+		// Each device computes against its own current coords (the
+		// caller passes ownCoords from this device's session side —
+		// requesterCoords or accepterCoords depending on which side
+		// we are), so the same line on both phones reads as that
+		// device's own progress, not a shared number.
+		let toDestSuffix = '';
+		if (destinationCoords && ownCoords) {
+			const toDest = this._haversineMeters(ownCoords, destinationCoords);
+			if (Number.isFinite(toDest)) {
+				toDestSuffix = ' • ' + this._meetFormatDistance(toDest) + ' to dest';
+			}
+		}
+		utils.timestampedLog('[meet] Distance: ~' + this._meetFormatDistance(meters)
+			+ ' peer' + toDestSuffix,
 			'— session', this._meetShortId(sessionId),
 			'(band', prev ? prev + '→' + band : band, ')');
 	}
@@ -14055,6 +14190,23 @@ class Sylk extends Component {
 		if (typeof expiresAt === 'number' && expiresAt > Date.now()) {
 			this._scheduleMeetingSessionWipe(requestId, fromUri, expiresAt);
 		}
+		// Capture the shared meeting destination if the requester
+		// included one (debug convergence simulator today; future
+		// "let me pick where to meet on a map" UI tomorrow). Stash on
+		// the meetingSessions session record so it survives even if
+		// pendingMeetingRequests gets cleared, and so a second tick
+		// carrying the same destination is a no-op.
+		const dest = metadataContent.destination;
+		if (dest
+				&& typeof dest.latitude === 'number'
+				&& typeof dest.longitude === 'number') {
+			if (!this.meetingSessions) this.meetingSessions = {};
+			const s = this.meetingSessions[requestId] || {};
+			if (!s.destination) {
+				s.destination = {latitude: dest.latitude, longitude: dest.longitude};
+				this.meetingSessions[requestId] = s;
+			}
+		}
 		if (this.handledMeetingRequestIds.has(requestId)) return;
 		if (expiresAt == null || Date.now() >= expiresAt) {
 			// Silently swallow already-expired requests — no modal, no note.
@@ -14062,9 +14214,34 @@ class Sylk extends Component {
 			this._persistMeetingHandshakeState();
 			return;
 		}
-		this.pendingMeetingRequests[fromUri] = {requestId, expiresAt, fromUri};
-		this._reportMeetingInvitationReceived(requestId, fromUri, expiresAt);
+		// `meeting_request:true` rides on every requester tick now (so
+		// SQL persists it on origin-row UPDATEs), which means
+		// `_noteIncomingMeetingRequest` fires per tick rather than
+		// once per session. Gate the user-visible "INVITATION
+		// RECEIVED" log on whether we've already noted *this* request
+		// id — avoids three identical lines back-to-back in the user
+		// log every time a fresh requester ships their initial burst
+		// of ticks.
+		const alreadyNoted = this.pendingMeetingRequests[fromUri]
+			&& this.pendingMeetingRequests[fromUri].requestId === requestId;
+		// Carry destination through to the pending entry too so the
+		// Accept handler can pull it out without re-walking sessions.
+		this.pendingMeetingRequests[fromUri] = {
+			requestId,
+			expiresAt,
+			fromUri,
+			destination: (dest
+				&& typeof dest.latitude === 'number'
+				&& typeof dest.longitude === 'number')
+				? {latitude: dest.latitude, longitude: dest.longitude}
+				: null,
+		};
+		if (!alreadyNoted) {
+			this._reportMeetingInvitationReceived(requestId, fromUri, expiresAt);
+		}
 		// If we're already looking at this chat, pop the modal now.
+		// (`_presentMeetingRequestForUri` is itself idempotent against
+		// re-entry via handledMeetingRequestIds.)
 		if (this.state.selectedContact && this.state.selectedContact.uri === fromUri) {
 			this._presentMeetingRequestForUri(fromUri);
 		}
@@ -14218,26 +14395,56 @@ class Sylk extends Component {
 			delete this.pendingMeetingRequests[uri];
 			return;
 		}
-		if (Date.now() >= entry.expiresAt) {
+		// "Only the latest invitation matters." The pending entry was
+		// noted as ticks were processed, so on a fresh second-device
+		// sync (or long-offline catch-up) it might be pointing at an
+		// older request — meanwhile getMessages has already populated
+		// state.messages[uri] with everything from that conversation.
+		// Walk the chat newest → oldest, find the most recent
+		// meeting-request bubble, and only show the modal if THAT
+		// invitation is still actionable (not expired, not cancelled,
+		// not already accepted on this account). If the most recent
+		// invitation is already over — or there's no invitation at
+		// all because the request has been wiped out — the prompt
+		// would be noise.
+		const target = this._findLatestActionableInvitation(uri) || (
+			// Live-arrival path: _noteIncomingMeetingRequest fires
+			// inside handleMessageMetadata BEFORE _injectLocationBubble
+			// has a chance to push the bubble into state.messages, so
+			// the scan above will come back empty. Fall back to the
+			// pending entry in that case so we don't accidentally
+			// suppress a brand-new request that hasn't been rendered
+			// yet — but only if it's still within its expiration
+			// window.
+			Date.now() < entry.expiresAt
+				? {requestId: entry.requestId, expiresAt: entry.expiresAt, fromUri: entry.fromUri}
+				: null
+		);
+		if (!target) {
+			console.log('[meeting] _presentMeetingRequestForUri: no actionable',
+				'invitation in chat for', uri, '— skipping modal');
 			this.handledMeetingRequestIds.add(entry.requestId);
 			this._persistMeetingHandshakeState();
 			delete this.pendingMeetingRequests[uri];
 			return;
 		}
-		// Mark handled BEFORE showing so there's no window where a
-		// re-entry (second tick, chat-reopen, hot reload) can pop the
-		// modal a second time. This is the "show once" guarantee.
-		this.handledMeetingRequestIds.add(entry.requestId);
+		// Mark target (and the original entry, if different) as handled
+		// BEFORE showing so a re-entry — second tick, chat-reopen, hot
+		// reload — can't pop the modal a second time.
+		this.handledMeetingRequestIds.add(target.requestId);
+		if (target.requestId !== entry.requestId) {
+			this.handledMeetingRequestIds.add(entry.requestId);
+		}
 		this._persistMeetingHandshakeState();
-		console.log('[meeting] presenting modal for', uri, 'request', entry.requestId,
+		console.log('[meeting] presenting modal for', uri, 'request', target.requestId,
 			'(2s delay)');
 		// Small delay so the modal doesn't slam in over whatever screen
 		// animation is in progress (chat opening, nav transition, etc.).
 		// Gives the user a moment to orient before the dialog appears.
 		const entryCopy = {
-			fromUri: entry.fromUri,
-			requestId: entry.requestId,
-			expiresAt: entry.expiresAt,
+			fromUri: target.fromUri || entry.fromUri,
+			requestId: target.requestId,
+			expiresAt: target.expiresAt,
 		};
 		delete this.pendingMeetingRequests[uri];
 		setTimeout(() => {
@@ -14254,10 +14461,100 @@ class Sylk extends Component {
 				requestId: entryCopy.requestId,
 				expiresAt: entryCopy.expiresAt,
 			}});
+			// 90-second auto-dismiss. If the user hasn't tapped Accept
+			// or Cancel by the time the timer fires we close the modal
+			// silently. Stored on `this` (not in state) so we can clear
+			// it from _closeMeetingRequestModal regardless of which path
+			// closed the modal — Accept, Cancel, tap-outside, or this
+			// timeout itself. Using BackgroundTimer would be overkill;
+			// a vanilla setTimeout is fine because the modal can only
+			// be dismissed while the app is foreground anyway.
+			if (this._meetingRequestModalDismissTimerId) {
+				clearTimeout(this._meetingRequestModalDismissTimerId);
+				this._meetingRequestModalDismissTimerId = null;
+			}
+			this._meetingRequestModalDismissTimerId = setTimeout(() => {
+				this._meetingRequestModalDismissTimerId = null;
+				// Only auto-close if the user truly hasn't acted — i.e.
+				// the same request is still on screen. Guards against a
+				// stale timer from a previous request firing on a new
+				// modal.
+				const m = this.state.meetingRequestModal;
+				if (m && m.show && m.requestId === entryCopy.requestId) {
+					console.log('[meeting] auto-dismissing modal after 90s of inactivity',
+						'request=', entryCopy.requestId);
+					this._closeMeetingRequestModal();
+				}
+			}, 90000);
 		}, 2000);
 	}
 
+	// Walk state.messages[uri] from newest to oldest looking for the
+	// most recent meeting invitation. Returns {requestId, expiresAt,
+	// fromUri} when that invitation is still actionable, or null when
+	// the latest invitation has already expired / been cancelled /
+	// been accepted, OR when no invitation exists in the chat at all.
+	//
+	// Older invitations are NOT consulted — only the last one matters.
+	// If a user (or peer) sent a fresh meeting_request after a stale
+	// one, the stale one is by definition irrelevant; if the latest
+	// one is already over, falling back to an even older one would
+	// just resurface ancient noise.
+	//
+	// state.messages[uri] is populated by getMessages() in unix-
+	// timestamp ASC order, so iterating from the tail walks newest
+	// first. Both the encrypted-pending and decrypted forms keep the
+	// `metadata` object intact (it's parsed from the plaintext
+	// metadata column at SQL load time), so this scan works even
+	// before async PGP decryption finishes.
+	_findLatestActionableInvitation(uri) {
+		const msgs = this.state && this.state.messages
+			? this.state.messages[uri] : null;
+		if (!Array.isArray(msgs) || msgs.length === 0) return null;
+		for (let i = msgs.length - 1; i >= 0; i--) {
+			const m = msgs[i];
+			if (!m) continue;
+			const meta = m.metadata;
+			if (!meta || meta.meeting_request !== true) continue;
+			// Found the most recent invitation. Validate it:
+			const requestId = m._id || meta.messageId;
+			if (!requestId) return null;
+			// Cancelled — the request bubble was deleted (remote-delete
+			// or local) or marked removed by the wipe path.
+			if (m.deleted || m.removed) return null;
+			// Already accepted on this device or another (the ack id is
+			// persisted across restarts in acceptedMeetingRequestIds).
+			if (this.acceptedMeetingRequestIds
+					&& this.acceptedMeetingRequestIds.has(requestId)) {
+				return null;
+			}
+			// Expired — read the expires field from metadata. _parseExpiresToMs
+			// returns null on missing / unparseable values, in which case
+			// we fall back to a pending-entry expiresAt if it exists.
+			let expiresAt = this._parseExpiresToMs(meta.expires);
+			if (expiresAt == null) {
+				const pending = this.pendingMeetingRequests[uri];
+				if (pending && pending.requestId === requestId
+						&& typeof pending.expiresAt === 'number') {
+					expiresAt = pending.expiresAt;
+				}
+			}
+			if (typeof expiresAt !== 'number' || Date.now() >= expiresAt) {
+				return null;
+			}
+			return {requestId, expiresAt, fromUri: uri};
+		}
+		// No invitation bubble in the chat at all.
+		return null;
+	}
+
 	_closeMeetingRequestModal() {
+		// Clear the auto-dismiss timer so a stale fire can't close a
+		// freshly-opened modal for a different request.
+		if (this._meetingRequestModalDismissTimerId) {
+			clearTimeout(this._meetingRequestModalDismissTimerId);
+			this._meetingRequestModalDismissTimerId = null;
+		}
 		this.setState({meetingRequestModal: {
 			show: false, fromUri: null, requestId: null, expiresAt: null,
 		}});
@@ -14269,10 +14566,29 @@ class Sylk extends Component {
 	// non-modal entry points — e.g. the kebab menu on the incoming
 	// meeting-request bubble after the modal has already been dismissed.
 	_acceptMeetingRequest(args) {
-		const src = args || this.state.meetingRequestModal;
-		const fromUri    = src && src.fromUri;
-		const requestId  = src && src.requestId;
-		const expiresAt  = src && src.expiresAt;
+		// Merge args ON TOP of the current modal state so the modal
+		// callback can pass just `{excludeOriginRadiusMeters: …}` and
+		// the rest of the request identity (fromUri / requestId /
+		// expiresAt) is picked up from state.meetingRequestModal.
+		// The kebab-menu path passes a complete payload — the merge
+		// is a no-op for it because every field is overridden.
+		// Treating `args || modalState` as either-or (the previous
+		// behaviour) silently dropped the modal-supplied identity
+		// whenever the modal callback set even a single field, so
+		// tapping Accept in the modal looked dead.
+		const modal = this.state.meetingRequestModal || {};
+		const src = {...modal, ...(args || {})};
+		const fromUri    = src.fromUri;
+		const requestId  = src.requestId;
+		const expiresAt  = src.expiresAt;
+		// `excludeOriginRadiusMeters` is supplied by the modal's
+		// onAccept callback; the kebab-menu acceptance path doesn't
+		// pass it (no UI to pick from). The merge above already lands
+		// the right value in `src`, so just coerce + default.
+		const excludeOriginRadiusMeters =
+			typeof src.excludeOriginRadiusMeters === 'number'
+				? src.excludeOriginRadiusMeters
+				: 0;
 		if (!fromUri || !requestId) return;
 		// Guard against late/duplicate accepts: if the request already
 		// expired, or if we've already accepted it, do nothing.
@@ -14298,10 +14614,27 @@ class Sylk extends Component {
 			this.acceptedMeetingRequestIds.add(requestId);
 			this._persistMeetingHandshakeState();
 		}
+		// Look up the destination we captured when the request came
+		// in (today only set by the convergence simulator, but this
+		// path also covers a future map-picked destination from the
+		// requester). Fall back to the meetingSessions record if the
+		// pending entry was already drained.
+		let destination = null;
+		const pending = this.pendingMeetingRequests
+			? this.pendingMeetingRequests[fromUri] : null;
+		if (pending && pending.destination) {
+			destination = pending.destination;
+		} else if (this.meetingSessions
+				&& this.meetingSessions[requestId]
+				&& this.meetingSessions[requestId].destination) {
+			destination = this.meetingSessions[requestId].destination;
+		}
 		navBar.startMeetingAcceptance(fromUri, {
 			requestId: requestId,
 			expiresAt: expiresAt,
 			periodLabel: 'until we meet',
+			excludeOriginRadiusMeters,
+			destination,
 		});
 	}
 
@@ -14323,6 +14656,152 @@ class Sylk extends Component {
 	// already marked the request handled at _presentMeetingRequestForUri
 	// time, so there's nothing else to do beyond letting the modal close.
 	_declineMeetingRequest() { /* no-op */ }
+
+	// ===== One-shot location-request handshake =====
+
+	_noteIncomingLocationRequest(fromUri, metadataContent) {
+		const requestId = metadataContent && metadataContent.messageId;
+		if (!requestId) return;
+		const expiresAt = this._parseExpiresToMs(metadataContent.expires);
+		if (this.handledLocationRequestIds.has(requestId)) return;
+		if (expiresAt == null || Date.now() >= expiresAt) {
+			// Already-stale request: never prompt, never reply.
+			this.handledLocationRequestIds.add(requestId);
+			return;
+		}
+		this.pendingLocationRequests[fromUri] = {requestId, expiresAt, fromUri};
+		// User-visible breadcrumb in the chat log.
+		try {
+			utils.timestampedLog('[meet] LOCATION REQUEST RECEIVED ←',
+				fromUri, '— request', requestId.slice(0, 8));
+		} catch (e) { /* noop */ }
+		if (this.state.selectedContact && this.state.selectedContact.uri === fromUri) {
+			this._presentLocationRequestModalForUri(fromUri);
+		}
+	}
+
+	_presentLocationRequestModalForUri(uri) {
+		const entry = this.pendingLocationRequests[uri];
+		if (!entry) return;
+		if (this.handledLocationRequestIds.has(entry.requestId)) {
+			delete this.pendingLocationRequests[uri];
+			return;
+		}
+		if (Date.now() >= entry.expiresAt) {
+			this.handledLocationRequestIds.add(entry.requestId);
+			delete this.pendingLocationRequests[uri];
+			return;
+		}
+		// Mark handled before showing — same "show once" guarantee
+		// pattern as _presentMeetingRequestForUri.
+		this.handledLocationRequestIds.add(entry.requestId);
+		const entryCopy = {
+			fromUri: entry.fromUri,
+			requestId: entry.requestId,
+			expiresAt: entry.expiresAt,
+		};
+		delete this.pendingLocationRequests[uri];
+		// Small delay matching the meet modal so it doesn't slam in
+		// over a chat-open animation.
+		setTimeout(() => {
+			if (Date.now() >= entryCopy.expiresAt) return;
+			this.setState({locationRequestModal: {
+				show: true,
+				fromUri: entryCopy.fromUri,
+				requestId: entryCopy.requestId,
+				expiresAt: entryCopy.expiresAt,
+			}});
+			// 90s auto-dismiss, mirroring the meet modal behaviour.
+			if (this._locationRequestModalDismissTimerId) {
+				clearTimeout(this._locationRequestModalDismissTimerId);
+				this._locationRequestModalDismissTimerId = null;
+			}
+			this._locationRequestModalDismissTimerId = setTimeout(() => {
+				this._locationRequestModalDismissTimerId = null;
+				const m = this.state.locationRequestModal;
+				if (m && m.show && m.requestId === entryCopy.requestId) {
+					this._closeLocationRequestModal();
+				}
+			}, 90000);
+		}, 2000);
+	}
+
+	_closeLocationRequestModal() {
+		if (this._locationRequestModalDismissTimerId) {
+			clearTimeout(this._locationRequestModalDismissTimerId);
+			this._locationRequestModalDismissTimerId = null;
+		}
+		this.setState({locationRequestModal: {
+			show: false, fromUri: null, requestId: null, expiresAt: null,
+		}});
+	}
+
+	_acceptLocationRequest() {
+		const src = this.state.locationRequestModal || {};
+		const fromUri = src.fromUri;
+		const requestId = src.requestId;
+		const expiresAt = src.expiresAt;
+		if (!fromUri) return;
+		if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
+			console.log('[meet] location request expired, ignoring',
+				'id=', requestId);
+			return;
+		}
+		const navBar = this.navigationBarRef && this.navigationBarRef.current;
+		if (!navBar || typeof navBar.shareLocationOnce !== 'function') {
+			console.log('[meet] location request: NavigationBar not available');
+			return;
+		}
+		try {
+			utils.timestampedLog('[meet] LOCATION REQUEST ACCEPTED ←',
+				fromUri, '— sending current location once');
+		} catch (e) { /* noop */ }
+		// Stamp in_reply_to on the one-shot reply so any sibling
+		// device on the same account sees the replicated tick and
+		// closes its prompt for the same requestId.
+		navBar.shareLocationOnce(fromUri, {inReplyTo: requestId});
+	}
+
+	// Decline is silent — same convention as meeting request. Sender
+	// gets no response either way; their kebab can offer a re-send if
+	// they want to nudge.
+	_declineLocationRequest() { /* no-op */ }
+
+	// Multi-device handshake mirror for one-shot location requests.
+	// Fired when this device receives an outgoingMessage replication
+	// of a one-shot location reply (in_reply_to set, one_shot=true)
+	// — meaning a sibling on the same account just answered a
+	// pending location_request. Mark it handled, drop the pending
+	// entry, and close the LocationRequestModal if it's currently
+	// open for that requestId.
+	//
+	// Idempotent — re-firing is harmless.
+	_noteSiblingAnsweredLocationRequest(requestId, peerUri) {
+		if (!requestId) return;
+		if (!this.handledLocationRequestIds) {
+			this.handledLocationRequestIds = new Set();
+		}
+		if (this.handledLocationRequestIds.has(requestId)) {
+			// Already handled on this device (we may have answered
+			// here). Still close the modal defensively in case it's
+			// somehow lingering.
+		} else {
+			this.handledLocationRequestIds.add(requestId);
+		}
+		if (this.pendingLocationRequests
+				&& peerUri
+				&& this.pendingLocationRequests[peerUri]
+				&& this.pendingLocationRequests[peerUri].requestId === requestId) {
+			delete this.pendingLocationRequests[peerUri];
+		}
+		const modal = this.state && this.state.locationRequestModal;
+		if (modal && modal.show && modal.requestId === requestId) {
+			console.log('[meet] sibling device answered location request',
+				requestId, '— closing modal on this device');
+			this._closeLocationRequestModal();
+		}
+	}
+
 
 	// Has this meeting session progressed past the acceptance handshake?
 	// Exposed as a prop to NavigationBar so stopLocationSharing can
@@ -14362,6 +14841,56 @@ class Sylk extends Component {
 		// just ahead of the first reply tick and serves as the handshake
 		// marker on both sides. A "Meeting request accepted" system note
 		// would be redundant next to that text.
+	}
+
+	// Multi-device handshake mirror. Fired when this device receives,
+	// via outgoingMessage replication, an acceptance origin tick that
+	// THIS account sent from a sibling device (e.g. user has the same
+	// account on iPhone + Android, accepts on the iPhone, the Android
+	// gets the replicated tick here). We mirror the local handshake
+	// state so the open modal closes, the kebab "Accept meeting request"
+	// option disappears, and re-entry into the chat doesn't reprompt.
+	//
+	// Idempotent: re-firing for every replicated tick is a no-op once
+	// acceptedMeetingRequestIds contains the requestId.
+	_noteSiblingAcceptedMeetingRequest(requestId, peerUri) {
+		if (!requestId) return;
+		if (this.acceptedMeetingRequestIds
+				&& this.acceptedMeetingRequestIds.has(requestId)) {
+			return;
+		}
+		if (!this.acceptedMeetingRequestIds) {
+			this.acceptedMeetingRequestIds = new Set();
+		}
+		this.acceptedMeetingRequestIds.add(requestId);
+		// Mark handled so a future _presentMeetingRequestForUri call
+		// (chat reopen, navigation back to the chat, etc.) early-exits
+		// instead of re-popping the modal.
+		if (!this.handledMeetingRequestIds) {
+			this.handledMeetingRequestIds = new Set();
+		}
+		this.handledMeetingRequestIds.add(requestId);
+		this._persistMeetingHandshakeState();
+		// Drop any pending entry — we don't need the modal anymore on
+		// this device.
+		if (this.pendingMeetingRequests
+				&& peerUri
+				&& this.pendingMeetingRequests[peerUri]
+				&& this.pendingMeetingRequests[peerUri].requestId === requestId) {
+			delete this.pendingMeetingRequests[peerUri];
+		}
+		// If the modal for this request is currently on screen, close
+		// it now. _closeMeetingRequestModal also clears the 90 s
+		// auto-dismiss timer cleanly.
+		const modal = this.state && this.state.meetingRequestModal;
+		if (modal && modal.show && modal.requestId === requestId) {
+			console.log('[meeting] sibling device accepted request', requestId,
+				'— closing modal on this device');
+			this._closeMeetingRequestModal();
+		} else {
+			console.log('[meeting] sibling device accepted request', requestId,
+				'— marked handled (modal not currently open)');
+		}
 	}
 
 	// Per-tick pair update for meeting sessions. Determines which session
@@ -14430,6 +14959,33 @@ class Sylk extends Component {
 			if (side === 'requester') s.requesterCoords = coords;
 			else                      s.accepterCoords  = coords;
 		}
+		// Capture shared meeting destination from any tick that
+		// carries it (origin or update; requester broadcasts it once
+		// they pick one — usually after their first GPS fix). Keep
+		// the first non-null value we ever see; subsequent broadcasts
+		// of the same destination are no-ops, and we don't want a
+		// rogue update to flip an established destination mid-session.
+		// If a NavBar share is already active for this conversation
+		// (the accepter side after they tapped Accept), forward the
+		// destination so its simulator/tick stamping picks it up.
+		const dest = metadataContent.destination;
+		if (dest
+				&& typeof dest.latitude === 'number'
+				&& typeof dest.longitude === 'number'
+				&& !s.destination) {
+			s.destination = {latitude: dest.latitude, longitude: dest.longitude};
+			try {
+				const navBar = this.navigationBarRef && this.navigationBarRef.current;
+				if (navBar
+						&& typeof navBar.setMeetingDestination === 'function'
+						&& conversationUri) {
+					navBar.setMeetingDestination(conversationUri, s.destination);
+				}
+			} catch (e) {
+				console.log('[meeting] propagating destination to NavBar failed',
+					e && e.message ? e.message : e);
+			}
+		}
 		this.meetingSessions[sessionId] = s;
 		return {sessionId, side, peerUri: conversationUri, session: s};
 	}
@@ -14462,11 +15018,7 @@ class Sylk extends Component {
 		this.ExecuteQuery(
 			"update messages set metadata = ? where msg_id = ? and account = ?",
 			[metadataJson, originMsgId, this.state.accountId]
-		).then((result) => {
-			const rows = result && result.rowsAffected;
-			console.log('[meeting] persisted peerCoords msg_id=', originMsgId,
-				'rowsAffected=', rows);
-		}).catch((error) => {
+		).catch((error) => {
 			console.log('[meeting] persist peerCoords SQL error:',
 				error && error.message ? error.message : error);
 		});
@@ -14511,7 +15063,16 @@ class Sylk extends Component {
 		if (!requesterCoords && !accepterCoords) return;
 
 		const distance = this._haversineMeters(requesterCoords, accepterCoords);
-		this._reportMeetingDistance(sessionId, distance);
+		// Pick "our own" coords for this side. We're the requester
+		// when this session id is in myOutgoingMeetingRequestIds (set
+		// when our outgoing meeting_request tick echoed locally).
+		// Otherwise we're the accepter side. The distance-to-dest
+		// log uses these so each device shows its own remaining
+		// walking distance to the meeting point.
+		const iAmRequester = !!(this.myOutgoingMeetingRequestIds
+			&& this.myOutgoingMeetingRequestIds.has(sessionId));
+		const ownCoords = iAmRequester ? requesterCoords : accepterCoords;
+		this._reportMeetingDistance(sessionId, distance, ownCoords, s.destination);
 
 		// Proximity auto-end. If the two participants have been within
 		// MEETING_PROXIMITY_METERS of each other for MEETING_PROXIMITY_DWELL_MS
@@ -14546,47 +15107,30 @@ class Sylk extends Component {
 			const newMm = {...prevMm};
 			let changed = false;
 
-			console.log('[meet] propagate START — session', this._meetShortId(sessionId),
-				'reqOrigin=', this._meetShortId(requesterOriginId),
-				'accOrigin=', this._meetShortId(accepterOriginId),
-				'haveReqCoords=', !!requesterCoords,
-				'haveAccCoords=', !!accepterCoords,
-				'topHasReq=', !!prevTopMeta[requesterOriginId],
-				'topHasAcc=', !!prevTopMeta[accepterOriginId],
-				'mirrorHasReq=', !!prevContactMeta[requesterOriginId],
-				'mirrorHasAcc=', !!prevContactMeta[accepterOriginId]);
+			// `[meet] propagate START / END / skip …` chatter used to
+			// fire on every tick here (≈80 lines per minute during a
+			// live meet). It was a debug aid for the two-pin
+			// asymmetry bug — that's been fixed for ages, so the
+			// noise is just clutter now. Keep the logic; drop the
+			// per-tick console output. Errors / contact-not-found
+			// retains a single log so a future regression still
+			// leaves a trail.
 
 			const applyPeer = (originId, peerCoords, label) => {
-				if (!originId) {
-					console.log('[meet] propagate', label, 'skip — no originId');
-					return;
-				}
+				if (!originId) return;
 				// No peer yet (one side hasn't been seen on this device) —
 				// don't overwrite an absent peerCoords with explicit null.
 				// Leaves the bubble showing a single pin until pairing
 				// completes, which is the correct visual.
-				if (!peerCoords) {
-					console.log('[meet] propagate', label, 'skip — no peerCoords for',
-						this._meetShortId(originId));
-					return;
-				}
+				if (!peerCoords) return;
 				const arr = prevMm[originId];
-				if (!Array.isArray(arr) || arr.length === 0) {
-					console.log('[meet] propagate', label, 'skip — empty metadata array for',
-						this._meetShortId(originId),
-						'(arrType=', typeof arr, 'len=', Array.isArray(arr) ? arr.length : '?)');
-					return;
-				}
+				if (!Array.isArray(arr) || arr.length === 0) return;
 				// Find the most recent 'location' entry (may not be last).
 				let realIdx = -1;
 				for (let i = arr.length - 1; i >= 0; i--) {
 					if (arr[i] && arr[i].action === 'location') { realIdx = i; break; }
 				}
-				if (realIdx < 0) {
-					console.log('[meet] propagate', label, 'skip — no location entry in array for',
-						this._meetShortId(originId));
-					return;
-				}
+				if (realIdx < 0) return;
 				const existing = arr[realIdx];
 				// Cheap equality check — skip setState if nothing changed.
 				const same = existing.peerCoords
@@ -14615,13 +15159,7 @@ class Sylk extends Component {
 			applyPeer(requesterOriginId, accepterCoords, 'req←acc');
 			applyPeer(accepterOriginId, requesterCoords, 'acc←req');
 
-			if (!changed) {
-				console.log('[meet] propagate END — no changes for session',
-					this._meetShortId(sessionId));
-				return null;
-			}
-			console.log('[meet] propagate END — stamped for session',
-				this._meetShortId(sessionId));
+			if (!changed) return null;
 
 			const updatedContact = {...oldContact, messagesMetadata: newMm};
 			const newContacts = [...prev.allContacts];
@@ -14841,8 +15379,6 @@ class Sylk extends Component {
 		try {
 			if (!this._proximityNotedSessionIds) this._proximityNotedSessionIds = new Set();
 			if (this._proximityNotedSessionIds.has(sessionId)) {
-				console.log('[meeting] Meeting-succeeded: already emitted for session',
-					sessionId, '— skipping dup');
 				return;
 			}
 			// Determine initiator directly from myOutgoingMeetingRequestIds
@@ -14852,17 +15388,11 @@ class Sylk extends Component {
 			// is the usual case on the peer-signal path.
 			const isInitiator = !!(this.myOutgoingMeetingRequestIds
 				&& this.myOutgoingMeetingRequestIds.has(sessionId));
-			const myOutgoingSize = this.myOutgoingMeetingRequestIds
-				? this.myOutgoingMeetingRequestIds.size : 0;
-			// Diagnostic trace: if the user reports "no Meeting succeeded
-			// message", this log tells us whether the gate failed because
-			// we weren't the initiator, because sessionId was missing, or
-			// because sendMessage wasn't wired.
-			console.log('[meeting] Meeting-succeeded gate:',
-				'isInitiator=', isInitiator,
-				'session=', sessionId,
-				'myOutgoing.size=', myOutgoingSize,
-				'conversationUri=', conversationUri);
+			// Diagnostic trace was here. Silenced now that the flow
+			// is stable; if the user ever reports "no Meeting
+			// succeeded message" again, the SESSION ENDED log on
+			// both sides + the absence of the Meeting-succeeded
+			// chat message together pinpoint the gate.
 			if (!isInitiator) return;
 			if (typeof this.sendMessage !== 'function') return;
 			// Claim the session BEFORE dispatching sendMessage so a
@@ -14879,8 +15409,6 @@ class Sylk extends Component {
 				// GiftedChat requires a user field on every outgoing message.
 				user: {},
 			};
-			console.log('[meeting] Meeting-succeeded: initiator sending to',
-				conversationUri, 'session=', sessionId, 'messageId=', msgId);
 			this.sendMessage(conversationUri, message);
 			// Persist "we've met this peer" — not used for text variation
 			// anymore (the message is invariant) but retained so a future
@@ -15058,8 +15586,8 @@ class Sylk extends Component {
 			&& metadataContent.author !== this.state.accountId
 			&& this.myOutgoingMeetingRequestIds
 			&& this.myOutgoingMeetingRequestIds.has(metadataContent.in_reply_to)) {
-			console.log('[location] _injectLocationBubble: skip — incoming reply to our own request',
-				'mId=', mId, 'in_reply_to=', metadataContent.in_reply_to);
+			// Per-tick dedup; used to log here but it's expected
+			// behaviour and fires once per accepter tick — pure noise.
 			return;
 		}
 
@@ -15078,8 +15606,8 @@ class Sylk extends Component {
 			&& metadataContent.author === this.state.accountId
 			&& this.acceptedMeetingRequestIds
 			&& this.acceptedMeetingRequestIds.has(metadataContent.in_reply_to)) {
-			console.log('[location] _injectLocationBubble: skip — outgoing reply to a request we accepted',
-				'mId=', mId, 'in_reply_to=', metadataContent.in_reply_to);
+			// Per-tick dedup; expected, fires once per outgoing tick
+			// after we accepted — pure noise.
 			return;
 		}
 
@@ -15371,6 +15899,23 @@ class Sylk extends Component {
                 content = decryptedBody;
                 if (message.contentType === 'application/sylk-contact-update') {
                     this.handleReplicateContact(content);
+                } else if (message.contentType === 'application/sylk-message-metadata') {
+                    // Live state update for the local device + SQL row
+                    // for restore-on-reload — same pair as the
+                    // unencrypted branch below. We MUST stop short of
+                    // the sylk2GiftedChat / renderMessages.push path
+                    // further down: that helper falls through to its
+                    // generic "Unknown message received <type>" text
+                    // for any contentType it doesn't recognise, and
+                    // sylk-message-metadata isn't in its allowlist.
+                    // Without this branch, every replicated outgoing
+                    // location tick (60 s during a meet) lands on
+                    // every other device on the same account as a
+                    // bogus "Unknown message received
+                    // application/sylk-message-metadata" bubble.
+                    this.handleMessageMetadata(this.state.accountId, content);
+                    this.saveOutgoingMessageSql(message, content, 1);
+                    return;
                 } else {
 
                     this.saveOutgoingMessageSql(message, content, 1);
@@ -18215,6 +18760,7 @@ return (
                     sendPublicKey = {this.sendPublicKeyToUri}
                     sendMessage = {this.sendMessage}
                     saveSystemMessage = {this.saveSystemMessage}
+                    renderSystemMessage = {this.renderSystemMessage}
                     sendLocalNotification = {this.sendLocalNotification}
                     deletePublicKey = {this.deletePublicKey}
                     showImportModal = {this.showImportPrivateKeyModal}
@@ -18451,9 +18997,19 @@ return (
                     show={this.state.meetingRequestModal.show}
                     fromUri={this.state.meetingRequestModal.fromUri}
                     expiresAt={this.state.meetingRequestModal.expiresAt}
-                    onAccept={() => this._acceptMeetingRequest()}
+                    onAccept={(opts) => this._acceptMeetingRequest({
+                        excludeOriginRadiusMeters: opts && opts.excludeOriginRadiusMeters,
+                    })}
                     onDecline={() => this._declineMeetingRequest()}
                     close={() => this._closeMeetingRequestModal()}
+                />
+
+                <LocationRequestModal
+                    show={this.state.locationRequestModal.show}
+                    fromUri={this.state.locationRequestModal.fromUri}
+                    onAccept={() => this._acceptLocationRequest()}
+                    onDecline={() => this._declineLocationRequest()}
+                    close={() => this._closeLocationRequestModal()}
                 />
             </Fragment>
         );
