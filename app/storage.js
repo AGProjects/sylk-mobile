@@ -3,7 +3,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 function initialize() {}
 
 async function set(key, value) {
-    obj = JSON.stringify(value);
+    // Hoist with `const` — the original `obj = …` was an implicit
+    // global which leaks under sloppy mode and throws under strict.
+    const obj = JSON.stringify(value);
     //console.log('Storage set', key);
     //console.log(obj);
 

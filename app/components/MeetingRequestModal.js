@@ -121,6 +121,18 @@ class MeetingRequestModal extends Component {
                                             + ', and all data will be removed from both devices after meeting.'}
                                     </Text>
 
+                                    {/* Policy notice — only when the user
+                                        has not yet agreed to Sylk's
+                                        location privacy policy. Tells them
+                                        accepting will pop the policy modal
+                                        first; consent is required for the
+                                        meet session to proceed. */}
+                                    {this.props.policyAcknowledged ? null : (
+                                        <Text style={[styles.body, { marginTop: 8, fontSize: 12, opacity: 0.85, fontStyle: 'italic' }]}>
+                                            {'When you tap Accept, you will be asked to review and agree to Sylk\'s location privacy policy before any data is sent.'}
+                                        </Text>
+                                    )}
+
                                     {/* Privacy-radius slider — same widget
                                         as the sender modal. Lets the
                                         accepter hide their own starting
@@ -173,12 +185,18 @@ class MeetingRequestModal extends Component {
 }
 
 MeetingRequestModal.propTypes = {
-    show:       PropTypes.bool,
-    close:      PropTypes.func.isRequired,
-    onAccept:   PropTypes.func,
-    onDecline:  PropTypes.func,
-    fromUri:    PropTypes.string,
-    expiresAt:  PropTypes.number,  // ms epoch
+    show:                PropTypes.bool,
+    close:               PropTypes.func.isRequired,
+    onAccept:            PropTypes.func,
+    onDecline:           PropTypes.func,
+    fromUri:             PropTypes.string,
+    expiresAt:           PropTypes.number,  // ms epoch
+    // True when the user has previously agreed to Sylk's location
+    // privacy policy. When false, the modal renders an inline note
+    // telling them the policy modal will appear before any data is
+    // sent. The actual policy gate runs inside startLocationSharing
+    // (which the meeting acceptance flow calls).
+    policyAcknowledged:  PropTypes.bool,
 };
 
 export default MeetingRequestModal;

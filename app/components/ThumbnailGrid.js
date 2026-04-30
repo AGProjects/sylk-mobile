@@ -20,6 +20,7 @@ import {
 import FastImage from 'react-native-fast-image';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import { IconButton, Checkbox} from 'react-native-paper';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
 const windowDims = Dimensions.get('window');
@@ -62,7 +63,11 @@ export default function ThumbnailGrid({
   onRotateImage,
   enableDelete = false,
   deleteImages,
-  showTimestamp = false
+  showTimestamp = false,
+  // Show the per-thumbnail size badge. False by default so the
+  // chat-embedded photo group is uncluttered; the grid media screen
+  // (where size IS the point of the view) opts in by passing true.
+  showSize = false
   }) {
 
     const [containerWidth, setContainerWidth] = useState(0);
@@ -250,7 +255,7 @@ const renderItem = useCallback(
           onLongPress={() => onLongPress && onLongPress(item, index)}
         />
 
-		{item.size != null && (
+		{showSize && item.size != null && (
 		  <View style={styles.sizeBadge}>
 			<Text style={styles.sizeText}>{sizeLabel}</Text>
 		  </View>
@@ -413,6 +418,30 @@ onPress={() => {
 						icon="rotate-left"
 						iconColor="white"
 					  />
+				</TouchableOpacity>
+
+				{/* Close button — explicit "go back" affordance. The
+				    viewer's onClick=closeViewer also exits, but a tap on
+				    the photo competes with zoom gestures and isn't
+				    discoverable. The X gives users an obvious way out. */}
+				<TouchableOpacity
+				  onPress={closeViewer}
+				  hitSlop={{top: 20, left: 20, right: 20, bottom: 20}}
+				  style={{
+					position: "absolute",
+					top: 40,
+					left: 30,
+					backgroundColor: "rgba(0,0,0,0.6)",
+					width: 56,
+					height: 56,
+					borderRadius: 28,
+					alignItems: "center",
+					justifyContent: "center",
+					zIndex: 100,
+					elevation: 100,
+				  }}
+				>
+				  <Icon name="close" size={36} color="white" />
 				</TouchableOpacity>
 			  </Modal>
 			  

@@ -29,14 +29,43 @@ class CustomActions extends React.Component {
     }
 
     onActionsPress = () => {
-		this.props.recordAudio();
+        // While previewing an attached image, the left-action button
+        // is the delete (discard preview) trigger. Otherwise it starts
+        // an audio recording, like before.
+        if (this.state.sendingImage) {
+            if (this.props.deleteSharingAssets) {
+                this.props.deleteSharingAssets();
+            }
+            return;
+        }
+        this.props.recordAudio();
     }
 
     renderIcon () {
-        if (this.state.texting || this.state.sendingImage || (this.props.selectedContact && this.props.selectedContact.tags.indexOf('test') > -1)) {
+        // Image preview state: show a red trash icon so the user can
+        // discard the attachment from the input toolbar instead of
+        // hunting for it inside the bubble. The wrapping View is sized
+        // to match the toolbar row and centers the icon — without
+        // alignItems/justifyContent here the glyph rendered visually
+        // low against the input field's baseline.
+        if (this.state.sendingImage) {
+            return (
+                <View style={{alignItems: 'center', justifyContent: 'center'}}>
+                    <Icon
+                      type="font-awesome"
+                      name="delete"
+                      style={styles.chatAudioIcon}
+                      size={22}
+                      color="red"
+                    />
+                </View>
+            );
+        }
+
+        if (this.state.texting || (this.props.selectedContact && this.props.selectedContact.tags.indexOf('test') > -1)) {
             return (<View></View>)
         }
-        
+
         let icon = "microphone";
         let color = "green";
 
@@ -49,7 +78,7 @@ class CustomActions extends React.Component {
         }
 
         return (
-            <View>
+            <View style={{alignItems: 'center', justifyContent: 'center'}}>
 				<Icon
 				  type="font-awesome"
 				  name={icon}
@@ -81,6 +110,7 @@ CustomActions.propTypes = {
 	recordingFile: PropTypes.string,
     texting: PropTypes.bool,
     sendingImage: PropTypes.bool,
+    deleteSharingAssets: PropTypes.func,
     selectedContact: PropTypes.object
 }
 

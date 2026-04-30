@@ -1,4 +1,4 @@
-import React, { memo, useContext } from 'react';
+import React, { memo, useContext, useEffect, useRef, useState } from 'react';
 import {
     View,
     TouchableOpacity,
@@ -6,9 +6,27 @@ import {
     Linking,
     StyleSheet,
     Platform,
-    Image,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+// FastImage replaces RN's built-in <Image> for the map tile grid
+// because RN's default cache is unreliable across app restarts —
+// memory-only on Android, opaque eviction on iOS — which means a
+// share viewed yesterday would re-fetch every tile when reopened
+// today, and offline the grey squares show up almost immediately.
+// FastImage maintains a real persistent on-disk cache (Glide on
+// Android, SDWebImage on iOS) so once the user has viewed a tile
+// it renders from disk on the next paint, even with no network.
+import FastImage from 'react-native-fast-image';
+import * as storage from '../storage';
+
+// Per-sharing-entity zoom override. LOCAL setting — this is a viewer
+// preference for the user looking at this device's screen, NOT something
+// that rides along in the on-wire metadata. Each share's bubble owns
+// its own zoom level, keyed by the bubble's msg_id (= the origin tick's
+// id, stable for the lifetime of the share regardless of how many
+// follow-up ticks land). On reopen, the bubble re-loads the saved zoom
+// and renders at the same level the user last chose.
+const ZOOM_STORAGE_PREFIX = 'locationZoom.';
 // Deep import: GiftedChatContext isn't re-exported from the package's
 // public entry point, but we need it so a long-press anywhere on the
 // LocationBubble can call back into the host (ContactsListBox) with the
@@ -23,14 +41,20 @@ import { GiftedChatContext } from 'react-native-gifted-chat/lib/GiftedChatContex
 // the bubble lightweight (no native map module / API key) and still lets the
 // user tap through to the native map app for panning and zooming.
 //
-// Tile provider: CartoDB's public basemap CDN (Voyager style). OSM's own tile
-// servers reject traffic from mobile apps under their tile usage policy and
-// serve an "access blocked" error tile, so we can't use tile.openstreetmap.org
-// directly. CartoDB's CDN is historically open and does not require an API
-// key; it does require attribution in the UI (see `attribution` below).
+// Tile provider: openstreetmap.de Mapnik mirror. We previously used
+// CartoDB's Voyager style, but Voyager is deliberately label-sparse at
+// low zooms — pull back to a 30+ km view and only the largest 1–2
+// city labels show, while villages and towns disappear entirely. The
+// openstreetmap.de mirror serves the standard OSM Mapnik style which
+// has much denser labelling (towns, villages, hamlets show through at
+// zooms 9–12) without becoming visually crowded. They explicitly
+// permit mobile-app traffic with attribution and do not require an
+// API key. The OSM main tile server (tile.openstreetmap.org) by
+// contrast rejects mobile UAs and serves an "access blocked" tile.
 //
-// To swap providers later (Mapbox, MapTiler, Stadia, our own tile server),
-// replace `tileUrl` and update the attribution string. Everything else stays.
+// To swap providers later (Mapbox, MapTiler, Stadia, our own tile
+// server), replace `tileUrl` and update the attribution string.
+// Everything else stays.
 // ---------------------------------------------------------------------------
 
 // Map preview footprint inside the chat bubble. Originally 230 × 150
@@ -47,17 +71,20 @@ const DEFAULT_ZOOM = 15;         // ~1 block of visible area
 const MIN_ZOOM = 3;              // continent-level; we refuse to go wider.
 const MAX_ZOOM = 18;             // CartoDB Voyager only serves up to 18.
 
-const TILE_SUBDOMAINS = ['a', 'b', 'c', 'd'];
+const TILE_SUBDOMAINS = ['a', 'b', 'c'];
 function tileUrl(z, x, y) {
     const host = TILE_SUBDOMAINS[(x + y) % TILE_SUBDOMAINS.length];
-    // CartoDB Voyager — coloured raster tiles, no API key required.
-    // Alternatives: 'light_all' (positron, grey), 'dark_all' (dark matter).
-    return `https://${host}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
+    // openstreetmap.de Mapnik mirror — OSM standard Mapnik style with
+    // denser place-name labelling than CartoDB Voyager at zooms 9–13,
+    // which is where our static-map view sits when peers are 10–50 km
+    // apart. No API key required; mobile usage permitted with
+    // attribution.
+    return `https://${host}.tile.openstreetmap.de/${z}/${x}/${y}.png`;
 }
 
-// Attribution line shown below the map — required by CartoDB's and OSM's
-// licences. Keep this in sync with whatever tile provider `tileUrl` uses.
-const ATTRIBUTION = '© OpenStreetMap contributors, © CARTO';
+// Attribution line shown below the map — required by OSM's licence.
+// Keep this in sync with whatever tile provider `tileUrl` uses.
+const ATTRIBUTION = '© OpenStreetMap contributors';
 
 // Slippy-map coordinate math.
 // https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
@@ -266,9 +293,15 @@ const StaticMap = memo((props) => {
     if (peer) visiblePoints.push(peer);
     if (destination) visiblePoints.push(destination);
 
-    const zoom = visiblePoints.length > 1
-        ? pickZoomToFitPoints(visiblePoints)
-        : (typeof props.zoom === 'number' ? props.zoom : DEFAULT_ZOOM);
+    // Explicit `zoom` prop wins unconditionally — this is what lets
+    // LocationBubble's +/- controls override the auto-fit value. Falls
+    // back to the original auto-fit logic when no override is supplied
+    // (initial render / fresh bubble that hasn't been zoomed yet).
+    const zoom = (typeof props.zoom === 'number')
+        ? Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, props.zoom))
+        : (visiblePoints.length > 1
+            ? pickZoomToFitPoints(visiblePoints)
+            : DEFAULT_ZOOM);
 
     const center = visiblePoints.length > 1
         ? centroid(visiblePoints)
@@ -309,9 +342,22 @@ const StaticMap = memo((props) => {
             const top = centerY - pxInTileY + dy * TILE_SIZE;
 
             tiles.push(
-                <Image
+                <FastImage
                     key={`${zoom}-${tx}-${ty}`}
-                    source={{ uri: tileUrl(zoom, tx, ty) }}
+                    // `priority: high` makes the visible map view
+                    // jump the FastImage queue — important when many
+                    // bubbles are scrolling past in a chat history.
+                    // `cache: immutable` tells FastImage the URL→bytes
+                    // mapping never changes (slippy-map tiles are
+                    // identified by z/x/y coordinates, never re-issued
+                    // with different content) so it can skip its
+                    // staleness checks and serve straight from disk
+                    // when offline.
+                    source={{
+                        uri: tileUrl(zoom, tx, ty),
+                        priority: FastImage.priority.high,
+                        cache: FastImage.cacheControl.immutable,
+                    }}
                     style={{
                         position: 'absolute',
                         left,
@@ -447,6 +493,49 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
     // that contextual menu uses live on `context.actionSheet()`.
     const chatContext = useContext(GiftedChatContext);
 
+    // Per-sharing-entity zoom override. `null` means "use auto" (the
+    // bounding-box fit picked by pickZoomToFitPoints, or DEFAULT_ZOOM
+    // for single-point views). Setting a number pins the map at that
+    // zoom level for THIS bubble until the user clears it. Persisted to
+    // AsyncStorage on every change so reopening the chat restores the
+    // user's last pick.
+    const [zoomOverride, setZoomOverride] = useState(null);
+
+    // Last-known-good coords cache. The sender's GPS can drop out
+    // mid-share (entering a tunnel, walking into a building, OS
+    // killing the location stream); when that happens NavigationBar
+    // can emit a tick without coords, which would otherwise revert the
+    // bubble to the "Locating…" placeholder and hide the map. We cache
+    // the most recent good {latitude, longitude} we've seen and fall
+    // back to those when the current tick is null. Caches the timestamp
+    // alongside so the title can show how stale the fix is.
+    const lastKnownRef = useRef(null);
+
+    const messageKey = currentMessage && currentMessage._id;
+
+    // Load any previously-saved zoom for this bubble on mount / when the
+    // bubble's identity changes (e.g. swapping which bubble is rendered
+    // because the chat scrolled). Late-arriving values get applied via
+    // setZoomOverride; the dependency array deliberately keys only on
+    // messageKey so we don't refetch on every parent re-render.
+    useEffect(() => {
+        if (!messageKey) return undefined;
+        let cancelled = false;
+        storage.get(ZOOM_STORAGE_PREFIX + messageKey).then((saved) => {
+            if (cancelled) return;
+            if (typeof saved === 'number'
+                    && isFinite(saved)
+                    && saved >= MIN_ZOOM
+                    && saved <= MAX_ZOOM) {
+                setZoomOverride(saved);
+            }
+        }).catch(() => {
+            // Storage failures are non-fatal — the bubble just falls
+            // back to auto-zoom for this open.
+        });
+        return () => { cancelled = true; };
+    }, [messageKey]);
+
     const meta = metadata || currentMessage?.metadata;
 
     // Compute peer-coords derived values with null-safe guards so the
@@ -462,15 +551,55 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
 
     if (!meta || !metaValue) return null;
 
-    const { latitude, longitude, accuracy } = metaValue;
-    // `hasCoords` gates the real map render. The sender fires the origin
-    // tick immediately with null lat/lng (to avoid a 10–15s black-hole
-    // wait on the GPS cold start), so the first render of this bubble
-    // can legitimately have no coordinates yet. We render a "Locating…"
-    // placeholder card in that case; the same bubble is updated in place
-    // once the follow-up tick lands with real coords.
+    const rawLatitude = metaValue.latitude;
+    const rawLongitude = metaValue.longitude;
+    const rawAccuracy = metaValue.accuracy;
+    const hasFreshCoords =
+        typeof rawLatitude === 'number' && typeof rawLongitude === 'number';
+
+    // Refresh the last-known cache whenever a fresh tick brings real
+    // coords. Stamp the ref with the tick's own timestamp (or fall back
+    // to the message timestamp) so we can label "Last known X ago" if
+    // the GPS later drops out.
+    if (hasFreshCoords) {
+        lastKnownRef.current = {
+            latitude: rawLatitude,
+            longitude: rawLongitude,
+            accuracy: rawAccuracy,
+            timestamp: metaValue.timestamp || meta.timestamp || Date.now(),
+        };
+    }
+
+    // The values we actually display: prefer fresh, fall back to the
+    // cached last-known position. `isStale` is true when we're showing
+    // the cached value because the current tick has no coords —
+    // surfaces the "Last known location" title in that case.
+    const cached = lastKnownRef.current;
+    const latitude = hasFreshCoords ? rawLatitude : (cached ? cached.latitude : null);
+    const longitude = hasFreshCoords ? rawLongitude : (cached ? cached.longitude : null);
+    const accuracy = hasFreshCoords ? rawAccuracy : (cached ? cached.accuracy : null);
+    const isStale = !hasFreshCoords && cached != null;
+
+    // `hasCoords` gates the real map render. With the null-coord
+    // stripping in place (sender side blocks emission, all SQL save
+    // paths reject null-coord ticks), the only way we end up here
+    // without coords is a legacy SQL row from before the fix landed
+    // OR a brand-new share whose first GPS fix hasn't arrived yet.
+    // The last-known cache (lastKnownRef above) covers the within-
+    // mount GPS-dropout case; the getMessages SQL salvage covers
+    // legacy plain-share rows by overlaying the most recent trail
+    // tick. Anything that still falls through is unrecoverable —
+    // we hide the bubble entirely (return null below) rather than
+    // leaving a "Locating…" stub the user can't act on.
     const hasCoords =
         typeof latitude === 'number' && typeof longitude === 'number';
+
+    // No usable coords AND nothing in the cache → don't render. The
+    // chat list shows nothing for this bubble until a real-coord tick
+    // arrives (sender-side) or the share is re-started (legacy data).
+    if (!hasCoords) {
+        return null;
+    }
 
     // Meeting-session pairing data injected by app.js's
     // _propagatePeerCoordsForSession. Present only when this bubble is
@@ -593,6 +722,71 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
         }
     };
 
+    // Compute the auto-fit zoom that StaticMap would otherwise pick on
+    // its own. We mirror its logic here so we know what "auto" looks
+    // like at this exact moment — both for seeding the +/- buttons when
+    // the user hasn't picked anything yet, and for keeping the disabled
+    // states accurate at the boundaries.
+    const _autoZoomPoints = [];
+    if (hasCoords) _autoZoomPoints.push({ latitude, longitude });
+    if (hasPeer) _autoZoomPoints.push({ latitude: peerLatitude, longitude: peerLongitude });
+    if (meta.destination
+            && typeof meta.destination.latitude === 'number'
+            && typeof meta.destination.longitude === 'number') {
+        _autoZoomPoints.push(meta.destination);
+    }
+    const autoZoom = _autoZoomPoints.length > 1
+        ? pickZoomToFitPoints(_autoZoomPoints)
+        : DEFAULT_ZOOM;
+    // The zoom we actually render at: the saved override if the user
+    // has interacted, otherwise the auto-fit value.
+    const effectiveZoom = (typeof zoomOverride === 'number')
+        ? Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoomOverride))
+        : autoZoom;
+    const canZoomIn = effectiveZoom < MAX_ZOOM;
+    const canZoomOut = effectiveZoom > MIN_ZOOM;
+
+    // Map-scale label. Web-Mercator metres-per-pixel at a given zoom +
+    // latitude is `156543.03392 * cos(lat) / 2^zoom`. Multiplying by
+    // MAP_WIDTH gives the real-world width of the visible window. The
+    // formula is latitude-dependent (Mercator stretches near the
+    // poles), so we use whichever centre latitude the StaticMap would
+    // pick — the centroid of the visible points when there's more than
+    // one, the single point otherwise. Falls back to 0° if everything
+    // is missing (the placeholder branch hides the scale anyway).
+    let scaleCenterLat = 0;
+    if (_autoZoomPoints.length > 1) {
+        let sum = 0;
+        for (const p of _autoZoomPoints) sum += p.latitude;
+        scaleCenterLat = sum / _autoZoomPoints.length;
+    } else if (_autoZoomPoints.length === 1) {
+        scaleCenterLat = _autoZoomPoints[0].latitude;
+    }
+    const metersPerPixel = (156543.03392
+        * Math.cos(scaleCenterLat * Math.PI / 180))
+        / Math.pow(2, effectiveZoom);
+    const mapWidthMeters = metersPerPixel * MAP_WIDTH;
+    const scaleLabel = formatDistance(mapWidthMeters);
+
+    const persistZoom = (next) => {
+        if (!messageKey) return;
+        storage.set(ZOOM_STORAGE_PREFIX + messageKey, next).catch(() => {
+            // Persistence failure is benign — the in-memory value still
+            // takes effect for the rest of this session, just won't
+            // survive a reopen. No user feedback needed.
+        });
+    };
+    const adjustZoom = (delta) => {
+        const base = (typeof zoomOverride === 'number') ? zoomOverride : autoZoom;
+        const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, base + delta));
+        if (next === base && typeof zoomOverride === 'number') {
+            // Already at the cap — nothing to update.
+            return;
+        }
+        setZoomOverride(next);
+        persistZoom(next);
+    };
+
     // Wrapped in a plain View (not TouchableOpacity) so a stray tap on the
     // map or info area no longer fires openMap / hijacks the user to an
     // external maps app. All intentional actions now live in the footer
@@ -611,6 +805,12 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                 delayLongPress={300}
                 accessibilityLabel="Shared location"
             >
+                {/* Map area + zoom controls. The View wraps both so the
+                    absolutely-positioned +/- buttons are anchored to the
+                    map's bounding box (top-right and bottom-right
+                    corners) regardless of the surrounding TouchableOpacity
+                    layout. */}
+                <View style={styles.mapWrapper}>
                 {hasCoords ? (() => {
                     // Goal: both ends of a meet share render the SAME
                     // map — same colour anchored to the same person —
@@ -661,6 +861,7 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                             }
                             ownerInitials={redInitials}
                             peerInitials={blueInitials}
+                            zoom={effectiveZoom}
                         />
                     );
                 })() : (
@@ -682,18 +883,81 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                         </Text>
                     </View>
                 )}
+                {/* Zoom controls. Only meaningful once we have real
+                    coords — there's nothing to zoom in the "Locating…"
+                    placeholder. + sits in the TOP-RIGHT corner, - in
+                    the BOTTOM-RIGHT corner so they don't block the
+                    centre pins and stay reachable with the user's
+                    thumb on either device side. */}
+                {hasCoords ? (
+                    <>
+                        <TouchableOpacity
+                            onPress={() => adjustZoom(+1)}
+                            disabled={!canZoomIn}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            accessibilityLabel="Zoom in"
+                            style={[
+                                styles.zoomBtn,
+                                styles.zoomBtnTop,
+                                !canZoomIn ? styles.zoomBtnDisabled : null,
+                            ]}
+                        >
+                            <Icon name="plus" size={18} color="#222" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            onPress={() => adjustZoom(-1)}
+                            disabled={!canZoomOut}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            accessibilityLabel="Zoom out"
+                            style={[
+                                styles.zoomBtn,
+                                styles.zoomBtnBottom,
+                                !canZoomOut ? styles.zoomBtnDisabled : null,
+                            ]}
+                        >
+                            <Icon name="minus" size={18} color="#222" />
+                        </TouchableOpacity>
+                    </>
+                ) : null}
+                </View>
 
                 <View style={styles.info}>
-                    <Text
-                        style={[styles.title, { color: textColor }]}
-                        numberOfLines={1}
-                    >
-                        {isOneShot
-                            ? 'Shared location'
-                            : (isExpired
-                                ? 'Location (expired)'
-                                : (hasCoords ? 'Current location' : 'Current location (acquiring)'))}
-                    </Text>
+                    {/* Title row — "Current location" on the left,
+                        map-width scale ("↔ 1.2 km") on the right.
+                        Same row so the scale label reads as supplementary
+                        info on the title rather than a separate stripe.
+                        The scale is hidden until we have real coords (no
+                        meaningful width on the placeholder) and on
+                        expired bubbles it stays useful for context, so
+                        we don't gate it on isExpired. */}
+                    <View style={styles.titleRow}>
+                        <Text
+                            style={[styles.title, { color: textColor, flexShrink: 1 }]}
+                            numberOfLines={1}
+                        >
+                            {isOneShot
+                                ? 'Shared location'
+                                : (isExpired
+                                    ? 'Location (expired)'
+                                    : (isStale
+                                        ? 'Last known location'
+                                        : (hasCoords ? 'Current location' : 'Current location (acquiring)')))}
+                        </Text>
+                        {hasCoords && scaleLabel ? (
+                            <Text
+                                style={[styles.scaleInline, { color: subColor }]}
+                                numberOfLines={1}
+                            >
+                                {/* ⟷ : single LONG LEFT RIGHT ARROW
+                                    glyph (U+27F7). Reads as one
+                                    connected arrow rather than the
+                                    scaffolded look of "⟵──⟶", and
+                                    renders longer than the cramped
+                                    "↔" we tried first. */}
+                                {'⟷ ' + scaleLabel}
+                            </Text>
+                        ) : null}
+                    </View>
                     {/* Coords used to be shown as "lat, lng ± accuracy" but
                         the raw numbers aren't actually useful to the user —
                         the map pin above makes the position visible, and
@@ -791,12 +1055,67 @@ const styles = StyleSheet.create({
         padding: 8,
         width: MAP_WIDTH + 16, // card padding
     },
+    // Wraps the map frame and the absolutely-positioned zoom buttons so
+    // the +/- controls anchor to the map's edges rather than to the
+    // surrounding card padding.
+    mapWrapper: {
+        width: MAP_WIDTH,
+        height: MAP_HEIGHT,
+        position: 'relative',
+    },
     mapFrame: {
         width: MAP_WIDTH,
         height: MAP_HEIGHT,
         borderRadius: 8,
         overflow: 'hidden',
         backgroundColor: '#e9ecef',
+    },
+    // Round white-with-shadow button used for the +/- zoom controls.
+    // Sits over the map tiles. Two corner positions are layered on top
+    // (zoomBtnTop / zoomBtnBottom) to push the same base style into the
+    // requested top-right / bottom-right slots.
+    zoomBtn: {
+        position: 'absolute',
+        right: 8,
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: '#000',
+        shadowOpacity: 0.18,
+        shadowRadius: 2,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+    },
+    zoomBtnTop: {
+        top: 8,
+    },
+    zoomBtnBottom: {
+        bottom: 8,
+    },
+    // When we hit MIN/MAX zoom the corresponding button greys out so
+    // the user gets visual feedback that the cap was reached. The press
+    // is also disabled via `disabled={true}`.
+    zoomBtnDisabled: {
+        opacity: 0.4,
+    },
+    // Title row beneath the map: "Current location" on the left, the
+    // map-width scale label ("↔ 1.2 km") on the right. flexDirection
+    // row + space-between so the scale always pins to the right edge
+    // even when the title text is short.
+    titleRow: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+    },
+    // Inline scale label rendered next to the title. Smaller / lighter
+    // than the title so it reads as supplementary metadata rather than
+    // a heading.
+    scaleInline: {
+        fontSize: 11,
+        marginLeft: 8,
     },
     // Used while waiting for the first GPS fix — replaces the tile
     // grid with a flat grey card centered on an icon + "Locating…"

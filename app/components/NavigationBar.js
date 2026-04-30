@@ -1,8 +1,8 @@
 import React, { Component } from 'react';
-import { Alert, Animated, Easing, Linking, Image, NativeModules, Platform, PermissionsAndroid, View , TouchableHighlight, Dimensions} from 'react-native';
+import { Alert, Animated, AppState, Easing, Linking, Image, NativeModules, Platform, PermissionsAndroid, View , TouchableHighlight, Dimensions, ActivityIndicator} from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Appbar, Menu, Divider, Text, IconButton, Button } from 'react-native-paper';
+import { Appbar, Menu, Divider, Text, IconButton, Button, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { Keyboard } from 'react-native';
@@ -86,12 +86,21 @@ import DeleteFileTransfers from './DeleteFileTransfers';
 import VersionNumber from 'react-native-version-number';
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
 import ShareLocationModal from './ShareLocationModal';
+import LocationPrivacyDisclosureModal from './LocationPrivacyDisclosureModal';
 import ActiveLocationSharesModal from './ActiveLocationSharesModal';
 import {openSettings, check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 import SylkAppbarContent from './SylkAppbarContent';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 import * as Progress from 'react-native-progress';
+import * as storage from '../storage';
+
+// Persisted snapshot of locationTimers, keyed under this AsyncStorage
+// entry. Versioned so a future schema change can re-key without
+// confusing older builds. See _persistActiveShares /
+// _loadAndResumeActiveShares for the read-write pair that keeps
+// in-flight shares alive across app restarts (graceful or hard kill).
+const ACTIVE_SHARES_STORAGE_KEY = 'activeLocationShares.v1';
 
 import styles from '../assets/styles/NavigationBar';
 
@@ -127,6 +136,23 @@ class NavigationBar extends Component {
 			backupKey: false,
 			deleteContact: false,
 			showShareLocationModal: false,
+			// Google Play "Prominent Disclosure" gate. Set to a {resolve}
+			// promise resolver while the LocationPrivacyDisclosureModal is
+			// up; cleared back to null when the user taps Continue or
+			// Cancel. _ensureLocationDisclosureAcknowledged below awaits
+			// the resolver so the share / permission flow blocks until
+			// the user has decided.
+			locationDisclosurePending: null,
+			// Mirrors AsyncStorage 'locationDisclosureAcknowledged.v2'
+			// in component state so render() can branch synchronously
+			// on the consent state. Read once at mount; updated by the
+			// share-flow's onContinue, the viewer's onOptOut, and the
+			// viewer's onContinue (when invoked from the not-yet-
+			// agreed branch). This is what keeps the "Location
+			// privacy policy..." menu item visible regardless of
+			// contact / chat state once the user has consented —
+			// they should always be able to revisit / withdraw.
+			locationDisclosureAcknowledged: false,
 			// Map<uri, expiresAtMs> — mirrors `this.locationTimers` in
 			// state so the menu can re-render when a share starts or stops.
 			activeLocationShares: {},
@@ -192,17 +218,286 @@ class NavigationBar extends Component {
         this._activeSharePulse.setValue(1);
     }
 
+    componentDidMount() {
+        // If NavigationBar mounts while a call is already in progress
+        // (e.g. user tapped the chat icon mid-call, which routes to
+        // /ready and remounts this component), componentDidUpdate's
+        // false→true transition never fires for `inCall` — we missed
+        // the edge. Same for active location shares present at mount
+        // time. Kick the pulse loop here so the indicator actually
+        // breathes from the first frame, not just from the next state
+        // change.
+        const sharesAtMount = Object.keys(this.state.activeLocationShares || {}).length;
+        if (this.props.callActive || sharesAtMount > 0) {
+            this._startActiveSharePulse();
+        }
+
+        // Read the location-disclosure acknowledgement flag from
+        // AsyncStorage so the kebab can decide whether to keep the
+        // "Location privacy policy..." item visible. Once consented,
+        // the item persists across all chats / contact states until
+        // the user explicitly opts out via the viewer modal. Android
+        // only — the disclosure UX is a Google Play requirement;
+        // iOS uses the App Store / CoreLocation usage-string model
+        // and never shows the in-app modal.
+        if (Platform.OS === 'android') {
+            storage.get('locationDisclosureAcknowledged.v2')
+                .then((acknowledged) => {
+                    if (acknowledged === true) {
+                        this.setState({locationDisclosureAcknowledged: true});
+                    }
+                })
+                .catch(() => { /* read failure is non-fatal — defaults to false */ });
+        }
+
+        // AppState listener — re-arm the pulse loop whenever the app
+        // comes back to the foreground while a share is still
+        // active. iOS pauses native-driver Animated.loop animations
+        // when the process is suspended and DOES NOT auto-resume
+        // them when the app foregrounds. Without this, the
+        // Animated.Value freezes at whatever opacity it had when
+        // the app went into background and the indicator looks
+        // permanently dimmed/static even though the share is still
+        // running. Stop+start gives us a fresh native loop.
+        this._appStateSub = AppState.addEventListener('change', this._onAppStateChange);
+
+        // Resume any share sessions that were in flight when the
+        // app was last killed / quit / force-stopped. We can ONLY
+        // do this once the account is registered with the SIP
+        // server — until then sendMessage just queues into the
+        // void and the first wave of resumed ticks would land
+        // nowhere. If the account happens to already be
+        // registered at mount time (hot reload, fast cold-start),
+        // run immediately; otherwise componentDidUpdate watches
+        // for the registrationState transition and fires once.
+        // _didResumeShares is the once-per-process guard.
+        if (this.props.registrationState === 'registered'
+                && !this._didResumeShares) {
+            this._didResumeShares = true;
+            this._loadAndResumeActiveShares();
+        }
+    }
+
     componentWillUnmount() {
-        // Stop any running location-sharing timers so we don't leak
-        // background work past the component's lifetime. Set `_unmounted`
-        // first so stopLocationSharing skips its setState call.
+        // Component-lifetime cleanup ONLY. We don't go through
+        // stopLocationSharing here — that path is reserved for
+        // user-initiated stops, expiry, and remote teardown signals.
+        // A swipe-kill / route change / hot reload is none of
+        // those: per product contract, sharing only stops on
+        // explicit UI actions or natural expiration. Calling
+        // stopLocationSharing here would also wipe the persisted
+        // resume snapshot (we'd lose the entries that
+        // _loadAndResumeActiveShares needs on the next boot) AND
+        // surface "Stopped sharing" system notes that misrepresent
+        // a process death as the user's choice.
+        //
+        // Just release the live timers / watchers so they don't
+        // leak after the component is gone, and leave locationTimers
+        // / activeLocationShares / AsyncStorage state intact for the
+        // next mount to inherit.
         this._unmounted = true;
-        Object.keys(this.locationTimers).forEach((uri) => {
-            this.stopLocationSharing(uri, {silent: true, reason: 'unmount'});
-        });
+        const uris = Object.keys(this.locationTimers || {});
+        for (const uri of uris) {
+            const entry = this.locationTimers[uri];
+            if (!entry) continue;
+            try {
+                if (entry.intervalId != null) {
+                    BackgroundTimer.clearInterval(entry.intervalId);
+                }
+            } catch (e) { /* noop */ }
+            try {
+                if (entry.watchId != null
+                        && Geolocation
+                        && typeof Geolocation.clearWatch === 'function') {
+                    Geolocation.clearWatch(entry.watchId);
+                }
+            } catch (e) { /* noop */ }
+            try {
+                if (entry.expiryTimeoutId != null) {
+                    BackgroundTimer.clearTimeout(entry.expiryTimeoutId);
+                }
+            } catch (e) { /* noop */ }
+        }
+        // Stop any simulator timers too (they'd otherwise fire on a
+        // dead component on the next interval and try to setState).
+        if (this._simStates) {
+            for (const uri of Object.keys(this._simStates)) {
+                const sim = this._simStates[uri];
+                if (sim && sim.timerId) {
+                    try { clearInterval(sim.timerId); } catch (e) { /* noop */ }
+                }
+            }
+            this._simStates = {};
+        }
         // Kill the pulse animation so it doesn't tick against a stale
         // Animated.Value after unmount.
         this._stopActiveSharePulse();
+        if (this._appStateSub && typeof this._appStateSub.remove === 'function') {
+            this._appStateSub.remove();
+            this._appStateSub = null;
+        }
+    }
+
+    _onAppStateChange(state) {
+        if (state !== 'active') return;
+        const sharesCount = Object.keys(this.state.activeLocationShares || {}).length;
+        if (sharesCount > 0 || this.props.callActive) {
+            this._stopActiveSharePulse();
+            this._startActiveSharePulse();
+        }
+    }
+
+    // Persist a compact snapshot of in-flight location shares to
+    // AsyncStorage. Called on every locationTimers mutation (entry
+    // create + entry delete) so the saved blob is always at most
+    // one tick behind reality. The snapshot only includes the
+    // fields _loadAndResumeActiveShares needs to re-arm the share
+    // (uri, kind, expiresAt, periodLabel, originMetadataId,
+    // meetingSessionId, inReplyTo, excludeOriginRadiusMeters,
+    // destination). Live runtime state (intervalId, watchId,
+    // BackgroundTimer ids, lastReportedCoords, simulator state, …)
+    // is intentionally excluded — it'd be meaningless after a
+    // process restart.
+    //
+    // Fire-and-forget: AsyncStorage writes are async but we don't
+    // gate any UI behaviour on completion, and the next start/stop
+    // will rewrite the blob anyway.
+    _persistActiveShares() {
+        try {
+            const map = {};
+            const now = Date.now();
+            const uris = Object.keys(this.locationTimers || {});
+            for (const uri of uris) {
+                const entry = this.locationTimers[uri];
+                if (!entry) continue;
+                if (typeof entry.expiresAt === 'number'
+                        && entry.expiresAt <= now) {
+                    continue; // expired — skip
+                }
+                map[uri] = {
+                    uri,
+                    kind: entry.kind || 'fixed',
+                    expiresAt: entry.expiresAt,
+                    periodLabel: entry.periodLabel || null,
+                    meetingSessionId: entry.meetingSessionId || null,
+                    inReplyTo: entry.inReplyTo || null,
+                    excludeOriginRadiusMeters:
+                        Number(entry.excludeOriginRadiusMeters) || 0,
+                    destination: (entry.tickExtras
+                        && entry.tickExtras.destination) || null,
+                    originMetadataId: entry.originMetadataId || null,
+                };
+            }
+            storage.set(ACTIVE_SHARES_STORAGE_KEY, map).catch((e) => {
+                console.log('[location] _persistActiveShares write failed',
+                    e && e.message ? e.message : e);
+            });
+        } catch (e) {
+            console.log('[location] _persistActiveShares failed',
+                e && e.message ? e.message : e);
+        }
+    }
+
+    // Boot-time hydrate: read the persisted snapshot, drop entries
+    // whose expiresAt has lapsed during the offline window, and
+    // re-arm whatever's left via startLocationSharing with two
+    // resume-only opts:
+    //   • resumeOriginMetadataId — reuses the saved bubble id so
+    //     the receiver keeps seeing the SAME bubble updated in
+    //     place rather than a fresh one spawning beside it.
+    //   • suppressAnnouncement — skips the "I want to meet up" /
+    //     "I am sharing for X hours" / "Started sharing at HH:MM"
+    //     chat-visible messages so a restart doesn't litter the
+    //     conversation with duplicates of the original
+    //     announcement.
+    //
+    // Best-effort: messages that fail to ship while the SIP
+    // connection is still establishing land on the floor; the next
+    // tick (≤ LOCATION_REPEAT_MS later) will retry.
+    async _loadAndResumeActiveShares() {
+        // Boot-time concurrency guard. The resume scan is triggered by the
+        // registrationState=registered transition, which is also the
+        // moment the SIP server starts firing the journal sync at us.
+        // A typical boot processes ~500 messages through the SQLite
+        // bridge in a tight burst; if we ALSO fire location ticks,
+        // outgoing-state UPDATEs, and getCurrentCoordinates timers in
+        // the same JS event-loop window, the React Native batched
+        // bridge can drop a params slot ("Malformed calls from JS:
+        // field sizes are different") and the app crashes.
+        //
+        // Two mitigations stacked here:
+        //   1. Wait for the sync wave to drain before starting any
+        //      shares. The sync usually finishes in 3-6s on a bulky
+        //      account; 8s gives comfortable headroom.
+        //   2. Stagger per-share starts so a user with multiple
+        //      simultaneous shares doesn't fire every tick + every
+        //      getCurrentCoordinates in the same tick of the loop.
+        const BOOT_RESUME_DELAY_MS = 8000;
+        const PER_SHARE_STAGGER_MS = 1500;
+        await new Promise((resolve) => setTimeout(resolve, BOOT_RESUME_DELAY_MS));
+        // Bail if the component was unmounted while we were waiting.
+        if (this._unmounted) return;
+
+        let map = null;
+        try {
+            map = await storage.get(ACTIVE_SHARES_STORAGE_KEY);
+        } catch (e) {
+            console.log('[location] _loadAndResumeActiveShares read failed',
+                e && e.message ? e.message : e);
+            return;
+        }
+        const candidateUris = (map && typeof map === 'object')
+            ? Object.keys(map) : [];
+        console.log('[location] resume scan: persisted entries =',
+            candidateUris.length,
+            candidateUris.length > 0 ? '(' + candidateUris.join(', ') + ')' : '');
+        if (!map || typeof map !== 'object') return;
+        const uris = candidateUris;
+        if (uris.length === 0) return;
+        const now = Date.now();
+        const utils = require('../utils');
+        let _staggerIndex = 0;
+        for (const uri of uris) {
+            const e = map[uri];
+            if (!e || !e.uri) continue;
+            const expiresAt = typeof e.expiresAt === 'number'
+                ? e.expiresAt : null;
+            if (expiresAt == null || expiresAt <= now) continue;
+            // Inter-share stagger: spread the resume work across
+            // PER_SHARE_STAGGER_MS-spaced ticks so 3 shares don't hit
+            // the bridge at the same instant.
+            if (_staggerIndex > 0) {
+                await new Promise((resolve) =>
+                    setTimeout(resolve, PER_SHARE_STAGGER_MS));
+                if (this._unmounted) return;
+            }
+            _staggerIndex += 1;
+            const remainingMs = expiresAt - now;
+            try {
+                utils.timestampedLog(
+                    `[location] resuming share with ${uri}`
+                    + ` — kind=${e.kind || 'fixed'}`
+                    + ` (${Math.round(remainingMs / 60000)} min remaining)`
+                );
+            } catch (err) { /* noop */ }
+            try {
+                this.startLocationSharing(uri, remainingMs,
+                    e.periodLabel || '',
+                    {
+                        kind: e.kind || 'fixed',
+                        inReplyTo: e.inReplyTo || null,
+                        expiresAt: expiresAt,
+                        excludeOriginRadiusMeters:
+                            Number(e.excludeOriginRadiusMeters) || 0,
+                        destination: e.destination || undefined,
+                        resumeOriginMetadataId: e.originMetadataId || null,
+                        suppressAnnouncement: true,
+                    });
+            } catch (err) {
+                console.log('[location] resume failed for', uri,
+                    err && err.message ? err.message : err);
+            }
+        }
     }
     
     get hasFiles() {
@@ -220,6 +515,19 @@ class NavigationBar extends Component {
 	componentDidUpdate(prevProps, prevState) {
 	    if (this.state.menuVisible != prevState.menuVisible && this.state.menuVisible) {
 		    Keyboard.dismiss();
+		}
+
+		// Account just finished registering with the SIP server.
+		// This is our cue to resume any in-flight share sessions
+		// that were saved to AsyncStorage before the previous
+		// process died. Guarded by _didResumeShares so the resume
+		// runs at most once per app lifetime, even if the account
+		// flaps registered → unregistered → registered.
+		if (!this._didResumeShares
+				&& this.props.registrationState === 'registered'
+				&& prevProps.registrationState !== 'registered') {
+			this._didResumeShares = true;
+			this._loadAndResumeActiveShares();
 		}
 
 		// Self-heal drift between activeLocationShares (React state that
@@ -268,20 +576,42 @@ class NavigationBar extends Component {
 		}
 
 		// Drive the pulsing marker indicator: start the loop on the
-		// first active share, stop it when the last one ends. We key
-		// off the count (not the map identity) so internal updates —
-		// e.g. renewing an expiresAtMs — don't restart the animation.
+		// first active share OR the start of an in-progress call,
+		// stop it when both signals go quiet. We share the same
+		// Animated.Value across both indicators so a simultaneous
+		// call+share breath in unison rather than fighting each other.
+		// Counted off both the share map (size > 0) and inCall so a
+		// transition in EITHER direction triggers the right side
+		// effect.
 		const prevCount = Object.keys(prevState.activeLocationShares || {}).length;
 		const currCount = Object.keys(this.state.activeLocationShares || {}).length;
-		if (prevCount === 0 && currCount > 0) {
+		// Gate on callActive (established) rather than inCall, matching
+		// the icon's visibility — otherwise the pulse loop runs while
+		// the call is still ringing even though the icon is hidden.
+		const prevActive = prevCount > 0 || !!prevProps.callActive;
+		const currActive = currCount > 0 || !!this.props.callActive;
+		if (!prevActive && currActive) {
 			this._startActiveSharePulse();
-		} else if (prevCount > 0 && currCount === 0) {
+		} else if (prevActive && !currActive) {
 			this._stopActiveSharePulse();
 			// If the modal was open when the last share ended, close
 			// it too so the user isn't left staring at an empty list.
 			if (this.state.showActiveSharesModal) {
 				this.setState({showActiveSharesModal: false});
 			}
+		} else if (currActive
+				&& prevProps.selectedContact !== this.props.selectedContact) {
+			// selectedContact changed while a share is active. The
+			// NavBar pin's render gate hides it when we're sitting
+			// inside the (single) sharing chat and shows it on every
+			// other screen. When that visibility flips on, the
+			// Animated.View remounts onto an Animated.Value whose
+			// native-side loop may have been silently torn down by
+			// the previous unmount. Re-arming with a clean
+			// stop+start re-binds the native driver to the new view
+			// so the pin actually breathes again.
+			this._stopActiveSharePulse();
+			this._startActiveSharePulse();
 		}
 
 		// Bubble the active-shares map up so app.js (and from there,
@@ -341,6 +671,79 @@ class NavigationBar extends Component {
                     if (_uri) {
                         this.requestPeerLocation(_uri);
                     }
+                }
+                break;
+            case 'viewLocationDisclosure':
+                // Viewer for the Prominent Disclosure modal — opens the
+                // same panel the share-flow uses, but with different
+                // button semantics depending on whether the user has
+                // already agreed:
+                //
+                //   • Already agreed (AsyncStorage flag set):
+                //     [Close] [Opt out] — Opt out wipes the
+                //     acknowledgement so the next share request will
+                //     re-prompt for consent.
+                //   • Not yet agreed:
+                //     [Not now] [I agree] — same as the share-flow,
+                //     so the user can grant consent ahead of their
+                //     first share if they want to.
+                //
+                // The state object carries `showOptOut` flag and an
+                // `onOptOut` handler that the modal renders into a
+                // dedicated button branch.
+                {
+                    const KEY = 'locationDisclosureAcknowledged.v2';
+                    // Same diagnostic log as the share-flow gate —
+                    // emit the current OS permission state alongside
+                    // the AsyncStorage agreement state so we can read
+                    // both at a glance when the user reports something
+                    // unexpected.
+                    this.getLocationPermissionStatus()
+                        .then((permState) => {
+                            console.log('[location] disclosure viewer opened — OS permission state =', permState);
+                        })
+                        .catch((e) => {
+                            console.log('[location] disclosure viewer opened — getLocationPermissionStatus failed',
+                                e && e.message ? e.message : e);
+                        });
+                    storage.get(KEY).catch(() => null).then((acknowledged) => {
+                        const showOptOut = acknowledged === true;
+                        console.log('[location] disclosure viewer — agreement state =',
+                            showOptOut ? 'agreed' : 'not agreed');
+                        this.setState({
+                            locationDisclosurePending: {
+                                showOptOut,
+                                onContinue: async () => {
+                                    // Only reachable from the
+                                    // not-yet-agreed branch; persist
+                                    // consent the same way the
+                                    // share-flow does and mirror in
+                                    // component state so the kebab
+                                    // updates immediately.
+                                    if (!showOptOut) {
+                                        try { await storage.set(KEY, true); }
+                                        catch (e) { /* noop */ }
+                                    }
+                                    this.setState({
+                                        locationDisclosurePending: null,
+                                        locationDisclosureAcknowledged: true,
+                                    });
+                                },
+                                onCancel: () => {
+                                    this.setState({locationDisclosurePending: null});
+                                },
+                                onOptOut: async () => {
+                                    try { await storage.remove(KEY); }
+                                    catch (e) { /* noop */ }
+                                    console.log('[location] user opted out — disclosure flag cleared');
+                                    this.setState({
+                                        locationDisclosurePending: null,
+                                        locationDisclosureAcknowledged: false,
+                                    });
+                                },
+                            },
+                        });
+                    });
                 }
                 break;
             case 'simulateMeet':
@@ -504,7 +907,70 @@ class NavigationBar extends Component {
         this.setState({showConferenceLinkModal: false});
     }
 
-    showShareLocationModal() {
+    async showShareLocationModal() {
+        // Step 1: Google Play "Prominent Disclosure" gate. Fires the
+        // FIRST time the user taps Share location at any entry point
+        // (chat-header pin, kebab, etc.) BEFORE any other UI. The
+        // AsyncStorage flag set on Continue collapses subsequent
+        // taps straight through.
+        const acknowledged = await this._ensureLocationDisclosureAcknowledged();
+        if (!acknowledged) {
+            console.log('[location] showShareLocationModal: disclosure declined — not opening picker');
+            return;
+        }
+
+        // Step 2: OS permission. Run this BEFORE the duration picker
+        // so the user knows whether location is even available before
+        // bothering to pick how long to share for. The probe + request
+        // chain is the same one startLocationSharing uses; calling it
+        // up-front means:
+        //   • A user who's never granted permission sees the Android
+        //     dialog right after I agree, where they expect it.
+        //   • A user who has previously denied (blocked) sees the
+        //     "Open Settings" alert immediately rather than
+        //     pick-a-duration → confirm → wait → finally see the
+        //     blocked notice.
+        //   • A user who already granted just falls through to the
+        //     picker without any visible delay.
+        // The duration picker only opens if permission is actually
+        // granted; otherwise we abort silently and let the alert
+        // (or the user's next attempt after fixing Settings) drive.
+        let hasPermission = false;
+        try {
+            hasPermission = await this.ensureLocationPermission();
+        } catch (e) {
+            hasPermission = false;
+        }
+        if (!hasPermission) {
+            console.log('[location] showShareLocationModal: OS permission not granted — picker stays closed');
+            // Show a one-tap-to-Settings alert so the user has a
+            // recovery path. Mirrors the alert wording from
+            // shareLocationOnce / startLocationSharing.
+            const openSettingsFn = () => {
+                try {
+                    if (Platform.OS === 'ios') {
+                        Linking.openURL('app-settings:');
+                    } else {
+                        try { openSettings(); }
+                        catch (e) { Linking.openSettings && Linking.openSettings(); }
+                    }
+                } catch (e) { /* noop */ }
+            };
+            Alert.alert(
+                'Location permission required',
+                Platform.OS === 'ios'
+                    ? "Open Settings → Sylk → Location to allow location access."
+                    : "Open Settings to allow Sylk to access your location.",
+                [
+                    {text: 'Cancel', style: 'cancel'},
+                    {text: 'Open Settings', onPress: openSettingsFn},
+                ],
+                {cancelable: true}
+            );
+            return;
+        }
+
+        // Step 3: open the duration picker.
         this.setState({showShareLocationModal: true});
     }
 
@@ -604,6 +1070,146 @@ class NavigationBar extends Component {
             }
         }
         return 'unavailable';
+    }
+
+    // Google Play "Prominent Disclosure" gate.
+    //
+    // Required by the Permissions and APIs that Access Sensitive
+    // Information policy: before any data collection that uses a
+    // sensitive permission (location is the headliner), the user must
+    // see an in-app disclosure that names the data, says how it's
+    // used, and says how / where it's shared. The disclosure must
+    // appear BEFORE the OS permission dialog and must not be combined
+    // with unrelated UI (T&Cs, login, marketing).
+    //
+    // Implementation:
+    //   • Persists a single AsyncStorage flag once the user taps
+    //     Continue. Subsequent shares skip the modal and go straight
+    //     to permission probe / tick emission. Versioned key so we
+    //     can re-prompt if disclosure text materially changes.
+    //   • Returns true when the user has acknowledged (now or
+    //     previously) — caller proceeds. Returns false when the user
+    //     declined — caller aborts cleanly without asking for
+    //     permission and without collecting any location data.
+    //   • Internally awaits a Promise that's resolved by the modal's
+    //     onContinue / onCancel handlers in render(), so any number
+    //     of concurrent share attempts queue up against the same
+    //     decision (the resolver lives on `this.state` and is
+    //     overwritten if a second share fires while the first is
+    //     still showing — last-write-wins is fine, the modal is the
+    //     same one either way).
+    // Returns true when the loaded message slice for `uri` contains at
+    // least one substantive interaction in BOTH directions. Used to
+    // gate the kebab's location-share / location-request items so we
+    // only surface them on chats that have actually been used.
+    //
+    // What counts:
+    //   • text/plain, text/html (user-typed messages)
+    //   • image/* attachments
+    //   • application/sylk-file-transfer
+    //   • application/sylk-live-location — historical location
+    //     bubbles count too. If the two parties have exchanged a
+    //     location share at any point in the past, that's by
+    //     itself evidence of an active relationship; the share-
+    //     location entry should remain surfaced even when the
+    //     chat's text history is otherwise empty (e.g. cleared,
+    //     or the SQL slice is dominated by location-trail rows
+    //     pushing text out of the loaded window).
+    // Excluded as noise:
+    //   • system === true (system notes)
+    //   • application/sylk-message-metadata (location ticks,
+    //     meeting handshakes, label/rotation/reply markers — these
+    //     ride along with bubbles, the bubble itself counts above)
+    //   • application/sylk-contact-update
+    //   • message/imdn (delivery receipts)
+    //   • text/pgp-* (key exchange)
+    _hasBidirectionalChat(uri) {
+        if (!uri) return false;
+        const msgs = (this.props.messages && this.props.messages[uri]) || [];
+        if (!Array.isArray(msgs) || msgs.length === 0) return false;
+        let hasOut = false;
+        let hasIn = false;
+        for (const m of msgs) {
+            if (!m) continue;
+            if (m.system === true) continue;
+            const ct = m.contentType;
+            if (typeof ct !== 'string') continue;
+            if (ct === 'application/sylk-message-metadata') continue;
+            if (ct === 'application/sylk-contact-update') continue;
+            if (ct === 'message/imdn') continue;
+            if (ct.indexOf('pgp') !== -1) continue;
+            // text/* (text + html), image/*, sylk-file-transfer,
+            // and sylk-live-location all count. Past location
+            // shares evidence an active relationship just as
+            // strongly as any other exchanged message.
+            const dir = m.direction;
+            if (dir === 'outgoing') hasOut = true;
+            else if (dir === 'incoming') hasIn = true;
+            if (hasOut && hasIn) return true;
+        }
+        return false;
+    }
+
+    async _ensureLocationDisclosureAcknowledged() {
+        // The Prominent Disclosure modal is required by Google Play's
+        // Permissions and APIs that Access Sensitive Information
+        // policy — it's an Android-store thing, not iOS. On iOS the
+        // App Store has its own usage-string + system-level
+        // disclosure model (NSLocationAlways/WhenInUseUsageDescription
+        // is shown by CoreLocation directly), and an additional in-
+        // app modal would be redundant and out of place. Short-circuit
+        // here so the share-flow on iOS proceeds straight to the OS
+        // permission probe.
+        if (Platform.OS !== 'android') {
+            return true;
+        }
+
+        // v1 → v2: disclosure body materially corrected to state that
+        // Sylk's server DOES retain the encrypted journal entry until
+        // the share's expiry (the v1 wording incorrectly implied the
+        // server never sees the data at all). Bumping the key makes
+        // any user who acknowledged v1 re-see the corrected wording.
+        const KEY = 'locationDisclosureAcknowledged.v2';
+        try {
+            const acknowledged = await storage.get(KEY);
+            if (acknowledged === true) {
+                return true;
+            }
+        } catch (e) {
+            // Read failure → fall through to show the modal. Better to
+            // double-disclose than to silently skip the requirement.
+        }
+        // Diagnostic: log the OS-level location permission state right
+        // before showing the disclosure panel, so we can correlate
+        // user reports ("the OS dialog didn't fire after I agree")
+        // with the permission state at the time. Best-effort — we
+        // don't block the modal on the probe.
+        try {
+            const permState = await this.getLocationPermissionStatus();
+            console.log('[location] disclosure shown — OS permission state =', permState);
+        } catch (e) {
+            console.log('[location] disclosure shown — getLocationPermissionStatus failed',
+                e && e.message ? e.message : e);
+        }
+        return new Promise((resolve) => {
+            this.setState({
+                locationDisclosurePending: {
+                    onContinue: async () => {
+                        try { await storage.set(KEY, true); }
+                        catch (e) { /* persistence failure is non-fatal */ }
+                        this.setState({
+                            locationDisclosurePending: null,
+                            locationDisclosureAcknowledged: true,
+                        });
+                        resolve(true);
+                    },
+                    onCancel: () => {
+                        this.setState({locationDisclosurePending: null});
+                        resolve(false);
+                    },
+                },
+            });
+        });
     }
 
     async ensureLocationPermission() {
@@ -758,6 +1364,53 @@ class NavigationBar extends Component {
             console.log('sendLocationMetadata: sendMessage prop is not wired');
             return null;
         }
+
+        // Hard guard: never emit a tick without usable coordinates.
+        // The receiver — and our own SQL row — would otherwise hold a
+        // placeholder "Locating…" record that overwrites any earlier
+        // good fix on UPDATE-in-place sessions, and on chat reload
+        // there'd be nothing to render. With this guard the only
+        // location ticks that ever reach the wire have a real lat/lng,
+        // so the SQL row always retains the LAST KNOWN good position
+        // even after a brief GPS dropout.
+        if (!coords
+                || typeof coords.latitude !== 'number'
+                || typeof coords.longitude !== 'number') {
+            console.log('[location] sendLocationMetadata: dropping tick — coords missing for', uri);
+            return null;
+        }
+
+        // Pause gate: when the entry is flagged paused, swallow the
+        // tick. We keep the watchPosition / setInterval armed (so
+        // Resume can fire an immediate tick without a re-arm dance),
+        // but no metadata leaves the device until the user resumes.
+        const _pausedEntry = this.locationTimers && this.locationTimers[uri];
+        if (_pausedEntry && _pausedEntry.paused) {
+            return null;
+        }
+
+        // Atomic origin promotion. Two paths can race to be "the first
+        // tick" of a session: the initial getCurrentCoordinates().then()
+        // callback in startLocationSharing AND the first
+        // watchPosition / setInterval fire (which may complete before
+        // the awaited GPS read). Both pass originMetadataId=null
+        // because the entry's origin id isn't set yet. Without
+        // coordination they'd each send an origin tick and the receiver
+        // would render two bubbles. Resolve here:
+        //   • If the entry already has an originMetadataId, this tick
+        //     is implicitly a follow-up — point it at that origin.
+        //   • Otherwise the tick we're about to send IS the origin;
+        //     stamp the entry below (after we've generated mId).
+        const entryAtSend = this.locationTimers && this.locationTimers[uri];
+        let promoteToOrigin = false;
+        if (originMetadataId == null) {
+            if (entryAtSend && entryAtSend.originMetadataId) {
+                originMetadataId = entryAtSend.originMetadataId;
+            } else {
+                promoteToOrigin = true;
+            }
+        }
+
         const mId = uuid.v4();
         const timestamp = new Date();
 
@@ -848,6 +1501,23 @@ class NavigationBar extends Component {
         };
 
         this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+
+        // First valid-coords send wins the origin slot for this session.
+        // Stamp the entry so concurrent first-fixes (initial GPS-fix
+        // resolve vs. first watch / interval callback) can read it and
+        // send themselves as updates instead of spawning another origin
+        // bubble. Mirrors meetingSessionId for meet-request sessions —
+        // the requester's origin _id is the canonical session key.
+        if (promoteToOrigin && entryAtSend) {
+            entryAtSend.originMetadataId = mId;
+            if (entryAtSend.kind === 'meetingRequest' && !entryAtSend.meetingSessionId) {
+                entryAtSend.meetingSessionId = mId;
+            }
+            // Mirror to the persisted snapshot so a kill-and-resume
+            // doesn't pick up an older / null id.
+            try { this._persistActiveShares(); } catch (e) { /* noop */ }
+        }
+
         // Per-tick breadcrumb. Emitted *after* the send so it's proof the
         // send path ran (not just that we got a fix). Kept terse — one
         // line per tick every LOCATION_REPEAT_MS so background sessions
@@ -1572,6 +2242,100 @@ class NavigationBar extends Component {
     //   that replaces an existing share before posting its own "started" note).
     // opts.reason — 'user' | 'expired' | 'deleted' | 'replaced' | 'unmount'.
     //   Shapes the system-note body. Defaults to 'user'.
+    // Pause an active location share. Lightweight (no clearWatch /
+    // clearInterval) — we just flip a flag the tick-emission paths
+    // consult before sending. The session timer entry stays alive so
+    // the user can Resume without re-announcing or restarting from
+    // scratch. Pause does NOT extend the share's expiry: real-world
+    // time keeps ticking, and if the user resumes after expiresAt the
+    // share will tear itself down on the next expiry check.
+    //
+    // No-op when:
+    //   • there's no entry for this uri (already stopped); the
+    //     contextual menu's Resume option will instead route to a
+    //     fresh startLocationSharing on the bubble's metadata.
+    //   • originMetadataId was supplied AND doesn't match the entry's
+    //     origin: the user long-pressed an OLD bubble whose share has
+    //     already been replaced by a newer one.
+    pauseLocationSharing(uri, originMetadataId) {
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (!entry) return false;
+        if (originMetadataId && entry.originMetadataId !== originMetadataId) return false;
+        if (entry.paused) return true;
+        entry.paused = true;
+        try { this._persistActiveShares(); } catch (e) { /* noop */ }
+        console.log('[location] paused share for', uri,
+            'origin=', entry.originMetadataId);
+        return true;
+    }
+
+    // Unpause a previously paused share. If no entry exists (the share
+    // was fully stopped — e.g. user deleted a bubble by mistake and
+    // wants to keep going), the caller should fall back to a fresh
+    // startLocationSharing with resumeOriginMetadataId set so the
+    // existing bubble keeps updating instead of a new one being
+    // spawned. Returns false in that case so app.js's bridge knows to
+    // take the start path.
+    resumeLocationSharing(uri, originMetadataId) {
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (!entry) return false;
+        if (originMetadataId && entry.originMetadataId !== originMetadataId) return false;
+        if (!entry.paused) return true;
+        if (Date.now() >= entry.expiresAt) {
+            // Expired while paused — clean up and tell the caller
+            // there's nothing to resume.
+            this.stopLocationSharing(uri, {reason: 'expired'});
+            return false;
+        }
+        entry.paused = false;
+        // Force an immediate fix so the receiver sees the position
+        // jump from "frozen during pause" to "back to live" without
+        // waiting for the LOCATION_REPEAT_MS window to roll around.
+        try {
+            this.sendLocationUpdate(
+                uri,
+                new Date(entry.expiresAt).toISOString(),
+                entry.originMetadataId,
+                entry.tickExtras || {}
+            );
+        } catch (e) { /* noop — next periodic tick will catch up */ }
+        try { this._persistActiveShares(); } catch (e) { /* noop */ }
+        console.log('[location] resumed share for', uri,
+            'origin=', entry.originMetadataId);
+        return true;
+    }
+
+    // Read the live state of a share for menu / UI purposes:
+    //   'active'   — entry exists, not paused
+    //   'paused'   — entry exists, paused
+    //   'stopped'  — no entry (share was torn down)
+    getLocationShareState(uri, originMetadataId) {
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (!entry) {
+            console.log('[location] getLocationShareState',
+                'uri=', uri,
+                'asked-origin=', originMetadataId,
+                '→ stopped (no entry)',
+                'allTimerKeys=', this.locationTimers ? Object.keys(this.locationTimers) : '(none)');
+            return 'stopped';
+        }
+        if (originMetadataId && entry.originMetadataId !== originMetadataId) {
+            console.log('[location] getLocationShareState',
+                'uri=', uri,
+                'asked-origin=', originMetadataId,
+                'entry-origin=', entry.originMetadataId,
+                '→ stopped (origin mismatch)');
+            return 'stopped';
+        }
+        const result = entry.paused ? 'paused' : 'active';
+        console.log('[location] getLocationShareState',
+            'uri=', uri,
+            'asked-origin=', originMetadataId,
+            'entry-origin=', entry.originMetadataId,
+            '→', result);
+        return result;
+    }
+
     stopLocationSharing(uri, opts = {}) {
         const {silent = false, reason = 'user'} = opts;
 
@@ -1635,6 +2399,21 @@ class NavigationBar extends Component {
             }
         }
         delete this.locationTimers[uri];
+        // Only rewrite the persisted snapshot when the share is
+        // ending for a USER / SESSION reason — not when the React
+        // component is being torn down by process death. On
+        // Android, swipe-up-to-kill DOES fire componentWillUnmount
+        // (it loops over every active share calling
+        // stopLocationSharing({reason:'unmount'}) ); persisting
+        // here would wipe the snapshot to an empty map and the
+        // resume-on-restart path would find nothing to bring back.
+        // The "unmount" branch keeps locationTimers clean for the
+        // brief window before the JS engine itself shuts down, but
+        // leaves AsyncStorage intact so _loadAndResumeActiveShares
+        // sees the still-live entries when the user reopens the app.
+        if (reason !== 'unmount') {
+            this._persistActiveShares();
+        }
 
         // Android: release the foreground-service promotion, but ONLY when
         // there are no other active shares (a user may be sharing with
@@ -1995,6 +2774,24 @@ class NavigationBar extends Component {
         }
         this._startingShares.add(uri);
       try {
+        // Prominent Disclosure (Google Play). Must come BEFORE any
+        // permission probe / OS dialog. The user can decline here
+        // without anything happening — no permission asked, no
+        // location read. After acknowledgement (now or previously)
+        // we fall through to the existing permission flow.
+        // Resume path skips the disclosure: by definition, this is a
+        // share the user already started + acknowledged in a previous
+        // session, and the OS-level permission is presumed to still
+        // be granted. Re-prompting on every restart would just be
+        // noise.
+        if (!opts.resumeOriginMetadataId) {
+            const acknowledged = await this._ensureLocationDisclosureAcknowledged();
+            if (!acknowledged) {
+                console.log('[location] startLocationSharing: disclosure declined for', uri);
+                this._startingShares.delete(uri);
+                return;
+            }
+        }
         const kind = opts.kind || 'fixed';
         const inReplyTo = opts.inReplyTo || null;
         // Privacy radius — distance in metres. When > 0, every
@@ -2094,8 +2891,14 @@ class NavigationBar extends Component {
         // Announcement text — build and ship NOW. Keep the id so we
         // can surgically delete the message if the permission chain
         // ultimately fails and we abandon this share attempt.
+        // suppressAnnouncement is used by the resume-on-restart path
+        // (_loadAndResumeActiveShares) — the original announcement
+        // already landed in the chat the first time the share
+        // started, so re-emitting it on resume would just spam the
+        // conversation with duplicate "I want to meet up" / "I am
+        // sharing for X hours" messages.
         let announcementMessageId = null;
-        if (this.props.sendMessage) {
+        if (this.props.sendMessage && !opts.suppressAnnouncement) {
             let announcementText;
             if (kind === 'meetingRequest') {
                 announcementText = 'I want to meet up with you';
@@ -2336,40 +3139,44 @@ class NavigationBar extends Component {
         // rollbackOptimistic() above for how we undo it if permission
         // is ultimately denied.
 
-        // 2nd message (origin tick, metadataId: null) — the first metadata
-        // message carrying coordinates + expiration. Its _id becomes the
-        // anchor every subsequent tick points back to. For "Until we meet"
-        // the origin tick carries meeting_request:true; for acceptance
-        // every tick carries in_reply_to pointing at the original request.
+        // Origin tick — the first metadata message carrying coordinates
+        // + expiration. Its _id becomes the anchor every subsequent
+        // tick points back to. For "Until we meet" the origin tick
+        // carries meeting_request:true; for acceptance every tick
+        // carries in_reply_to pointing at the original request.
         //
-        // We ship the origin tick IMMEDIATELY with a placeholder `value`
-        // (null lat/lng, acquiring:true) instead of blocking on a fresh
-        // GPS fix. getCurrentPosition can take 10–15s on a cold start,
-        // and during that wait the sender sees no feedback at all — no
-        // bubble in their chat, no visible proof the tap did anything.
-        // By firing the placeholder synchronously the bubble renders on
-        // both devices right away; LocationBubble shows a "Locating…"
-        // card for the placeholder and swaps in the map once real
-        // coordinates arrive via the follow-up update tick below.
-        const placeholderCoords = {
-            latitude: null,
-            longitude: null,
-            accuracy: null,
-            timestamp: Date.now(),
-            acquiring: true,
-        };
-        const originMetadataId = this.sendLocationMetadata(
-            uri, placeholderCoords, expiresIso, null, tickExtras
-        );
+        // We DON'T send a placeholder up-front. Earlier we shipped a
+        // null-coords "Locating…" tick synchronously to give the user
+        // immediate feedback; that produced a wire / SQL row with no
+        // useful data, and on chat reload the bubble fell back to
+        // "Locating…" with no map. The wait-for-first-fix path is
+        // backed instead by the memory-only "📍 Location will be shared
+        // as soon as it is acquired…" system message (see
+        // shareLocationOnce / kicker callers) so the sender still sees
+        // immediate feedback. The first valid-coords send (initial
+        // getCurrentCoordinates() resolve OR first watchPosition /
+        // setInterval fire — whichever wins) becomes the origin via
+        // the atomic origin-promotion check inside sendLocationMetadata.
+        //
+        // Resume path: we already know the saved origin id from a
+        // previous run. Reuse it so subsequent ticks UPDATE the
+        // existing bubble instead of spawning a fresh one.
+        let originMetadataId = null;
+        if (opts.resumeOriginMetadataId) {
+            originMetadataId = opts.resumeOriginMetadataId;
+        }
 
         // Kick off the real GPS fetch in the background. When the fix
-        // lands we emit a metadataId=originMetadataId update tick so the
-        // receiver replaces the placeholder card in-place with the live
-        // map. We don't await this — startLocationSharing's watch /
-        // interval arming below must run synchronously so the tear-down
-        // path (timers, session state) is consistent regardless of how
-        // long the first fix takes.
-        if (originMetadataId) {
+        // lands we emit a tick that the atomic origin-promotion in
+        // sendLocationMetadata routes correctly: as the origin if no
+        // origin has been recorded yet (fresh share), or as an update
+        // if a watchPosition fire already claimed the origin slot, or
+        // an explicit update on the resume path. We don't await this —
+        // startLocationSharing's watch / interval arming below must
+        // run synchronously so the tear-down path (timers, session
+        // state) is consistent regardless of how long the first fix
+        // takes.
+        {
             this.getCurrentCoordinates().then(async (coords) => {
                 // Session may have been stopped between placeholder send
                 // and GPS resolve (user hit Stop, or meeting handshake
@@ -2559,8 +3366,17 @@ class NavigationBar extends Component {
                 // skip the gate entirely.
                 awaitingSimulatedPosition:
                     ENABLE_MEET_SIMULATION && kind === 'meetingAccept',
+                // Persisted to AsyncStorage on every mutation so a
+                // killed app can re-arm this entry on next boot —
+                // see _persistActiveShares / _loadAndResumeActiveShares.
+                // periodLabel is only used at restart-time to pass
+                // through to the resumed startLocationSharing call;
+                // we don't ship a fresh announcement message on resume.
+                kind,
+                periodLabel,
             };
             this.locationTimers[uri] = entry;
+            this._persistActiveShares();
 
             if (Geolocation && typeof Geolocation.watchPosition === 'function') {
                 try {
@@ -2776,7 +3592,11 @@ class NavigationBar extends Component {
                 // long comment there for what this gates and why.
                 awaitingSimulatedPosition:
                     ENABLE_MEET_SIMULATION && kind === 'meetingAccept',
+                // Same persistence-resume metadata as the iOS branch.
+                kind,
+                periodLabel,
             };
+            this._persistActiveShares();
         }
 
         // Reflect the final (authoritative) expiresAt in React state.
@@ -2807,9 +3627,14 @@ class NavigationBar extends Component {
         // above the real text. Plain timed shares keep the "started
         // sharing at HH:MM" note — that one isn't redundant because
         // plain shares have no comparable chat-visible text marker.
+        // Skip the "Started sharing location at HH:MM" note on
+        // resume — the original note already lives in the chat;
+        // re-emitting it on every restart would litter the
+        // conversation.
         const isMeeting = kind === 'meetingRequest' || kind === 'meetingAccept';
         if (originMetadataId
             && !isMeeting
+            && !opts.suppressAnnouncement
             && typeof this.props.saveSystemMessage === 'function') {
             // Wall-clock time the share began — same HH:MM format as the
             // stop note so the two bracket the sharing window visibly.
@@ -2865,6 +3690,14 @@ class NavigationBar extends Component {
         if (!uri) return;
         if (!this.props.sendMessage) {
             console.log('[location] shareLocationOnce: sendMessage prop not wired');
+            return;
+        }
+        // Prominent Disclosure (Google Play). Same gate as
+        // startLocationSharing — must precede the OS permission
+        // dialog and any data collection. Declining cleanly aborts.
+        const acknowledged = await this._ensureLocationDisclosureAcknowledged();
+        if (!acknowledged) {
+            console.log('[location] shareLocationOnce: disclosure declined for', uri);
             return;
         }
         let hasPermission;
@@ -3590,7 +4423,55 @@ class NavigationBar extends Component {
                 />
                 : null}
 
-                {this.props.selectedContact ?
+                {/* First-sync activity indicator — sits immediately to
+                    the LEFT of the search icon while we're waiting for
+                    the server to respond to a sync request (set in
+                    app.js between requestSyncConversations and the
+                    matching server response, with a 15s safety
+                    timeout). Sized to match the adjacent IconButton(s)
+                    so the toolbar layout doesn't shift when it appears
+                    or disappears: react-native-paper's IconButton with
+                    size=18 renders a 34x34 container with an 18px
+                    icon, so we mirror those exact dimensions here.
+                    On Android `size` accepts a number; on iOS only
+                    'small' | 'large', so we Platform.select to keep
+                    the on-screen footprint equal across both. */}
+                {this.props.firstSyncPending ?
+                    <View
+                        key={'syncing-' + _navRemountKey}
+                        // marginRight: 10 mirrors the bell's marginLeft: 10
+                        // so the spinner→search gap matches the search→bell
+                        // gap exactly.
+                        style={{width: 40, height: 40, marginRight: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent'}}
+                    >
+                        {/* Use Paper's ActivityIndicator (not RN's) so iOS
+                            renders the same circular Material spinner as
+                            Android instead of UIKit's eight-spoke
+                            asterisk. Paper accepts a numeric size on
+                            both platforms, so we can use one value.
+                            Diameter is bumped above the adjacent 18px
+                            icon glyphs because a hollow circular spinner
+                            reads visually smaller than a solid glyph at
+                            the same pixel size. The parent View (40x40,
+                            alignItems/justifyContent center) handles
+                            centering. */}
+                        <PaperActivityIndicator
+                            size={26}
+                            color="#2196F3"
+                            animating={true}
+                        />
+                    </View>
+                : null}
+
+                {/* Search icon (search messages within the open chat, OR
+                    search contacts on the list view). Hidden while a call
+                    is active so the navbar stays uncluttered for the
+                    pulsing "Back to call" indicator — the user is in a
+                    transient mid-call mode and search is a low-priority
+                    affordance there. Same pattern as the existing
+                    cover-display hide for the search-messages variant. */}
+                {this.props.inCall ? null :
+                 this.props.selectedContact ?
                     // Hide the "search messages" icon on the cover display —
                     // the NavBar is too cramped to also host a search UI there.
                     (this.props.isFolded ? null :
@@ -3636,7 +4517,14 @@ class NavigationBar extends Component {
                    single share (when there's no selectedContact, the
                    "same chat" case is impossible, so count>0 suffices
                    for this branch). */}
+               {/* Hide the DND bell during an active call too — same
+                   reasoning as the location-share branch above: the
+                   pulsing back-to-call icon needs to be the dominant
+                   signal in this slot. A static bell right next to it
+                   would dilute the "tap me to return" urgency and
+                   add navbar clutter while audio is flowing. */}
                { (!this.props.selectedContact && !this.props.searchContacts
+                  && !this.props.callActive
                   && Object.keys(this.state.activeLocationShares || {}).length === 0) ?
                 <IconButton
                     key={'bell-' + _navRemountKey}
@@ -3663,6 +4551,39 @@ class NavigationBar extends Component {
                     the circle red because a live location feed is a
                     persistently sensitive action we want the user to
                     notice, not blend in. */}
+                {/* Pulsing "Back to call" indicator. Replaces the inline
+                    Back-to-call button that used to sit above the chat
+                    container in ReadyBox — that approach shifted the
+                    chat layout (and therefore the keyboard offset) every
+                    time a call started or ended. A small green pulsing
+                    phone icon in the NavBar conveys the same "you have a
+                    call in progress, tap to return" message without
+                    moving any layout. Tap routes back to the call view
+                    via the same handler the inline button used. Pulse
+                    animation is shared with the location-share indicator
+                    via _activeSharePulse so simultaneous call+share
+                    breathe in unison.
+
+                    Gated on `callActive` (state === 'established'), not
+                    `inCall` (any call lifecycle): we only want to nudge
+                    the user back when audio is actually flowing — while
+                    the call is still ringing or proceeding the call
+                    screen itself is the primary surface and a NavBar
+                    pulse there would be noise. */}
+                {this.props.callActive ?
+                    <Animated.View style={{ opacity: this._activeSharePulse }}>
+                        <IconButton
+                            key={'back-to-call-' + _navRemountKey}
+                            size={18}
+                            iconColor="white"
+                            containerColor="rgba(40, 167, 69, 0.95)"
+                            icon="phone-in-talk"
+                            accessibilityLabel="Call in progress — tap to return"
+                            onPress={this.props.goBackToCallFunc}
+                        />
+                    </Animated.View>
+                : null}
+
                 {(() => {
                     // The NavBar indicator is the fallback signal when the
                     // user is NOT already looking at the chat whose share
@@ -3747,59 +4668,108 @@ class NavigationBar extends Component {
                         {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
 
-                        {/* Location group — Share location, Request
-                            location. Bracketed by Dividers so the two
-                            location-related items read as a single
-                            grouped section in the kebab. The group is
-                            gated on the same contact-state predicates
-                            as the original Share-location item; if
-                            none of the items would render, we render
-                            nothing (no orphaned Dividers). */}
-                        {tags.indexOf('blocked') === -1 && !isConference && !isAnonymous && !this.myself && this.props.canSend && this.props.canSend() ?
-                        (() => {
+                        {/* Location group — bracketed by Dividers ABOVE
+                            and BELOW so all three location-related
+                            entries (Share, Request, Policy) read as a
+                            single grouped section in the kebab. Both
+                            Dividers always render because the policy
+                            item itself always renders. Share / Request
+                            items above the policy entry are still
+                            gated on contact-state predicates (key
+                            present, bidirectional chat, not blocked,
+                            etc.); when those predicates fail the
+                            section collapses to just the policy entry
+                            sitting between the same two Dividers. */}
+                        {(() => {
                             const _uri = this.props.selectedContact && this.props.selectedContact.uri;
                             const sharing = !!(_uri && this.state.activeLocationShares[_uri]);
-                            // Gate on the contact's PGP public key. Location
-                            // metadata ships encrypted (see app.js
-                            // sendMessage location-metadata branch) and there
-                            // is no plaintext fallback — if we don't have the
-                            // contact's key the share would land as
-                            // unreadable ciphertext on the peer. When a
-                            // share is already in flight we keep the menu
-                            // item visible so the user can still stop it,
-                            // even if the key has been removed in the
-                            // meantime.
                             const hasContactKey = !!(
                                 this.props.selectedContact &&
                                 this.props.selectedContact.publicKey
                             );
-                            if (!sharing && !hasContactKey) return null;
+                            const bidir = this._hasBidirectionalChat(_uri);
+                            // Same gating predicates that previously
+                            // returned null for the whole section — now
+                            // gate ONLY the share / request items.
+                            const contactOk =
+                                tags.indexOf('blocked') === -1
+                                && !isConference
+                                && !isAnonymous
+                                && !this.myself
+                                && this.props.canSend
+                                && this.props.canSend();
+                            const shareItemsVisible = contactOk
+                                && (sharing || hasContactKey)
+                                && (sharing || bidir);
+                            // Policy item visibility:
+                            //   • Android only — the in-app Prominent
+                            //     Disclosure is a Google Play
+                            //     requirement; iOS uses CoreLocation's
+                            //     usage-string flow at the OS level
+                            //     and the panel doesn't apply there.
+                            //   • shareItemsVisible  → show (the user can
+                            //     tap Share / Request right above and
+                            //     should be able to read the policy or
+                            //     opt out alongside it)
+                            //   • locationDisclosureAcknowledged → show
+                            //     (the user has previously consented;
+                            //     keep the entry available everywhere
+                            //     so they can revisit / opt out at any
+                            //     time)
+                            //   • neither → hide. A user who has never
+                            //     consented and is in a chat where
+                            //     sharing isn't surfaced has no use
+                            //     for the policy entry on its own.
+                            const policyItemVisible = Platform.OS === 'android'
+                                && (shareItemsVisible
+                                    || this.state.locationDisclosureAcknowledged);
+                            // If neither share/request nor policy
+                            // would render, the whole location section
+                            // collapses (no orphaned dividers).
+                            if (!shareItemsVisible && !policyItemVisible) return null;
                             return (
                                 <React.Fragment>
                                     <Divider />
-                                    <Menu.Item
-                                        onPress={() => this.handleMenu('shareLocation')}
-                                        icon={sharing ? "map-marker-off" : "map-marker"}
-                                        title={sharing ? "Stop sharing location" : "Share location..."}
-                                    />
-                                    {/* Request location is only useful
-                                        when there's no live share in
-                                        flight — once we're already
-                                        sharing, the peer has our
-                                        position; asking for theirs
-                                        instead is a separate flow. */}
-                                    {!sharing ? (
+                                    {shareItemsVisible ? (
+                                        <React.Fragment>
+                                            <Menu.Item
+                                                onPress={() => this.handleMenu('shareLocation')}
+                                                icon={sharing ? "map-marker-off" : "map-marker"}
+                                                title={sharing ? "Stop sharing location" : "Share location..."}
+                                            />
+                                            {/* Request location is only useful
+                                                when there's no live share in
+                                                flight — once we're already
+                                                sharing, the peer has our
+                                                position; asking for theirs
+                                                instead is a separate flow. */}
+                                            {!sharing && bidir ? (
+                                                <Menu.Item
+                                                    onPress={() => this.handleMenu('requestLocation')}
+                                                    icon="map-marker-question"
+                                                    title="Request location..."
+                                                />
+                                            ) : null}
+                                        </React.Fragment>
+                                    ) : null}
+                                    {/* Policy item — visible when share
+                                        items are shown above OR when the
+                                        user has previously opted in
+                                        (state.locationDisclosureAcknowledged).
+                                        Modal adapts to current consent
+                                        state: [Not now]/[I agree] before
+                                        agreement, [Close]/[Opt out] after. */}
+                                    {policyItemVisible ? (
                                         <Menu.Item
-                                            onPress={() => this.handleMenu('requestLocation')}
-                                            icon="map-marker-question"
-                                            title="Request location..."
+                                            onPress={() => this.handleMenu('viewLocationDisclosure')}
+                                            icon="shield-account"
+                                            title="Location privacy policy..."
                                         />
                                     ) : null}
                                     <Divider />
                                 </React.Fragment>
                             );
-                        })()
-                        : null}
+                        })()}
 
                         {/* DEBUG: meet-up convergence simulator. Single
                             off-switch via ENABLE_MEET_SIMULATION at the
@@ -4108,6 +5078,39 @@ class NavigationBar extends Component {
                     onConfirm={this.onShareLocationConfirmed}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
                     displayName={this.props.selectedContact ? this.props.selectedContact.name : null}
+                />
+
+                {/* Google Play Prominent Disclosure. Shown the first time
+                    the user starts ANY location share (one-shot, timed,
+                    or "Meet me"); subsequent shares skip it via the
+                    AsyncStorage flag the modal sets on Continue. The
+                    {locationDisclosurePending} state object holds the
+                    Promise resolvers that
+                    _ensureLocationDisclosureAcknowledged is awaiting,
+                    so tapping Continue / Cancel here unblocks the
+                    pending share/permission flow. */}
+                <LocationPrivacyDisclosureModal
+                    show={!!this.state.locationDisclosurePending}
+                    showOptOut={!!(this.state.locationDisclosurePending
+                        && this.state.locationDisclosurePending.showOptOut)}
+                    onContinue={() => {
+                        const pending = this.state.locationDisclosurePending;
+                        if (pending && typeof pending.onContinue === 'function') {
+                            pending.onContinue();
+                        }
+                    }}
+                    onCancel={() => {
+                        const pending = this.state.locationDisclosurePending;
+                        if (pending && typeof pending.onCancel === 'function') {
+                            pending.onCancel();
+                        }
+                    }}
+                    onOptOut={() => {
+                        const pending = this.state.locationDisclosurePending;
+                        if (pending && typeof pending.onOptOut === 'function') {
+                            pending.onOptOut();
+                        }
+                    }}
                 />
 
                 {/* Global "manage active location shares" sheet — opened

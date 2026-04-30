@@ -75,6 +75,21 @@ class LocationRequestModal extends Component {
                                             + 'The location data can be deleted from both devices.'}
                                     </Text>
 
+                                    {/* Policy notice — only shown when the
+                                        user has not yet agreed to Sylk's
+                                        location privacy policy. Tells them
+                                        accepting this request will pop the
+                                        policy modal first; their agreement
+                                        is required for the share to actually
+                                        proceed. Once they agree, this
+                                        notice disappears on subsequent
+                                        requests. */}
+                                    {this.props.policyAcknowledged ? null : (
+                                        <Text style={[styles.body, { marginTop: 8, fontSize: 12, opacity: 0.85, fontStyle: 'italic' }]}>
+                                            {'When you tap "Share once", you will be asked to review and agree to Sylk\'s location privacy policy before any data is sent.'}
+                                        </Text>
+                                    )}
+
                                     <View style={[styles.buttonRow, { marginBottom: 16 }]}>
                                         <Button
                                             mode="outlined"
@@ -105,11 +120,17 @@ class LocationRequestModal extends Component {
 }
 
 LocationRequestModal.propTypes = {
-    show:       PropTypes.bool,
-    close:      PropTypes.func.isRequired,
-    onAccept:   PropTypes.func,
-    onDecline:  PropTypes.func,
-    fromUri:    PropTypes.string,
+    show:                PropTypes.bool,
+    close:               PropTypes.func.isRequired,
+    onAccept:            PropTypes.func,
+    onDecline:           PropTypes.func,
+    fromUri:             PropTypes.string,
+    // True when the user has previously agreed to Sylk's location
+    // privacy policy. When false, the modal renders an inline note
+    // telling them the policy modal will appear before any data is
+    // sent. The policy gate itself runs inside shareLocationOnce
+    // (which onAccept eventually calls).
+    policyAcknowledged:  PropTypes.bool,
 };
 
 export default LocationRequestModal;

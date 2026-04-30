@@ -1,12 +1,25 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import styles from '../assets/styles/blink/_PrivateKeyModal.scss';
 
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+// Use the keyboard-aware dialog on BOTH platforms. The import flow has a
+// numeric pincode field auto-focused on mount, so the OS keyboard pops
+// straight up and pushes the bottom of the dialog (where "Import key"
+// lives) below the keyboard line. KeyBoardAwareDialog wraps the body in a
+// KeyboardSpacer that gives us correct lift on iOS AND Android — the
+// underlying react-native-keyboard-spacer hooks the right
+// keyboardWillShow / keyboardDidShow events per-platform internally.
+//
+// Previously this module did `Platform.OS === 'ios' ? … : Dialog` while
+// also failing to import `Platform`, so on Android it silently fell back
+// to the raw paper Dialog (no keyboard handling) and on iOS the
+// `Platform` reference would have ReferenceError'd at module init had
+// any path actually evaluated it. Both bugs are gone now.
+const DialogType = KeyboardAwareDialog;
 
 class ImportPrivateKeyModal extends Component {
     constructor(props) {

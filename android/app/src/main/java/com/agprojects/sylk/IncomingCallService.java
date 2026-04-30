@@ -42,6 +42,8 @@ import android.provider.Settings;
 
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteDatabaseLockedException;
+import android.database.sqlite.SQLiteException;
 import android.content.Context;
 import java.util.ArrayList;
 import java.util.List;
@@ -111,6 +113,22 @@ public class IncomingCallService extends Service {
 			}
 	
 			db.close();
+		} catch (SQLiteDatabaseLockedException locked) {
+			// DB locked by JS thread writes — fall through with empty
+			// favorite/autoanswer lists. The call will still ring; we
+			// just won't be able to apply favorite/autoanswer treatment
+			// on this notification (worst case the user gets a normal
+			// ring instead of an auto-answered one). NO retry: previous
+			// backoff retries stretched the FCM handler to ~30s on
+			// contention, well past the caller's patience.
+			Log.w(LOG_TAG, "getContactsByTag: DB locked — using empty favorite/autoanswer lists, call will ring");
+		} catch (SQLiteException sqlEx) {
+			String msg = sqlEx.getMessage();
+			if (msg != null && msg.contains("SQLITE_BUSY")) {
+				Log.w(LOG_TAG, "getContactsByTag: DB busy — using empty lists, call will ring");
+			} else {
+				Log.e(LOG_TAG, "Failed to read contacts from database (SQLite)", sqlEx);
+			}
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Failed to read contacts from database", e);
 		}

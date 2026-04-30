@@ -392,10 +392,20 @@ class RegisterForm extends Component {
     handleAccountIdChange(value) {
 		const trimmed = value.trim();
 		console.log('handleAccountIdChange');
-		this.setState({ 
+		this.setState({
 			accountId: trimmed,
 			password: trimmed === '' ? '' : this.state.password // reset password if accountId is empty
 		});
+    }
+
+    // Wipes the SIP address + password fields in one tap. Bound to the
+    // trailing "close" icon on the SIP address input so the user can
+    // start a fresh login (e.g. switching identities on the same
+    // server) without having to clear each field manually. We also
+    // refocus the SIP address input so the keyboard stays up and the
+    // next character lands in the right place.
+    clearCredentials() {
+		this.setState({ accountId: '', password: '' });
     }
 
 	changeServer() {
@@ -610,6 +620,28 @@ class RegisterForm extends Component {
                         autoCapitalize="none"
                         returnKeyType="next"
                         onSubmitEditing={() => this.passwordInput.focus()}
+                        right={
+                            // Only render the clear affordance when there's
+                            // actually something to wipe — otherwise an
+                            // always-visible X next to an empty field is
+                            // visual noise. Tapping it clears both the SIP
+                            // address AND the password (handler in
+                            // clearCredentials) so the user can start a
+                            // fresh login in one tap. Kept small + gray so
+                            // it reads as a discreet utility affordance,
+                            // not a primary action competing with the
+                            // Sign In button below.
+                            (this.state.accountId || this.state.password) ?
+                            <TextInput.Icon
+                                icon="close"
+                                size={18}
+                                color="#999"
+                                forceTextInputFocus={false}
+                                accessibilityLabel="Clear address and password"
+                                onPress={this.clearCredentials}
+                            />
+                            : null
+                        }
                     />
                 </View>
                 : null}
@@ -631,8 +663,13 @@ class RegisterForm extends Component {
                         secureTextEntry={!this.state.passwordVisible}
                         ref={(ref) => { this.passwordInput = ref; }}
                         right={
+                            // Match the discreet styling of the SIP-address
+                            // clear icon: small + gray so the eye reads as
+                            // a utility affordance, not a primary action.
                             <TextInput.Icon
                                 icon={this.state.passwordVisible ? 'eye-off' : 'eye'}
+                                size={18}
+                                color="#999"
                                 forceTextInputFocus={false}
                                 accessibilityLabel={
                                     this.state.passwordVisible ? 'Hide password' : 'Show password'
@@ -735,9 +772,18 @@ class RegisterForm extends Component {
 
                 {(this.hasAccounts && connection_state !== 'disconnected') ?
                 <Text onPress={this.helpLink} style={(this.state.domainChecked || connection_state == 'ready' || this.state.SylkServerDiscovery) ? styles.goodServer : styles.brokenServer}>
-                    {this.state.SylkServerStatus || serverState}
+                    {/* Once the websocket is actually ready, always show the
+                        live serverState ("Server is ready") and ignore any
+                        leftover SylkServerStatus from a prior discovery
+                        attempt (e.g. "DNS configuration not available" set
+                        when the user switched to a server that hadn't
+                        finished booting). The discovery status is only
+                        meaningful while we don't have a live connection
+                        yet — once we do, the connection itself is the
+                        authoritative signal. */}
+                    {connection_state === 'ready' ? serverState : (this.state.SylkServerStatus || serverState)}
                 </Text>
-                : null}                
+                : null}
 
                 {(!this.state.SylkServerDiscovery && !this.state.registering) ?
                 <Text onPress={this.changeServer} style={serverStyle}>

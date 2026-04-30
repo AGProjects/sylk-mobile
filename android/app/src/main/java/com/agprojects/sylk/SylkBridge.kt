@@ -41,4 +41,20 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
         val callId = prefs.getString("currentCall", null)
         promise.resolve(callId)
     }
+
+    // ---------------------------------------------------------------
+    // appActive flag — written by JS on AppState 'active'/'background'
+    // transitions. MyFirebaseMessagingService.isAppInForeground reads
+    // this; it can't trust ActivityManager.getMyMemoryState because
+    // the FCM service runs in its own process and reports its own
+    // (background) importance, not the React Native app's. Without
+    // this hint the FCM service ran incrementUnreadForContact even
+    // when the JS process was actively handling the same WS-delivered
+    // message, double-counting the launcher badge.
+    // ---------------------------------------------------------------
+    @ReactMethod
+    fun setAppActive(active: Boolean) {
+        Log.d("[SYLK]", "setAppActive: $active")
+        prefs.edit().putBoolean("appActive", active).apply()
+    }
 }

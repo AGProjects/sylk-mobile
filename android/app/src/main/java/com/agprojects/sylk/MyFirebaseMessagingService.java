@@ -28,6 +28,8 @@ import androidx.core.content.pm.ShortcutManagerCompat;
 
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteDatabaseLockedException;
+import android.database.sqlite.SQLiteException;
 import android.content.Context;
 import android.content.SharedPreferences;
 
@@ -86,31 +88,76 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	}
 
 	private void createMessageChannel() {
+		ensureMessageChannel(this);
+	}
+
+	// Dedicated low-importance channel for the silent badge-driver
+	// notifications. IMPORTANCE_MIN is the only level Android guarantees
+	// will NOT raise a status-bar icon or shade alert — even
+	// PRIORITY_LOW + setSilent(true) on an IMPORTANCE_HIGH channel
+	// still produced visible "phantom push" entries on the user's
+	// shade after every restart, because notification visibility is
+	// gated by the channel's importance, not the per-notification
+	// priority. This channel keeps setShowBadge(true) so the launcher
+	// dot/count still updates from setNumber().
+	public static void ensureBadgeChannel(Context context) {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			String channelId = "messages_channel";
+			String channelId = "messages_badge_channel";
+			String channelName = "Sylk Unread Badge";
+
+			NotificationManager manager = context.getSystemService(NotificationManager.class);
+			if (manager == null) return;
+			NotificationChannel existing = manager.getNotificationChannel(channelId);
+			if (existing != null) return;
+
+			NotificationChannel channel = new NotificationChannel(
+				channelId,
+				channelName,
+				NotificationManager.IMPORTANCE_MIN
+			);
+			channel.setShowBadge(true);
+			channel.setDescription("Keeps the app icon badge in sync with unread messages");
+			channel.setSound(null, null);
+			channel.enableVibration(false);
+			channel.enableLights(false);
+			manager.createNotificationChannel(channel);
+			Log.d(LOG_TAG, "Badge-only channel was created");
+		}
+	}
+
+	// Static so setUnreadForContact (called from JS via UnreadModule) can
+	// guarantee the channel exists before posting the silent badge-driver
+	// notification. Previously the channel was only ever created from
+	// onMessageReceived, so any flow that bypassed FCM (e.g. WS-delivered
+	// message processed by JS in the foreground while FCM was simultaneously
+	// dropping its delivery on a SQL lock) had nowhere to post a badge from.
+	// Bumped to v2 because re-creating the legacy "messages_channel" with
+	// setShowBadge(false) was unreliable: deleteNotificationChannel +
+	// createNotificationChannel does not always reset user-visible
+	// preferences (e.g. "Show notification dot" toggled in system Settings),
+	// and Motorola's ROM appears to cache the prior setShowBadge=true
+	// regardless. A brand-new channel id has no legacy state and starts
+	// with the desired setShowBadge(false) baseline. The legacy
+	// "messages_channel" is explicitly deleted below so it doesn't linger
+	// in the app's Notification settings UI.
+	public static final String MESSAGES_CHANNEL_ID = "messages_channel_v2";
+
+	public static void ensureMessageChannel(Context context) {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			String channelId = MESSAGES_CHANNEL_ID;
 			String channelName = "Sylk Messages";
 
-			NotificationManager manager = getSystemService(NotificationManager.class);
+			NotificationManager manager = context.getSystemService(NotificationManager.class);
+			if (manager == null) return;
+
+			// Tear down the legacy channel once. Idempotent — if it's
+			// already gone the call is a no-op.
+			manager.deleteNotificationChannel("messages_channel");
+
 			NotificationChannel existing_channel = manager.getNotificationChannel(channelId);
-			boolean mustCreate = false;
-
 			if (existing_channel != null) {
-				boolean canBypass = existing_channel.canBypassDnd();
-				boolean hasBadge = existing_channel.canShowBadge();
-
-				if (!hasBadge || !canBypass) {
-					manager.deleteNotificationChannel(channelId);
-					mustCreate = true;
-				}
-			} else {
-				mustCreate = true;
+				return;
 			}
-
-            if (!mustCreate) {
-				return;	
-            }
-
-			mustCreate = true;
 
 			NotificationChannel channel = new NotificationChannel(
 				channelId,
@@ -118,7 +165,15 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				NotificationManager.IMPORTANCE_HIGH
 			);
 
-			channel.setShowBadge(true);
+			// IMPORTANT: showBadge OFF on this channel. The launcher icon
+			// badge is owned by `messages_badge_channel`'s single global
+			// summary (refreshGlobalBadge), which carries the authoritative
+			// setNumber(total). Leaving showBadge=true here meant Motorola's
+			// launcher counted each per-contact loud notification on
+			// messages_channel as +1 IN ADDITION to the summary's
+			// setNumber, inflating the icon count by one per active
+			// contact.
+			channel.setShowBadge(false);
 			channel.setBypassDnd(true);
 			channel.setDescription("Bubble messages");
 
@@ -153,22 +208,26 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	}
 
 	private Contact getContact(String account, String uri) {
+		// Display-name / tag lookup for the incoming caller. Non-critical:
+		// if it fails we just fall back to using the SIP URI as the display
+		// name and treat the contact as untagged (not blocked, not muted).
+		// We deliberately do NOT retry on SQLITE_BUSY here — the JS thread
+		// can hold the DB lock for several seconds during contact/message
+		// writes, and burning that time before the call rings caused the
+		// notification to land long after the caller had already cancelled
+		// (~30s in production logs). Fail open immediately and let the call
+		// reach the user without a friendly name.
+		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
+		if (!dbFile.exists()) {
+			Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
+			return null;
+		}
 	
 		Contact contact = null;
-	
+		SQLiteDatabase db = null;
+		Cursor cursor = null;
 		try {
-			File dbFile = getApplicationContext().getDatabasePath("sylk.db");
-			if (!dbFile.exists()) {
-				Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
-				return null;
-			}
-	
-			SQLiteDatabase db = SQLiteDatabase.openDatabase(
-					dbFile.getPath(),
-					null,
-					SQLiteDatabase.OPEN_READONLY
-			);
-	
+			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
 			String sql =
 					"SELECT name, tags FROM contacts " +
 					"WHERE account = ? AND (" +
@@ -178,35 +237,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					"uris LIKE ? OR " +
 					"uris LIKE ?" +
 					")";
-	
 			String likeStart = uri + ",%";
 			String likeMiddle = "%," + uri + ",%";
 			String likeEnd = "%," + uri;
-	
-			Cursor cursor = db.rawQuery(
-					sql,
-					new String[]{
-							account,
-							uri,
-							uri,
-							likeStart,
-							likeMiddle,
-							likeEnd
-					}
-			);
-	
+			cursor = db.rawQuery(sql, new String[]{ account, uri, uri, likeStart, likeMiddle, likeEnd });
 			if (cursor != null && cursor.moveToFirst()) {
-	
-				String name = cursor.getString(
-						cursor.getColumnIndexOrThrow("name")
-				);
-	
-				String tagsRaw = cursor.getString(
-						cursor.getColumnIndexOrThrow("tags")
-				);
-	
+				String name = cursor.getString(cursor.getColumnIndexOrThrow("name"));
+				String tagsRaw = cursor.getString(cursor.getColumnIndexOrThrow("tags"));
 				List<String> tagsList = new ArrayList<>();
-	
 				if (tagsRaw != null && !tagsRaw.trim().isEmpty()) {
 					String[] raw = tagsRaw.split(",");
 					for (String t : raw) {
@@ -216,18 +254,23 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 						}
 					}
 				}
-	
 				contact = new Contact(name, tagsList);
-	
-				cursor.close();
 			}
-	
-			db.close();
-	
+		} catch (SQLiteDatabaseLockedException locked) {
+			Log.w(LOG_TAG, "getContact: DB locked — skipping name lookup, using URI");
+		} catch (SQLiteException sqlEx) {
+			String msg = sqlEx.getMessage();
+			if (msg != null && msg.contains("SQLITE_BUSY")) {
+				Log.w(LOG_TAG, "getContact: DB busy — skipping name lookup");
+			} else {
+				Log.e(LOG_TAG, "getContact: SQLite error", sqlEx);
+			}
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Failed to get contact", e);
+		} finally {
+			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
+			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
 		}
-	
 		return contact;
 	}
 	
@@ -240,33 +283,59 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			return false;
 		}
 	
-		SQLiteDatabase db = null;
-		Cursor cursor = null;
+		// Single-shot read with NO retries. Earlier we did exponential
+		// backoff retries (50/100/200/400ms) here, but observed in
+		// production that each retry took ~3s because the JS thread holds
+		// the DB lock for that long during contact/message writes — total
+		// wait stretched to ~30s, well past the caller's patience. Better
+		// to fail-open immediately on lock and ring the call than to
+		// honour DND/reject preferences late. The JS handler can re-check
+		// preferences once the user reaches an answer/decline action.
 		boolean isActive = false;
 		boolean isDnd = false;
 		boolean rejectAnonymous = false;
 		boolean rejectNonContacts = false;
+		boolean readOk = false;
 	
+		SQLiteDatabase db = null;
+		Cursor cursor = null;
 		try {
 			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
-	
 			cursor = db.rawQuery(
 					"SELECT active, dnd, reject_anonymous, reject_non_contacts FROM accounts WHERE account = ?",
 					new String[]{account}
 			);
-	
 			if (cursor != null && cursor.moveToFirst()) {
 				isActive = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("active")));
 				isDnd = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("dnd")));
 				rejectAnonymous = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("reject_anonymous")));
 				rejectNonContacts = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("reject_non_contacts")));
 			}
-	
+			readOk = true;
+		} catch (SQLiteDatabaseLockedException locked) {
+			Log.w(LOG_TAG, "isAccountActive: DB locked — failing open immediately so call rings");
+		} catch (SQLiteException sqlEx) {
+			String msg = sqlEx.getMessage();
+			if (msg != null && msg.contains("SQLITE_BUSY")) {
+				Log.w(LOG_TAG, "isAccountActive: DB busy — failing open immediately so call rings");
+			} else {
+				Log.e(LOG_TAG, "isAccountActive: SQLite error", sqlEx);
+			}
 		} catch (Exception e) {
 			Log.e(LOG_TAG, "Failed to read account status", e);
 		} finally {
-			if (cursor != null) cursor.close();
-			if (db != null) db.close();
+			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
+			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
+		}
+	
+		// If we never got a definitive read, fail OPEN so the user is
+		// presented with the call. We do NOT honour rejectNonContacts /
+		// rejectAnonymous / DND in this fail-open path — those preferences
+		// can be re-evaluated by the JS handler once the DB is free.
+		if (!readOk) {
+			Log.w(LOG_TAG, "isAccountActive: bypassing rejection checks for " + fromUri
+				+ " due to DB lock — call will ring");
+			return true;
 		}
 	
 		if (rejectNonContacts && contactTags == null) {
@@ -372,6 +441,21 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	}
 
 	private boolean isAppInForeground() {
+		// Prefer the explicit hint JS pushes via SylkBridge.setAppActive
+		// — when present and true, JS is actively handling messages over
+		// the websocket and FCM must not double-count by also calling
+		// incrementUnreadForContact. ActivityManager.getMyMemoryState is
+		// useless here because this service runs in its own process and
+		// reports BACKGROUND for itself even when the main React Native
+		// app process is at IMPORTANCE_FOREGROUND.
+		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
+		if (prefs.contains("appActive")) {
+			boolean jsActive = prefs.getBoolean("appActive", false);
+			Log.d("[SYLK]", "isAppInForeground: JS-reported appActive=" + jsActive);
+			return jsActive;
+		}
+
+		// Fallback for the very first boot before JS has set the flag.
 		android.app.ActivityManager.RunningAppProcessInfo appProcessInfo =
 				new android.app.ActivityManager.RunningAppProcessInfo();
 		android.app.ActivityManager.getMyMemoryState(appProcessInfo);
@@ -414,8 +498,107 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
 		Log.d("[SYLK]", "setUnreadForContact " + uri + " " + count);
 		prefs.edit().putInt("unread_chat_" + uri, count).apply();
+
+		// Eagerly reconcile both notification channels here — JS calls
+		// into us at startup via updateTotalUnread, so this guarantees
+		// the channels exist with their current desired settings (badge
+		// OFF on messages_channel, ON on messages_badge_channel) without
+		// waiting for the next FCM delivery to trigger ensureMessageChannel.
+		// The internal guard inside ensureMessageChannel detects a stale
+		// setShowBadge=true on the existing channel and re-creates it,
+		// which is how the user upgrades to the new badge policy without
+		// uninstalling the app.
+		ensureMessageChannel(context);
+
+		// Refresh the global launcher badge.  See refreshGlobalBadge for
+		// why this is a single summary notification rather than N
+		// per-contact silent ones (Android's AutoGroup summary kept
+		// inflating the count by +1 once we had ≥2 active notifications).
+		refreshGlobalBadge(context);
 	}
-	
+
+	// Single source of truth for the launcher icon badge. Posts (or
+	// cancels) ONE silent notification on messages_badge_channel whose
+	// setNumber reflects the sum of every per-contact unread we currently
+	// have stored in SharedPreferences. Using one notification means:
+	//   * No Android AutoGroup summary is auto-created (avoids the
+	//     phantom +1 the user saw).
+	//   * The launcher reads setNumber from a single source — no
+	//     summing across N per-contact notifications.
+	//   * Real FCM alerts on messages_channel can still post per-contact
+	//     visible bubbles for "you got a message" without affecting the
+	//     count, as long as those carry setNumber(0).
+	public static final int GLOBAL_BADGE_NOTIFICATION_ID = 0xBADE7;
+	public static final String UNREAD_NOTIFICATION_GROUP = "sylk_unread_group";
+
+	public static int getTotalUnreadCountStatic(Context context) {
+		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
+		int total = 0;
+		Map<String, ?> all = prefs.getAll();
+		for (Map.Entry<String, ?> entry : all.entrySet()) {
+			String key = entry.getKey();
+			if (key.startsWith("unread_chat_")) {
+				Object value = entry.getValue();
+				if (value instanceof Integer) {
+					total += (Integer) value;
+				}
+			}
+		}
+		return total;
+	}
+
+	public static void refreshGlobalBadge(Context context) {
+		int total = getTotalUnreadCountStatic(context);
+		if (total <= 0) {
+			NotificationManagerCompat.from(context).cancel(GLOBAL_BADGE_NOTIFICATION_ID);
+			Log.d("[SYLK]", "refreshGlobalBadge: total=0, cancelled global badge");
+			return;
+		}
+		ensureBadgeChannel(context);
+
+		Intent intent = new Intent(context, MainActivity.class);
+		intent.setAction(Intent.ACTION_VIEW);
+		intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+		PendingIntent tapIntent = PendingIntent.getActivity(
+				context,
+				GLOBAL_BADGE_NOTIFICATION_ID,
+				intent,
+				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+		);
+
+		// Standalone (NOT a group summary). Empirically, Motorola's
+		// NotificationMonitorService treats "GROUP_SUMMARY with no live
+		// children" as a hideable notification and excludes it from the
+		// launcher badge — which surfaced as JS=4, badge=0 after the JS
+		// startup reconcile fired before any per-contact FCM child had
+		// arrived. VISIBILITY_PRIVATE (instead of SECRET) keeps the
+		// notification eligible for badge counting on Moto's launcher
+		// while still hiding details on the lockscreen.
+		NotificationCompat.Builder builder =
+				new NotificationCompat.Builder(context, "messages_badge_channel")
+						.setSmallIcon(R.drawable.ic_notification)
+						.setContentTitle("Unread messages")
+						.setContentText(total + " unread")
+						.setAutoCancel(true)
+						.setNumber(total)
+						.setPriority(NotificationCompat.PRIORITY_MIN)
+						.setOnlyAlertOnce(true)
+						.setContentIntent(tapIntent)
+						.setCategory(NotificationCompat.CATEGORY_STATUS)
+						.setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+						.setDefaults(0)
+						.setSound(null)
+						.setVibrate(new long[]{0L});
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			builder.setSilent(true);
+		}
+
+		NotificationManagerCompat.from(context).notify(GLOBAL_BADGE_NOTIFICATION_ID, builder.build());
+		Log.d("[SYLK]", "refreshGlobalBadge: posted setNumber=" + total);
+	}
+
 	public static int getUnreadForContact(Context context, String uri) {
 		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
 		Log.d("[SYLK]", "getUnreadForContact " + uri);
@@ -433,13 +616,17 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				.remove(LAST_NOTIF_PREFIX + uri)
 				.apply();
 
-		// Cancel notification
+		// Cancel the per-contact loud notification (and any stale per-contact
+		// silent badge from earlier builds — same id).
 		int notificationId = uri.hashCode();
 		NotificationManagerCompat.from(context).cancel(notificationId);
 
 		// Remove dynamic shortcut
 		String shortcutId = "chat_" + uri.replaceAll("[^a-zA-Z0-9_]", "_");
 		ShortcutManagerCompat.removeDynamicShortcuts(context, Collections.singletonList(shortcutId));
+
+		// Recompute the global launcher badge from the remaining counters.
+		refreshGlobalBadge(context);
 	}
 	
 	private int getTotalUnreadCount() {
@@ -714,16 +901,25 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// Skip increment if app is in foreground — JS side will count this
 			// message via setUnreadForContact and we would otherwise double-count.
 			boolean appInForeground = isAppInForeground();
-			int unreadCount;
 			if (appInForeground) {
 				Log.d("[SYLK]", "App in foreground, JS handles unread counter for " + fromUri);
-				unreadCount = getTotalUnreadCount();
 			} else {
 				// increase unread badge counter
 				incrementUnreadForContact(fromUri);
-				unreadCount = getTotalUnreadCount();
 			}
-			Log.d("[SYLK]", "Badge unread counter:" + unreadCount);
+
+			// IMPORTANT: setNumber on a per-contact notification must be the
+			// PER-CONTACT count, not the total across the whole inbox. The
+			// launcher already sums setNumber across every active notification
+			// to build the icon badge, so passing the global total here would
+			// inflate the badge by O(N²) (each contact's notification carrying
+			// the sum, then the launcher summing those sums). Symptom before
+			// this fix: living233=2 + florig=2 in-app, but launcher showed 6
+			// because florig's notification got setNumber(4) (=total) on top
+			// of living233's existing setNumber(2).
+			int unreadCount = getUnreadForContact(fromUri);
+			Log.d("[SYLK]", "Per-contact unread for " + fromUri + ":" + unreadCount
+					+ " (total inbox=" + getTotalUnreadCount() + ")");
 
 			// Throttle the alert for visible notifications: if we showed a
 			// notification for this sender less than THROTTLE_NOTIFICATION_MS
@@ -742,8 +938,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			String contentType = data.get("content_type");
 
 			// ----- CHANNEL -----
-			String channelId = "messages_channel";
-			
+			String channelId = MESSAGES_CHANNEL_ID;
+
 			// ----- INTENT -----
 			Intent intent = new Intent(this, MainActivity.class);
 			intent.setAction(Intent.ACTION_VIEW);
@@ -826,13 +1022,19 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 			
 			// ----- BUILD NOTIFICATION -----
+			// NOTE: deliberately no setNumber here. The launcher icon
+			// badge is driven exclusively by the global summary
+			// notification posted by refreshGlobalBadge.
+			// `messages_channel` now has setShowBadge(false), so these
+			// per-contact loud notifications don't contribute to the
+			// icon count — they only handle the heads-up alert and
+			// shade entry for "you got a message".
 			NotificationCompat.Builder builder =
 					new NotificationCompat.Builder(this, channelId)
 							.setSmallIcon(R.drawable.ic_notification)
 							.setContentTitle("New message") // header
 							.setContentText("Message from " + displayName) // second line
 							.setAutoCancel(true)
-							.setNumber(unreadCount)
 							.setPriority(throttled
 									? NotificationCompat.PRIORITY_LOW
 									: NotificationCompat.PRIORITY_HIGH)
@@ -858,6 +1060,13 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// ----- SEND -----
 			int nid = fromUri.hashCode();
 			NotificationManagerCompat.from(this).notify(nid, builder.build());
+
+			// Update the global launcher badge after the per-contact prefs
+			// changed (only if we actually incremented above — appInForeground
+			// case is JS's responsibility).
+			if (!appInForeground) {
+				refreshGlobalBadge(this);
+			}
 
 			if (throttled) {
 				Log.d("[SYLK]", "Silent notification update for " + fromUri

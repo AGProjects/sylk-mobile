@@ -5,12 +5,13 @@ import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors, Menu } from 'react-native-paper';
-import { View, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
+import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import {StatusBar} from 'react-native';
 import Immersive from 'react-native-immersive';
 import { StyleSheet } from 'react-native';
 import { Surface } from 'react-native-paper';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import CallOverlay from './CallOverlay';
 
@@ -81,7 +82,9 @@ class VideoBox extends Component {
 			insets: this.props.insets,
 			isLandscape: this.props.isLandscape,
 			aspectRatio: 'cover',
-			audioDevicePickerVisible: false
+			audioDevicePickerVisible: false,
+			cameraFacing: 'front',
+			videoPickerVisible: false
         };
 
 		this.prevStats = {}; // initialize here
@@ -94,13 +97,36 @@ class VideoBox extends Component {
         if (this.props.call) {
             this.props.call.statistics.on('stats', this.statistics);
         }
-        
+
 		const localStream = this.state.localStream;
 		if (localStream.getVideoTracks().length > 0) {
+			const track = localStream.getVideoTracks()[0];
 			if (this.props.videoMuted) {
-				const track = localStream.getVideoTracks()[0];
 				track.enabled = false;
 				console.log('Initial video is muted');
+			}
+			// Derive initial camera facing from the actual track
+			// settings so the bar/label/swap logic doesn't start out of
+			// phase with the device's real camera. RNWebRTC reports
+			// facingMode as 'user' (front) or 'environment' (back) when
+			// available; if the runtime doesn't expose it, we fall
+			// back to the assumed 'front' default.
+			let initialFacing = 'front';
+			try {
+				const settings = track.getSettings ? track.getSettings() : null;
+				if (settings && settings.facingMode === 'environment') {
+					initialFacing = 'back';
+				}
+			} catch (e) {
+				// getSettings not supported — keep the 'front' default.
+			}
+			this.state.cameraFacing = initialFacing;
+			// If the user muted video back in the LocalMedia preview,
+			// the same underlying track is already disabled. Reflect
+			// that in our state so the UI doesn't show the camera as
+			// "live" when it isn't.
+			if (track.enabled === false) {
+				this.state.videoMuted = true;
 			}
 		} else {
 			console.log('No video track');
@@ -256,11 +282,17 @@ class VideoBox extends Component {
     }
 
     muteVideo(event) {
-        event.preventDefault();
+        if (event && event.preventDefault) {
+            event.preventDefault();
+        }
+        this.toggleVideoMute();
+    }
+
+    toggleVideoMute() {
         const localStream = this.state.localStream;
-        if (localStream.getVideoTracks().length > 0) {
+        if (localStream && localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
-            if(this.state.videoMuted) {
+            if (this.state.videoMuted) {
                 DEBUG('Unmute camera');
                 track.enabled = true;
                 this.setState({videoMuted: false});
@@ -386,7 +418,13 @@ class VideoBox extends Component {
 						size={buttonSize}
 						style={[buttonClass]}
 						icon={selectedIcon}
-						onPress={() => this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible})}
+						onPress={() => this.setState({
+							audioDevicePickerVisible: !this.state.audioDevicePickerVisible,
+							// Collapse the video picker when opening (or
+							// toggling) the audio picker — only one
+							// floating menu should be visible at a time.
+							videoPickerVisible: false
+						})}
 					/>
 				</View>
 			);
@@ -396,13 +434,249 @@ class VideoBox extends Component {
 	}
 
     toggleCamera(event) {
-        event.preventDefault();
+        if (event && event.preventDefault) {
+            event.preventDefault();
+        }
         const localStream = this.state.localStream;
-        if (localStream.getVideoTracks().length > 0) {
+        if (localStream && localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
             track._switchCamera();
-            this.setState({mirror: !this.state.mirror});
+            this.setState({
+                mirror: !this.state.mirror,
+                cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front'
+            });
         }
+    }
+
+    selectCamera(facing) {
+        // If video is currently muted, picking a camera should also
+        // unmute it — that's the only way out of the muted state from
+        // the picker (the Unmute row is hidden when muted).
+        if (this.state.videoMuted) {
+            this.toggleVideoMute();
+        }
+        // No-op (apart from the unmute above) if we're already on the
+        // requested camera.
+        if (facing === this.state.cameraFacing) return;
+        const localStream = this.state.localStream;
+        if (localStream && localStream.getVideoTracks().length > 0) {
+            const track = localStream.getVideoTracks()[0];
+            track._switchCamera();
+            this.setState({
+                mirror: !this.state.mirror,
+                cameraFacing: facing
+            });
+        }
+    }
+
+    renderVideoPicker(buttonSize, buttonClass) {
+        const facing = this.state.cameraFacing || 'front';
+        const muted = this.state.videoMuted;
+        const enableMyVideo = this.state.enableMyVideo;
+        // Main button reflects the currently active camera. Muted state is
+        // shown as a big red X overlay on top of the camera icon so the user
+        // knows both *which* camera is active *and* that it's muted.
+        const mainIcon = facing === 'front' ? 'camera-front' : 'camera-rear';
+
+        // Pick the swap icon so its diagonal points through the corner
+        // where the PIP thumbnail currently sits. Thumb in topLeft or
+        // bottomRight → use the "\" diagonal; thumb in topRight or
+        // bottomLeft → use the "/" diagonal. That way the arrow's top
+        // tip points to the thumb when it's at the top, and its bottom
+        // tip points to the thumb when it's at the bottom.
+        const corner = this.state.myVideoCorner;
+        const swapIcon = (corner === 'topLeft' || corner === 'bottomRight')
+            ? 'arrow-top-left-bottom-right-bold'
+            : 'arrow-top-right-bottom-left-bold';
+
+        // Build the camera options. When the camera is currently in
+        // use (not muted), drop the active one so the user only sees
+        // the camera they can switch *to*. When muted, show BOTH so
+        // the user can pick which camera to unmute into — tapping
+        // either unmutes (and switches if needed) via selectCamera.
+        const cameraOptions = [
+            {
+                key: 'front',
+                icon: 'camera-front',
+                label: 'Front Camera',
+                facing: 'front'
+            },
+            {
+                key: 'back',
+                icon: 'camera-rear',
+                label: 'Back Camera',
+                facing: 'back'
+            }
+        ]
+            .filter(opt => muted || opt.facing !== facing)
+            .map(opt => ({
+                key: opt.key,
+                icon: opt.icon,
+                label: opt.label,
+                onPress: () => this.selectCamera(opt.facing)
+            }));
+
+        // The picker rows are *actions*, not radio choices — there is
+        // no persistent "selected" highlight. The icon/label of each
+        // row already reflects the next state (e.g. "Hide Myself" vs
+        // "Show Myself", "Mute Camera" hidden when muted), which is
+        // enough to communicate current state.
+        const items = [
+            ...cameraOptions,
+            // Hide the Unmute row entirely when muted — the only way to
+            // unmute from the picker is to choose one of the camera
+            // options above.
+            ...(muted ? [] : [{
+                key: 'mute',
+                icon: 'video-off',
+                label: 'Mute Camera',
+                onPress: () => this.toggleVideoMute()
+            }]),
+            {
+                key: 'myself',
+                icon: enableMyVideo ? 'eye-off' : 'eye',
+                label: enableMyVideo ? 'Hide Myself' : 'Show Myself',
+                onPress: () => this.toggleMyVideo()
+            },
+            {
+                key: 'swap',
+                // Diagonal two-headed arrow — chosen so its diagonal
+                // passes through the corner where the PIP thumbnail
+                // currently sits (see swapIcon computation above).
+                icon: swapIcon,
+                label: 'Swap Video',
+                onPress: () => this.swapVideo()
+            },
+            {
+                key: 'aspect',
+                icon: 'aspect-ratio',
+                label: 'Aspect Ratio',
+                onPress: () => this.toggleAspectRatio()
+            }
+        ];
+
+        // Size the floating-panel icons up to roughly the *visual* size
+        // of the bar button (the circular IconButton, which is bigger
+        // than its glyph). Bumps both the icon glyph and the row height
+        // so the menu reads as comfortably touch-sized.
+        const rowIconSize = buttonSize + 14;
+        const rowFontSize = 18;
+        const itemRowHeight = rowIconSize + 18;
+        // The trigger IconButton has margin: 10 (from styles.iosButton /
+        // androidButton). To keep the icon column vertically aligned
+        // with the bar button, shift the row left so its icon center
+        // sits directly above the bar-button center, regardless of the
+        // larger row icon size.
+        const iconColumnPadLeft = Math.max(10 - (rowIconSize - buttonSize) / 2, 0);
+        // Estimate the panel width: longest label is "Front Camera" /
+        // "Aspect Ratio" (~12 characters). At rowFontSize the text needs
+        // roughly 0.6 * fontSize per character. Plus the icon column,
+        // gap and right padding. The slot containing the panel has
+        // maxWidth: 54 which would otherwise force the labels to wrap,
+        // so we set an explicit width that's wide enough for the longest
+        // label plus a small margin.
+        const longestLabelChars = 13;
+        const panelWidth = iconColumnPadLeft
+            + rowIconSize
+            + 14   // marginLeft on the text
+            + Math.ceil(longestLabelChars * rowFontSize * 0.6)
+            + 12;  // paddingRight on the row
+        return (
+            <View style={[styles.buttonContainer, {position: 'relative'}]}>
+                {this.state.videoPickerVisible && (
+                    <View style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        // Anchor the left edge of the panel to the left
+                        // edge of the trigger button so the icon column
+                        // sits directly above the button below and the
+                        // text labels extend to the right of the icons.
+                        left: 0,
+                        // Explicit width that fits the longest label on
+                        // a single line. We can't rely on shrink-to-fit
+                        // because the slot wrapping the panel has
+                        // maxWidth: 54 which would otherwise force the
+                        // label to wrap.
+                        width: panelWidth,
+                        marginBottom: 8,
+                        zIndex: 100,
+                        elevation: 10,
+                        backgroundColor: 'rgba(34,34,34,0.92)',
+                        borderRadius: 8,
+                        paddingVertical: 4
+                    }}>
+                        {items.map(item => (
+                            <TouchableOpacity
+                                key={item.key}
+                                onPress={() => {
+                                    this.setState({videoPickerVisible: false});
+                                    // Defer the action a tick so the panel
+                                    // closes cleanly before any state churn
+                                    // from the action itself.
+                                    setTimeout(() => item.onPress(), 50);
+                                }}
+                                // Standard row: icon on the left (above
+                                // the trigger button), text label to its
+                                // right. Every row is an *action* (not a
+                                // radio choice), so we never highlight
+                                // a row as "selected".
+                                style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    height: itemRowHeight,
+                                    paddingLeft: iconColumnPadLeft,
+                                    paddingRight: 12,
+                                    backgroundColor: 'transparent'
+                                }}
+                            >
+                                <Icon name={item.icon} size={rowIconSize} color="white" />
+                                <Text
+                                    numberOfLines={1}
+                                    style={{
+                                        color: 'white',
+                                        marginLeft: 14,
+                                        fontSize: rowFontSize
+                                    }}
+                                >
+                                    {item.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                )}
+                <View style={{position: 'relative'}}>
+                    <IconButton
+                        size={buttonSize}
+                        style={[buttonClass]}
+                        icon={mainIcon}
+                        onPress={() => this.setState({
+                            videoPickerVisible: !this.state.videoPickerVisible,
+                            // Collapse the audio device picker when opening
+                            // (or toggling) the video picker — only one
+                            // floating menu should be visible at a time.
+                            audioDevicePickerVisible: false
+                        })}
+                    />
+                    {muted && (
+                        <View
+                            pointerEvents="none"
+                            style={{
+                                position: 'absolute',
+                                top: 0, left: 0, right: 0, bottom: 0,
+                                justifyContent: 'center',
+                                alignItems: 'center'
+                            }}
+                        >
+                            <Icon
+                                name="close-thick"
+                                size={buttonSize + 14}
+                                color="#D32F2F"
+                            />
+                        </View>
+                    )}
+                </View>
+            </View>
+        );
     }
 
     get showRemote() {
@@ -622,7 +896,6 @@ class VideoBox extends Component {
 
         let buttons;
         const muteButtonIcons = this.state.audioMuted ? 'microphone-off' : 'microphone';
-        const muteVideoButtonIcons = this.state.videoMuted ? 'video-off' : 'video';
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
 
         const buttonSize = this.props.isTablet ? 40 : 28;
@@ -679,36 +952,13 @@ class VideoBox extends Component {
                         icon={muteButtonIcons}
                     />
                 </View>
-                <View style={styles.buttonContainer}>
-                    <IconButton
-                        size={buttonSize}
-                        style={buttonClass}
-                        onPress={this.muteVideo}
-                        icon={muteVideoButtonIcons}
-                    />
-                </View>
 
-                <View style={styles.buttonContainer}>
-                    <IconButton
-                        size={buttonSize}
-                        style={[buttonClass]}
-                        title="Toggle camera"
-                        onPress={this.toggleCamera}
-                        icon='camera-switch'
-                        key="toggleVideo"
-                    />
-                </View>
-
-                <View style={styles.buttonContainer}>
-                    <IconButton
-                        size={buttonSize}
-                        style={[buttonClass]}
-                        title="Toggle Aspect"
-                        onPress={this.toggleAspectRatio}
-                        icon='aspect-ratio'
-                        key="toggleAspectRatio"
-                    />
-                </View>
+                {/* Single video picker button: tapping it shows a floating
+                    panel with Front/Back Camera, Mute, Hide Myself, Swap
+                    Video and Aspect Ratio. The bar icon itself reflects
+                    the active camera (front/back) and overlays a red X
+                    when the camera is muted. */}
+                {this.renderVideoPicker(buttonSize, buttonClass)}
 
                 {this.renderAudioDevicePicker(buttonSize, buttonClass)}
 
@@ -721,7 +971,15 @@ class VideoBox extends Component {
                     />
                 </View>
             </View>);
-            buttons = (<View style={buttonsContainer}>{content}</View>);
+            // The local PIP thumbnail wrapper uses zIndex: 1000, so the
+            // buttons View (which hosts the floating video/audio picker
+            // panels) must sit above it for the panels to render on top
+            // of the thumbnail when they overlap.
+            buttons = (
+                <View style={[buttonsContainer, {zIndex: 2000, elevation: 30}]}>
+                    {content}
+                </View>
+            );
         }
         
         const debugBorderWidth = 0;
@@ -978,6 +1236,19 @@ class VideoBox extends Component {
                     <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
                     : null
                 }
+
+                {/* Fullscreen invisible backdrop that dismisses the
+                    floating video picker when the user taps anywhere
+                    outside the panel. Rendered before {buttons} so the
+                    buttons (and the panel itself, which lives inside
+                    them) remain on top and stay tappable. */}
+                {this.state.videoPickerVisible && (
+                    <TouchableWithoutFeedback
+                        onPress={() => this.setState({videoPickerVisible: false})}
+                    >
+                        <View style={StyleSheet.absoluteFillObject} />
+                    </TouchableWithoutFeedback>
+                )}
 
                 {buttons}
 

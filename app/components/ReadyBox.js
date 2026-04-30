@@ -584,6 +584,36 @@ class ReadyBox extends Component {
     // icon stays static because that toggle-state lives in NavigationBar.
     // If we ever want state-aware iconography here we'd need to lift
     // `activeLocationShares` up to app.js.
+    // Mirrors NavigationBar._hasBidirectionalChat — true when the
+    // loaded message slice for `uri` carries at least one substantive
+    // exchange in BOTH directions. text/* + image/* + file-transfer
+    // + sylk-live-location (historical share bubbles) all count as
+    // evidence of an active relationship. Pure control messages
+    // (sylk-message-metadata, contact-update, IMDN, PGP-key) are
+    // excluded. See the NavigationBar version for the full rationale.
+    _hasBidirectionalChat(uri) {
+        if (!uri) return false;
+        const msgs = (this.props.messages && this.props.messages[uri]) || [];
+        if (!Array.isArray(msgs) || msgs.length === 0) return false;
+        let hasOut = false;
+        let hasIn = false;
+        for (const m of msgs) {
+            if (!m) continue;
+            if (m.system === true) continue;
+            const ct = m.contentType;
+            if (typeof ct !== 'string') continue;
+            if (ct === 'application/sylk-message-metadata') continue;
+            if (ct === 'application/sylk-contact-update') continue;
+            if (ct === 'message/imdn') continue;
+            if (ct.indexOf('pgp') !== -1) continue;
+            const dir = m.direction;
+            if (dir === 'outgoing') hasOut = true;
+            else if (dir === 'incoming') hasIn = true;
+            if (hasOut && hasIn) return true;
+        }
+        return false;
+    }
+
     get showLocationShareButton() {
         if (!this.props.selectedContact) {
             return false;
@@ -610,6 +640,18 @@ class ReadyBox extends Component {
 
         // PGP key required — same rule as NavigationBar's menu item.
         if (!this.props.selectedContact.publicKey) {
+            return false;
+        }
+
+        // Bidirectional chat required — same rule as NavigationBar's
+        // menu item. Don't surface location sharing on a chat the
+        // user has never actually exchanged messages on. EXCEPT when
+        // a share is already live for THIS contact: the user needs
+        // a Stop affordance regardless of the chat's history (e.g. a
+        // share that started before they cleared the chat history).
+        const _activeShares = this.props.activeLocationShares || {};
+        const _alreadySharing = !!_activeShares[this.props.selectedContact.uri];
+        if (!_alreadySharing && !this._hasBidirectionalChat(this.props.selectedContact.uri)) {
             return false;
         }
 
@@ -1798,34 +1840,18 @@ class ReadyBox extends Component {
                         </View>
                         : null}
 
-                           {(this.showBackToCallButton && !this.showButtonsBar)?
-                            <View style={buttonGroupClass}>
-                                <Button
-                                    mode="contained"
-                                    style={styles.backButton}
-                                    onPress={this.props.goBackFunc}
-                                    accessibilityLabel={backButtonTitle}
-                                    >{backButtonTitle}
-                                </Button>
-                            </View>
-                            :
-                            null}
+                           {/* Inline Back-to-call button removed: now rendered
+                               as a floating overlay near the bottom of the
+                               render output so it doesn't shift the chat
+                               layout (and therefore the keyboard offset)
+                               every time a call starts/ends. See the
+                               floating-back-to-call block at the end of
+                               render(). */}
 
                         {this.showButtonsBar ?
 							<View style={uriGroupClass}>
-	
-                            {this.showBackToCallButton ?
-                            <View style={buttonGroupClass}>
-                                <Button
-                                    mode="contained"
-                                    labelStyle={{ fontSize: 14 }}
-                                    style={styles.backButton}
-                                    onPress={this.props.goBackFunc}
-                                    accessibilityLabel={backButtonTitle}
-                                    >{backButtonTitle}
-                                </Button>
-                            </View>
-                            : this.props.isFolded ?
+
+                            {this.props.isFolded ?
                             // On foldables, hide the whole call/action
                             // button row (audio, video, mic, delete, share,
                             // etc.) when on the cover display. The Back-to-
@@ -2221,6 +2247,9 @@ class ReadyBox extends Component {
 						contactStopShare = {this.props.contactStopShare}
 						acceptMeetingRequest = {this.props.acceptMeetingRequest}
 						isMeetingRequestAcceptable = {this.props.isMeetingRequestAcceptable}
+						pauseLocationShare = {this.props.pauseLocationShare}
+						resumeLocationShare = {this.props.resumeLocationShare}
+						getLocationShareState = {this.props.getLocationShareState}
 						setFullScreen = {this.props.setFullScreen}
 						fullScreen = {this.props.fullScreen}
 						transferProgress = {this.props.transferProgress}

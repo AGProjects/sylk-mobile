@@ -137,7 +137,35 @@ const styles = StyleSheet.create({
     minWidth: 20,
   },
 
-  badgeTextStyle: { fontSize: 9},
+  // The unread number was sitting too low inside the red dot on
+  // Android. Two Android-only quirks were stacking on top of each
+  // other: (1) Text views default to includeFontPadding: true, which
+  // wedges extra space above and below the glyph and pushes small
+  // labels visually downward inside tight containers, and (2) without
+  // an explicit lineHeight, RN falls back to the font's intrinsic
+  // metrics, which for the system font centres the baseline below the
+  // geometric middle of a circular badge. Disabling font padding,
+  // forcing textAlignVertical center, and pinning lineHeight to the
+  // glyph height (≈ fontSize * 1.1) snaps the digit back into the
+  // visual middle. iOS doesn't need any of this and rendered fine
+  // before, so leave that branch as the original {fontSize: 9} only.
+  badgeTextStyle: Platform.select({
+    android: {
+      fontSize: 9,
+      lineHeight: 10,
+      includeFontPadding: false,
+      textAlignVertical: 'center',
+    },
+    ios: { fontSize: 9 },
+  }),
+
+  // react-native-elements' <Badge/> ships with badgeStyle = {borderWidth:
+  // 1, borderColor: 'white'} baked in. On Android that white ring around
+  // the rounded red dot fights the subpixel anti-aliasing on the curve
+  // and reads as a fuzzy halo at small badge sizes. Override the inner
+  // badgeStyle to drop the border entirely; the red fill still has clean
+  // edges from RN's own rasteriser.
+  badgeInnerStyle: { borderWidth: 0 },
   selectedContact: { marginTop: 15 },
   participants: { marginTop: 10 },
   participant: { fontSize: 14 },
@@ -345,6 +373,7 @@ class ContactCard extends Component {
 						value={unread}
 						status="error"
 						textStyle={styles.badgeTextStyle}
+						badgeStyle={styles.badgeInnerStyle}
 						containerStyle={[styles.badgeContainer, isDark && darkStyles.badgeContainer]}
 					  />
 					) : null}

@@ -177,6 +177,22 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
 
     let g_id = sylkMessage.id;
 
+    // Normalise to a real Date object. sylkrtc delivers `timestamp` as
+    // an ISO string from the websocket payload; the outgoing bubble
+    // path (GiftedChat onSend) hands us a Date instance instead. The
+    // mixed-type sort in ContactsListBox.componentWillReceiveProps
+    // (`a.createdAt < b.createdAt`) silently no-ops when one side is
+    // a Date and the other a string — both `<` and `>` come back false
+    // because the ISO string coerces to NaN under numeric comparison —
+    // which is why a freshly arrived reply was rendering above the
+    // user's just-sent bubble. Coercing here keeps every chat bubble
+    // comparable as Date <-> Date.
+    let createdAt = sylkMessage.timestamp;
+    if (!(createdAt instanceof Date)) {
+        const parsed = new Date(createdAt);
+        createdAt = isNaN(parsed.getTime()) ? new Date() : parsed;
+    }
+
     let msg = {
         _id: g_id,
         key: g_id,
@@ -188,7 +204,7 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
         metadata: metadata,
         contentType: sylkMessage.contentType,
         pinned: false,
-        createdAt: sylkMessage.timestamp,
+        createdAt: createdAt,
         received: direction === 'incoming',
         direction: direction,
 		failed: false,
@@ -805,20 +821,19 @@ function isAudio(filename, filetype=null) {
         return true
     }
 
-    if (filename.toLowerCase().endsWith('.mp3')) {
+    // File-extension fallback (used when no MIME type is available).
+    // Cover the common audio containers — extending the original list
+    // (.mp3/.opus/.wav) with the formats users actually receive: .m4a
+    // (AAC in MOV-style container, the iOS-friendly transcode target),
+    // .aac (raw AAC), .flac, .ogg, and .oga.
+    const lower = filename.toLowerCase();
+    const audioExts = ['.mp3', '.opus', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.oga'];
+    for (const ext of audioExts) {
+        if (lower.endsWith(ext)) return true;
+    }
+
+    if (lower.startsWith('sylk-audio-recording')) {
         return true;
-    }
-
-    if (filename.toLowerCase().endsWith('.opus')) {
-        return true
-    }
-
-    if (filename.toLowerCase().endsWith('.wav')) {
-        return true
-    }
-
-    if (filename.toLowerCase().startsWith('sylk-audio-recording')) {
-        return true
     }
 
     return false;

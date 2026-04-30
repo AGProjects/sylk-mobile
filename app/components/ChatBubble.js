@@ -175,10 +175,67 @@ const ChatBubble = memo(
     let content = null;
 
     if (currentMessage.image) {
+      // Preview state: the user just attached an image and is about
+      // to send it. Strip every bit of margin/padding/border GiftedChat
+      // adds around the bubble so the image fills the screen edge to
+      // edge horizontally and sits flush against the input toolbar
+      // below. Avatar gutter + radii are also dropped — there's only
+      // one thing on screen and it should look like a single block.
+      const isPreview = currentMessage.metadata?.preview === true;
+
+      const previewWrapper = isPreview
+        ? {
+            backgroundColor: 'transparent',
+            borderRadius: 0,
+            borderTopLeftRadius: 0,
+            borderTopRightRadius: 0,
+            borderBottomLeftRadius: 0,
+            borderBottomRightRadius: 0,
+            // Explicit longhand zeros — gifted-chat's wrapper hard-codes
+            // marginLeft: 60 (right pos) / marginRight: 60 (left pos),
+            // and a shorthand `margin: 0` doesn't always override a
+            // pre-applied longhand margin in RN's style merging. Spell
+            // out each side so the gutter actually disappears.
+            marginTop: 0,
+            marginRight: 0,
+            marginBottom: 0,
+            marginLeft: 0,
+            padding: 0,
+            // Force the wrapper to span the full width of the Bubble
+            // container, regardless of the parent's alignItems.
+            alignSelf: 'stretch',
+            width: '100%'
+          }
+        : null;
+
+      // GiftedChat's Bubble wraps wrapperStyle in a containerStyle View
+      // that adds horizontal margin (avatar gutter). Zero it out on
+      // both sides for the preview so the wrapper actually reaches the
+      // screen edges.
+      const previewContainer = isPreview
+        ? {
+            margin: 0,
+            marginLeft: 0,
+            marginRight: 0,
+            padding: 0
+          }
+        : null;
+
       content = (
-        <Bubble 
+        <Bubble
           {...bubbleProps}
-          wrapperStyle={{ left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 }, right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 } }}
+          wrapperStyle={{
+            left: isPreview
+              ? { ...leftWrapper, ...previewWrapper }
+              : { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
+            right: isPreview
+              ? { ...rightWrapper, ...previewWrapper }
+              : { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 }
+          }}
+          containerStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          containerToPreviousStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          containerToNextStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          bottomContainerStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
           textProps={{ style: { color: position === 'left' ? '#000' : '#000' } }}
           textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
         />
@@ -348,17 +405,39 @@ const ChatBubble = memo(
 	  }
 
 	  // ==== Transfer progress ====
-	  const prevProgress = prev.transferProgress?.[id]?.progress ?? 0;
-	  const nextProgress = next.transferProgress?.[id]?.progress ?? 0;
-	  if (prevProgress !== nextProgress) {
-	    if (prevProgress && nextProgress !== 0 && prevProgress > nextProgress) {
-			console.log(`[Bubble ${id}] RERENDER → progress skip negative changed (${prevProgress} → ${nextProgress})`);
-			locTrace(true, 'progress regressed');
-			return true;
-	    }
-		//console.log(`[Bubble ${id}] RERENDER → progress changed (${prevProgress} → ${nextProgress})`);
-		locTrace(false, 'progress changed');
+	  // Re-render whenever the transferProgress entry for this bubble
+	  // appears, disappears, changes stage, or changes numeric progress.
+	  // Previously this only watched numeric `progress` with `?? 0` defaults,
+	  // which silently swallowed the first update (undefined → {progress:0})
+	  // and any stage transition that happened to keep progress at 0. The
+	  // user never saw the "Downloading..." label / cancel button until the
+	  // first non-zero progress event arrived — and on stalled large
+	  // downloads that may never happen.
+	  const prevProgEntry = prev.transferProgress?.[id];
+	  const nextProgEntry = next.transferProgress?.[id];
+	  const prevHas = prevProgEntry !== undefined;
+	  const nextHas = nextProgEntry !== undefined;
+
+	  if (prevHas !== nextHas) {
+		locTrace(false, 'transferProgress entry appeared/cleared');
 		return false;
+	  }
+
+	  if (prevHas && nextHas) {
+		if (prevProgEntry.stage !== nextProgEntry.stage) {
+			locTrace(false, 'stage changed');
+			return false;
+		}
+		const prevProgress = prevProgEntry.progress ?? 0;
+		const nextProgress = nextProgEntry.progress ?? 0;
+		if (prevProgress !== nextProgress) {
+			if (prevProgress && nextProgress !== 0 && prevProgress > nextProgress) {
+				locTrace(true, 'progress regressed');
+				return true;
+			}
+			locTrace(false, 'progress changed');
+			return false;
+		}
 	  }
 
 	  // ==== Image loading state ====

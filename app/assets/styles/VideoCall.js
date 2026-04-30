@@ -119,6 +119,9 @@ const styles = StyleSheet.create({
     // this value and the buttons still fill the row; on wide screens
     // the cluster centers itself instead of scattering.
     maxWidth: 54,
+    // Extra horizontal breathing room between adjacent buttons in the
+    // call control bar.
+    marginHorizontal: 8,
   },
 
   audioDeviceContainer: {

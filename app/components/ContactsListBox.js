@@ -6,7 +6,12 @@ import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
-import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer, Day} from 'react-native-gifted-chat'
+import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer, Day, Message} from 'react-native-gifted-chat'
+// Deep import — needed so the menu IconButton inside a custom bubble
+// renderer can hand the same `context` object back to onLongMessagePress
+// that GiftedChat's built-in long-press path supplies. Without this the
+// menu button can't call `context.actionSheet().showActionSheetWithOptions(...)`.
+import { GiftedChatContext } from 'react-native-gifted-chat/lib/GiftedChatContext';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
 import MessageInfoModal from './MessageInfoModal';
 import EditMessageModal from './EditMessageModal';
@@ -45,7 +50,7 @@ import CameraRoll from "@react-native-camera-roll/camera-roll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
-import { ActivityIndicator, Animated } from 'react-native';
+import { ActivityIndicator, Animated, Alert } from 'react-native';
 import dayjs from 'dayjs';
 
 import styles from '../assets/styles/ContactsListBox';
@@ -223,7 +228,22 @@ class ContactsListBox extends Component {
 		    sharingAssets: [],
             sharingMessages: [],
             showScrollSideButtons: false,
-            actionSheetDisplayed: false
+            actionSheetDisplayed: false,
+            // iOS-only audio player state. AVAudioPlayer (used by
+            // react-native-audio-recorder-player on iOS) silently fails to
+            // decode some MP3 variants — VBR Sony hardware-recorder output
+            // in particular accepts the prepare/play step but never emits a
+            // frame. AVPlayer (via react-native-video in audioOnly mode)
+            // handles them. On iOS we bypass audioRecorderPlayer entirely
+            // and drive playback through a hidden <Video> component fed by
+            // this state. Android continues to use audioRecorderPlayer.
+            iosAudio: {
+                path: null,
+                message: null,
+                paused: true,
+                duration: 0,    // seconds, set on onLoad
+                hasSeeked: false,
+            },
         }
 
         this.ended = false;
@@ -308,14 +328,30 @@ class ContactsListBox extends Component {
 			const oldMessages = this.state.renderMessages || [];
 
 		    let newMessages = [...nextProps.messages[uri]] || [];
-			// Sort newest → oldest
+			// Sort newest → oldest. Coerce createdAt to a numeric ms
+			// value before comparing — the incoming-websocket path used
+			// to hand us createdAt as an ISO string while the outgoing
+			// path uses a Date. Comparing Date < string under JS numeric
+			// rules yields false on both sides, the comparator returns
+			// 0 for every pair involving the mixed-type bubble, and the
+			// reply silently lands above the user's just-sent message.
+			// The sylk2GiftedChat fix already normalises new bubbles to
+			// Date, but this guard keeps any stray string-shaped row
+			// from reintroducing the bug.
+			const _ts = (v) => {
+				if (v == null) return 0;
+				if (v instanceof Date) return v.getTime();
+				if (typeof v === 'number') return v;
+				const t = new Date(v).getTime();
+				return isNaN(t) ? 0 : t;
+			};
 			newMessages = newMessages.sort(function (a, b) {
-			  if (a.createdAt < b.createdAt) return 1;
-			  if (a.createdAt > b.createdAt) return -1;
-			  if (a.createdAt === b.createdAt) {
-				if (a.msg_id < b.msg_id) return 1;
-				if (a.msg_id > b.msg_id) return -1;
-			  }
+			  const ta = _ts(a.createdAt);
+			  const tb = _ts(b.createdAt);
+			  if (ta < tb) return 1;
+			  if (ta > tb) return -1;
+			  if (a.msg_id < b.msg_id) return 1;
+			  if (a.msg_id > b.msg_id) return -1;
 			  return 0;
 			});
 
@@ -524,7 +560,6 @@ class ContactsListBox extends Component {
 
 		if ('audioRecordingStatus' in nextProps) {
 			this.setState({audioRecordingStatus: nextProps.audioRecordingStatus});
-			console.log('audioRecordingStatus', nextProps.audioRecordingStatus);
 		}
  
         this.setState({isLandscape: nextProps.isLandscape,
@@ -589,10 +624,27 @@ class ContactsListBox extends Component {
 		this._audioDurationsInFlight.add(messageId);
 
 		const Sound = require('react-native-sound'); // import dynamically
+		// Cache the failure too so we don't keep re-trying on every
+		// render. iOS's react-native-sound rejects some MP3 variants
+		// (OSStatus 1685348671 / 'djio' — header-size parsing) that
+		// AVAudioPlayer plays just fine, so a failure here must NOT
+		// affect playback. We just store 0 so getAudioDuration returns
+		// it as "no duration label", and let startAudioPlayer drive
+		// playback independently.
 		const sound = new Sound(filePath, '', (error) => {
 		  if (error) {
-			console.log('Failed to load the audio', error);
+			// Log compactly — the full native stack trace was noise.
+			console.log('Audio duration probe failed for', messageId,
+			    'code=', error && error.code,
+			    'msg=', error && error.message);
 			this._audioDurationsInFlight.delete(messageId);
+			this.setState((prevState) => ({
+			  audioDurations: {
+				...prevState.audioDurations,
+				[messageId]: 0, // 0 → durationLabel falls back to "Recording"
+			  },
+			}));
+			try { sound.release && sound.release(); } catch (e) { /* ignore */ }
 			return;
 		  }
 		  let duration = Math.floor(sound.getDuration());
@@ -603,6 +655,7 @@ class ContactsListBox extends Component {
 			  [messageId]: duration,
 			},
 		  }));
+		  try { sound.release && sound.release(); } catch (e) { /* ignore */ }
 		});
 	  };
   
@@ -725,18 +778,19 @@ class ContactsListBox extends Component {
                         renderMessages: GiftedChat.append(messages, []),
 						fullSize: false,
                         //placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
-						placeholder: 'Add a note...'
+						placeholder: 'Add a note, or just click Send...'
                         });
     }
 
     renderCustomActions = props =>
     (
-      <CustomChatActions {...props} 
-         recordAudio={this.props.recordAudio} 
-         isAudioRecording={this.state.isAudioRecording} 
-         recordingFile={this.state.recordingFile} 
-         texting={this.state.texting || this.state.replyingTo} 
-         sendingImage={this.state.sharingMessages.length > 0} 
+      <CustomChatActions {...props}
+         recordAudio={this.props.recordAudio}
+         isAudioRecording={this.state.isAudioRecording}
+         recordingFile={this.state.recordingFile}
+         texting={this.state.texting || this.state.replyingTo}
+         sendingImage={this.state.sharingMessages.length > 0}
+         deleteSharingAssets={this.deleteSharingAssets}
          selectedContact={this.state.selectedContact}/>
     )
 
@@ -965,7 +1019,10 @@ class ContactsListBox extends Component {
 			  scrollEnabled
 			  onChangeText={composerProps.onTextChanged}
 			  value={composerProps.text}
-			  textAlignVertical="top"
+			  // 'center' instead of 'top' so the placeholder/text sits
+			  // on the same baseline as the Delete and Send icons in
+			  // the input toolbar (the row uses alignItems: 'center').
+			  textAlignVertical="center"
 			/>
 		  </View>
 		</View>
@@ -1102,18 +1159,27 @@ class ContactsListBox extends Component {
     async handleShare(message, email=false) {
         //console.log('-- handleShare\n', JSON.stringify(message, null, 2));
         let what = 'Message';
-        
-        console.log('handleShare', message._id);
-		const selectedIds = this.state.selectedImages;
 
-		if (message._id in this.state.imageGroups && selectedIds && selectedIds.length > 0) {  
-			console.log(' -- handleShare', this.state.selectedImages);
+        console.log('handleShare', message._id);
+		// For a group leader bubble: share the user's selection if any,
+		// otherwise share the whole group. Single (non-leader) messages
+		// fall through to the regular single-message share below.
+		let targetIds = null;
+		if (message._id in this.state.imageGroups) {
+			const sel = this.state.selectedImages || [];
+			targetIds = sel.length > 0
+				? sel
+				: (this.state.imageGroups[message._id] || []);
+		}
+
+		if (targetIds && targetIds.length > 0) {
+			console.log(' -- handleShare', targetIds);
 
 			what = 'Share images';
 			let urls = [];
 	
 			for (let msg of this.state.filteredMessages) {
-				if (!selectedIds.includes(msg._id)) continue;
+				if (!targetIds.includes(msg._id)) continue;
 	
 				if (msg.metadata && msg.metadata.local_url) {
 					let filePath = msg.metadata.local_url;
@@ -1241,8 +1307,6 @@ class ContactsListBox extends Component {
 	async startAudioPlayer(message) {
 		const id = message._id;
 
-		//console.log('startAudioPlayer', id, 'at position', message.metadata.position)
-
 		// Send IMDN "displayed" FIRST — before any other work — the moment
 		// the recipient presses Play. Doing this before stopAudioPlayer() and
 		// audioRecorderPlayer.startPlayer() ensures the network notification
@@ -1257,13 +1321,72 @@ class ContactsListBox extends Component {
 			}
 		}
 
-		this.stopAudioPlayer();
-
-		if (this.state.audioRecordingStatus && this.state.audioRecordingStatus.metadata && this.state.audioRecordingStatus.metadata.transfer_id == id) {
+		// Already playing THIS exact message — no-op. Use the synchronous
+		// instance ref `currentAudioMessage` (set in the playback listener,
+		// cleared by stopAudioPlayer) instead of `state.audioRecordingStatus`,
+		// which lags by one async setState round and used to bail on every
+		// tap-to-replay (especially after the synchronous audioRecordingStatus
+		// seed lower in this function set transfer_id pre-emptively, so the
+		// state.transfer_id always matched id on subsequent taps and the
+		// function returned before reaching audioRecorderPlayer.startPlayer).
+		if (this.currentAudioMessage && this.currentAudioMessage._id === id) {
 			return;
 		}
 
+		this.stopAudioPlayer();
+
 		this.props.startAudioPlayerFunc();
+
+		// Seed audioRecordingStatus synchronously so the bubble's `isCurrent`
+		// check (audioRecordingStatus.metadata.transfer_id === currentMessage
+		// .metadata.transfer_id) is true the moment `currentMessage.playing`
+		// flips to true. Without this, the first render after the first
+		// playback tick still has audioRecordingStatus={} (transfer_id
+		// undefined) → isCurrent=false → isPlaying gets force-cleared → the
+		// bubble's icon stays as "play" until a later React commit picks up
+		// the listener's setState. That's the "play -> pause flips after a
+		// while" lag we see in metro.log: msg.playing=true with
+		// status.tid=undefined on the first render.
+		this.setState({
+			audioRecordingStatus: {
+				metadata: message.metadata,
+				duration: '00:00',
+				position: message.metadata?.position || 0,
+			},
+		});
+
+		// iOS playback engine fork. AVAudioPlayer (used by
+		// audioRecorderPlayer on iOS) accepts but doesn't decode certain
+		// MP3 variants (notably VBR Sony recorder output). AVPlayer via
+		// react-native-video handles those reliably. On iOS we set
+		// iosAudio state, render a hidden <Video audioOnly>, and let its
+		// onLoad/onProgress/onEnd callbacks drive the same updates the
+		// addPlayBackListener path produces on Android.
+		//
+		// TEMPORARILY DISABLED — re-testing with audioRecorderPlayer for
+		// well-formed files (e.g. transcoded m4a). The <Video> path
+		// played audio but the play↔pause icon and slider didn't update,
+		// so we need to rework state propagation before re-enabling.
+		// Flip USE_IOS_VIDEO_AUDIO_PLAYER to true to restore the AVPlayer
+		// path for AVAudioPlayer-incompatible MP3s.
+		const USE_IOS_VIDEO_AUDIO_PLAYER = false;
+		if (USE_IOS_VIDEO_AUDIO_PLAYER && Platform.OS === 'ios') {
+			const iosPath = message.audio.startsWith('file://')
+				? message.audio
+				: 'file://' + message.audio;
+			this.currentAudioMessage = message;
+			this.currentAudioDurationMs = 0;
+			this.setState({
+				iosAudio: {
+					path: iosPath,
+					message: message,
+					paused: false,
+					duration: 0,
+					hasSeeked: false,
+				},
+			});
+			return;
+		}
 
 		const path = message.audio.startsWith('file://') ? message.audio : 'file://' + message.audio;
 
@@ -1277,6 +1400,53 @@ class ContactsListBox extends Component {
 			*/
 
 			await audioRecorderPlayer.startPlayer(path);
+
+			// Silence-on-resume seek. If the user scrubbed the slider
+			// to a non-zero position before pressing Play, we want
+			// playback to begin AT that position — not at 0 with the
+			// first ~500 ms audible before the listener's first tick
+			// gets to issue seekToPlayer(). Pause immediately after
+			// startPlayer so the player loads but doesn't emit audio,
+			// and let the listener resume after the seek lands.
+			const savedPct = message.metadata && message.metadata.position;
+			const needsSeek = typeof savedPct === 'number' && savedPct > 0 && savedPct < 100;
+			if (needsSeek) {
+				try {
+					await audioRecorderPlayer.pausePlayer();
+				} catch (e) {
+					console.log('[startAudioPlayer] pause-for-seek failed', e && e.message);
+				}
+			}
+
+			// Silent-failure watchdog. iOS AVAudioPlayer accepts some
+			// MP3 variants (e.g. VBR Sony recorder output) at the
+			// prepare/play step but never emits decoded frames or
+			// listener ticks. Without this guard the bubble locks at
+			// "playing" with no audio and no way for the user to
+			// retap (the early-return guard above sees
+			// currentAudioMessage as set). If no tick has fired
+			// within `noTickGraceMs`, declare the playback failed,
+			// stop the player, restore state, and surface a system
+			// message so the user knows what happened.
+			const noTickGraceMs = 2000;
+			this._anyTickReceived = false;
+			if (this._noTickTimer) clearTimeout(this._noTickTimer);
+			this._noTickTimer = setTimeout(() => {
+				if (this._anyTickReceived) return;
+				if (!this.currentAudioMessage || this.currentAudioMessage._id !== id) return;
+				console.log('[startAudioPlayer] no tick within',
+				    noTickGraceMs, 'ms — silent decoder failure');
+				try { audioRecorderPlayer.stopPlayer(); } catch (e) { /* ignore */ }
+				try { audioRecorderPlayer.removePlayBackListener(); } catch (e) { /* ignore */ }
+				this.props.stopAudioPlayerFunc && this.props.stopAudioPlayerFunc();
+				this.setState({audioRecordingStatus: {}});
+				this.currentAudioMessage = null;
+				this.currentAudioDurationMs = 0;
+				const watchdogTitle = "Could not play audio";
+				const watchdogBody = "The player started without errors but produced no sound — the file format may not be supported. Open the message menu and share it to another app.";
+				Alert.alert(watchdogTitle, watchdogBody, [{ text: 'OK', style: 'default' }]);
+				this.postChatSystemMessage(watchdogTitle + ' — ' + watchdogBody);
+			}, noTickGraceMs);
 
 			// Heuristic state for detecting "playback actually finished" even
 			// when the underlying player gets stuck a few hundred ms before
@@ -1298,6 +1468,9 @@ class ContactsListBox extends Component {
 
 			audioRecorderPlayer.addPlayBackListener((e) => {
 				if (!e.duration || e.duration <= 0) return;
+				// Disarm the silent-decoder watchdog the moment we get
+				// a meaningful tick — file is decoding fine.
+				this._anyTickReceived = true;
 
 				const current = Math.floor(e.currentPosition);
 				const duration = Math.floor(e.duration);
@@ -1320,6 +1493,17 @@ class ContactsListBox extends Component {
 					hasSeeked = true;
 					seekTargetMs = Math.floor(seekPosition);
 					seekSettled = seekTargetMs <= 0;
+					// If we paused immediately after startPlayer (because
+					// savedPct > 0), resume now that the seek has been
+					// issued — the user hears playback only from the
+					// requested position, not from 0.
+					if (needsSeek) {
+						try {
+							audioRecorderPlayer.resumePlayer();
+						} catch (e2) {
+							console.log('[startAudioPlayer] resume-after-seek failed', e2 && e2.message);
+						}
+					}
 					// Pre-publish the resume position to the slider so it
 					// stays where the user paused/seeked to instead of
 					// snapping back to 0 while the player settles.
@@ -1357,7 +1541,6 @@ class ContactsListBox extends Component {
 				}
 
 				let percentage = Math.floor((current / duration) * 100); // Integer between 0 and 100
-				console.log('e.currentPosition', e.currentPosition, 'e.duration', e.duration, 'percentage', percentage );
 
 				// Track tick advancement for the "stuck near end" heuristic.
 				const now = Date.now();
@@ -1409,7 +1592,22 @@ class ContactsListBox extends Component {
 			});
 
 		} catch (e) {
-			console.log('startAudioPlayer error', e);
+			console.log('[startAudioPlayer] error', 'msg=', e && e.message,
+			    'code=', e && e.code, 'domain=', e && e.domain);
+			// Player failed to load this file. Roll back the in-flight
+			// audioRecordingStatus seed so the bubble doesn't think it's
+			// playing — and so the next tap isn't blocked by the
+			// "already playing" guard above.
+			this.props.stopAudioPlayerFunc && this.props.stopAudioPlayerFunc();
+			this.setState({audioRecordingStatus: {}});
+			this.currentAudioMessage = null;
+			this.currentAudioDurationMs = 0;
+			// Surface to the user via a native Alert (guaranteed
+			// visible) plus a chat system note for the record.
+			const errTitle = "Could not play audio";
+			const errBody = (e && e.message) || 'Unknown error from audio player';
+			Alert.alert(errTitle, errBody, [{ text: 'OK', style: 'default' }]);
+			this.postChatSystemMessage(errTitle + ' — ' + errBody);
 		}
 	}
 
@@ -1440,9 +1638,14 @@ class ContactsListBox extends Component {
     async stopAudioPlayer() {
 		//console.log('stopAudioPlayer', this.state.audioRecordingStatus);
 
-		audioRecorderPlayer.stopPlayer();
-		audioRecorderPlayer.removePlayBackListener();
-		
+		// On Android the player is audioRecorderPlayer. On iOS we drive
+		// the hidden <Video audioOnly> via state — calling stopPlayer
+		// there is a no-op (and removePlayBackListener too), but we
+		// always tear down both so a stale handle from a previous
+		// platform/session can't keep emitting.
+		try { audioRecorderPlayer.stopPlayer(); } catch (e) { /* ignore */ }
+		try { audioRecorderPlayer.removePlayBackListener(); } catch (e) { /* ignore */ }
+
 		/*
 		if (Platform.OS === 'android') {
 			if (this.previousAudioMode !== null) {
@@ -1450,7 +1653,7 @@ class ContactsListBox extends Component {
 				await AudioRouteModule.setAudioMode(previousMode);
 			}
 		}
-		*/	
+		*/
 
 		this.props.stopAudioPlayerFunc();
 
@@ -1464,10 +1667,131 @@ class ContactsListBox extends Component {
 			}
 		}
 
-		this.setState({audioRecordingStatus: {}});
+		this.setState({
+			audioRecordingStatus: {},
+			// Tear down the iOS Video component too, so AVPlayer
+			// releases the asset.
+			iosAudio: {
+				path: null,
+				message: null,
+				paused: true,
+				duration: 0,
+				hasSeeked: false,
+			},
+		});
 		this.currentAudioDurationMs = 0;
 		this.currentAudioMessage = null;
 	}
+
+	// ---------- iOS-only audio playback handlers ----------
+	// These mirror the Android addPlayBackListener tick logic but are
+	// driven by react-native-video's onLoad / onProgress / onEnd /
+	// onError on a hidden <Video audioOnly>. They share the same
+	// state surface (audioRecordingStatus, currentAudioMessage,
+	// updateFileTransferMetadata 'playing'/'position') so the bubble
+	// UI is platform-agnostic.
+
+	_onIOSAudioLoad = ({ duration }) => {
+		const ios = this.state.iosAudio;
+		if (!ios || !ios.message) return;
+		const message = ios.message;
+		const durationMs = Math.floor((duration || 0) * 1000);
+		this.currentAudioDurationMs = durationMs;
+		// Mirror the "playing=true" metadata flip that the Android
+		// listener's first tick produces.
+		this.props.updateFileTransferMetadata(message.metadata, 'playing', true);
+		// Seed audioRecordingStatus with mm:ss duration + saved position.
+		const savedPct = message.metadata?.position || 0;
+		this.setState((prev) => ({
+			iosAudio: { ...prev.iosAudio, duration: duration || 0 },
+			audioRecordingStatus: {
+				metadata: message.metadata,
+				duration: audioRecorderPlayer.mmssss(durationMs),
+				position: savedPct,
+			},
+		}));
+		// If we have a saved scrub position, ask the Video to seek.
+		if (!ios.hasSeeked && savedPct > 0 && savedPct < 100 && this._iosAudioRef) {
+			const seekSec = (savedPct / 100) * (duration || 0);
+			try { this._iosAudioRef.seek(seekSec); } catch (e) { /* ignore */ }
+		}
+		// Mark hasSeeked even if savedPct is 0/100 so we don't keep
+		// re-seeking on every onLoad (some Video versions re-fire it
+		// after seek).
+		this.setState((prev) => ({
+			iosAudio: { ...prev.iosAudio, hasSeeked: true },
+		}));
+	};
+
+	_onIOSAudioProgress = ({ currentTime, playableDuration }) => {
+		const ios = this.state.iosAudio;
+		if (!ios || !ios.message || !ios.duration) return;
+		const durationMs = Math.floor(ios.duration * 1000);
+		const currentMs = Math.floor((currentTime || 0) * 1000);
+		const percentage = Math.floor((currentMs / durationMs) * 100);
+		// Mirror the Android tick's audioRecordingStatus update so the
+		// slider advances and the bubble's isCurrent stays true.
+		this.setState({
+			audioRecordingStatus: {
+				metadata: ios.message.metadata,
+				duration: audioRecorderPlayer.mmssss(durationMs),
+				position: Math.max(0, Math.min(100, percentage)),
+			},
+		});
+	};
+
+	_onIOSAudioEnd = () => {
+		const ios = this.state.iosAudio;
+		if (ios && ios.message) {
+			// Pin the slider at 100% on the final state update so the
+			// bubble shows the audio as completed before stopAudioPlayer
+			// clears state.
+			this.setState({
+				audioRecordingStatus: {
+					metadata: ios.message.metadata,
+					duration: audioRecorderPlayer.mmssss(this.currentAudioDurationMs),
+					position: 100,
+				},
+			}, () => {
+				this.stopAudioPlayer();
+			});
+		} else {
+			this.stopAudioPlayer();
+		}
+	};
+
+	_onIOSAudioError = (error) => {
+		console.log('[iosAudio] onError', JSON.stringify(error));
+		// Translate AVFoundation's terse codes into something users can
+		// act on. The most common one we see for Sony VBR recordings is
+		// AVErrorOperationNotSupportedForAsset (-11849) with a "This
+		// media may be damaged" failure reason — the file is fine, iOS
+		// just can't decode it. Suggest the workaround: share/save the
+		// file and open it in an app that can (Files, VLC, etc.).
+		const inner = (error && error.error) || {};
+		const code = inner.code;
+		const reason = inner.localizedFailureReason || '';
+		let title, body;
+		if (code === -11849 || /damaged/i.test(reason)) {
+			title = "Can't play this audio on iOS";
+			body = "Apple's built-in decoder doesn't support this MP3 variant (often the case for hardware recorders). The file is fine — open the message menu and share it to Files, VLC, or another audio app.";
+		} else if (code === -11800 || code === -11828) {
+			title = "Can't open this audio";
+			body = "iOS couldn't open this audio file. It may be corrupted, or in a format Apple doesn't support. Open the message menu and share it to another app.";
+		} else {
+			title = "Could not play audio";
+			body = inner.localizedDescription || (code != null ? 'iOS error ' + code : 'unknown error');
+		}
+		// Surface via a native Alert (guaranteed visible) AND as a
+		// chat system message (visible after dismissing the alert,
+		// useful as a record). The chat one used to be the only path
+		// but was being stomped by the next componentWillReceiveProps
+		// sync that rebuilt renderMessages from props, so the user
+		// saw nothing.
+		Alert.alert(title, body, [{ text: 'OK', style: 'default' }]);
+		this.postChatSystemMessage(title + ' — ' + body);
+		this.stopAudioPlayer();
+	};
 
     setTargetUri(uri, contact) {
         //console.log('Set target uri uri in history list', uri);
@@ -1995,9 +2319,22 @@ class ContactsListBox extends Component {
 		this.getAudioDuration(currentMessage.audio, currentMessage._id);
 	  }
 
-	  // Get duration string
-	  const durationLabel = audioDurations[currentMessage._id]
-		? `Recording of ${audioDurations[currentMessage._id]}s`
+	  // Format raw seconds as "1h 6m 40s" / "23m 14s" / "45s" so a 1394s clip
+	  // reads as "Recording of 23m 14s" instead of "Recording of 1394s".
+	  const formatAudioDuration = (totalSeconds) => {
+		const s = Math.max(0, Math.floor(totalSeconds || 0));
+		const h = Math.floor(s / 3600);
+		const m = Math.floor((s % 3600) / 60);
+		const sec = s % 60;
+		const parts = [];
+		if (h > 0) parts.push(`${h}h`);
+		if (h > 0 || m > 0) parts.push(`${m}m`);
+		parts.push(`${sec}s`);
+		return parts.join(' ');
+	  };
+	  const rawDuration = audioDurations[currentMessage._id];
+	  const durationLabel = rawDuration
+		? `Recording of ${formatAudioDuration(rawDuration)}`
 		: 'Recording';
 
 	  const isIncoming = currentMessage.direction === 'incoming';
@@ -2250,6 +2587,12 @@ class ContactsListBox extends Component {
 	showGrid = subsequentMessages.length > 1;
 
 	if (showGrid) {
+		// Upload preview phase: the bubbles carry metadata.preview === true
+		// while the user is staging images to send. Selection checkmarks
+		// are meaningless there (you can't multi-select pre-send), so the
+		// checkbox overlay is suppressed. After send, selection comes back
+		// for the regular grouped-image affordances.
+		const isPreview = !!currentMessage.metadata?.preview;
 		return (
 		  <ThumbnailGrid
 			images={gridImages.reverse()}
@@ -2257,6 +2600,7 @@ class ContactsListBox extends Component {
 			onRotateImage={this.onRotateImage}
 			numColumns={numColumns}
 			showTimestamp={false}
+			selectMode={!isPreview}
 			onSelectionChange = {this.thumbnailSelectionChanged}
 			onLongPress={(item) => console.log('long', item)}
 			renderThumb={({item, index, size}) => (
@@ -2276,7 +2620,7 @@ class ContactsListBox extends Component {
 			width: '100%',
 			justifyContent: 'center',
 			alignItems: 'center',
-			marginBottom: -5,
+			marginBottom: -5
 		  }}
 		>
 
@@ -2296,7 +2640,7 @@ class ContactsListBox extends Component {
 			  <ActivityIndicator size="large" color="#aaa" />
 			</View>
 		  )}
-	
+
 		  <View
 			style={{
 			  width: '100%',
@@ -2312,7 +2656,7 @@ class ContactsListBox extends Component {
 				width: '100%',
 				height: '100%',
 				opacity: isLoading ? 0.9 : 1,
-				transform: [{ rotate: `${rotation}deg` }],
+				transform: [{ rotate: `${rotation}deg` }]
 			  }}
 			  source={{
 				uri,
@@ -2440,11 +2784,18 @@ class ContactsListBox extends Component {
         if (message.metadata && message.metadata.preview) {
 			return;
         }
-        
+
         //console.log('onMessagePress');
-    
+
+        // Body taps now perform the natural action for the bubble type
+        // (download / decrypt / open / play). The contextual action sheet
+        // is reachable only through the bubble's kebab IconButton — the
+        // wide-area "tap anywhere -> menu" behavior was confusing because
+        // it competed with the body-tap default action and made it easy
+        // to open the menu by accident while trying to start playback or
+        // open a file.
+
         if (message.metadata && message.metadata.filename) {
-            //console.log('File metadata', message.metadata.filename);
             let file_transfer = message.metadata;
             if (!file_transfer.local_url) {
 				if (!file_transfer.path) {
@@ -2457,35 +2808,37 @@ class ContactsListBox extends Component {
 				}
                 return;
             }
-            
-            if (!file_transfer.local_url) {
-				return;
-            }
 
             RNFS.exists(file_transfer.local_url).then((exists) => {
                 if (exists) {
                     if (file_transfer.local_url.endsWith('.asc')) {
                         if (file_transfer.error) {
-                            this.onLongMessagePress(context, message);
+                            // Decryption failed previously — body tap retries
+                            // the decrypt rather than opening the menu (the
+                            // kebab can be used to delete / inspect instead).
+                            this.props.decryptFunc(message.metadata);
                         } else {
                             this.props.decryptFunc(message.metadata);
                         }
                     } else {
-                        this.onLongMessagePress(context, message);
-                        //this.openFile(message)
+                        // Decrypted file ready: open it (audio plays via
+                        // startAudioPlayer, others via FileViewer).
+                        this.openFile(message);
                     }
                 } else {
                     if (file_transfer.path) {
-                        // this was a local created upload, don't download as the file has not yet been uploaded
-                        this.onLongMessagePress(context, message);
+                        // Local upload still in flight — body tap is a
+                        // no-op; the kebab gives access to cancel/delete.
+                        return;
                     } else {
                         this.props.downloadFile(message.metadata, true);
                     }
                 }
             });
-        } else {
-            this.onLongMessagePress(context, message);
         }
+        // Plain-text messages: body tap does nothing. Long-press still
+        // opens the contextual menu through GiftedChat's onLongPress, and
+        // the kebab is the explicit one-touch path for media bubbles.
     }
 
     openFile(message) {
@@ -2603,6 +2956,66 @@ class ContactsListBox extends Component {
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
 
+			// Pause / Resume — only meaningful for OUR OWN live share
+			// (we can't pause / resume a peer's stream) and only when
+			// the share hasn't expired and isn't a one-shot. The
+			// active/paused/stopped distinction comes from
+			// getLocationShareState (consults navBar.locationTimers
+			// in app.js's bridge):
+			//   • active  → show "Pause"
+			//   • paused  → show "Resume"
+			//   • stopped → show "Resume" too (the "deleted by mistake"
+			//               case the user asked for — bridge falls
+			//               back to startLocationSharing with
+			//               resumeOriginMetadataId set so the existing
+			//               bubble keeps updating).
+			const _liveMd = mdForMeeting; // already pulled above
+			const _isOurShare = currentMessage.direction === 'outgoing';
+			const _isOneShot = _liveMd.one_shot === true;
+			let _expiresMs = null;
+			if (_liveMd.expires) {
+				const v = typeof _liveMd.expires === 'number'
+					? _liveMd.expires
+					: Date.parse(_liveMd.expires);
+				if (Number.isFinite(v)) _expiresMs = v;
+			}
+			const _isExpired = _expiresMs != null && _expiresMs <= Date.now();
+			const _shareOriginId = _liveMd.messageId || currentMessage._id;
+			const _shareUri = this.state.targetUri;
+			let _shareState = 'stopped';
+			if (typeof this.props.getLocationShareState === 'function') {
+				try {
+					_shareState = this.props.getLocationShareState(_shareUri, _shareOriginId);
+				} catch (e) { /* default to 'stopped' */ }
+			}
+			if (isLiveLocation
+					&& _isOurShare
+					&& !_isOneShot
+					&& !_isExpired) {
+				console.log('[location] kebab: pause/resume eligible',
+					'uri=', _shareUri,
+					'bubble=', currentMessage._id,
+					'shareOriginId=', _shareOriginId,
+					'shareState=', _shareState,
+					'expiresMs=', _expiresMs,
+					'remainingMs=', _expiresMs != null ? _expiresMs - Date.now() : '(no expires)');
+				if (_shareState === 'active') {
+					options.push('Pause');
+					icons.push(<Icon name="pause" size={20} />);
+				} else {
+					// 'paused' OR 'stopped' — Resume covers both.
+					options.push('Resume');
+					icons.push(<Icon name="play" size={20} />);
+				}
+			} else if (isLiveLocation && _isOurShare) {
+				console.log('[location] kebab: pause/resume hidden',
+					'uri=', _shareUri,
+					'bubble=', currentMessage._id,
+					'isOneShot=', _isOneShot,
+					'isExpired=', _isExpired,
+					'expiresMs=', _expiresMs);
+			}
+
 			// Edit is meaningless for live-location bubbles — their body is
 			// auto-generated (a tick timestamp), not user-authored text.
 			if (this.isMessageEditable(currentMessage) && !isLiveLocation) {
@@ -2631,14 +3044,22 @@ class ContactsListBox extends Component {
             }
 
 			if (currentMessage.image) {
-				if (!(currentMessage._id in this.state.imageGroups)) {  
+				if (!(currentMessage._id in this.state.imageGroups)) {
 					options.push('Delete');
 					icons.push(<Icon name="delete" size={20} />);
 				} else {
-				    if (this.state.selectedImages.length > 0) {
-						options.push('Delete');
-						icons.push(<Icon name="delete" size={20} />);
+					// Group leader: Delete is always reachable. With a
+					// thumbnail selection it targets just the selected
+					// images; without one it targets every image in the
+					// group. The label communicates which.
+					const groupSize = (this.state.imageGroups[currentMessage._id] || []).length;
+					const selCount = this.state.selectedImages.length;
+					if (selCount > 0) {
+						options.push(`Delete selected (${selCount})`);
+					} else {
+						options.push(`Delete all (${groupSize} images)`);
 					}
+					icons.push(<Icon name="delete" size={20} />);
 				}
 			} else {
 				options.push('Delete');
@@ -2678,12 +3099,23 @@ class ContactsListBox extends Component {
 						icons.push(<Icon name="share" size={20} />);
 
 					} else {
-						if (this.state.selectedImages.length > 0) {
-							options.push('Forward');
-							icons.push(<Icon name="arrow-right" size={20} />);
-							options.push('Share');
-							icons.push(<Icon name="share" size={20} />);
-						}
+						// Group leader: same fallback as Delete — with a
+						// selection, target just the selected; without
+						// one, target the whole group. Labels communicate
+						// the count so the user knows what they're about
+						// to send / share.
+						const groupSize = (this.state.imageGroups[currentMessage._id] || []).length;
+						const selCount = this.state.selectedImages.length;
+						const fwdLabel = selCount > 0
+							? `Forward selected (${selCount})`
+							: `Forward all (${groupSize} images)`;
+						const shareLabel = selCount > 0
+							? `Share selected (${selCount})`
+							: `Share all (${groupSize} images)`;
+						options.push(fwdLabel);
+						icons.push(<Icon name="arrow-right" size={20} />);
+						options.push(shareLabel);
+						icons.push(<Icon name="share" size={20} />);
 					}
 				} else {
 					options.push('Forward');
@@ -2761,10 +3193,16 @@ class ContactsListBox extends Component {
                     } else {
                         Clipboard.setString(currentMessage.text);
                     }
-                } else if (action === 'Delete') {
+                } else if (action === 'Delete'
+                           || action.startsWith('Delete selected')
+                           || action.startsWith('Delete all')) {
                     let messagesToDelete = [currentMessage._id];
 					if (currentMessage._id in this.state.imageGroups) {
-						messagesToDelete = this.state.selectedImages;
+						// "Delete selected (N)" → selectedImages
+						// "Delete all (N images)" → every member of the group
+						messagesToDelete = this.state.selectedImages.length > 0
+							? this.state.selectedImages
+							: (this.state.imageGroups[currentMessage._id] || []);
 					}
                     // Only outgoing messages can be deleted for the remote party.
                     // Incoming messages live on the sender's device and we have no
@@ -2781,6 +3219,23 @@ class ContactsListBox extends Component {
                         canDeleteRemote: canDeleteRemote,
                         showDeleteMessageModal: true,
                     });
+                } else if (action === 'Pause') {
+                    if (typeof this.props.pauseLocationShare === 'function') {
+                        const md = currentMessage.metadata || {};
+                        const originId = md.messageId || currentMessage._id;
+                        this.props.pauseLocationShare(this.state.targetUri, originId);
+                    }
+                } else if (action === 'Resume') {
+                    if (typeof this.props.resumeLocationShare === 'function') {
+                        const md = currentMessage.metadata || {};
+                        const originId = md.messageId || currentMessage._id;
+                        // Hand the bubble's metadata to app.js so the
+                        // bridge can fall back to startLocationSharing
+                        // with the right durationMs / kind when the
+                        // share has been fully stopped (e.g. deleted
+                        // by mistake) rather than just paused.
+                        this.props.resumeLocationShare(this.state.targetUri, originId, md);
+                    }
                 } else if (action === 'Pin') {
                     this.props.pinMessage(currentMessage._id);
                 } else if (action === 'Unpin') {
@@ -2798,9 +3253,14 @@ class ContactsListBox extends Component {
                 } else if (action.startsWith('Forward')) {
                     let messagesToForward = [currentMessage];
 					if (currentMessage._id in this.state.imageGroups) {
-						  messagesToForward = this.state.renderMessages.filter(
-							msg => this.state.selectedImages.includes(msg._id)
-						  );
+						// "Forward selected (N)" → only selected.
+						// "Forward all (N images)" → every member.
+						const targetIds = this.state.selectedImages.length > 0
+							? this.state.selectedImages
+							: (this.state.imageGroups[currentMessage._id] || []);
+						messagesToForward = this.state.renderMessages.filter(
+						  msg => targetIds.includes(msg._id)
+						);
 					}
                     this.props.forwardMessagesFunc(messagesToForward, this.state.targetUri);
                 } else if (action.startsWith('Reply')) {
@@ -2939,9 +3399,33 @@ class ContactsListBox extends Component {
 		const result = {};
 		Object.entries(mm).forEach(([msgId, arr]) => {
 			if (!Array.isArray(arr)) return;
-			// Find the newest 'location' entry for this message.
-			const last = [...arr].reverse().find(e => e.action === 'location');
-			if (last) result[msgId] = last;
+			// Pick the newest 'location' entry for this message that
+			// ALSO carries usable coordinates. Legacy data can have a
+			// null-coord origin row in the array; without the coord
+			// filter the previous "first match in reversed array"
+			// pattern returned that origin (null lat/lng), hiding the
+			// map even when valid trail entries existed. We score by
+			// metadataContent.timestamp (preferring inner value.timestamp
+			// when present, since that's the GPS-fix time) and keep the
+			// best.
+			let best = null;
+			let bestTs = -Infinity;
+			for (const e of arr) {
+				if (!e || e.action !== 'location') continue;
+				const v = e.value;
+				if (!v
+						|| typeof v.latitude !== 'number'
+						|| typeof v.longitude !== 'number') {
+					continue;
+				}
+				const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+				const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+				if (ts > bestTs) {
+					best = e;
+					bestTs = ts;
+				}
+			}
+			if (best) result[msgId] = best;
 		});
 		return result;
 	}
@@ -3130,9 +3614,14 @@ class ContactsListBox extends Component {
 				// Live location: when this message is a rendered location
 				// bubble and a newer tick landed, bump `text` (a field
 				// ChatBubble's memo comparator watches) and refresh the
-				// embedded metadata so the LocationBubble renders the new
-				// coords. We intentionally leave `_id` and `createdAt`
-				// untouched so the bubble stays in its chronological slot.
+				// embedded metadata so the LocationBubble renders the
+				// new coords. We also bump `createdAt` to the new tick's
+				// timestamp so the bubble's footer time (HH:MM under the
+				// bubble) reflects the latest update — users expect the
+				// shown time to read "now-ish", not the origin time
+				// from when the share started. `_id` stays anchored to
+				// the origin so subsequent merges and metadata lookups
+				// keep finding the same row.
 				const newLocation = msg.contentType === 'application/sylk-live-location'
 					? locationData?.[msg._id]
 					: null;
@@ -3183,11 +3672,29 @@ class ContactsListBox extends Component {
 						: newLocation;
 					const textChanged = tickMarker !== msg.text;
 					const metaChanged = mergedMetadata !== msg.metadata;
-					if (textChanged || metaChanged) {
+					// Pull a Date out of the new tick — prefer the tick's
+					// own value.timestamp (when the GPS fix was taken),
+					// fall back to the metadataContent timestamp, then
+					// to "now" if neither is present.
+					const tickInner = newLocation && newLocation.value
+						? newLocation.value.timestamp
+						: null;
+					const tickOuter = newLocation && newLocation.timestamp
+						? newLocation.timestamp : null;
+					const newCreatedAt = tickInner
+						? new Date(tickInner)
+						: (tickOuter ? new Date(tickOuter) : new Date());
+					const _existingCreatedMs = msg.createdAt
+						? new Date(msg.createdAt).getTime()
+						: 0;
+					const _newCreatedMs = newCreatedAt.getTime();
+					const createdAtChanged = _newCreatedMs > _existingCreatedMs;
+					if (textChanged || metaChanged || createdAtChanged) {
 						return {
 							...msg,
 							text: tickMarker,
 							metadata: mergedMetadata,
+							createdAt: createdAtChanged ? newCreatedAt : msg.createdAt,
 						};
 					}
 				}
@@ -3544,7 +4051,19 @@ class ContactsListBox extends Component {
 	    isTransfering = progressData && progressData.progress < 100;
 	    
 	    if (!isIncoming && !currentMessage.pending) {
-			isTransfering = false;
+			// Original intent: hide upload progress on already-sent outgoing
+			// messages. But on a multi-device account, the SAME outgoing
+			// message can later be DOWNLOADED on the user's other device
+			// (you upload from Desktop -> the file-transfer message
+			// replicates to the Razr as still-outgoing -> you tap Download
+			// on the Razr to fetch the encrypted blob). In that case the
+			// stage is 'download' or 'decrypt', not 'upload'/'encrypt' --
+			// keep isTransfering true so the progress bar, stage label, and
+			// cancel button render.
+			const downloadStage = progressData && (progressData.stage === 'download' || progressData.stage === 'decrypt');
+			if (!downloadStage) {
+				isTransfering = false;
+			}
 	    }
 
 /*
@@ -3556,8 +4075,13 @@ class ContactsListBox extends Component {
 */
 	    let stage = progressData && progressData.stage;
 	    if (stage) {
+	        // Use the same label at every progress value — "Decrypting…" /
+	        // "Downloading…" etc. The indeterminate progress bar (driven by
+	        // `isStarting` below) is enough motion at 0% to show the
+	        // request is alive without needing a separate "Starting…" label.
 	        stage = stage.charAt(0).toUpperCase() + stage.substr(1).toLowerCase() + 'ing...';
 	    }
+	    const isStarting = !!(progressData && progressData.progress === 0);
 	    
 	    let mediaLabel = currentMessage.text;
 	    if ( currentMessage.metadata?.label ) {
@@ -3633,13 +4157,18 @@ class ContactsListBox extends Component {
 					<View style={[{flexDirection: 'row', alignItems: 'flex-start', borderWidth: 0, borderColor: 'red',
 					justifyContent: 'space-between', // distribute items evenly
 					paddingHorizontal: 0}, styles.photoMenuContainer, extraStyles]}>
-	
-						<IconButton
-							style={styles.photoMenu}
-							size={20}
-							icon="menu"
-							iconColor={!isIncoming ? "black": "white"}
-						/>
+
+						<GiftedChatContext.Consumer>
+						  {(chatContext) => (
+							<IconButton
+								style={styles.photoMenu}
+								size={20}
+								icon="menu"
+								iconColor={!isIncoming ? "black": "white"}
+								onPress={() => this.onLongMessagePress(chatContext, currentMessage)}
+							/>
+						  )}
+						</GiftedChatContext.Consumer>
 					  <View
 						style={[
 						  styles.photoMenuText,
@@ -3678,13 +4207,14 @@ class ContactsListBox extends Component {
 					        <View style={{ marginTop: 8, alignItems: 'flex-start' }}>
 							  <Progress.Bar
 								progress={progress}
+								indeterminate={isStarting}
 								width={60}         // smaller width for inline look
 								height={6}
 								borderRadius={3}
 								borderWidth={0}
 								color={isTransfering ? "#007AFF" : "orange"}
 								unfilledColor="#e0e0e0"
-								style={{ marginRight: 12 }} 
+								style={{ marginRight: 12 }}
 							  />
 
 							  <Text
@@ -3695,11 +4225,11 @@ class ContactsListBox extends Component {
 								  marginLeft: 2,
 								}}
 							  >
-								{Math.round(progress * 100)}%
+								{isStarting ? '…' : Math.round(progress * 100) + '%'}
 							  </Text>
 							  </View>
 							)}
-							
+
 							{!isTransfering?
 							<IconButton
 							  icon="fullscreen"
@@ -3728,12 +4258,17 @@ class ContactsListBox extends Component {
 				justifyContent: 'space-between', // distribute items evenly
 				paddingHorizontal: 0}, styles.photoMenuContainer, extraStyles]}>
 
-					<IconButton
-						style={styles.audio}
-						size={20}
-						icon="menu"
-						iconColor='white'
-					/>
+					<GiftedChatContext.Consumer>
+					  {(chatContext) => (
+						<IconButton
+							style={styles.audio}
+							size={20}
+							icon="menu"
+							iconColor='white'
+							onPress={() => this.onLongMessagePress(chatContext, currentMessage)}
+						/>
+					  )}
+					</GiftedChatContext.Consumer>
 
 				  <View
 					style={[
@@ -3773,13 +4308,14 @@ class ContactsListBox extends Component {
 						<View style={{ marginTop: 8, alignItems: 'flex-start' }}>
 						  <Progress.Bar
 							progress={progress}
+							indeterminate={isStarting}
 							width={60}         // smaller width for inline look
 							height={6}
 							borderRadius={3}
 							borderWidth={0}
 							color={isTransfering ? "#007AFF" : "orange"}
 							unfilledColor="#e0e0e0"
-							style={{ marginRight: 12 }} 
+							style={{ marginRight: 12 }}
 						  />
 
 						  <Text
@@ -3790,12 +4326,12 @@ class ContactsListBox extends Component {
 							  marginLeft: 2,
 							}}
 						  >
-							{Math.round(progress * 100)}%
+							{isStarting ? '…' : Math.round(progress * 100) + '%'}
 						  </Text>
 						  </View>
-						  
+
 						)}
-						
+
 						{isTransfering?
 						<IconButton
 						  icon="cancel"
@@ -3816,64 +4352,92 @@ class ContactsListBox extends Component {
 
             if (currentMessage.metadata.preview) {
 				return (
-					<View style={[{flexDirection: 'row', alignItems: 'flex-start',
-						justifyContent: 'space-between', // distribute items evenly
+					<View style={[{flexDirection: 'row', alignItems: 'center',
+						justifyContent: 'flex-start',
 						paddingHorizontal: 10,
 						paddingTop: 12}, styles.photoMenuContainer, extraStyles]}>
-	
-	
+
+
 					<View style={{flexDirection: 'row', alignItems: 'center',  borderWidth: 0, borderColor: 'red'}}>
-	
+
 					{ Platform.OS === "android" ?
 					   <Checkbox
+						 color="white"
+						 uncheckedColor="white"
 						 status={this.state.fullSize ? 'checked' : 'unchecked'}
-						 onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));						 							 
+						 onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));
 						 }}
 						/>
 					:
-					
+
 					<View
 					  style={{
 						borderWidth: this.state.fullSize ? 0.5 : 2,
-						borderColor: 'black',
+						borderColor: 'white',
 						borderRadius: 2,
 						padding: 0,
 						transform: [{ scale: 0.5 }]
 					  }}
 					>
 						<Checkbox
+						  color="white"
+						  uncheckedColor="white"
 						  status={this.state.fullSize ? 'checked' : 'unchecked'}
-						  onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));		
-						 }}			
+						  onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));
+						 }}
 						/>
-					 </View> 
+					 </View>
 					 }
-					  <Text style={[styles.checkboxLabel, {marginTop: 0}]}>Full size</Text>
+					  <Text style={[styles.checkboxLabel, {marginTop: 0, color: 'white'}]}>
+					    {(() => {
+					        // When uploading a batch of images the user sees one
+					        // preview bubble per image. Pre-fix, the "Full size of …"
+					        // label only reflected the size of the bubble it lived
+					        // on (typically the last one), making it look like the
+					        // whole upload was tiny. Sum filesizes across all
+					        // sharingMessages when there's more than one so the
+					        // label reflects the entire payload the user is about
+					        // to send.
+					        const sm = this.state.sharingMessages || [];
+					        if (sm.length > 1) {
+					            const total = sm.reduce(
+					                (s, m) => s + ((m.metadata && m.metadata.filesize) || 0),
+					                0
+					            );
+					            return total > 0
+					                ? `Full size of ${formatFileSize(total)} (${sm.length} images)`
+					                : `Full size (${sm.length} images)`;
+					        }
+					        return currentMessage.metadata?.filesize
+					            ? 'Full size of ' + formatFileSize(currentMessage.metadata.filesize)
+					            : 'Full size';
+					    })()}
+					  </Text>
 					  </View>
-		  
-					  <IconButton
-						style={styles.deleteButton}
-						type="font-awesome"
-						size={20}
-						icon="delete"
-						iconColor='red'
-						onPress={() => this.deleteSharingAssets()}
-					  />
-	
+
+					{/* Delete button has moved to the left side of the input
+					    toolbar (see CustomActions / ChatActions.js) so the
+					    preview bubble holds only the Full-size toggle. */}
+
 					</View>
-				); 
+				);
 			} else {
 				return (
 				<View style={[{flexDirection: 'row', alignItems: 'center',
 				justifyContent: 'space-between', // distribute items evenly
 				paddingHorizontal: 0}, styles.photoMenuContainer, extraStyles]}>
 
-					<IconButton
-						style={styles.photoMenu}
-						size={20}
-						icon="menu"
-						iconColor={!isIncoming ? "black": "white"}
-					/>
+					<GiftedChatContext.Consumer>
+					  {(chatContext) => (
+						<IconButton
+							style={styles.photoMenu}
+							size={20}
+							icon="menu"
+							iconColor={!isIncoming ? "black": "white"}
+							onPress={() => this.onLongMessagePress(chatContext, currentMessage)}
+						/>
+					  )}
+					</GiftedChatContext.Consumer>
 				  <View
 					style={[
 					  styles.photoMenuText,
@@ -3913,6 +4477,7 @@ class ContactsListBox extends Component {
 
 						  <Progress.Bar
 							progress={progress}
+							indeterminate={isStarting}
 							width={60}         // smaller width for inline look
 							height={6}
 							borderRadius={3}
@@ -3929,7 +4494,7 @@ class ContactsListBox extends Component {
 							  marginLeft: 2,
 							}}
 						  >
-							{Math.round(progress * 100)}%
+							{isStarting ? '…' : Math.round(progress * 100) + '%'}
 						  </Text>
 						  </View>
 						)}
@@ -4033,6 +4598,7 @@ class ContactsListBox extends Component {
 						
 							  <Progress.Bar
 								progress={progress}
+								indeterminate={isStarting}
 								width={120}
 								height={6}
 								borderRadius={3}
@@ -4040,7 +4606,7 @@ class ContactsListBox extends Component {
 								color={isTransfering ? "#007AFF" : "orange"}
 								unfilledColor="#e0e0e0"
 							  />
-						
+
 							  <Text
 								style={{
 								  fontSize: 12,
@@ -4048,7 +4614,7 @@ class ContactsListBox extends Component {
 								  marginTop: 2,
 								}}
 							  >
-								{Math.round(progress * 100)}%
+								{isStarting ? '…' : Math.round(progress * 100) + '%'}
 							  </Text>
 							</View>
 						
@@ -4063,7 +4629,12 @@ class ContactsListBox extends Component {
 						
 						) : (
 						
-						  /* Not downloading */
+						  /* Not downloading — explicit "Press to download"
+						     affordance. Pre-fix the bubble showed a bare
+						     download icon with no label, which made it
+						     unclear that the user had to act before
+						     anything would happen (especially for large
+						     files where auto-download is skipped). */
 						  currentMessage.metadata.local_url == null && (
 							<View
 							  style={{
@@ -4073,6 +4644,15 @@ class ContactsListBox extends Component {
 								alignItems: 'center',
 							  }}
 							>
+							  <Text
+								style={{
+								  color: '#666',
+								  fontSize: 13,
+								  marginRight: 4,
+								}}
+							  >
+								Press to download
+							  </Text>
 							  <IconButton
 								icon="download"
 								size={24}
@@ -4203,8 +4783,19 @@ class ContactsListBox extends Component {
 	  const isMedia = currentMessage.video || currentMessage.audio;
 	  const textColor = currentMessage.audio || isIncoming ? 'white' : 'black';
 	  let hasFileSize = !!currentMessage.metadata?.filesize;
-	  if (currentMessage._id in this.state.imageGroups) { 
-		  hasFileSize = false;
+	  // In normal chat, suppress per-photo filesize for any image that
+	  // belongs to a group (the group leader's id is a key in
+	  // imageGroups; non-leader members of the same group only appear
+	  // in groupOfImage). Sizes were noisy in the timeline view — they
+	  // belong on the grid media screen, where filesize is the whole
+	  // point. Show them there (orderBy === 'size'), hide elsewhere.
+	  if (this.state.orderBy !== 'size') {
+	      if (currentMessage._id in this.state.imageGroups) {
+	          hasFileSize = false;
+	      }
+	      if (this.state.groupOfImage && currentMessage._id in this.state.groupOfImage) {
+	          hasFileSize = false;
+	      }
 	  }
 	
 	  const timeString = currentMessage.createdAt
@@ -5126,6 +5717,7 @@ scrollToMessage(id) {
 					isLandscape={this.state.isLandscape}
 					numColumns={3}
 					showTimestamp={true}
+					showSize={true}
 					enableDelete={true}
 					deleteImages={this.deleteImages}
 					onRotateImage={this.onRotateImage}
@@ -5144,7 +5736,7 @@ scrollToMessage(id) {
 				<KeyboardWrapper
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
 					  style={[chatContainer, {marginBottom: Platform.OS === 'ios' ? this.state.composerHeight - bottomInset + this.state.replyContainerHeight: 0}]}
-					  
+
 					  {...(Platform.OS === 'android'
 						? {
 							behavior: 'height',
@@ -5170,6 +5762,29 @@ scrollToMessage(id) {
                   onLongPress={this.onLongMessagePress}
                   onPress={this.onMessagePress}
                   renderInputToolbar={chatInputClass}
+                  renderMessage={(props) => {
+                      // Image-attach preview: collapse gifted-chat's
+                      // built-in avatar gutter (renderAvatar={null}
+                      // makes Avatar return null) and zero out the
+                      // hard-coded marginLeft/marginRight on Message's
+                      // inner row so the bubble truly reaches both
+                      // screen edges.
+                      const isPreview = props.currentMessage?.metadata?.preview === true;
+                      if (!isPreview) {
+                          return <Message {...props} />;
+                      }
+                      const previewRowStyle = { marginLeft: 0, marginRight: 0 };
+                      return (
+                          <Message
+                              {...props}
+                              renderAvatar={null}
+                              containerStyle={{
+                                  left: previewRowStyle,
+                                  right: previewRowStyle
+                              }}
+                          />
+                      );
+                  }}
                   renderBubble={this.renderBubbleWithMessages}
                   renderMessageText={this.renderMessageText}
 				  renderMessageImage={(props) =>
@@ -5344,8 +5959,57 @@ scrollToMessage(id) {
 						iconColor="white"
 					  />
 				</TouchableOpacity>
+
+				{/* Close button — explicit "go back" affordance. Uses the
+				    raw vector-icons Icon (not paper's IconButton) so the
+				    glyph renders reliably without the IconButton's
+				    internal padding/touch-area that could otherwise nest
+				    badly inside the TouchableOpacity. */}
+				<TouchableOpacity
+				  onPress={() => this.onImagePress(null)}
+				  hitSlop={{top: 20, left: 20, right: 20, bottom: 20}}
+				  style={{
+					position: "absolute",
+					top: 40,
+					left: 30,
+					backgroundColor: "rgba(0,0,0,0.6)",
+					width: 56,
+					height: 56,
+					borderRadius: 28,
+					alignItems: "center",
+					justifyContent: "center",
+					zIndex: 100,
+					elevation: 100,
+				  }}
+				>
+				  <Icon name="close" size={36} color="white" />
+				</TouchableOpacity>
 			  </Modal>
 			)}
+
+            {/* iOS audio playback engine. Hidden zero-size Video in
+                audio-only mode that plays through AVPlayer (more permissive
+                than AVAudioPlayer / audioRecorderPlayer's CoreAudio path,
+                so VBR Sony recorder MP3s actually decode). Mounted only
+                when iosAudio.path is set; unmount on stop releases the
+                asset. Android continues to use audioRecorderPlayer and
+                does not render this. */}
+            {Platform.OS === 'ios' && this.state.iosAudio && this.state.iosAudio.path ? (
+                <Video
+                    ref={(r) => { this._iosAudioRef = r; }}
+                    source={{ uri: this.state.iosAudio.path }}
+                    audioOnly={true}
+                    paused={this.state.iosAudio.paused}
+                    ignoreSilentSwitch="ignore"
+                    playInBackground={false}
+                    onLoad={this._onIOSAudioLoad}
+                    onProgress={this._onIOSAudioProgress}
+                    onEnd={this._onIOSAudioEnd}
+                    onError={this._onIOSAudioError}
+                    progressUpdateInterval={250}
+                    style={{ width: 0, height: 0, position: 'absolute' }}
+                />
+            ) : null}
 
             <DeleteMessageModal
                 show={this.state.showDeleteMessageModal}

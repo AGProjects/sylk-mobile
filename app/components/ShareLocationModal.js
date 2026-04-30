@@ -228,7 +228,7 @@ class ShareLocationModal extends Component {
                                         <PrivacyRadiusSlider
                                             value={this.state.excludeOriginRadiusMeters}
                                             onChange={this.setRadiusStop}
-                                            title="Hide my starting location until I move:"
+                                            title="Don’t share my location until I move away from my starting point:"
                                         />
                                     ) : null}
 
