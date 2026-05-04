@@ -15,7 +15,7 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
     )', __dir__]).strip
 
-platform :ios, 14.0
+platform :ios, 15.1
 prepare_react_native_project!
 
 # If you are using a `react-native-flipper` your iOS build will fail when `NO_FLIPPER=1` is set.
@@ -118,9 +118,46 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     target.build_configurations.each do |config|
       config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = "arm64"
-      config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+      # C++20 is required by the iOS 26 SDK headers (Apple clang 17+ has
+      # deprecated several C++17-only constructs that RCT-Folly's
+      # config.h still references). Stays compatible with RN 0.73's
+      # RCT-Folly podspec.
+      config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++20'
       config.build_settings['CLANG_CXX_LIBRARY'] = 'libc++'
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+      # Bumped from iOS 14 to iOS 15.1 for Xcode 26 / iOS 26 SDK
+      # compliance (App Store Connect rejects builds linking to the
+      # iOS 26 SDK with deployment targets older than what the SDK
+      # supports). 15.1 is the practical floor for RN 0.73 + Xcode 26.
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+
+      # RCT-Folly defines required for C++20 compilation under the
+      # iOS 26 SDK. FOLLY_MOBILE / FOLLY_USE_LIBCPP keep its config.h
+      # off the unavailable POSIX paths; FOLLY_HAVE_CLOCK_GETTIME stops
+      # it falling back to mach_absolute_time which Apple now warns on.
+      existing_defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] || ['$(inherited)']
+      existing_defs = [existing_defs] unless existing_defs.is_a?(Array)
+      folly_defs = [
+        'FOLLY_NO_CONFIG=1',
+        'FOLLY_MOBILE=1',
+        'FOLLY_USE_LIBCPP=1',
+        'FOLLY_HAVE_CLOCK_GETTIME=1',
+      ]
+      folly_defs.each do |d|
+        existing_defs << d unless existing_defs.include?(d)
+      end
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = existing_defs
+
+      # Apple clang 17 (Xcode 26) removed -Wno-shorten-64-to-32 from
+      # its accepted flag set; some pods (Flipper, FBLazyVector) still
+      # ship it in OTHER_CFLAGS and the build now errors out. Strip it.
+      ['OTHER_CFLAGS', 'OTHER_CPLUSPLUSFLAGS'].each do |flag_key|
+        flags = config.build_settings[flag_key]
+        next unless flags
+        flags = flags.is_a?(Array) ? flags : flags.split(' ')
+        flags = flags.reject { |f| f == '-Wno-shorten-64-to-32' }
+        config.build_settings[flag_key] = flags
+      end
+
     end
 
     if target.name == 'Flipper'
@@ -133,6 +170,34 @@ post_install do |installer|
           file.puts(contents)
         end
       end
+    end
+  end
+
+  # ---- RCT-Folly / Flipper-Folly CacheLocality fix --------------------------
+  #
+  # Xcode 26's libc++ no longer marks std::atomic<T> as trivial (its internal
+  # layout changed), so std::is_trivial<GlobalState>::value is now false.
+  # Folly's static_assert is overly strict — what it actually needs is for
+  # the static-local GlobalState to have a trivial destructor (so safe
+  # zero-initialization on first use is sound). Relax the assert to test
+  # that property explicitly. Idempotent: bails if the relaxed form is
+  # already in place. Runs every time `pod install` regenerates Pods/.
+  Dir.glob('Pods/**/folly/concurrency/CacheLocality.{h,cpp}').each do |path|
+    src = File.read(path)
+    next if src.include?('std::is_trivially_destructible<GlobalState>::value')
+    next unless src.include?('std::is_trivial<GlobalState>::value')
+    patched = src.gsub(
+      /static_assert\s*\(\s*std::is_trivial<GlobalState>::value\s*\|\|\s*kCpplibVer\s*,\s*"not trivial"\s*\)\s*;/m,
+      'static_assert(' \
+        'is_constexpr_default_constructible_v<GlobalState> && ' \
+        'std::is_trivially_destructible<GlobalState>::value, ' \
+        '"unsuitable for global state");'
+    )
+    if patched == src
+      Pod::UI.warn "Folly CacheLocality patch: pattern not matched in #{path} — please verify by hand."
+    else
+      File.write(path, patched)
+      Pod::UI.puts "Folly CacheLocality patch: relaxed static_assert in #{path}"
     end
   end
   # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202

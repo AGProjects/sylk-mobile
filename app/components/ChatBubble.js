@@ -305,6 +305,43 @@ const ChatBubble = memo(
           textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
         />
       );
+    } else if (currentMessage.contentType === 'application/sylk-live-location') {
+      // Live-location bubbles host an interactive trail scrubber
+      // (AudioProgressSlider) plus zoom / pan / current-location /
+      // restore icon buttons. GiftedChat's default Bubble wrapper
+      // both claims the responder for tap AND fires its own
+      // onLongPress timer after ~300 ms regardless of whether an
+      // inner PanResponder is actively dragging — which means a
+      // slow slide pops the contextual menu mid-drag.
+      // We disable BOTH:
+      //   • onPress — empty no-op so a tap doesn't bubble up
+      //   • onLongPress — empty no-op so the menu can't open via
+      //     long-press anywhere on the bubble. The user can still
+      //     open the contextual menu by tapping the menu icon in
+      //     the footer (the hamburger on the left), which routes
+      //     through triggerMenu in LocationBubble.js — so the
+      //     menu remains reachable, just not via the bubble body.
+      content = (
+        <Bubble
+          {...bubbleProps}
+          onPress={() => {}}
+          onLongPress={() => {}}
+          wrapperStyle={{
+            left: { ...leftWrapper },
+            right: { ...rightWrapper },
+          }}
+          containerStyle={{
+            left: isFocused
+              ? { borderWidth: 0, borderColor: 'orange', borderRadius: 0 }
+              : {},
+            right: isFocused
+              ? { borderWidth: 0, borderColor: 'orange', borderRadius: 0}
+              : {},
+          }}
+          textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
+          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+        />
+      );
     } else {
       content = (
         <Bubble

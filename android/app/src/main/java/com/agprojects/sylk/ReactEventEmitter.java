@@ -13,7 +13,7 @@ import com.agprojects.sylk.CallEventModule;
 
 public class ReactEventEmitter {
 
-    private static final String LOG_TAG = "[SYLK REACT EMITT]";
+    private static final String LOG_TAG = "SYLK_APP";
 
     public static synchronized void sendEventToReact(
             String action,
@@ -37,19 +37,19 @@ public class ReactEventEmitter {
             payload.putString("event", event);
             payload.putBoolean("phoneLocked", phoneLocked);
 
-            Log.d(LOG_TAG, "action " + action);
-            Log.d(LOG_TAG, "event " + event);
+            Log.d(LOG_TAG, "[Emitter] action " + action);
+            Log.d(LOG_TAG, "[Emitter] event " + event);
 
 			if (rc != null && CallEventModule.isRNready()) {
-                Log.d(LOG_TAG, "RN ready → event emitted");
+                Log.d(LOG_TAG, "[Emitter] RN ready → event emitted");
                 emit(rc, payload);
             } else {
 				CallEventModule.setLastEvent(payload);
-				Log.w(LOG_TAG, "RN not ready → event stored for pull");
+				Log.w(LOG_TAG, "[Emitter] RN not ready → event stored for pull");
             }
 
         } catch (Exception e) {
-            Log.e(LOG_TAG, "Error sending RN event", e);
+            Log.e(LOG_TAG, "[Emitter] Error sending RN event", e);
         }
     }
 

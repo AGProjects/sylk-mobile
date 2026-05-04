@@ -32,7 +32,7 @@ import { createThumbnail } from "react-native-create-thumbnail";
 import { createThumbnailSafe } from '../thumbnailService';
 import UserIcon from './UserIcon';
 import { CustomMessageText } from './CustomMessageText';
-import RenderHTML from 'react-native-render-html';
+import RenderHTML, { HTMLElementModel, HTMLContentModel } from 'react-native-render-html';
 
 import * as Progress from 'react-native-progress';
 
@@ -55,6 +55,19 @@ import dayjs from 'dayjs';
 
 import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
+
+// Teach react-native-render-html about <button> tags so it stops warning
+// each time an incoming HTML message contains one. We treat it as mixed
+// content (can hold both inline text and block children) — this is the
+// most permissive model and makes the inner label still render as plain
+// text rather than being silently dropped (which is what
+// ignoredDomTags=['button'] would do).
+const customHTMLElementModels = {
+    button: HTMLElementModel.fromCustomModel({
+        tagName: 'button',
+        contentModel: HTMLContentModel.mixed,
+    }),
+};
 
 function linkifyHtml(html) {
   if (!html) return html;
@@ -229,6 +242,15 @@ class ContactsListBox extends Component {
             sharingMessages: [],
             showScrollSideButtons: false,
             actionSheetDisplayed: false,
+            // Location-bubble fullscreen viewer. When set to a message
+            // object, a modal renders the same LocationBubble at full
+            // window size, hiding the chat list behind it. Mirrors the
+            // expandedImage / ImageViewer modal pattern below — enter
+            // via the bubble's kebab → "Full screen", exit by tapping
+            // the close button or via Android back. Lifted onto the
+            // parent app's setFullScreen() so the surrounding navbar /
+            // status chrome also collapses, matching the image viewer.
+            fullScreenLocation: null,
             // iOS-only audio player state. AVAudioPlayer (used by
             // react-native-audio-recorder-player on iOS) silently fails to
             // decode some MP3 variants — VBR Sony hardware-recorder output
@@ -3066,6 +3088,39 @@ class ContactsListBox extends Component {
 				icons.push(<Icon name="delete" size={20} />);
 			}
 
+            // Live-location bubbles get a "Share location" entry that
+            // mirrors the inline share-variant icon under the slider:
+            // it pops the system Share sheet with a 📍 pin at the
+            // bubble's latest known coords. The inline icon already
+            // covers "share whichever scrubbed point I'm looking at",
+            // but a kebab entry is the standard way to discover the
+            // action without first scrolling/exploring the slider —
+            // matches "Copy / Delete / Cancel" muscle memory for any
+            // other message type.
+            if (isLiveLocation) {
+                const _v = currentMessage.metadata && currentMessage.metadata.value;
+                if (_v
+                        && typeof _v.latitude === 'number'
+                        && typeof _v.longitude === 'number') {
+                    options.push('Share location');
+                    icons.push(<Icon name="share-variant" size={20} />);
+                }
+
+                // Full screen viewer. Mirrors the image bubble's
+                // "open expanded" affordance: hides the rest of the
+                // chat list and renders the same map at window size
+                // so the user can read street-level detail. Available
+                // on every live-location bubble — same gate as
+                // Share location (must have valid coords; the modal
+                // would otherwise show "Locating…").
+                if (_v
+                        && typeof _v.latitude === 'number'
+                        && typeof _v.longitude === 'number') {
+                    options.push('Full screen');
+                    icons.push(<Icon name="fullscreen" size={20} />);
+                }
+            }
+
             let showResend = currentMessage.metadata && currentMessage.metadata.error;
             showResend = true;
 
@@ -3078,15 +3133,19 @@ class ContactsListBox extends Component {
                 }
             }
 
-            if (!isLiveLocation) {
-                if (currentMessage.pinned) {
-                    options.push('Unpin');
-                    icons.push(<Icon name="pin-off" size={20} />);
-                } else {
-                    if (!currentMessage.metadata.error) {
-                        options.push('Pin');
-                        icons.push(<Icon name="pin" size={20} />);
-                    }
+            // Pin / Unpin is now also offered for live-location
+            // bubbles. Pinning the bubble of a long share is a
+            // common ask — "I want to come back to that trip later"
+            // — and the existing pin path doesn't care about the
+            // payload type. The metadata.error guard still applies
+            // (don't pin a failed bubble).
+            if (currentMessage.pinned) {
+                options.push('Unpin');
+                icons.push(<Icon name="pin-off" size={20} />);
+            } else {
+                if (!currentMessage.metadata || !currentMessage.metadata.error) {
+                    options.push('Pin');
+                    icons.push(<Icon name="pin" size={20} />);
                 }
             }
 
@@ -3246,6 +3305,71 @@ class ContactsListBox extends Component {
                     this.setState({message: currentMessage, showEditMessageModal: true});
                 } else if (action === 'Preview') {
                     this.onImagePress(currentMessage);
+                } else if (action === 'Share location') {
+                    // Mirror of the inline share-variant icon under
+                    // the trail slider: open the system Share sheet
+                    // with a 📍 + Google Maps URL pointing at the
+                    // bubble's latest known coords. Listed BEFORE the
+                    // action.startsWith('Share') prefix match below so
+                    // it takes priority — otherwise the file/media
+                    // share path (handleShare) would swallow it.
+                    //
+                    // Uses the existing react-native-share import
+                    // (`Share.open({...})`) rather than the core
+                    // react-native `Share.share` so we don't shadow
+                    // the file/image share path that already uses it
+                    // — same library handles both surfaces.
+                    const _md = currentMessage.metadata || {};
+                    const _v = _md.value || {};
+                    const _lat = _v.latitude;
+                    const _lng = _v.longitude;
+                    if (typeof _lat === 'number' && typeof _lng === 'number') {
+                        const _ts = _v.timestamp || _md.timestamp || null;
+                        let _when = '';
+                        if (_ts) {
+                            try {
+                                _when = new Date(_ts).toLocaleString();
+                            } catch (e) {
+                                _when = new Date(_ts).toISOString();
+                            }
+                        }
+                        const _url = `https://maps.google.com/?q=${_lat},${_lng}`;
+                        const _msg = _when
+                            ? `📍 Position on ${_when}\n${_url}`
+                            : `📍 Position\n${_url}`;
+                        Share.open({
+                            title: 'Share location',
+                            message: _msg,
+                        }).catch((err) => {
+                            const m = err && err.message ? err.message : '';
+                            // react-native-share rejects with this when
+                            // the user dismisses the sheet — not a
+                            // failure, just noise.
+                            if (m.indexOf('did not share') === -1) {
+                                console.log('[location] kebab share failed', m || err);
+                            }
+                        });
+                    } else {
+                        console.log('[location] kebab share: no coords on bubble',
+                            currentMessage._id);
+                    }
+                } else if (action === 'Full screen') {
+                    // Open the location bubble in a full-screen modal.
+                    // Mirrors the image-bubble fullscreen pattern below
+                    // (expandedImage + ImageViewer modal): we hide the
+                    // surrounding chrome via the parent app's
+                    // setFullScreen() and stash the message id so the
+                    // modal at the bottom of render() materialises a
+                    // maximised LocationBubble for it. Exit re-enables
+                    // chrome and clears the state. Logged so a future
+                    // "stuck in fullscreen" report has a breadcrumb.
+                    console.log('[location] kebab: Full screen tapped',
+                        'bubble=', currentMessage._id);
+                    this.setState({actionSheetDisplayed: false});
+                    if (typeof this.props.setFullScreen === 'function') {
+                        this.props.setFullScreen(true);
+                    }
+                    this.setState({fullScreenLocation: currentMessage});
                 } else if (action.startsWith('Share')) {
                     this.handleShare(currentMessage);
                 } else if (action.startsWith('Email')) {
@@ -3741,17 +3865,67 @@ class ContactsListBox extends Component {
 		  });
 	   }
 
-	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy) {	   
-	       
+	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy || prevState.messagesCategoryFilter !== this.state.messagesCategoryFilter || prevState.sortOrder !== this.state.sortOrder) {
+
 			let filteredMessages = this.state.renderMessages;
-	
+
 			const mediaLabels = this.mediaLabels;
 			const mediaRotations = this.mediaRotations;
-		
-		    if (this.state.orderBy === 'size') { 
-		        //console.log('skip non files');
+
+		    if (this.state.orderBy === 'size') {
+		        // "Sort by size" is the file-grid path: it strips
+		        // everything that doesn't have a filesize so the grid
+		        // (used by the dedicated media surfaces) only renders
+		        // file-transfer rows. That filter wipes out location
+		        // bubbles though — they're metadata messages with no
+		        // filename — so when the user is explicitly filtered
+		        // to Locations we must keep them visible regardless
+		        // of the sort axis. The size toggle becomes a visual
+		        // affordance only in that case (locations keep their
+		        // chronological order, since "size" isn't meaningful
+		        // for a tick stream); the filter intent — "show me my
+		        // location bubbles" — wins.
+		        if (this.state.messagesCategoryFilter !== 'location') {
+					filteredMessages = filteredMessages.filter(
+					  message => message.metadata && message.metadata.filename
+					);
+				}
+			}
+
+			// Category-aware visibility for live-location bubbles.
+			// Two complementary cases keep the chat surface honest:
+			//
+			//   • Locations filter active → keep ONLY location bubbles.
+			//     The SQL slice is already location-only, but the
+			//     merge / journal paths can reintroduce non-location
+			//     messages (system notes, announcements, the
+			//     locationAnnouncement text bubble we emit at share
+			//     start). A targeted JS filter pins the chat strictly
+			//     to "show me my location messages, nothing else".
+			//
+			//   • A different category filter active (image / video /
+			//     audio / other / text / pinned) → EXCLUDE location
+			//     bubbles. Locations otherwise leak into those views
+			//     because they're metadata-bearing rows that pass the
+			//     generic SQL gate (e.g. user picks Video and sees
+			//     their location bubbles intermixed with video rows).
+			//     Locations are explicitly opt-in: they're only
+			//     visible under the Locations filter or with no
+			//     filter active.
+			//
+			// Null (no filter) is the chat-default: every message
+			// type renders, including locations — that's the
+			// natural mixed timeline the user sees on chat open.
+			const _catFilter = this.state.messagesCategoryFilter;
+			if (_catFilter === 'location') {
 				filteredMessages = filteredMessages.filter(
-				  message => message.metadata && message.metadata.filename
+				  message => message
+				    && message.contentType === 'application/sylk-live-location'
+				);
+			} else if (_catFilter) {
+				filteredMessages = filteredMessages.filter(
+				  message => !message
+				    || message.contentType !== 'application/sylk-live-location'
 				);
 			}
 
@@ -3782,25 +3956,59 @@ class ContactsListBox extends Component {
 		  // Apply search & media filters
 		  if (this.state.searchString && this.state.searchString.length > 1) {
 			const searchLower = this.state.searchString.toLowerCase();
-	
+
 			const textMatches = filteredMessages.filter(
 			  msg => msg.text && msg.text.toLowerCase().includes(searchLower)
 			);
-			
+
 			const matchingMediaIds = Object.keys(this.state.mediaLabels || {}).filter(id =>
 			  (this.state.mediaLabels[id] || "").toLowerCase().includes(searchLower)
 			);
-	
+
 			const mediaMatches = filteredMessages.filter(msg =>
 			  matchingMediaIds.includes(msg._id)
 			);
-	
+
 			filteredMessages = [
 			  ...textMatches,
 			  ...mediaMatches.filter(m => !textMatches.some(tm => tm._id === m._id)),
 			];
 		  }
-		 
+
+		  // Apply asc/desc sort. The merge in CWRP already ships
+		  // renderMessages in DESC order (newest at index 0), which under
+		  // GiftedChat's `inverted={true}` renders newest at the bottom —
+		  // the historical "default chat" order, equivalent to the
+		  // 'desc' sortOrder. Toggling 'asc' flips the array so the
+		  // inverted list places newest at the TOP and oldest at the
+		  // bottom. The chat list previously ignored sortOrder entirely;
+		  // this change is what makes the up-arrow / down-arrow icons
+		  // affect the timeline (and crucially the new Locations
+		  // filter, which prompted the bug report — without sortOrder
+		  // applied, location bubbles never reordered no matter how
+		  // many times the toggle was tapped).
+		  // Tie-break on _id so messages sharing a millisecond
+		  // (e.g. a fresh outgoing message and its local echo) keep a
+		  // stable order across re-renders.
+		  const _ts = (v) => {
+		    if (v == null) return 0;
+		    if (v instanceof Date) return v.getTime();
+		    if (typeof v === 'number') return v;
+		    const t = new Date(v).getTime();
+		    return isNaN(t) ? 0 : t;
+		  };
+		  const _orderMul = this.state.sortOrder === 'asc' ? 1 : -1;
+		  filteredMessages = [...filteredMessages].sort((a, b) => {
+		    const ta = _ts(a.createdAt);
+		    const tb = _ts(b.createdAt);
+		    if (ta !== tb) return (ta - tb) * _orderMul;
+		    const ia = String(a._id || '');
+		    const ib = String(b._id || '');
+		    if (ia < ib) return -1 * _orderMul;
+		    if (ia > ib) return  1 * _orderMul;
+		    return 0;
+		  });
+
 		if (this.state.renderMessages.length > 0 && filteredMessages.length > 0) {
 			let last_message_ts = this.state.renderMessages[0].createdAt;
 			if (filteredMessages[0].createdAt > last_message_ts) {
@@ -4021,10 +4229,39 @@ class ContactsListBox extends Component {
         if (currentMessage.contentType === 'application/sylk-live-location') {
             const latest = this.locationData?.[currentMessage._id]
                 || currentMessage.metadata;
+            // Trail: the full ordered list of valid GPS fixes for this
+            // share. Each tick lives as its own entry in
+            // messagesMetadata[origin_id] (kept that way intentionally
+            // — the runtime filter+append path was changed earlier in
+            // this work to preserve the trail). We extract just the
+            // {latitude, longitude, timestamp} triple, drop placeholder
+            // / numeric-NaN entries, and sort ascending by tick time so
+            // the polyline can be drawn oldest → newest (A → … → end).
+            // Hand it down to LocationBubble; an empty / single-entry
+            // trail is harmless — StaticMap falls back to a single pin.
+            const _rawTrail = (this.state.messagesMetadata
+                && this.state.messagesMetadata[currentMessage._id]) || [];
+            const trail = [];
+            for (const e of _rawTrail) {
+                if (!e || e.action !== 'location') continue;
+                const v = e.value;
+                if (!v
+                        || typeof v.latitude !== 'number'
+                        || typeof v.longitude !== 'number') continue;
+                const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+                const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+                trail.push({
+                    latitude: v.latitude,
+                    longitude: v.longitude,
+                    timestamp: ts,
+                });
+            }
+            trail.sort((a, b) => a.timestamp - b.timestamp);
             return (
                 <LocationBubble
                     currentMessage={currentMessage}
                     metadata={latest}
+                    trail={trail}
                     onLongPress={this.onLongMessagePress}
                     ownerName={this.props.myDisplayName}
                     peerName={this.props.selectedContact
@@ -4690,6 +4927,7 @@ class ContactsListBox extends Component {
 				  <RenderHTML
 					source={{ html: html }}
 					contentWidth={w}
+					customHTMLElementModels={customHTMLElementModels}
 					  tagsStyles={{
 						span: {
 						  color: isIncoming ? '#FFFFFF' : '#000000',
@@ -4778,11 +5016,55 @@ class ContactsListBox extends Component {
 	  const { currentMessage, position } = props;
 
 	  if (currentMessage.metadata?.preview) return null;
-	 
+
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const isMedia = currentMessage.video || currentMessage.audio;
 	  const textColor = currentMessage.audio || isIncoming ? 'white' : 'black';
 	  let hasFileSize = !!currentMessage.metadata?.filesize;
+
+	  // Live-location bubbles: count the number of valid coordinate
+	  // ticks we have in messagesMetadata for this session so the user
+	  // can see how many updates have flowed (sent on outgoing, received
+	  // on incoming) at a glance. Hidden on one-shot shares since there's
+	  // always exactly one tick — the count would be noise. The label is
+	  // appended to the LEFT of the timestamp regardless of direction
+	  // (i.e. it sits at the bottom-left of the bubble's footer), in
+	  // line with the requested "left of timestamp" placement.
+	  //
+	  // Floor of 1: if a live-location BUBBLE is on screen, at least one
+	  // tick has been recorded — _injectLocationBubble only fires on a
+	  // valid-coords origin tick, and that same tick is what populates
+	  // the messagesMetadata trail. There's a sub-render-cycle window
+	  // where _injectLocationBubble's setState has committed (so the
+	  // bubble renders) but our local-state mirror of messagesMetadata
+	  // hasn't yet synced via componentWillReceiveProps. Falling back to
+	  // 1 means the user sees "↻ 1" the moment the share starts instead
+	  // of an unlabelled bubble for a frame.
+	  let liveTickLabel = '';
+	  if (currentMessage.contentType === 'application/sylk-live-location'
+	      && !currentMessage.metadata?.one_shot) {
+	    let validTicks = 1;
+	    const trail = this.state.messagesMetadata
+	      && this.state.messagesMetadata[currentMessage._id];
+	    if (Array.isArray(trail) && trail.length > 0) {
+	      let count = 0;
+	      for (const e of trail) {
+	        if (!e || e.action !== 'location') continue;
+	        const v = e.value;
+	        if (!v
+	            || typeof v.latitude !== 'number'
+	            || typeof v.longitude !== 'number') continue;
+	        count += 1;
+	      }
+	      if (count > validTicks) validTicks = count;
+	    }
+	    // Compact glyph + count so the footer stays narrow even when
+	    // a long-running share has accumulated dozens of ticks.
+	    // U+21BB (clockwise reload) is widely supported on both
+	    // platforms' default fonts and reads as "updates" without
+	    // needing a separate icon node.
+	    liveTickLabel = `↻ ${validTicks}`;
+	  }
 	  // In normal chat, suppress per-photo filesize for any image that
 	  // belongs to a group (the group leader's id is a key in
 	  // imageGroups; non-leader members of the same group only appear
@@ -4817,13 +5099,18 @@ class ContactsListBox extends Component {
 		}
 	  }
 
-	  // Compose footer parts in order, then join with separators
+	  // Compose footer parts in order, then join with separators.
+	  // Live-location tick count is always pushed first so it sits to
+	  // the left of the timestamp regardless of bubble direction —
+	  // matches the requested "left bottom of the bubble" placement.
 	  const parts = [];
 	  if (isIncoming) {
+		if (liveTickLabel) parts.push(liveTickLabel);
 		parts.push(timeString);
 		if (hasFileSize) parts.push(formatFileSize(currentMessage.metadata.filesize));
 		if (durationString) parts.push(durationString);
 	  } else {
+		if (liveTickLabel) parts.push(liveTickLabel);
 		if (durationString) parts.push(durationString);
 		if (hasFileSize) parts.push(formatFileSize(currentMessage.metadata.filesize));
 		parts.push(timeString);
@@ -5570,7 +5857,22 @@ scrollToMessage(id) {
 			messages = this.state.sharingMessages;
         }
         
-        if (this.state.orderBy === 'size') {
+        // "By size" sort path. Two distinct concerns:
+        //   1. The grid surfaces (file/media browse) want a files-only
+        //      view sorted by storage usage — that's why this branch
+        //      both filters down to messages with a filename and sorts
+        //      by filesize.
+        //   2. The Locations filter has no notion of "size" (a tick
+        //      stream isn't a stored asset), so applying this branch
+        //      while category === 'location' would empty the chat —
+        //      the user reported exactly this. The size icon is also
+        //      hidden from the bottom bar in that case (see
+        //      categorySortItems' enabled gate), so this guard is
+        //      defensive — even if a stale orderBy='size' bleeds
+        //      through, the location-filtered list still shows its
+        //      bubbles in chronological order.
+        if (this.state.orderBy === 'size'
+                && this.state.messagesCategoryFilter !== 'location') {
 			messages = messages.filter(
 			  msg => msg.metadata && msg.metadata.filename // or whatever condition you have
 			);
@@ -5582,7 +5884,7 @@ scrollToMessage(id) {
 				.sort((a, b) => {
 				  const sizeA = a.metadata.filesize || 0;
 				  const sizeB = b.metadata.filesize || 0;
-			
+
 				  return this.state.sortOrder === 'desc'
 					? sizeB - sizeA // largest first
 					: sizeA - sizeB; // smallest first
@@ -5804,7 +6106,53 @@ scrollToMessage(id) {
                   inverted={true}
                   maxInputLength={16000}
                   tickStyle={{ color: 'green' }}
-                  renderTicks={this.state.orderBy === 'size' ? null : undefined}
+                  renderTicks={(currentMessage) => {
+                    // Live-location bubbles: the IMDN ✓✓ only ever
+                    // reflects the ORIGIN tick's delivery state, not
+                    // any of the heartbeats that follow. Once the
+                    // first tick is delivered the indicator freezes
+                    // there forever — it stops conveying anything
+                    // useful and reads (incorrectly) like every
+                    // update has been confirmed. Hide ticks on
+                    // these bubbles entirely; the user gets the
+                    // "is it working?" signal from the live map
+                    // updates themselves. Same logic also covers
+                    // meet-mode bubbles since they share the same
+                    // contentType.
+                    if (currentMessage
+                            && currentMessage.contentType === 'application/sylk-live-location') {
+                        return null;
+                    }
+                    // Existing 'size' sort behaviour: hide ticks
+                    // across the board so the size column has more
+                    // room.
+                    if (this.state.orderBy === 'size') return null;
+                    // Otherwise replicate the default GiftedChat
+                    // tick rendering — ✓ for sent, ✓✓ for
+                    // received, 🕓 while pending. Done inline because
+                    // returning `undefined` from a renderTicks
+                    // function suppresses the default; we only get
+                    // the default when the prop itself is undefined,
+                    // and we can't conditionally undef a JSX prop.
+                    const _ticks = [];
+                    if (currentMessage && currentMessage.sent) {
+                        _ticks.push(
+                            <Text key="t-sent" style={{fontSize: 10, color: 'green'}}>✓</Text>
+                        );
+                    }
+                    if (currentMessage && currentMessage.received) {
+                        _ticks.push(
+                            <Text key="t-recv" style={{fontSize: 10, color: 'green'}}>✓</Text>
+                        );
+                    }
+                    if (currentMessage && currentMessage.pending) {
+                        _ticks.push(
+                            <Text key="t-pend" style={{fontSize: 10, color: 'green'}}>🕓</Text>
+                        );
+                    }
+                    if (_ticks.length === 0) return null;
+                    return <View style={{flexDirection: 'row', marginRight: 4}}>{_ticks}</View>;
+                  }}
                   infiniteScroll={false}
                   loadEarlier={loadEarlier}
                   isLoadingEarlier={this.state.isLoadingEarlier}
@@ -5986,6 +6334,115 @@ scrollToMessage(id) {
 				</TouchableOpacity>
 			  </Modal>
 			)}
+
+			{/* Location-bubble fullscreen viewer. Mirrors the image
+			    viewer above: a transparent Modal holds a maximised
+			    LocationBubble (the same component the chat list
+			    renders inline, with a fullScreen prop that switches
+			    its map dimensions to ~window size). The chat list
+			    itself isn't unmounted — when the modal closes the
+			    bubble's place in the scroll position is unchanged.
+			    Android back button hits onRequestClose, which routes
+			    through the same exit path as tapping the close
+			    icon. */}
+			{this.state.fullScreenLocation && (() => {
+				const _msg = this.state.fullScreenLocation;
+				const _latest = this.locationData?.[_msg._id] || _msg.metadata;
+				// Trail: same derivation as renderMessageText so the
+				// fullscreen view shows the same set of points (and
+				// the same scrubber slider state) as the inline
+				// bubble. For meet sessions LocationBubble suppresses
+				// trail/slider via the isMeetSession flag inside it.
+				const _rawTrail = (this.state.messagesMetadata
+					&& this.state.messagesMetadata[_msg._id]) || [];
+				const _trail = [];
+				for (const e of _rawTrail) {
+					if (!e || e.action !== 'location') continue;
+					const v = e.value;
+					if (!v
+							|| typeof v.latitude !== 'number'
+							|| typeof v.longitude !== 'number') continue;
+					const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+					const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+					_trail.push({
+						latitude: v.latitude,
+						longitude: v.longitude,
+						timestamp: ts,
+					});
+				}
+				_trail.sort((a, b) => a.timestamp - b.timestamp);
+				const _exit = () => {
+					if (typeof this.props.setFullScreen === 'function') {
+						this.props.setFullScreen(false);
+					}
+					this.setState({fullScreenLocation: null});
+				};
+				return (
+					<Modal
+						visible={true}
+						transparent={false}
+						animationType="fade"
+						onRequestClose={_exit}
+					>
+						<View
+							style={{
+								flex: 1,
+								backgroundColor: '#000',
+								alignItems: 'center',
+								justifyContent: 'center',
+							}}
+						>
+							<LocationBubble
+								currentMessage={_msg}
+								metadata={_latest}
+								trail={_trail}
+								onLongPress={() => {}}
+								ownerName={this.props.myDisplayName}
+								peerName={this.props.selectedContact
+									&& (this.props.selectedContact.name
+										|| this.props.selectedContact.uri)}
+								fullScreen={true}
+							/>
+							{/* Close button — same visual language as
+							    the image-viewer modal so the affordance
+							    reads identically across full-screen
+							    surfaces. zIndex/elevation lifted above
+							    the bubble's own absolutely-positioned
+							    map controls so a tap lands here, not on
+							    a zoom/pan button beneath. */}
+							<TouchableOpacity
+								onPress={_exit}
+								hitSlop={{top: 20, left: 20, right: 20, bottom: 20}}
+								style={{
+									position: 'absolute',
+									// Top-left, slightly lower than the
+									// image-viewer convention (top:40) so
+									// it clears the device notch / status
+									// bar without dropping into the centre
+									// of the screen. The user accepted the
+									// minor visual brush against the map's
+									// top-left current-location button at
+									// this height — they explicitly chose
+									// "top-left, just lower" over the
+									// no-overlap bottom position.
+									top: 60,
+									left: 30,
+									backgroundColor: 'rgba(0,0,0,0.6)',
+									width: 56,
+									height: 56,
+									borderRadius: 28,
+									alignItems: 'center',
+									justifyContent: 'center',
+									zIndex: 100,
+									elevation: 100,
+								}}
+							>
+								<Icon name="close" size={36} color="white" />
+							</TouchableOpacity>
+						</View>
+					</Modal>
+				);
+			})()}
 
             {/* iOS audio playback engine. Hidden zero-size Video in
                 audio-only mode that plays through AVPlayer (more permissive

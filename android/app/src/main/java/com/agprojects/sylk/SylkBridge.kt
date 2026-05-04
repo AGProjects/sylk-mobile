@@ -13,6 +13,10 @@ import android.util.Log
 class SylkBridgeModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
+    companion object {
+        private const val TAG = "SYLK_APP"
+    }
+
     override fun getName(): String = "SylkBridge"
 
     private val prefs: SharedPreferences =
@@ -20,7 +24,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveChat(chatId: String?) {
-        Log.d("[SYLK]", "setActiveChat: $chatId")
+        Log.d(TAG, "[Bridge] setActiveChat: $chatId")
         prefs.edit().putString("currentChat", chatId).apply()
     }
 
@@ -32,7 +36,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveCall(target: String?) {
-        Log.d("[SYLK]", "setActiveCall: $target")
+        Log.d(TAG, "[Bridge] setActiveCall: $target")
         prefs.edit().putString("currentCall", target).apply()
     }
 
@@ -54,7 +58,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
     // ---------------------------------------------------------------
     @ReactMethod
     fun setAppActive(active: Boolean) {
-        Log.d("[SYLK]", "setAppActive: $active")
+        Log.d(TAG, "[Bridge] setAppActive: $active")
         prefs.edit().putBoolean("appActive", active).apply()
     }
 }

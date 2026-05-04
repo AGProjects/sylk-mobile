@@ -1,0 +1,504 @@
+diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-native-sylkrtc/lib/call.js
+index af962e0..e2bc94d 100644
+--- a/node_modules/react-native-sylkrtc/lib/call.js
++++ b/node_modules/react-native-sylkrtc/lib/call.js
+@@ -37,7 +37,30 @@ class Call extends EventEmitter {
+         this._setup_in_progress = false;  // set while we set the remote description and setup the peer copnnection
+         this._headers = []
+         this._messages = new Map();
+-        this._statistics = new Statistics();
++        // 5000ms instead of the default 1000ms: on rn-webrtc 124.x the
++        // per-second pc.getStats() call disturbs the video renderer
++        // enough to cause a periodic visible freeze. 5s is plenty for a
++        // bandwidth / packet-loss readout in the UI.
++        this._statistics = new Statistics({ getStatsInterval: 5000 });
++        // Inline (in-dialog / session-event) chat handling. A legacy
++        // feature that let chat messages exchanged BETWEEN the two
++        // call parties be received on the Call object itself instead
++        // of the parent Account — useful when a UI wanted a strictly
++        // "this conversation belongs to this call" view. Modern
++        // consumers (sylk-mobile) no longer want this split: the same
++        // chat thread should look identical whether or not a call is
++        // active, and the duplicated dispatch path was the source of
++        // the "this.sendDispositionNotification is not a function"
++        // class of bugs (Call doesn't define sendDispositionNotification,
++        // only Account does).
++        //
++        // Default is OFF — incoming session-event messages are
++        // forwarded to the Account so the app's account.on('incomingMessage')
++        // listeners fire exactly once and the IMDN reply runs through
++        // the Account's well-tested method. Apps that still need the
++        // legacy behaviour can flip `enableInlineMessaging = true`
++        // on the Call instance after construction.
++        this.enableInlineMessaging = false;
+         // bind some handlers to this instance
+         // this._onDtmf = this._onDtmf.bind(this);
+     }
+@@ -108,20 +131,25 @@ class Call extends EventEmitter {
+     }
+ 
+     getRemoteStreams() {
+-        if (this._pc !== null) {
+-           if (this._pc.getReceivers) {
+-              this._pc.getReceivers().forEach((e) => {
+-                  if (e.track.readyState !== "ended") {
++        if (this._pc === null) return [];
++        // Prefer the native-backed stream captured on the 'track' event.
++        // It already includes the receiver tracks and is wired to the
++        // renderer pipeline, so RTCView can display its frames. The
++        // JS-side _remoteStreams synthesis below is a fallback for code
++        // paths where the 'track' event hasn't fired yet (very early
++        // call states) or older WebRTC builds.
++        if (this._nativeRemoteStream) {
++            return [this._nativeRemoteStream];
++        }
++        if (this._pc.getReceivers) {
++            this._pc.getReceivers().forEach((e) => {
++                if (e.track.readyState !== "ended") {
+                     this._remoteStreams.addTrack(e.track);
+-                  }
+-              });
+-              return [this._remoteStreams];
+-          } else {
+-                return this._pc.getRemoteStreams();
+-          }
+-        } else {
+-            return [];
++                }
++            });
++            return [this._remoteStreams];
+         }
++        return this._pc.getRemoteStreams();
+     }
+ 
+     getSenders() {
+@@ -155,12 +183,23 @@ class Call extends EventEmitter {
+         // Create the RTCPeerConnection
+         this._initRTCPeerConnection(pcConfig);
+ 
+-        this._pc.addStream(options.localStream);
+-        this.emit('localStreamAdded', options.localStream);
++		options.localStream.getTracks().forEach((track) => {
++			this._pc.addTrack(track, options.localStream);
++		});
++
+         this._pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}))
+             // success
+             .then(() => {
+-                utils.createLocalSdp(this._pc, 'answer', answerOptions)
++                // Mirror the caller's first video codec in the answer
++                // instead of using our own local preference. If the
++                // callee uses its own preferredCodec here, caller and
++                // callee end up with different codecs in their views of
++                // the SDP — which silently breaks E2EE because the
++                // FrameEncryptor's per-codec unencrypted-prefix size
++                // differs (VP8=3, VP9=3, H264=2, AV1=1) and the receiver
++                // reads the wrong byte as the v|keyId header.
++                const answerCodec = utils.pickAnswerVideoCodec(this._incomingSdp);
++                utils.createLocalSdp(this._pc, 'answer', answerOptions, answerCodec)
+                     .then((sdp) => {
+                         DEBUG('Local SDP: %s', sdp);
+                         this._sendAnswer(sdp, options.headers);
+@@ -266,65 +305,73 @@ class Call extends EventEmitter {
+         this._sendTerminate();
+     }
+ 
+-    sendDtmf(tones, duration=100, interToneGap=70) {
+-        DEBUG('sendDtmf()');
+-        // if (this._dtmfSender === null) {
+-        //     if (this._pc !== null) {
+-        //         let track = null;
+-        //         try {
+-        //             track = this._pc.getLocalStreams()[0].getAudioTracks()[0];
+-        //         } catch (e) {
+-        //             // ignore
+-        //         }
+-        //         if (track !== null) {
+-        //             DEBUG('Creating DTMF sender');
+-        //             this._dtmfSender = this._pc.createDTMFSender(track);
+-        //             if (this._dtmfSender) {
+-        //                 this._dtmfSender.addEventListener('tonechange', this._onDtmf);
+-        //             }
+-        //         }
+-        //     }
+-        // }
+-        if (true) {
+-            DEBUG('Sending DTMF tones');
+-            this._pc.sendDTMF(tones, duration, interToneGap);
+-        }
+-    }
+-
+-    // Private API
+-
+-    _initOutgoing(uri, options={}) {
+-        if (uri.indexOf('@') === -1) {
+-            throw new Error('Invalid URI');
+-        }
++	sendDtmf(tones, duration = 100, interToneGap = 70) {
++		DEBUG('sendDtmf()');
++
++		if (!this._dtmfSender) {
++			DEBUG('DTMF sender NOT available');
++			return false;
++		}
++
++		DEBUG(`Sending DTMF: ${tones}`);
++		this._dtmfSender.insertDTMF(tones, duration, interToneGap);
++
++		return true;
++	}
++
++	// Private API
++	_initOutgoing(uri, options = {}) {
++		if (!uri.includes('@')) throw new Error('Invalid URI');
++		if (!options.localStream) throw new Error('Missing localStream');
++
++		this._id = options.id || uuidv4();
++		this._direction = 'outgoing';
++		this._remoteIdentity = new utils.Identity(uri);
++		this._headers = options.headers;
++		this._audioSender = null;
++
++		const pcConfig = options.pcConfig || {
++			iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
++		};
++		const offerOptions = options.offerOptions;
++
++		// Create RTCPeerConnection
++		this._initRTCPeerConnection(pcConfig);
++
++		// ❗ M111: use addTrack instead of addStream
++		options.localStream.getTracks().forEach((track) => {
++			const sender = this._pc.addTrack(track, options.localStream);
++			if (track.kind === 'audio') {
++				this._audioSender = sender;
++			}
++		});
++
++		this.emit('localStreamAdded', options.localStream);
++
++		// Create the offer
++		utils.createLocalSdp(this._pc, 'offer', offerOptions, utils.getPreferredVideoCodec())
++			.then((sdp) => {
++				DEBUG('Local SDP: %s', sdp);
++				//
++				// ✅ DTMF becomes available here — AFTER setLocalDescription()
++				//
++				setTimeout(() => {
++					if (this._audioSender?.dtmf) {
++						DEBUG("DTMF sender now available");
++						this._dtmfSender = this._audioSender.dtmf;
++						this._dtmfSender.addEventListener('tonechange', this._onDtmf);
++					} else {
++						DEBUG("No DTMF sender even after negotiate");
++					}
++				}, 0);
++				this._sendCall(uri, sdp);
++			})
++			.catch((reason) => {
++				DEBUG(reason);
++				this._localTerminate(reason);
++			});
++	}
+ 
+-        if (!options.localStream) {
+-            throw new Error('Missing localStream');
+-        }
+-
+-        this._id = options.id || uuidv4();
+-        this._direction = 'outgoing';
+-        this._remoteIdentity = new utils.Identity(uri);
+-        this._headers = options.headers;
+-
+-        const pcConfig = options.pcConfig || {iceServers:[]};
+-        const offerOptions = options.offerOptions;
+-
+-        // Create the RTCPeerConnection
+-        this._initRTCPeerConnection(pcConfig);
+-
+-        this._pc.addStream(options.localStream);
+-        this.emit('localStreamAdded', options.localStream);
+-        utils.createLocalSdp(this._pc, 'offer', offerOptions, 'VP8')
+-            .then((sdp) => {
+-                DEBUG('Local SDP: %s', sdp);
+-                this._sendCall(uri, sdp);
+-            })
+-            .catch((reason) => {
+-                DEBUG(reason);
+-                this._localTerminate(reason);
+-            });
+-    }
+ 
+     _initIncoming(id, caller, sdp, callId, headers = {}) {
+         this._id = id;
+@@ -333,6 +380,8 @@ class Call extends EventEmitter {
+         this._direction = 'incoming';
+         this._state = 'incoming';
+         this._callId = callId;
++		this._dtmfSender = null;
++
+         this._remoteMediaDirections = Object.assign(
+             {audio: [], video:[]}, utils.getMediaDirections(sdp)
+         );
+@@ -399,7 +448,20 @@ class Call extends EventEmitter {
+                 }
+                 break;
+             case 'message':
+-                DEBUG('Incoming in dialog message from %s: %o', message.sender.uri, message);
++                // Default path: hand the in-dialog message off to the
++                // parent Account so consumers see it on
++                // account.on('incomingMessage') exactly like an
++                // out-of-call message — single dispatch path, single
++                // IMDN reply, no Call-vs-Account divergence. Set
++                // call.enableInlineMessaging = true to opt back into
++                // the legacy behaviour below (the original code path
++                // that emits 'incomingMessage' on the Call itself).
++                if (!this.enableInlineMessaging) {
++                    DEBUG('Forwarding in-dialog message to Account: %o', message);
++                    this._account._handleEvent(message);
++                    break;
++                }
++                DEBUG('Incoming in dialog message from %s (inline): %o', message.sender.uri, message);
+                 const incomingMessage = this._messages.get(message.message_id);
+                 if (!incomingMessage) {
+                     if (message.content_type === 'text/pgp-private-key') {
+@@ -423,7 +485,10 @@ class Call extends EventEmitter {
+                     if (message.disposition_notification &&
+                         message.disposition_notification.indexOf('positive-delivery') !== -1
+                     ) {
+-                        this.sendDispositionNotification(
++                        // sendDispositionNotification lives on Account, not
++                        // on Call. Delegate to the parent Account so the
++                        // IMDN actually leaves the device.
++                        this._account.sendDispositionNotification(
+                             message.sender.uri,
+                             message.message_id,
+                             message.timestamp,
+@@ -433,6 +498,17 @@ class Call extends EventEmitter {
+                 }
+                 break;
+             case 'disposition-notification':
++                // Same default-vs-inline split as 'message' above.
++                // Outgoing-message state changes are tracked on the
++                // Account's _messages map by sendMessage; sending
++                // the disposition event back through the Account makes
++                // the messageStateChanged listener fire once, on the
++                // same emitter the app subscribed to before the call
++                // was placed.
++                if (!this.enableInlineMessaging) {
++                    this._account._handleEvent(message);
++                    break;
++                }
+                 const outgoingMessage = this._messages.get(message.message_id);
+                 if (outgoingMessage) {
+                     if (outgoingMessage.state === 'displayed') {
+@@ -448,26 +524,40 @@ class Call extends EventEmitter {
+         }
+     }
+ 
+-    _initRTCPeerConnection(pcConfig) {
+-        if (this._pc !== null) {
+-            throw new Error('RTCPeerConnection already initialized');
+-        }
++	_initRTCPeerConnection(pcConfig) {
++		if (this._pc !== null) {
++			throw new Error('RTCPeerConnection already initialized');
++		}
++
++		this._pc = new RTCPeerConnection(pcConfig);
++
++		this._pc.addEventListener('track', (event) => {
++			const stream = event.streams && event.streams[0];
++			if (stream) {
++				// Capture the native-backed stream that libwebrtc emits
++				// on the 'track' event. Synthesizing a JS-side MediaStream
++				// with new MediaStream() and adding receiver tracks to it
++				// does not hook the renderer pipeline correctly on M124,
++				// so we prefer this native stream for getRemoteStreams().
++				this._nativeRemoteStream = stream;
++				this.emit('streamAdded', stream);
++			} else {
++				DEBUG('Track added without stream');
++			}
++		});
++
++		this._pc.addEventListener('icecandidate', (event) => {
++			if (event.candidate) {
++				DEBUG('New ICE candidate', event.candidate);
++			} else {
++				DEBUG('ICE candidate gathering finished');
++			}
++
++			this._sendTrickle(event.candidate);
++		});
+ 
+-        this._pc = new RTCPeerConnection(pcConfig);
+-        this._pc.addEventListener('addstream', (event) => {
+-            DEBUG('Stream added');
+-            this.emit('streamAdded', event.stream);
+-        });
+-        this._pc.addEventListener('icecandidate', (event) => {
+-            if (event.candidate !== null) {
+-                DEBUG('New ICE candidate %o', event.candidate);
+-            } else {
+-                DEBUG('ICE candidate gathering finished');
+-            }
+-            this._sendTrickle(event.candidate);
+-        });
+         this._statistics.addConnection({pc:this._pc, peerId: this._id});
+-    }
++	}
+ 
+     _sendRequest(req, cb) {
+         this._account._sendRequest(req, cb);
+diff --git a/node_modules/react-native-sylkrtc/lib/conference.js b/node_modules/react-native-sylkrtc/lib/conference.js
+index 33da09d..a388b38 100644
+--- a/node_modules/react-native-sylkrtc/lib/conference.js
++++ b/node_modules/react-native-sylkrtc/lib/conference.js
+@@ -121,10 +121,15 @@ class Participant extends EventEmitter {
+         const pc = new RTCPeerConnection(pcConfig);
+         this._conference._statistics.addConnection({pc: pc, peerId: this._id});
+ 
+-        pc.addEventListener('addstream', (event) => {
+-            DEBUG('Stream added');
+-            this.emit('streamAdded', event.stream);
+-        });
++		pc.addEventListener('track', (event) => {
++			const stream = event.streams && event.streams[0];
++			if (stream) {
++				this.emit('streamAdded', stream);
++			} else {
++				DEBUG('Track added without stream');
++			}
++		});
++
+         pc.addEventListener('icecandidate', (event) => {
+             if (event.candidate !== null) {
+                 DEBUG('New ICE candidate %o', event.candidate);
+@@ -572,7 +577,10 @@ class ConferenceCall extends EventEmitter {
+             this._sendTrickle(event.candidate);
+         });
+ 
+-        this._pc.addStream(options.localStream);
++		options.localStream.getTracks().forEach((track) => {
++			this._pc.addTrack(track, options.localStream);
++		});
++
+         this.emit('localStreamAdded', options.localStream);
+         DEBUG('Offer options: %o', offerOptions);
+         utils.createLocalSdp(this._pc, 'offer', offerOptions)
+diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
+index ae521ed..dad44b0 100644
+--- a/node_modules/react-native-sylkrtc/lib/sylkrtc.js
++++ b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
+@@ -19,8 +19,10 @@ function createConnection(options = {}) {
+ 
+ 
+ const utils = {
+-    'attachMediaStream' : _utils.attachMediaStream,
+-    'closeMediaStream'  : _utils.closeMediaStream
++    'attachMediaStream'      : _utils.attachMediaStream,
++    'closeMediaStream'       : _utils.closeMediaStream,
++    'setPreferredVideoCodec' : _utils.setPreferredVideoCodec,
++    'getPreferredVideoCodec' : _utils.getPreferredVideoCodec,
+ };
+ 
+ 
+diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react-native-sylkrtc/lib/utils.js
+index a64c601..b6bb224 100644
+--- a/node_modules/react-native-sylkrtc/lib/utils.js
++++ b/node_modules/react-native-sylkrtc/lib/utils.js
+@@ -360,6 +360,8 @@ export function parseStats(stats, previousStats, options = {}) {
+                         codecInfo.clockRate = codec.clockRate;
+                         codecInfo.mimeType = codec.mimeType;
+                         codecInfo.payloadType = codec.payloadType;
++                        codecInfo.channels = codec.channels;
++                        codecInfo.sdpFmtpLine = codec.sdpFmtpLine;
+                     }
+                 }
+ 
+@@ -388,6 +390,8 @@ export function parseStats(stats, previousStats, options = {}) {
+                         codecInfo.clockRate = codec.clockRate;
+                         codecInfo.mimeType = codec.mimeType;
+                         codecInfo.payloadType = codec.payloadType;
++                        codecInfo.channels = codec.channels;
++                        codecInfo.sdpFmtpLine = codec.sdpFmtpLine;
+                     }
+                 }
+ 
+@@ -435,6 +439,8 @@ export function parseStats(stats, previousStats, options = {}) {
+                         codecInfo.clockRate = codec.clockRate;
+                         codecInfo.mimeType = codec.mimeType;
+                         codecInfo.payloadType = codec.payloadType;
++                        codecInfo.channels = codec.channels;
++                        codecInfo.sdpFmtpLine = codec.sdpFmtpLine;
+                     }
+                 }
+ 
+@@ -469,6 +475,8 @@ export function parseStats(stats, previousStats, options = {}) {
+                         codecInfo.clockRate = codec.clockRate;
+                         codecInfo.mimeType = codec.mimeType;
+                         codecInfo.payloadType = codec.payloadType;
++                        codecInfo.channels = codec.channels;
++                        codecInfo.sdpFmtpLine = codec.sdpFmtpLine;
+                     }
+                 }
+ 
+@@ -506,4 +514,56 @@ export function map2obj(stats) {
+     return o;
+ }
+ 
+-export default { Identity, SharedFile, createLocalSdp, mungeSdp, getMediaDirections, attachMediaStream, closeMediaStream,  sanatizeHtml, map2obj, parseStats};
++// ----- preferred video codec ------------------------------------------------
++//
++// Module-level default for the video codec that appears first in both the
++// offer's and answer's video m-line. Both sides need to agree, so set this
++// once at app init via setPreferredVideoCodec(). Recognized values follow
++// the names libwebrtc puts in `a=rtpmap` (case-insensitive on lookup):
++// "VP8", "VP9", "H264", "AV1". Default 'VP8' — universally available, fits
++// our FrameEncryptor's 1-byte unencrypted-prefix layout.
++let _preferredVideoCodec = 'VP8';
++
++function setPreferredVideoCodec(codec) {
++    if (typeof codec === 'string' && codec.length > 0) {
++        _preferredVideoCodec = codec;
++    }
++}
++
++function getPreferredVideoCodec() {
++    return _preferredVideoCodec;
++}
++
++// SDP-correct answer-side codec selection: the answerer should not name a
++// codec the offerer didn't include — picking from the offer's video m-line
++// is the only safe way. We pick the first listed real codec (skipping rtx
++// / red / ulpfec / flexfec / cn) and use that as the answer's preferred
++// codec. Falls back to the local default if the offer can't be parsed.
++//
++// Why this matters: if the answer comes back with a codec the offerer
++// didn't put first, the two sides end up disagreeing on the negotiated
++// codec. With E2EE on, the FrameEncryptor's per-codec unencrypted-prefix
++// then differs (VP8=3, VP9=3, H264=2, AV1=1) and decryption silently
++// fails — audio works, video freezes both ways.
++function pickAnswerVideoCodec(offerSdp) {
++    const fallback = getPreferredVideoCodec();
++    if (!offerSdp) return fallback;
++    try {
++        const parsed = transform.parse(offerSdp);
++        const videoMLine = parsed.media && parsed.media.find(m => m.type === 'video');
++        if (!videoMLine || !videoMLine.payloads) return fallback;
++        const payloadOrder = String(videoMLine.payloads).split(' ').map(p => parseInt(p, 10));
++        const ignored = new Set(['rtx', 'red', 'ulpfec', 'flexfec-03', 'cn']);
++        for (const pt of payloadOrder) {
++            const rtp = videoMLine.rtp && videoMLine.rtp.find(r => r.payload === pt);
++            if (!rtp || !rtp.codec) continue;
++            if (ignored.has(rtp.codec.toLowerCase())) continue;
++            return rtp.codec;
++        }
++    } catch (e) {
++        // fall through to local default
++    }
++    return fallback;
++}
++
++export default { Identity, SharedFile, createLocalSdp, mungeSdp, getMediaDirections, attachMediaStream, closeMediaStream,  sanatizeHtml, map2obj, parseStats, setPreferredVideoCodec, getPreferredVideoCodec, pickAnswerVideoCodec};

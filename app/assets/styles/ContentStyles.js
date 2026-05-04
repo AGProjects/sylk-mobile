@@ -57,6 +57,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-start',
     alignItems: 'center',
+    // Real horizontal spacing between the control (Checkbox / Switch)
+    // and its label. Previously the layout relied on a single leading
+    // space inside the <Text> for a visible gap, which was fine when
+    // UISwitch was narrow. iOS 26's UISwitch is noticeably wider and
+    // the single-space gap isn't enough — the switch's right edge
+    // overlaps the first character of the label. `columnGap` is
+    // honored on RN 0.71+ (we're on 0.73) and applies to every
+    // adjacent pair of flex children in the row, so existing leading
+    // spaces in label strings are still tolerated, just no longer
+    // load-bearing.
+    columnGap: 12,
   },
 
 // Conference Modal

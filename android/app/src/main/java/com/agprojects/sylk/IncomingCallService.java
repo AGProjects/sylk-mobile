@@ -51,6 +51,8 @@ import java.util.List;
 import android.os.Vibrator;
 import android.os.VibrationEffect;
 
+import android.telecom.DisconnectCause;
+
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.lifecycle.ProcessLifecycleOwner;
 import android.content.Context;
@@ -61,7 +63,7 @@ public class IncomingCallService extends Service {
 
     public static final String CHANNEL_ID = "incoming-sylk-calls";
     public static final Set<String> handledCalls = new HashSet<>();
-    private static final String LOG_TAG = "[SYLK CALL SERVICE]";
+    private static final String LOG_TAG = "SYLK_APP";
     private Map<String, List<String>> contactsByTag = new HashMap<>();
     
     private Handler autoCancelHandler;
@@ -79,7 +81,7 @@ public class IncomingCallService extends Service {
 		try {
 			File dbFile = getApplicationContext().getDatabasePath("sylk.db");
 			if (!dbFile.exists()) {
-				Log.e(LOG_TAG, "Database file not found: " + dbFile.getAbsolutePath());
+				Log.e(LOG_TAG, "[CallSvc] Database file not found: " + dbFile.getAbsolutePath());
 				// still put empty lists in the map
 				result.put("favorites", favorites);
 				result.put("autoanswer", autoanswer);
@@ -121,16 +123,16 @@ public class IncomingCallService extends Service {
 			// ring instead of an auto-answered one). NO retry: previous
 			// backoff retries stretched the FCM handler to ~30s on
 			// contention, well past the caller's patience.
-			Log.w(LOG_TAG, "getContactsByTag: DB locked — using empty favorite/autoanswer lists, call will ring");
+			Log.w(LOG_TAG, "[CallSvc] getContactsByTag: DB locked — using empty favorite/autoanswer lists, call will ring");
 		} catch (SQLiteException sqlEx) {
 			String msg = sqlEx.getMessage();
 			if (msg != null && msg.contains("SQLITE_BUSY")) {
-				Log.w(LOG_TAG, "getContactsByTag: DB busy — using empty lists, call will ring");
+				Log.w(LOG_TAG, "[CallSvc] getContactsByTag: DB busy — using empty lists, call will ring");
 			} else {
-				Log.e(LOG_TAG, "Failed to read contacts from database (SQLite)", sqlEx);
+				Log.e(LOG_TAG, "[CallSvc] Failed to read contacts from database (SQLite)", sqlEx);
 			}
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "Failed to read contacts from database", e);
+			Log.e(LOG_TAG, "[CallSvc] Failed to read contacts from database", e);
 		}
 	
 		result.put("favorites", favorites);
@@ -176,13 +178,13 @@ public class IncomingCallService extends Service {
 				break;
 		}
 		
-		Log.d(LOG_TAG, "Current ringer mode: " + modeString);
+		Log.d(LOG_TAG, "[CallSvc] Current ringer mode: " + modeString);
 
 		boolean isFavorite = isFavorite(from_uri);
 	
 		// Check ringer mode
 		if (!isFavorite && ringerMode == AudioManager.RINGER_MODE_SILENT) {
-			Log.d(LOG_TAG, "Do Not Disturb or silent mode, not playing ringtone");
+			Log.d(LOG_TAG, "[CallSvc] Do Not Disturb or silent mode, not playing ringtone");
 			return;
 		}
 	
@@ -216,7 +218,7 @@ public class IncomingCallService extends Service {
 			}
 	
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "Failed to start ringtone/vibration", e);
+			Log.e(LOG_TAG, "[CallSvc] Failed to start ringtone/vibration", e);
 		}
 	}
 
@@ -239,7 +241,7 @@ public class IncomingCallService extends Service {
 				//Log.d(LOG_TAG, "Vibration stopped");
 			}
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "Error stopping vibration", e);
+			Log.e(LOG_TAG, "[CallSvc] Error stopping vibration", e);
 		}
 		
 		vibrator = null;
@@ -275,14 +277,14 @@ public class IncomingCallService extends Service {
         contactsByTag = getContactsByTag();
         
         if (intent == null || intent.getExtras() == null) {
-            Log.w(LOG_TAG, "Started with null intent, stop now");
+            Log.w(LOG_TAG, "[CallSvc] Started with null intent, stop now");
             return START_NOT_STICKY;
         }
 
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				Log.d(LOG_TAG, "[CallSvc]   EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 
@@ -311,50 +313,62 @@ public class IncomingCallService extends Service {
 		int notificationId = Math.abs(callId.hashCode());
 
         if (callId == null) {
-            Log.w(LOG_TAG, "Missing callId");
+            Log.w(LOG_TAG, "[CallSvc] Missing callId");
             return START_NOT_STICKY;
         }
 
-		Log.w(LOG_TAG, "onStartCommand " + event + " " + callId + " from " + from_uri + " " + displayName);
+		Log.w(LOG_TAG, "[CallSvc] onStartCommand " + event + " " + callId + " from " + from_uri + " " + displayName);
 		//Log.w(LOG_TAG, "phoneLocked " + phoneLocked);
 		//Log.w(LOG_TAG, "action " + action);
 		//Log.w(LOG_TAG, "displayName " + displayName);
 
         if (handledCalls.contains(callId)) {
-			Log.d(LOG_TAG, "Call " + callId + " already handled, skipping");
+			Log.d(LOG_TAG, "[CallSvc] Call " + callId + " already handled, skipping");
             return START_NOT_STICKY;
 		}
 
         if ("cancel".equals(action) || "ACTION_REJECT_CALL".equals(action)) {
-            Log.d(LOG_TAG, "action received: " + action + " for " + callId);
+            Log.d(LOG_TAG, "[CallSvc] action received: " + action + " for " + callId);
 			stopRingtone();
 	        handledCalls.add(callId);
 			// Cancel auto-answer if scheduled
 			Runnable scheduled = autoAnswerRunnables.remove(callId);
 			if (scheduled != null) {
 				mainHandler.removeCallbacks(scheduled);
-				Log.d(LOG_TAG, "Canceled auto-answer for call: " + callId);
+				Log.d(LOG_TAG, "[CallSvc] Canceled auto-answer for call: " + callId);
 			}
+
+			// Tell Telecom (and therefore the BT car kit / Android Auto) that
+			// the call is over. "cancel" comes from FCM when the caller hung
+			// up, ACTION_REJECT_CALL is a local rejection.
+			int dc = "cancel".equals(action)
+					? DisconnectCause.REMOTE
+					: DisconnectCause.REJECTED;
+			SylkTelecom.endCall(callId, dc);
 
 			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");
 			closeActivityIntent.putExtra("session-id", callId);
 			LocalBroadcastManager.getInstance(this).sendBroadcast(closeActivityIntent);
-    
+
             cancelNotification(notificationId);
-			Log.d(LOG_TAG, "Stop " + callId);
+			Log.d(LOG_TAG, "[CallSvc] Stop " + callId);
             stopSelf();
             return START_NOT_STICKY;
         }
 
         if (event == null) {
-            Log.w(LOG_TAG, "Missing event");
+            Log.w(LOG_TAG, "[CallSvc] Missing event");
             return START_NOT_STICKY;
         }
 
-		if ("ACTION_ACCEPT_AUDIO".equals(action) || "ACTION_ACCEPT_VIDEO".equals(action)) {		 
-			Log.d(LOG_TAG, "Starting app for accepted call " + callId + " from " + from_uri);
+		if ("ACTION_ACCEPT_AUDIO".equals(action) || "ACTION_ACCEPT_VIDEO".equals(action)) {
+			Log.d(LOG_TAG, "[CallSvc] Starting app for accepted call " + callId + " from " + from_uri);
 			stopRingtone();
 			String acceptedMediaType = "ACTION_ACCEPT_AUDIO".equals(action) ? "audio" : "video";
+			// Flip the Telecom Connection to ACTIVE so the BT car kit /
+			// Android Auto switches from the ringing state to the in-call
+			// state immediately, before the RN app has finished launching.
+			SylkTelecom.setActive(callId);
 			handleAcceptCall(callId, displayName, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
 			return START_NOT_STICKY;
 		}
@@ -364,19 +378,33 @@ public class IncomingCallService extends Service {
 
 			createCallNotificationChannel();
             startRingtone(from_uri);
-            
+
 			if ("incoming_session".equals(event) && isAutoAnswer(from_uri)) {
     			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, notificationId, 20);
 			}
 
 			showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, "");
 
+			// Hand the call off to the Telecom framework as a self-managed
+			// Connection. This is what makes the BT car-kit display the
+			// "Incoming call from X" prompt, and what plumbs the call into
+			// Android Auto. The CallStyle notification above still drives
+			// the on-device lockscreen UI; the two paths run in parallel.
+			SylkTelecom.presentIncomingCall(
+					getApplicationContext(),
+					callId,
+					from_uri,
+					displayName,
+					mediaType);
+
 			// Auto-cancel fallback after 60s
 			autoCancelHandler = new Handler(Looper.getMainLooper());
+			final String autoCancelCallId = callId;
 			autoCancelRunnable = () -> {
 				stopRingtone();
+				SylkTelecom.endCall(autoCancelCallId, DisconnectCause.MISSED);
 				cancelNotification(notificationId);
-				Log.d(LOG_TAG, "Stop " + callId);
+				Log.d(LOG_TAG, "[CallSvc] Stop " + autoCancelCallId);
 				stopSelf();
 			};
 
@@ -439,7 +467,7 @@ public class IncomingCallService extends Service {
 			}
 		}
 
-		Log.d(LOG_TAG, title);
+		Log.d(LOG_TAG, "[CallSvc] " + title);
 	
 		int notificationId = Math.abs(callId.hashCode());
 	
@@ -555,11 +583,11 @@ public class IncomingCallService extends Service {
 
 		if (callId == null) return;
 	
-		Log.d(LOG_TAG, "handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked + " event " + event );
-		Log.d(LOG_TAG, "handleAcceptCall from_uri: " + from_uri);
-		Log.d(LOG_TAG, "handleAcceptCall to_uri: " + to_uri);
-		Log.d(LOG_TAG, "handleAcceptCall displayName: " + displayName);
-		Log.d(LOG_TAG, "handleAcceptCall mediaType: " + mediaType);
+		Log.d(LOG_TAG, "[CallSvc] handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked + " event " + event );
+		Log.d(LOG_TAG, "[CallSvc] handleAcceptCall from_uri: " + from_uri);
+		Log.d(LOG_TAG, "[CallSvc] handleAcceptCall to_uri: " + to_uri);
+		Log.d(LOG_TAG, "[CallSvc] handleAcceptCall displayName: " + displayName);
+		Log.d(LOG_TAG, "[CallSvc] handleAcceptCall mediaType: " + mediaType);
 		
 		String action = "ACTION_ACCEPT_AUDIO";
 		if ("video".equalsIgnoreCase(mediaType)) {
@@ -570,14 +598,14 @@ public class IncomingCallService extends Service {
 		Runnable scheduled = autoAnswerRunnables.remove(callId);
 		if (scheduled != null) {
 			new Handler(Looper.getMainLooper()).removeCallbacks(scheduled);
-			Log.d(LOG_TAG, "Cancelled scheduled auto-answer for call: " + callId);
+			Log.d(LOG_TAG, "[CallSvc] Cancelled scheduled auto-answer for call: " + callId);
 		}
 	
 		handledCalls.add(callId);
 	
 		cancelNotification(notificationId);
 	
-		Log.d(LOG_TAG, "-- Launching Sylk app");
+		Log.d(LOG_TAG, "[CallSvc] -- Launching Sylk app");
 		Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
 		if (launchIntent != null) {
 			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -589,13 +617,13 @@ public class IncomingCallService extends Service {
 			launchIntent.putExtra("displayName", displayName);
 			launchIntent.putExtra("phoneLocked", phoneLocked);
 			startActivity(launchIntent);
-			Log.d(LOG_TAG, "RN app launched for call: " + callId);
+			Log.d(LOG_TAG, "[CallSvc] RN app launched for call: " + callId);
 		}
 
 		// RN app alive → send event only
 		if (getApplication() instanceof ReactApplication) {
 			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, false, event, (ReactApplication) getApplication());
-			Log.d(LOG_TAG, "Sent React Native event for call: " + callId);
+			Log.d(LOG_TAG, "[CallSvc] Sent React Native event for call: " + callId);
 		}
 	
 		stopSelf();
@@ -640,7 +668,7 @@ public class IncomingCallService extends Service {
 	
 				// Stop if handled externally
 				if (handledCalls.contains(callId)) {
-					Log.d(LOG_TAG, "Countdown stopped for handled call " + callId);
+					Log.d(LOG_TAG, "[CallSvc] Countdown stopped for handled call " + callId);
 					autoAnswerRunnables.remove(callId);
 					return;
 				}
@@ -655,7 +683,7 @@ public class IncomingCallService extends Service {
 				if (remaining > 0) {
 					handler.postDelayed(this, 1000);
 				} else {
-					Log.d(LOG_TAG, "Countdown finished, auto-accepting call " + callId);
+					Log.d(LOG_TAG, "[CallSvc] Countdown finished, auto-accepting call " + callId);
 	
 					handledCalls.add(callId);
 					autoAnswerRunnables.remove(callId);
@@ -676,7 +704,7 @@ public class IncomingCallService extends Service {
 	
 		autoAnswerRunnables.put(callId, countdownRunnable);
 	
-		Log.d(LOG_TAG, "Scheduled auto-answer countdown for call "
+		Log.d(LOG_TAG, "[CallSvc] Scheduled auto-answer countdown for call "
 				+ callId + " (" + seconds + "s)");
 	
 		handler.post(countdownRunnable);

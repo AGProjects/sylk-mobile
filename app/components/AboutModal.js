@@ -132,15 +132,9 @@ const AboutModal = (props) => {
                       {props.devMode ? ' (dev mode)' : ''}
                     </Text>
 
-                    {props.appStoreVersion && props.appStoreVersion.version > props.currentVersion ? (
-                      <Text onPress={handleUpdate} style={styles.link}>
-                        Update Sylk...
-                      </Text>
-                    ) : (
-                      <Text onPress={handleUpdate} style={styles.link}>
-                        Check App Store for update...
-                      </Text>
-                    )}
+                    <Text onPress={handleUpdate} style={styles.link}>
+                      Check App Store for update...
+                    </Text>
 
                     <Text style={styles.love}>
                       For family, friends and customers, with love.
@@ -164,7 +158,6 @@ AboutModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
   currentVersion: PropTypes.string,
-  appStoreVersion: PropTypes.object,
   buildId: PropTypes.string,
   toggleDevMode: PropTypes.func,
   devMode: PropTypes.bool,

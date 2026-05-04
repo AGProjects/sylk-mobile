@@ -152,12 +152,12 @@ class ConferenceParticipantSelf extends Component {
         return (
             <Surface style={[container,  { transform: [{ translateX: shiftX}, { translateY: shiftY }]}]}>
                 {muteIcon}
-                <RTCView objectFit="cover" 
-                         style={styles.video} 
-                         ref="videoElement" 
-                         poster="assets/images/transparent-1px.png" 
-                         streamURL={this.props.stream ? this.props.stream.toURL() : null} 
-                         mirror={true}/>
+                <RTCView objectFit="cover"
+                         style={styles.video}
+                         ref="videoElement"
+                         poster="assets/images/transparent-1px.png"
+                         streamURL={this.props.stream ? this.props.stream.toURL() : null}
+                         mirror={(this.props.cameraFacing || 'front') !== 'back'}/>
             </Surface>
         );
     }
@@ -170,7 +170,8 @@ ConferenceParticipantSelf.propTypes = {
     audioMuted: PropTypes.bool.isRequired,
     generatedVideoTrack: PropTypes.bool,
     isLandscape: PropTypes.bool,
-    big: PropTypes.bool
+    big: PropTypes.bool,
+    cameraFacing: PropTypes.string
 };
 
 export default ConferenceParticipantSelf;

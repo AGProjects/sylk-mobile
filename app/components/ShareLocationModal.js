@@ -12,19 +12,41 @@ import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/blink/_DeleteMessageModal.scss';
 
 // Duration options presented to the user.
-//   value       — duration in milliseconds
-//   label       — what the user sees in the radio list
-//   periodLabel — what appears in the outgoing "I am sharing the location
-//                 with you for …" text
-//   kind        — 'meetingRequest' stamps meeting_request:true on the origin
-//                 tick and means "until we meet"; 'fixed' is a plain timed
-//                 share with no handshake semantics.
+//   value         — duration in milliseconds (acts as the maximum cap;
+//                   the share can stop earlier on its own — see
+//                   'untilIReturn' below).
+//   label         — what the user sees in the radio list
+//   periodLabel   — what appears in the outgoing "I am sharing the
+//                   location with you …" text
+//   kind          — 'meetingRequest' stamps meeting_request:true on the
+//                   origin tick and means "until we meet";
+//                   'untilIReturn' is a caregiver-only auto-stop share
+//                   (NavigationBar watches for departure-then-return);
+//                   'once' is a single GPS fix; 'fixed' is a plain timed
+//                   share with no handshake semantics.
+//   caregiverOnly — when true, the option is rendered only when the
+//                   parent passes isCaregiver:true (i.e. the contact
+//                   carries the caregiver tag). Hidden for everyone else.
 //
 // "Until we meet" caps at 4h so the share can't run forever if the two
 // parties never actually meet — per product decision, sharing must
 // eventually expire on its own, and 4h is the window we expect for a
 // realistic "meet up" intent.
+//
+// "Until I return" caps at 8h. The intent is "I'm popping out, share
+// my location with my caregiver until I'm home again" — the auto-stop
+// kicks in as soon as we detect the user has come back to within
+// UNTIL_RETURN_RETURN_THRESHOLD_M of where they started, but only
+// after they've actually left (otherwise the share would self-stop
+// the moment it began, since the first GPS fix is "at" the origin).
+// 8h is a generous-but-finite ceiling for a typical "out for the day"
+// excursion; if the user never returns, the share lapses on its own.
 const DURATION_OPTIONS = [
+    // Caregiver-only: starts immediately, runs up to 8h, auto-stops
+    // when the user returns to where they started (after first
+    // moving >100m away). NavigationBar implements the state
+    // machine; this entry just selects that code path.
+    {value: 8 * 60 * 60 * 1000,    label: 'Until I return', periodLabel: 'until I return', kind: 'untilIReturn', caregiverOnly: true},
     {value: 4 * 60 * 60 * 1000,    label: 'Until we meet', periodLabel: 'until we meet', kind: 'meetingRequest'},
     // One-shot: a single GPS fix is acquired and a single location
     // message ships. No timer, no follow-up ticks, no live-update
@@ -42,16 +64,15 @@ class ShareLocationModal extends Component {
         autoBind(this);
         this.state = {
             show: props.show,
-            // Index into DURATION_OPTIONS. Default to "Once" (a
-            // single-shot share is the lowest-commitment option and
-            // the most common day-to-day case — "send my current
-            // location" without any live tracking). The previous
-            // default was "Until we meet" at index 0; keep that
-            // option in the list at index 0 but pre-select index 1.
-            // We can't key off `value` here because "Until we meet"
-            // and one of the fixed shares can collide on duration but
-            // differ in semantics.
-            selectedIndex: 1,
+            // Index into DURATION_OPTIONS chosen on open. Defaults to
+            // ShareLocationModal.defaultIndexFor(props) so caregiver
+            // contacts open with "Until I return" pre-selected and
+            // everybody else opens with "Once" — the same low-commitment
+            // default we had before the caregiver feature landed. We
+            // can't key off `value` to find the default because
+            // multiple options share the same durationMs (4h / 8h)
+            // but differ in `kind`.
+            selectedIndex: ShareLocationModal.defaultIndexFor(props),
             // Privacy radius (metres). Only meaningful for the
             // "Until we meet" path. 0 disables the gate; non-zero values
             // tell NavigationBar to swallow every outgoing location tick
@@ -64,10 +85,27 @@ class ShareLocationModal extends Component {
         };
     }
 
+    // Static helper so the constructor and CWRP both pick the same
+    // default. Caregivers default to "Until I return"; non-caregivers
+    // keep the historical "Once" default (lowest-commitment for a
+    // day-to-day "send my current location" share).
+    static defaultIndexFor(props) {
+        if (props && props.isCaregiver) {
+            const idx = DURATION_OPTIONS.findIndex(o => o.kind === 'untilIReturn');
+            if (idx >= 0) return idx;
+        }
+        return DURATION_OPTIONS.findIndex(o => o.kind === 'once');
+    }
+
     UNSAFE_componentWillReceiveProps(nextProps) {
-        // When the modal is re-opened, reset to the default ("Once").
+        // When the modal is re-opened, reset to the default selection
+        // for the (possibly updated) caregiver state of the contact.
         if (nextProps.show && !this.state.show) {
-            this.setState({show: true, selectedIndex: 1, excludeOriginRadiusMeters: 0});
+            this.setState({
+                show: true,
+                selectedIndex: ShareLocationModal.defaultIndexFor(nextProps),
+                excludeOriginRadiusMeters: 0,
+            });
         } else {
             this.setState({show: nextProps.show});
         }
@@ -160,22 +198,52 @@ class ShareLocationModal extends Component {
                                     >
                                         <View style={{ flexDirection: 'row' }}>
                                             <View style={{ flex: 1 }}>
-                                                {DURATION_OPTIONS.map((opt, idx) => (
-                                                    opt.kind === 'meetingRequest' ? (
-                                                        /* Override the shared
-                                                           checkBoxRow's 10px
-                                                           bottom margin so the
-                                                           option sits snug at
-                                                           the top of its column. */
-                                                        <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
-                                                            <RadioButton.Android
-                                                                value={String(idx)}
-                                                                uncheckedColor="#666"
-                                                            />
-                                                            <Text>{opt.label}</Text>
-                                                        </View>
-                                                    ) : null
-                                                ))}
+                                                {/* Caregiver-only "Until I return" sits at the top of the
+                                                    left column, above "Until we meet", because the user's
+                                                    caregiver setup makes it the most likely default — we want
+                                                    it to be the first thing the user reads when they open this
+                                                    modal for a caregiver contact. Hidden entirely for non-
+                                                    caregivers; the option's caregiverOnly flag also keeps the
+                                                    radio group from being able to land on it. */}
+                                                {this.props.isCaregiver
+                                                    ? DURATION_OPTIONS.map((opt, idx) => (
+                                                        opt.kind === 'untilIReturn' ? (
+                                                            <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
+                                                                <RadioButton.Android
+                                                                    value={String(idx)}
+                                                                    uncheckedColor="#666"
+                                                                />
+                                                                <Text>{opt.label}</Text>
+                                                            </View>
+                                                        ) : null
+                                                    ))
+                                                    : null}
+                                                {/* "Until we meet" is the meet-up handshake — a
+                                                    peer-to-peer "let's converge on the same point"
+                                                    intent. For a caregiver contact that's the wrong
+                                                    semantic: the caregiver isn't trying to meet up,
+                                                    they're keeping watch over a trip. Hide it
+                                                    entirely so the modal stays focused on the
+                                                    "Until I return" / fixed-interval shapes that
+                                                    actually fit the relationship. */}
+                                                {!this.props.isCaregiver
+                                                    ? DURATION_OPTIONS.map((opt, idx) => (
+                                                        opt.kind === 'meetingRequest' ? (
+                                                            /* Override the shared
+                                                               checkBoxRow's 10px
+                                                               bottom margin so the
+                                                               option sits snug at
+                                                               the top of its column. */
+                                                            <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
+                                                                <RadioButton.Android
+                                                                    value={String(idx)}
+                                                                    uncheckedColor="#666"
+                                                                />
+                                                                <Text>{opt.label}</Text>
+                                                            </View>
+                                                        ) : null
+                                                    ))
+                                                    : null}
                                                 {/* "or select an interval"
                                                     separator: just the text,
                                                     no horizontal rules — the
@@ -250,6 +318,12 @@ class ShareLocationModal extends Component {
                                                     + 'Sharing can be stopped at any time by clicking on the location icon. '
                                                     + 'Location data will be destroyed on both devices after meetup.';
                                             }
+                                            if (sel && sel.kind === 'untilIReturn') {
+                                                return head
+                                                    + 'Sharing starts immediately and stops automatically when you return to where you started, '
+                                                    + 'or after 8 hours — whichever comes first. '
+                                                    + 'You can also stop it at any time by clicking on the location icon.';
+                                            }
                                             if (sel && sel.kind === 'once') {
                                                 return head
                                                     + 'A single GPS fix is sent and not updated afterwards. '
@@ -304,6 +378,10 @@ ShareLocationModal.propTypes = {
     onConfirm   : PropTypes.func.isRequired,
     uri         : PropTypes.string,
     displayName : PropTypes.string,
+    // True when the selected contact carries the 'caregiver' tag /
+    // localProperties.caregiver flag. Surfaces the auto-stopping
+    // "Until I return" option in the modal and pre-selects it.
+    isCaregiver : PropTypes.bool,
 };
 
 export default ShareLocationModal;

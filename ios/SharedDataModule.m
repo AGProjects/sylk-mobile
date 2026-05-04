@@ -14,7 +14,7 @@ static NSString *activeChatJID = nil;
 
 + (BOOL)requiresMainQueueSetup
 {
-  NSLog(@"[sylk_share] requiresMainQueueSetup called");
+  NSLog(@"[SYLK_APP] [SharedData] requiresMainQueueSetup called");
   return YES;
 }
 
@@ -60,9 +60,9 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
       NSError *removeError = nil;
       [fm removeItemAtURL:fileURL error:&removeError];
       if (removeError) {
-          NSLog(@"[sylk_share] Failed to delete %@: %@", fileURL.lastPathComponent, removeError);
+          NSLog(@"[SYLK_APP] [SharedData] Failed to delete %@: %@", fileURL.lastPathComponent, removeError);
       } else {
-          NSLog(@"[sylk_share] Deleted %@", fileURL.lastPathComponent);
+          NSLog(@"[SYLK_APP] [SharedData] Deleted %@", fileURL.lastPathComponent);
       }
   }
   
@@ -75,10 +75,10 @@ RCT_EXPORT_METHOD(setActiveChat:(NSString * _Nullable)jid)
 
     if (jid != nil && [jid length] > 0) {
         [defaults setObject:jid forKey:@"activeChatJID"];
-        NSLog(@"[SharedDataModule] Active chat set to %@", jid);
+        NSLog(@"[SYLK_APP] [SharedData] Active chat set to %@", jid);
     } else {
         [defaults removeObjectForKey:@"activeChatJID"];
-        NSLog(@"[SharedDataModule] Active chat cleared");
+        NSLog(@"[SYLK_APP] [SharedData] Active chat cleared");
     }
 
     [defaults synchronize]; // ensure it's written immediately

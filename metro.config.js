@@ -72,6 +72,21 @@ const config = {
               sourceExts: [...defaultConfig.resolver.sourceExts, 'scss', 'sass'],
               assetExts: defaultConfig.resolver.assetExts.filter(ext => ext !== 'scss' && ext !== 'sass'),
             },
+      // Hide the noisy ENOENT errors Metro prints when it tries to
+      // symbolicate frames pointing inside Hermes' own InternalBytecode.js.
+      // The path Metro looks for is hard-coded into the prebuilt Hermes
+      // source maps as the CI machine's path (`/Users/distiller/...`)
+      // which doesn't exist on any developer's box. Collapsing those
+      // frames stops the symbolicator from trying to read the file and
+      // silences the spam without affecting real stack traces.
+      symbolicator: {
+              customizeFrame: (frame) => {
+                      if (frame.file && frame.file.includes('InternalBytecode.js')) {
+                              return { collapse: true };
+                            }
+                      return frame;
+                    },
+            },
 };
 
 module.exports = mergeConfig(defaultConfig, config);

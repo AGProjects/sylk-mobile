@@ -26,7 +26,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 public class MainActivity extends ReactActivity {
 
-    private static final String TAG = "[SYLK]";
+    private static final String TAG = "SYLK_APP";
     private static Intent pendingShareIntent;
     private static boolean shareHandled = false;
 
@@ -39,7 +39,7 @@ public class MainActivity extends ReactActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Log.d(TAG, "MainActivity onCreate intent=" + getIntent());
+        Log.d(TAG, "[Main] MainActivity onCreate intent=" + getIntent());
 
         // Handle the launch intent (replaces SplashActivity)
         handleIntent(getIntent());
@@ -54,7 +54,7 @@ public class MainActivity extends ReactActivity {
                 true
             );
         } catch (ErrnoException e) {
-            Log.e(TAG, "Failed to set EXTERNAL_STORAGE", e);
+            Log.e(TAG, "[Main] Failed to set EXTERNAL_STORAGE", e);
         }
     }
 
@@ -71,17 +71,17 @@ public class MainActivity extends ReactActivity {
 
         // This exactly mirrors what SplashActivity forwarded
         if (Intent.ACTION_VIEW.equals(action) && data != null) {
-			Log.d(TAG, "handleViewIntent");
+			Log.d(TAG, "[Main] handleViewIntent");
             handleViewIntent(data);
         }
 
 		if (Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action)) {
 			// VERY IMPORTANT: keep intent so RN can read it
-			Log.d(TAG, "Caching share intent");
+			Log.d(TAG, "[Main] Caching share intent");
 			pendingShareIntent = intent;
 			if (!shareHandled) {
 				setIntent(intent);
-				Log.d(TAG, "setIntent");
+				Log.d(TAG, "[Main] setIntent");
 				emitShareIntent(intent);
 				shareHandled = true;
 			}
@@ -153,7 +153,7 @@ public class MainActivity extends ReactActivity {
 	
 		if (pendingShareIntent != null) {
 			if (!shareHandled) {
-				Log.d(TAG, "Re-applying pending share intent");
+				Log.d(TAG, "[Main] Re-applying pending share intent");
 				setIntent(pendingShareIntent);
 				shareHandled = true;
 			}
@@ -165,7 +165,7 @@ public class MainActivity extends ReactActivity {
      * Forward to React Native via Linking / event emitter
      */
     private void handleViewIntent(Uri uri) {
-        Log.d(TAG, "Deep link received: " + uri);
+        Log.d(TAG, "[Main] Deep link received: " + uri);
 
         // IMPORTANT:
         // Do NOT start another Activity here.
@@ -184,7 +184,7 @@ public class MainActivity extends ReactActivity {
     public void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
 
-        Log.d(TAG, "MainActivity onNewIntent intent=" + intent);
+        Log.d(TAG, "[Main] MainActivity onNewIntent intent=" + intent);
 
         // Required so RN Linking sees updated intent
         setIntent(intent);

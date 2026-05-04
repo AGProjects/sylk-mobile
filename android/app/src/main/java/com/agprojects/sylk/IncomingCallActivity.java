@@ -27,7 +27,7 @@ import android.database.sqlite.SQLiteDatabase;
 
 public class IncomingCallActivity extends AppCompatActivity {
 
-    private static final String LOG_TAG = "[SYLK CALL ACTIVITY]";
+    private static final String LOG_TAG = "SYLK_APP";
     private static final long TIMEOUT_MS = 60 * 1000; // 60 seconds
 
     private String callId;
@@ -46,17 +46,17 @@ public class IncomingCallActivity extends AppCompatActivity {
         public void onReceive(Context context, Intent intent) {
 
             String sessionId = intent.getStringExtra("session-id");
-            Log.d(LOG_TAG, "closeReceiver triggered for session: " + sessionId);
-            Log.d(LOG_TAG, "existing callId: " + callId);
+            Log.d(LOG_TAG, "[CallUI] closeReceiver triggered for session: " + sessionId);
+            Log.d(LOG_TAG, "[CallUI] existing callId: " + callId);
 			Bundle extras = intent.getExtras();
 			if (extras != null) {
 				for (String key : extras.keySet()) {
-					Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+					Log.d(LOG_TAG, "[CallUI]   EXTRA: " + key + " = " + extras.get(key));
 				}
 			}
 
             if (callId != null && callId.equals(sessionId)) {
-                Log.d(LOG_TAG, "Closing IncomingCallActivity due to remote cancel");
+                Log.d(LOG_TAG, "[CallUI] Closing IncomingCallActivity due to remote cancel");
                 finish();
             }
         }
@@ -65,16 +65,16 @@ public class IncomingCallActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-		Log.d(LOG_TAG, "IncomingCallActivity onCreate");
+		Log.d(LOG_TAG, "[CallUI] IncomingCallActivity onCreate");
 
         // Check if device is locked
         KeyguardManager keyguardManager = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
         if (keyguardManager != null && !keyguardManager.isKeyguardLocked()) {
-            Log.d(LOG_TAG, "Phone is unlocked, skip alert panel");
+            Log.d(LOG_TAG, "[CallUI] Phone is unlocked, skip alert panel");
             finish();
             return;
         } else {
-            Log.d(LOG_TAG, "Phone is locked");
+            Log.d(LOG_TAG, "[CallUI] Phone is locked");
         }
 
         setContentView(R.layout.activity_incoming_call);
@@ -89,8 +89,8 @@ public class IncomingCallActivity extends AppCompatActivity {
             phoneLocked = getIntent().getBooleanExtra("phoneLocked", false);
         }
 
-        Log.d(LOG_TAG, "IncomingCallActivity phoneLocked=" + phoneLocked);
-        Log.d(LOG_TAG, "IncomingCallActivity mediaType=" + mediaType);
+        Log.d(LOG_TAG, "[CallUI] IncomingCallActivity phoneLocked=" + phoneLocked);
+        Log.d(LOG_TAG, "[CallUI] IncomingCallActivity mediaType=" + mediaType);
 
         String displayName = null;
 		Cursor cursor = null;
@@ -107,7 +107,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 				displayName = cursor.getString(cursor.getColumnIndexOrThrow("name"));
 			}
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "Error fetching display_name from DB", e);
+			Log.e(LOG_TAG, "[CallUI] Error fetching display_name from DB", e);
 		} finally {
 			if (cursor != null) {
 				cursor.close();
@@ -153,13 +153,13 @@ public class IncomingCallActivity extends AppCompatActivity {
 			acceptButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_AUDIO"));
 			rejectButtonAudio.setOnClickListener(v -> sendRejectIntent());
 		}
-        Log.d(LOG_TAG, "IncomingCallActivity alert panel displayed");
+        Log.d(LOG_TAG, "[CallUI] IncomingCallActivity alert panel displayed");
 
 	}
 
 	// Utility methods
 	private void sendRejectIntent() {
-		Log.d(LOG_TAG, "Reject pressed for call: " + callId);
+		Log.d(LOG_TAG, "[CallUI] Reject pressed for call: " + callId);
 	
 		Intent intent = new Intent(this, IncomingCallActionReceiver.class)
 				.setAction("ACTION_REJECT_CALL")
@@ -176,7 +176,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 	}
 
 	private void sendAcceptIntent(String action) {
-		Log.d(LOG_TAG, "Accept pressed for call: " + callId + ", action: " + action);
+		Log.d(LOG_TAG, "[CallUI] Accept pressed for call: " + callId + ", action: " + action);
 		Intent intent = new Intent(this, IncomingCallActionReceiver.class)
 				.setAction(action)
 				.putExtra("session-id", callId)
@@ -201,7 +201,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 
         // Schedule the auto-dismiss after 60 seconds
         timeoutRunnable = () -> {
-            Log.d(LOG_TAG, "Timeout reached, dismissing IncomingCallActivity for call: " + callId);
+            Log.d(LOG_TAG, "[CallUI] Timeout reached, dismissing IncomingCallActivity for call: " + callId);
             finish();
         };
         timeoutHandler.postDelayed(timeoutRunnable, TIMEOUT_MS);

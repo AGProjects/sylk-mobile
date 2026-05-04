@@ -1,0 +1,2661 @@
+diff --git a/node_modules/react-native-webrtc/android/build.gradle b/node_modules/react-native-webrtc/android/build.gradle
+index 033a226..021c7c9 100644
+--- a/node_modules/react-native-webrtc/android/build.gradle
++++ b/node_modules/react-native-webrtc/android/build.gradle
+@@ -12,6 +12,7 @@ android {
+ 
+     compileSdkVersion safeExtGet('compileSdkVersion', 24)
+     buildToolsVersion safeExtGet('buildToolsVersion', "23.0.1")
++    ndkVersion safeExtGet('ndkVersion', '25.1.8937393')
+ 
+     defaultConfig {
+         minSdkVersion 24
+@@ -19,6 +20,28 @@ android {
+         versionCode 1
+         versionName "1.0"
+         consumerProguardFiles 'consumer-rules.pro'
++
++        // Sylk E2EE: native FrameEncryptor/Decryptor JNI bridge.
++        // -fexperimental-relative-c++-abi-vtables matches the ABI the
++        // libjingle_peerconnection_so.so binary was built with (verified
++        // by disassembly: nativeSetFrameEncryptor reads vtable[0] as a
++        // 4-byte sign-extended offset, not an 8-byte absolute fn ptr).
++        // Without this flag our class's vtable layout is incompatible
++        // and libwebrtc crashes on the first virtual dispatch.
++        externalNativeBuild {
++            cmake {
++                cppFlags '-std=c++17', '-fexceptions', '-frtti', '-fexperimental-relative-c++-abi-vtables'
++                arguments '-DANDROID_STL=c++_shared'
++                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
++            }
++        }
++    }
++
++    externalNativeBuild {
++        cmake {
++            path 'src/main/cpp/CMakeLists.txt'
++            version safeExtGet('cmakeVersion', '3.22.1')
++        }
+     }
+ 
+     // WebRTC requires Java 8 features
+diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/CMakeLists.txt b/node_modules/react-native-webrtc/android/src/main/cpp/CMakeLists.txt
+new file mode 100644
+index 0000000..49fb9ea
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/cpp/CMakeLists.txt
+@@ -0,0 +1,27 @@
++# Sylk E2EE native bridge for react-native-webrtc.
++# Phase 1: NDK plumbing (sylk_e2ee.cpp)
++# Phase 2: noop FrameEncryptor/Decryptor (MediaEncryptorJni.cpp)
++# Phase 3: AES-128-GCM crypto (later)
++
++cmake_minimum_required(VERSION 3.22.1)
++
++project(sylk_e2ee CXX)
++
++set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++set(CMAKE_POSITION_INDEPENDENT_CODE ON)
++
++# sylk_webrtc_compat.h lives in this directory. Do NOT add include/ to the
++# include path — those are upstream WebRTC headers fetched for reference;
++# they are NOT compilable standalone (transitive abseil / rtc_base deps).
++include_directories(${CMAKE_CURRENT_SOURCE_DIR})
++
++add_library(sylk_e2ee SHARED
++    sylk_e2ee.cpp
++    MediaEncryptorJni.cpp
++)
++
++target_link_libraries(sylk_e2ee
++    log
++    android
++)
+diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp b/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
+new file mode 100644
+index 0000000..2d49a8f
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
+@@ -0,0 +1,545 @@
++// MediaEncryptorJni.cpp — Sylk ZRTP FrameEncryptor / FrameDecryptor.
++//
++// Phase 2 noop classes (passthrough) are kept for diagnostics + the
++// Phase 3 keyed AES-128-GCM classes that are what an actual encrypted
++// call uses are added below. The keyed path JNI-callbacks into the Java
++// helpers SylkE2EE.aesGcmEncrypt / aesGcmDecrypt for each frame so we
++// don't need to vendor a C crypto library into the native build.
++//
++// Frame layout (Phase 3, audio-only Opus = 0 codec passthrough bytes):
++//
++//   [1B header   = 4b version=1 | 4b keyId]
++//   [4B counter  = monotonic per-direction, big-endian]
++//   [   ciphertext     ]   (same length as plaintext)
++//   [16B GCM auth tag  ]
++//
++// IV  = salt(8) || counter(4)            (12 bytes, all GCM IVs)
++// AAD = header(1) || counter(4)          (5 bytes, authenticated only)
++
++#include <jni.h>
++#include <android/log.h>
++#include <atomic>
++#include <cstring>
++#include <cstdint>
++#include <mutex>
++#include <vector>
++
++#include "sylk_webrtc_compat.h"
++
++#define LOG_TAG "SylkZRTP"
++#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
++#define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, __VA_ARGS__)
++#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
++
++// Bump this any time the wire format / prefix size / framing logic changes.
++// Both phones' native libs MUST report the same value or the asymmetric
++// behaviour we're chasing is from version skew, not from the codec.
++#define SYLK_E2EE_BUILD "build-2026-05-02-public-aesgcm"
++
++// ---- JNI cache: SylkE2EE class + AES-GCM method IDs -----------------------
++//
++// One-time initialization on the first call into either an encryptor or
++// decryptor. We hold a global ref to the class and cache the method IDs
++// so the per-frame call only needs AttachCurrentThread + array marshaling.
++
++namespace {
++
++JavaVM*   g_jvm                 = nullptr;
++jclass    g_sylkE2EEClass       = nullptr;
++jmethodID g_aesGcmEncryptMid    = nullptr;
++jmethodID g_aesGcmDecryptMid    = nullptr;
++std::once_flag g_jniInitFlag;
++
++void InitJniCacheLocked(JNIEnv* env) {
++    env->GetJavaVM(&g_jvm);
++    jclass localClass = env->FindClass("com/oney/WebRTCModule/SylkE2EE");
++    if (!localClass) {
++        LOGE("FindClass com/oney/WebRTCModule/SylkE2EE failed");
++        return;
++    }
++    g_sylkE2EEClass = (jclass)env->NewGlobalRef(localClass);
++    env->DeleteLocalRef(localClass);
++    g_aesGcmEncryptMid = env->GetStaticMethodID(
++        g_sylkE2EEClass, "aesGcmEncrypt", "([B[B[B[B)[B");
++    g_aesGcmDecryptMid = env->GetStaticMethodID(
++        g_sylkE2EEClass, "aesGcmDecrypt", "([B[B[B[B)[B");
++    if (!g_aesGcmEncryptMid || !g_aesGcmDecryptMid) {
++        LOGE("GetStaticMethodID(aesGcmEncrypt/Decrypt) failed");
++    }
++}
++
++void EnsureJniCache(JNIEnv* env) {
++    std::call_once(g_jniInitFlag, [env]() { InitJniCacheLocked(env); });
++}
++
++JNIEnv* AttachThread(bool* outDidAttach) {
++    JNIEnv* env = nullptr;
++    if (!g_jvm) return nullptr;
++    int status = g_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
++    *outDidAttach = false;
++    if (status == JNI_EDETACHED) {
++        if (g_jvm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
++            *outDidAttach = true;
++        } else {
++            return nullptr;
++        }
++    }
++    return env;
++}
++
++void DetachThread(bool didAttach) {
++    if (didAttach && g_jvm) {
++        g_jvm->DetachCurrentThread();
++    }
++}
++
++// Build a 12-byte IV from salt(8) and a big-endian 32-bit counter.
++inline void BuildIV(const uint8_t salt[8], uint32_t counter, uint8_t out[12]) {
++    std::memcpy(out, salt, 8);
++    out[8]  = (uint8_t)((counter >> 24) & 0xff);
++    out[9]  = (uint8_t)((counter >> 16) & 0xff);
++    out[10] = (uint8_t)((counter >>  8) & 0xff);
++    out[11] = (uint8_t)( counter        & 0xff);
++}
++
++// Helper: call SylkE2EE.aesGcm(En|De)crypt(key, iv, aad, data) and return
++// the resulting byte[] (ciphertext+tag for encrypt, plaintext for decrypt).
++// Returns nullptr on Java-side failure (e.g. AEADBadTagException for
++// decrypt). Caller is responsible for env->DeleteLocalRef on the result.
++jbyteArray CallAesGcm(JNIEnv* env,
++                      jmethodID mid,
++                      const uint8_t* key, size_t keyLen,
++                      const uint8_t* iv,  size_t ivLen,
++                      const uint8_t* aad, size_t aadLen,
++                      const uint8_t* data, size_t dataLen) {
++    jbyteArray jKey = env->NewByteArray((jsize)keyLen);
++    env->SetByteArrayRegion(jKey, 0, (jsize)keyLen, (const jbyte*)key);
++
++    jbyteArray jIv = env->NewByteArray((jsize)ivLen);
++    env->SetByteArrayRegion(jIv, 0, (jsize)ivLen, (const jbyte*)iv);
++
++    jbyteArray jAad = env->NewByteArray((jsize)aadLen);
++    env->SetByteArrayRegion(jAad, 0, (jsize)aadLen, (const jbyte*)aad);
++
++    jbyteArray jData = env->NewByteArray((jsize)dataLen);
++    if (dataLen > 0) {
++        env->SetByteArrayRegion(jData, 0, (jsize)dataLen, (const jbyte*)data);
++    }
++
++    jobject result = env->CallStaticObjectMethod(
++        g_sylkE2EEClass, mid, jKey, jIv, jAad, jData);
++
++    if (env->ExceptionCheck()) {
++        env->ExceptionDescribe();
++        env->ExceptionClear();
++        result = nullptr;
++    }
++
++    env->DeleteLocalRef(jKey);
++    env->DeleteLocalRef(jIv);
++    env->DeleteLocalRef(jAad);
++    env->DeleteLocalRef(jData);
++
++    return reinterpret_cast<jbyteArray>(result);
++}
++
++}  // namespace
++
++namespace sylke2ee {
++
++// ---- Phase 2: noop classes (kept for diagnostics) -------------------------
++
++class NoopFrameEncryptor : public webrtc::FrameEncryptorInterface {
++ public:
++    NoopFrameEncryptor() : ref_count_(0) {
++        LOGI("NoopFrameEncryptor ctor %p", this);
++    }
++
++    int Encrypt(cricket::MediaType /*media_type*/,
++                uint32_t /*ssrc*/,
++                rtc::ArrayView<const uint8_t> /*additional_data*/,
++                rtc::ArrayView<const uint8_t> frame,
++                rtc::ArrayView<uint8_t> encrypted_frame,
++                size_t* bytes_written) override {
++        if (encrypted_frame.size() < frame.size()) return -1;
++        std::memcpy(encrypted_frame.data(), frame.data(), frame.size());
++        *bytes_written = frame.size();
++        return 0;
++    }
++
++    size_t GetMaxCiphertextByteSize(cricket::MediaType, size_t frame_size) override {
++        return frame_size;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) { delete this; return webrtc::RefCountReleaseStatus::kDroppedLastRef; }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~NoopFrameEncryptor() override { LOGI("NoopFrameEncryptor dtor %p", this); }
++
++ private:
++    mutable std::atomic<int> ref_count_;
++};
++
++class NoopFrameDecryptor : public webrtc::FrameDecryptorInterface {
++ public:
++    NoopFrameDecryptor() : ref_count_(0) {
++        LOGI("NoopFrameDecryptor ctor %p", this);
++    }
++
++    Result Decrypt(cricket::MediaType,
++                   const std::vector<uint32_t>&,
++                   rtc::ArrayView<const uint8_t>,
++                   rtc::ArrayView<const uint8_t> encrypted_frame,
++                   rtc::ArrayView<uint8_t> frame) override {
++        if (frame.size() < encrypted_frame.size()) return Result(Status::kFailedToDecrypt, 0);
++        std::memcpy(frame.data(), encrypted_frame.data(), encrypted_frame.size());
++        return Result(Status::kOk, encrypted_frame.size());
++    }
++
++    size_t GetMaxPlaintextByteSize(cricket::MediaType, size_t encrypted_frame_size) override {
++        return encrypted_frame_size;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) { delete this; return webrtc::RefCountReleaseStatus::kDroppedLastRef; }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~NoopFrameDecryptor() override { LOGI("NoopFrameDecryptor dtor %p", this); }
++
++ private:
++    mutable std::atomic<int> ref_count_;
++};
++
++// ---- Phase 3: AES-128-GCM via JNI callback into javax.crypto.Cipher ------
++
++static constexpr size_t kKeyLen   = 16;  // AES-128
++static constexpr size_t kSaltLen  = 8;
++static constexpr size_t kIvLen    = 12;  // GCM
++static constexpr size_t kTagLen   = 16;  // GCM 128-bit tag
++static constexpr size_t kHeaderLen = 1;
++static constexpr size_t kCounterLen = 4;
++static constexpr size_t kFrameOverhead = kHeaderLen + kCounterLen + kTagLen;
++// = 1 (version|keyId) + 4 (counter) + 16 (tag) = 21 bytes per frame.
++
++class MediaEncryptor : public webrtc::FrameEncryptorInterface {
++ public:
++    MediaEncryptor(const uint8_t key[kKeyLen],
++                   const uint8_t salt[kSaltLen],
++                   uint8_t keyId,
++                   uint8_t videoPrefix)
++        : keyId_(keyId & 0x0f), videoPrefix_(videoPrefix),
++          counter_(0), ref_count_(0) {
++        std::memcpy(key_, key, kKeyLen);
++        std::memcpy(salt_, salt, kSaltLen);
++        LOGI("MediaEncryptor ctor %p keyId=%u videoPrefix=%u",
++             this, (unsigned)keyId_, (unsigned)videoPrefix_);
++    }
++
++    // Number of leading plaintext bytes left UN-encrypted on video frames.
++    // WebRTC's RTP codec packetizers read several bytes of the encoded
++    // frame to extract codec-specific metadata. If we encrypt those bytes,
++    // the packetizer reads garbage and the receiver can't reassemble.
++    // The exact size depends on the negotiated codec (VP8 = 1, VP9 = 3,
++    // H264 = 2-4, AV1 = 1) so JS computes the value at install time and
++    // passes it via the constructor — native just stores it.
++    size_t UnencryptedPrefixForMediaType(cricket::MediaType mt) const {
++        return mt == cricket::MEDIA_TYPE_VIDEO ? (size_t)videoPrefix_ : 0;
++    }
++
++    int Encrypt(cricket::MediaType media_type,
++                uint32_t /*ssrc*/,
++                rtc::ArrayView<const uint8_t> /*additional_data*/,
++                rtc::ArrayView<const uint8_t> frame,
++                rtc::ArrayView<uint8_t> encrypted_frame,
++                size_t* bytes_written) override {
++        const size_t prefix = UnencryptedPrefixForMediaType(media_type);
++        if (frame.size() < prefix) return -1;
++        const size_t need = frame.size() + kFrameOverhead;
++        if (encrypted_frame.size() < need) return -1;
++
++        bool didAttach = false;
++        JNIEnv* env = AttachThread(&didAttach);
++        if (!env) return -1;
++
++        const uint32_t counter = counter_.fetch_add(1, std::memory_order_relaxed);
++        uint8_t iv[kIvLen];
++        BuildIV(salt_, counter, iv);
++
++        // Header: high nibble = version 1, low nibble = keyId.
++        const uint8_t header = static_cast<uint8_t>((1u << 4) | (keyId_ & 0x0f));
++        uint8_t aad[kHeaderLen + kCounterLen];
++        aad[0] = header;
++        std::memcpy(aad + 1, iv + kSaltLen, kCounterLen);
++
++        // Encrypt only bytes AFTER the unencrypted prefix.
++        const uint8_t* plainPtr = frame.data() + prefix;
++        const size_t   plainLen = frame.size() - prefix;
++
++        jbyteArray jResult = CallAesGcm(env, g_aesGcmEncryptMid,
++            key_, kKeyLen, iv, kIvLen, aad, sizeof(aad),
++            plainPtr, plainLen);
++        if (!jResult) {
++            LOGE("MediaEncryptor: Java aesGcmEncrypt returned null");
++            DetachThread(didAttach);
++            return -1;
++        }
++        const jsize resultLen = env->GetArrayLength(jResult);
++        if ((size_t)resultLen != plainLen + kTagLen) {
++            LOGE("MediaEncryptor: unexpected GCM output length %d (want %zu)",
++                 (int)resultLen, plainLen + kTagLen);
++            env->DeleteLocalRef(jResult);
++            DetachThread(didAttach);
++            return -1;
++        }
++
++        // Layout: [prefix bytes plaintext][header][counter][ciphertext+tag]
++        if (prefix > 0) {
++            std::memcpy(encrypted_frame.data(), frame.data(), prefix);
++        }
++        encrypted_frame.data()[prefix] = header;
++        std::memcpy(encrypted_frame.data() + prefix + 1, iv + kSaltLen, kCounterLen);
++        env->GetByteArrayRegion(jResult, 0, resultLen,
++            reinterpret_cast<jbyte*>(
++                encrypted_frame.data() + prefix + kHeaderLen + kCounterLen));
++        env->DeleteLocalRef(jResult);
++
++        *bytes_written = frame.size() + kFrameOverhead;
++        DetachThread(didAttach);
++        return 0;
++    }
++
++    size_t GetMaxCiphertextByteSize(cricket::MediaType, size_t frame_size) override {
++        return frame_size + kFrameOverhead;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) { delete this; return webrtc::RefCountReleaseStatus::kDroppedLastRef; }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~MediaEncryptor() override { LOGI("MediaEncryptor dtor %p", this); }
++
++ private:
++    uint8_t  key_[kKeyLen];
++    uint8_t  salt_[kSaltLen];
++    uint8_t  keyId_;
++    uint8_t  videoPrefix_;   // bytes left plaintext at start of each video frame
++    mutable std::atomic<uint32_t> counter_;
++    mutable std::atomic<int>      ref_count_;
++};
++
++class MediaDecryptor : public webrtc::FrameDecryptorInterface {
++ public:
++    MediaDecryptor(const uint8_t key[kKeyLen],
++                   const uint8_t salt[kSaltLen],
++                   uint8_t keyId,
++                   uint8_t videoPrefix)
++        : expectedKeyId_(keyId & 0x0f), videoPrefix_(videoPrefix), ref_count_(0) {
++        std::memcpy(key_, key, kKeyLen);
++        std::memcpy(salt_, salt, kSaltLen);
++        LOGI("MediaDecryptor ctor %p keyId=%u videoPrefix=%u",
++             this, (unsigned)expectedKeyId_, (unsigned)videoPrefix_);
++    }
++
++    // Permissive decrypt:
++    //   1. If the frame doesn't start with our v1|keyId header, OR is too
++    //      short to be encrypted, OR the AES-GCM tag fails to verify, we
++    //      pass the input bytes through to the output unchanged. This lets
++    //      libwebrtc render plaintext frames that the peer is still sending
++    //      while the two-phase install is in progress (peer hasn't yet
++    //      installed sender_enc).
++    //   2. On a successful decrypt, return the plaintext.
++    // Drops to the floor only happen when the output buffer can't fit
++    // the plaintext / passthrough — never in the normal codepath.
++    // Per-instance prefix mirroring MediaEncryptor's. Both ends must agree
++    // on the size or the decryptor reads the wrong byte as our header.
++    size_t UnencryptedPrefixForMediaType(cricket::MediaType mt) const {
++        return mt == cricket::MEDIA_TYPE_VIDEO ? (size_t)videoPrefix_ : 0;
++    }
++
++    Result Decrypt(cricket::MediaType media_type,
++                   const std::vector<uint32_t>& /*csrcs*/,
++                   rtc::ArrayView<const uint8_t> /*additional_data*/,
++                   rtc::ArrayView<const uint8_t> encrypted_frame,
++                   rtc::ArrayView<uint8_t> frame) override {
++        const size_t prefix = UnencryptedPrefixForMediaType(media_type);
++
++        // Passthrough helper.
++        auto passthrough = [&]() -> Result {
++            if (frame.size() < encrypted_frame.size()) {
++                return Result(Status::kFailedToDecrypt, 0);
++            }
++            std::memcpy(frame.data(), encrypted_frame.data(), encrypted_frame.size());
++            return Result(Status::kOk, encrypted_frame.size());
++        };
++
++        if (encrypted_frame.size() < prefix + kFrameOverhead) {
++            return passthrough();
++        }
++        const uint8_t header = encrypted_frame.data()[prefix];
++        const uint8_t version = (header >> 4) & 0x0f;
++        const uint8_t keyId   = header & 0x0f;
++        if (version != 1 || keyId != expectedKeyId_) {
++            return passthrough();
++        }
++
++        const uint8_t* ctrPtr = encrypted_frame.data() + prefix + 1;
++        const uint32_t counter = ((uint32_t)ctrPtr[0] << 24)
++                               | ((uint32_t)ctrPtr[1] << 16)
++                               | ((uint32_t)ctrPtr[2] <<  8)
++                               | ((uint32_t)ctrPtr[3]);
++
++        uint8_t iv[kIvLen];
++        BuildIV(salt_, counter, iv);
++
++        uint8_t aad[kHeaderLen + kCounterLen];
++        aad[0] = header;
++        std::memcpy(aad + 1, ctrPtr, kCounterLen);
++
++        const size_t cipherTagLen = encrypted_frame.size() - prefix - kHeaderLen - kCounterLen;
++        const size_t plainLen     = cipherTagLen - kTagLen;
++        const size_t outLen       = prefix + plainLen;
++
++        if (frame.size() < outLen) {
++            return passthrough();
++        }
++
++        bool didAttach = false;
++        JNIEnv* env = AttachThread(&didAttach);
++        if (!env) return passthrough();
++
++        jbyteArray jResult = CallAesGcm(env, g_aesGcmDecryptMid,
++            key_, kKeyLen, iv, kIvLen, aad, sizeof(aad),
++            encrypted_frame.data() + prefix + kHeaderLen + kCounterLen, cipherTagLen);
++        if (!jResult) {
++            // Tag mismatch — likely a real plaintext frame whose bytes
++            // happened to look like our header. Pass through.
++            DetachThread(didAttach);
++            return passthrough();
++        }
++        const jsize resultLen = env->GetArrayLength(jResult);
++        if ((size_t)resultLen != plainLen) {
++            env->DeleteLocalRef(jResult);
++            DetachThread(didAttach);
++            return passthrough();
++        }
++        // Copy back the plaintext prefix bytes, then the decrypted payload.
++        if (prefix > 0) {
++            std::memcpy(frame.data(), encrypted_frame.data(), prefix);
++        }
++        env->GetByteArrayRegion(jResult, 0, resultLen,
++            reinterpret_cast<jbyte*>(frame.data() + prefix));
++        env->DeleteLocalRef(jResult);
++        DetachThread(didAttach);
++
++        return Result(Status::kOk, outLen);
++    }
++
++    // Output buffer must hold either plaintext (encrypted_size - kFrameOverhead)
++    // OR a passthrough copy (= encrypted_size). Return the larger of the two
++    // so libwebrtc allocates enough space for either path.
++    size_t GetMaxPlaintextByteSize(cricket::MediaType, size_t encrypted_frame_size) override {
++        return encrypted_frame_size;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) { delete this; return webrtc::RefCountReleaseStatus::kDroppedLastRef; }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~MediaDecryptor() override { LOGI("MediaDecryptor dtor %p", this); }
++
++ private:
++    uint8_t  key_[kKeyLen];
++    uint8_t  salt_[kSaltLen];
++    uint8_t  expectedKeyId_;
++    uint8_t  videoPrefix_;   // bytes left plaintext at start of each video frame
++    mutable std::atomic<int> ref_count_;
++};
++
++}  // namespace sylke2ee
++
++// ---- JNI entry points ------------------------------------------------------
++
++extern "C" JNIEXPORT jlong JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeCreateNoopEncryptor(JNIEnv* env, jclass) {
++    EnsureJniCache(env);
++    auto* enc = new sylke2ee::NoopFrameEncryptor();
++    enc->AddRef();
++    return reinterpret_cast<jlong>(static_cast<webrtc::FrameEncryptorInterface*>(enc));
++}
++
++extern "C" JNIEXPORT jlong JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeCreateNoopDecryptor(JNIEnv* env, jclass) {
++    EnsureJniCache(env);
++    auto* dec = new sylke2ee::NoopFrameDecryptor();
++    dec->AddRef();
++    return reinterpret_cast<jlong>(static_cast<webrtc::FrameDecryptorInterface*>(dec));
++}
++
++extern "C" JNIEXPORT jlong JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeCreateMediaEncryptor(
++        JNIEnv* env, jclass, jbyteArray jKey, jbyteArray jSalt, jint keyId, jint videoPrefix) {
++    EnsureJniCache(env);
++    if (env->GetArrayLength(jKey)  < (jsize)sylke2ee::kKeyLen)  return 0;
++    if (env->GetArrayLength(jSalt) < (jsize)sylke2ee::kSaltLen) return 0;
++    uint8_t key[sylke2ee::kKeyLen];
++    uint8_t salt[sylke2ee::kSaltLen];
++    env->GetByteArrayRegion(jKey,  0, sylke2ee::kKeyLen,  reinterpret_cast<jbyte*>(key));
++    env->GetByteArrayRegion(jSalt, 0, sylke2ee::kSaltLen, reinterpret_cast<jbyte*>(salt));
++    auto* enc = new sylke2ee::MediaEncryptor(key, salt, (uint8_t)keyId, (uint8_t)videoPrefix);
++    enc->AddRef();
++    return reinterpret_cast<jlong>(static_cast<webrtc::FrameEncryptorInterface*>(enc));
++}
++
++extern "C" JNIEXPORT jlong JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeCreateMediaDecryptor(
++        JNIEnv* env, jclass, jbyteArray jKey, jbyteArray jSalt, jint keyId, jint videoPrefix) {
++    EnsureJniCache(env);
++    if (env->GetArrayLength(jKey)  < (jsize)sylke2ee::kKeyLen)  return 0;
++    if (env->GetArrayLength(jSalt) < (jsize)sylke2ee::kSaltLen) return 0;
++    uint8_t key[sylke2ee::kKeyLen];
++    uint8_t salt[sylke2ee::kSaltLen];
++    env->GetByteArrayRegion(jKey,  0, sylke2ee::kKeyLen,  reinterpret_cast<jbyte*>(key));
++    env->GetByteArrayRegion(jSalt, 0, sylke2ee::kSaltLen, reinterpret_cast<jbyte*>(salt));
++    auto* dec = new sylke2ee::MediaDecryptor(key, salt, (uint8_t)keyId, (uint8_t)videoPrefix);
++    dec->AddRef();
++    return reinterpret_cast<jlong>(static_cast<webrtc::FrameDecryptorInterface*>(dec));
++}
++
++extern "C" JNIEXPORT void JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeReleaseEncryptor(JNIEnv*, jclass, jlong ptr) {
++    if (ptr == 0) return;
++    auto* enc = reinterpret_cast<webrtc::FrameEncryptorInterface*>(ptr);
++    enc->Release();
++}
++
++extern "C" JNIEXPORT void JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeReleaseDecryptor(JNIEnv*, jclass, jlong ptr) {
++    if (ptr == 0) return;
++    auto* dec = reinterpret_cast<webrtc::FrameDecryptorInterface*>(ptr);
++    dec->Release();
++}
+diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
+new file mode 100644
+index 0000000..3e0ef4e
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
+@@ -0,0 +1,30 @@
++// sylk_e2ee.cpp — Phase 1 sanity stub + build-version probe.
++//
++// nativeHello() is called once when SylkE2EE.java is class-loaded
++// (System.loadLibrary("sylk_e2ee")). It logs the build version we
++// compiled against, so we can verify both phones are running the
++// same .so. Bump SYLK_E2EE_BUILD in MediaEncryptorJni.cpp whenever
++// the wire format / prefix size / framing logic changes.
++
++#include <jni.h>
++#include <android/log.h>
++
++#define LOG_TAG "SylkZRTP"
++#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
++
++// Mirror of MediaEncryptorJni.cpp's SYLK_E2EE_BUILD. Keep in sync.
++#define SYLK_E2EE_BUILD "build-2026-05-02-public-aesgcm"
++
++extern "C" JNIEXPORT jint JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeHello(JNIEnv* /*env*/, jclass /*clazz*/) {
++    LOGI("native lib loaded; build=%s", SYLK_E2EE_BUILD);
++    return 124;
++}
++
++// Returns the compiled-in SYLK_E2EE_BUILD string so Java/JS can verify
++// the loaded .so matches the JS-side expected version. Mismatch means
++// patch-package didn't apply or a stale .cxx cache is in play.
++extern "C" JNIEXPORT jstring JNICALL
++Java_com_oney_WebRTCModule_SylkE2EE_nativeGetBuild(JNIEnv* env, jclass /*clazz*/) {
++    return env->NewStringUTF(SYLK_E2EE_BUILD);
++}
+diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/sylk_webrtc_compat.h b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_webrtc_compat.h
+new file mode 100644
+index 0000000..e080862
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_webrtc_compat.h
+@@ -0,0 +1,122 @@
++// sylk_webrtc_compat.h
++//
++// Minimal slice of the WebRTC M124 public C++ API needed to implement
++// FrameEncryptorInterface and FrameDecryptorInterface. We deliberately do
++// NOT include the upstream api/crypto/frame_encryptor_interface.h because
++// it transitively pulls in abseil (string_view, type_traits) which we do
++// not want to vendor.
++//
++// Each declaration here mirrors the upstream M124 source layout exactly
++// (verified against branch-heads/6261 in webrtc.googlesource.com/src), so
++// our derived classes share the same vtable layout as the binary produced
++// by org.jitsi:webrtc:124.+ at runtime. If the upstream headers change in
++// a future milestone, regenerate this file from the new headers — see the
++// comments next to each class.
++
++#ifndef SYLK_WEBRTC_COMPAT_H_
++#define SYLK_WEBRTC_COMPAT_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++// ---- cricket::MediaType (api/media_types.h) -------------------------------
++
++namespace cricket {
++
++enum MediaType {
++    MEDIA_TYPE_AUDIO,
++    MEDIA_TYPE_VIDEO,
++    MEDIA_TYPE_DATA,
++    MEDIA_TYPE_UNSUPPORTED,
++};
++
++}  // namespace cricket
++
++// ---- webrtc::RefCountInterface (api/ref_count.h) --------------------------
++
++namespace webrtc {
++
++enum class RefCountReleaseStatus { kDroppedLastRef, kOtherRefsRemained };
++
++class RefCountInterface {
++ public:
++    virtual void AddRef() const = 0;
++    virtual RefCountReleaseStatus Release() const = 0;
++ protected:
++    virtual ~RefCountInterface() {}
++};
++
++}  // namespace webrtc
++
++// ---- rtc:: aliases (rtc_base/ref_count.h) ---------------------------------
++
++namespace rtc {
++
++using RefCountInterface = ::webrtc::RefCountInterface;
++using RefCountReleaseStatus = ::webrtc::RefCountReleaseStatus;
++
++// ---- rtc::ArrayView (api/array_view.h, variable-size variant) -------------
++// Layout matches the upstream variable-size ArrayView: T* data + size_t size.
++// Only members read by FrameEncryptor/Decryptor implementations are exposed.
++template <typename T>
++class ArrayView final {
++ public:
++    ArrayView() : data_(nullptr), size_(0) {}
++    ArrayView(T* data, size_t size) : data_(data), size_(size) {}
++    T* data() const { return data_; }
++    size_t size() const { return size_; }
++    bool empty() const { return size_ == 0; }
++ private:
++    T* data_;
++    size_t size_;
++};
++
++}  // namespace rtc
++
++// ---- webrtc::FrameEncryptorInterface (api/crypto/frame_encryptor_interface.h)
++// ---- webrtc::FrameDecryptorInterface (api/crypto/frame_decryptor_interface.h)
++
++namespace webrtc {
++
++class FrameEncryptorInterface : public rtc::RefCountInterface {
++ public:
++    ~FrameEncryptorInterface() override {}
++
++    virtual int Encrypt(cricket::MediaType media_type,
++                        uint32_t ssrc,
++                        rtc::ArrayView<const uint8_t> additional_data,
++                        rtc::ArrayView<const uint8_t> frame,
++                        rtc::ArrayView<uint8_t> encrypted_frame,
++                        size_t* bytes_written) = 0;
++
++    virtual size_t GetMaxCiphertextByteSize(cricket::MediaType media_type,
++                                            size_t frame_size) = 0;
++};
++
++class FrameDecryptorInterface : public rtc::RefCountInterface {
++ public:
++    enum class Status { kOk, kRecoverable, kFailedToDecrypt, kUnknown };
++
++    struct Result {
++        Result(Status s, size_t b) : status(s), bytes_written(b) {}
++        bool IsOk() const { return status == Status::kOk; }
++        const Status status;
++        const size_t bytes_written;
++    };
++
++    ~FrameDecryptorInterface() override {}
++
++    virtual Result Decrypt(cricket::MediaType media_type,
++                           const std::vector<uint32_t>& csrcs,
++                           rtc::ArrayView<const uint8_t> additional_data,
++                           rtc::ArrayView<const uint8_t> encrypted_frame,
++                           rtc::ArrayView<uint8_t> frame) = 0;
++
++    virtual size_t GetMaxPlaintextByteSize(cricket::MediaType media_type,
++                                           size_t encrypted_frame_size) = 0;
++};
++
++}  // namespace webrtc
++
++#endif  // SYLK_WEBRTC_COMPAT_H_
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java
+new file mode 100644
+index 0000000..4aa61c7
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java
+@@ -0,0 +1,181 @@
++// SylkE2EE.java — Java side of the Sylk ZRTP FrameEncryptor / FrameDecryptor
++// JNI bridge. Phase 3: real AES-128-GCM. The C++ side calls back into the
++// aesGcmEncrypt / aesGcmDecrypt static helpers below for each frame —
++// keeps the crypto in the platform's vetted javax.crypto and avoids
++// vendoring a C crypto library into the native build.
++//
++// Two inner classes (MediaEncryptor / MediaDecryptor) implement
++// org.webrtc.FrameEncryptor / org.webrtc.FrameDecryptor. Each holds a long
++// pointing at the matching C++ object, returned via getNativeFrameEncryptor
++// / getNativeFrameDecryptor. When libwebrtc's RtpSender.setFrameEncryptor()
++// or RtpReceiver.setFrameDecryptor() is called with one of these holders,
++// libwebrtc reads the long and treats it as a webrtc::FrameEncryptorInterface*
++// (resp. webrtc::FrameDecryptorInterface*).
++
++package com.oney.WebRTCModule;
++
++import android.util.Log;
++
++import javax.crypto.Cipher;
++import javax.crypto.spec.GCMParameterSpec;
++import javax.crypto.spec.SecretKeySpec;
++
++import org.webrtc.FrameDecryptor;
++import org.webrtc.FrameEncryptor;
++
++public final class SylkE2EE {
++    private static final String TAG = "SylkZRTP";
++    private static final String GCM_TRANSFORMATION = "AES/GCM/NoPadding";
++    private static final int GCM_TAG_BITS = 128;
++
++    static {
++        try {
++            System.loadLibrary("sylk_e2ee");
++            // Tiny touch of the JNI to surface UnsatisfiedLinkError early
++            // if the .so didn't ship correctly. No log on the happy path.
++            nativeHello();
++        } catch (UnsatisfiedLinkError e) {
++            Log.e(TAG, "Failed to load sylk_e2ee native lib", e);
++        } catch (Throwable t) {
++            Log.e(TAG, "sylk_e2ee init threw", t);
++        }
++    }
++
++    /** Force class initialization (and therefore native lib loading). */
++    public static void touch() {}
++
++    private SylkE2EE() {}
++
++    // ---- JNI surface (package-private; called from inner classes) ---------
++
++    static native int nativeHello();
++    static native String nativeGetBuild();
++    static native long nativeCreateNoopEncryptor();
++    static native long nativeCreateNoopDecryptor();
++    static native long nativeCreateMediaEncryptor(byte[] key, byte[] salt, int keyId, int videoPrefix);
++    static native long nativeCreateMediaDecryptor(byte[] key, byte[] salt, int keyId, int videoPrefix);
++    static native void nativeReleaseEncryptor(long ptr);
++    static native void nativeReleaseDecryptor(long ptr);
++
++    /** Returns the SYLK_E2EE_BUILD string baked into the loaded .so so the
++     *  caller can verify it matches the version the JS side expects. */
++    public static String getBuild() {
++        try {
++            return nativeGetBuild();
++        } catch (Throwable t) {
++            Log.e(TAG, "nativeGetBuild failed", t);
++            return "unknown";
++        }
++    }
++
++    // ---- AES-GCM helpers (called from C++ via JNI for every frame) --------
++    //
++    // Both return the same byte layout javax.crypto.Cipher uses for GCM:
++    // ciphertext concatenated with the 16-byte authentication tag. On
++    // decrypt failure (wrong key/IV/tag, or truncated input) we return
++    // null instead of throwing, so the native side can propagate a clean
++    // FrameDecryptor::Status::kFailedToDecrypt back to libwebrtc.
++
++    public static byte[] aesGcmEncrypt(byte[] key, byte[] iv, byte[] aad, byte[] plaintext) {
++        try {
++            final Cipher cipher = Cipher.getInstance(GCM_TRANSFORMATION);
++            final SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
++            final GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_BITS, iv);
++            cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
++            if (aad != null && aad.length > 0) {
++                cipher.updateAAD(aad);
++            }
++            return cipher.doFinal(plaintext != null ? plaintext : new byte[0]);
++        } catch (Throwable t) {
++            Log.e(TAG, "aesGcmEncrypt failed", t);
++            return null;
++        }
++    }
++
++    public static byte[] aesGcmDecrypt(byte[] key, byte[] iv, byte[] aad, byte[] ciphertextWithTag) {
++        try {
++            final Cipher cipher = Cipher.getInstance(GCM_TRANSFORMATION);
++            final SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
++            final GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_BITS, iv);
++            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
++            if (aad != null && aad.length > 0) {
++                cipher.updateAAD(aad);
++            }
++            return cipher.doFinal(ciphertextWithTag);
++        } catch (Throwable t) {
++            // Common case: AEADBadTagException — wrong key/tag mismatch.
++            // Don't log noisily; return null and let the C++ side report
++            // kFailedToDecrypt.
++            return null;
++        }
++    }
++
++    // ---- FrameEncryptor holder --------------------------------------------
++
++    /**
++     * Wraps a C++ webrtc::FrameEncryptorInterface* allocated in JNI. Pass an
++     * instance of this to RtpSender.setFrameEncryptor() to install. Caller
++     * must call release() once libwebrtc no longer holds a reference.
++     */
++    public static final class MediaEncryptor implements FrameEncryptor {
++        private long nativePtr;
++
++        /** Phase 2: noop passthrough — keeps frames unchanged. */
++        public MediaEncryptor() {
++            this.nativePtr = nativeCreateNoopEncryptor();
++        }
++
++        /**
++         * Phase 3: AES-128-GCM with the given key (16 bytes) + salt (8 bytes).
++         * videoPrefix is the number of bytes left UN-encrypted at the start of
++         * each video frame (codec-dependent: VP8=1, VP9=3, H264=2, AV1=1, audio=0).
++         */
++        public MediaEncryptor(byte[] key, byte[] salt, int keyId, int videoPrefix) {
++            this.nativePtr = nativeCreateMediaEncryptor(key, salt, keyId, videoPrefix);
++        }
++
++        @Override
++        public long getNativeFrameEncryptor() {
++            return nativePtr;
++        }
++
++        public void release() {
++            if (nativePtr != 0) {
++                nativeReleaseEncryptor(nativePtr);
++                nativePtr = 0;
++            }
++        }
++    }
++
++    // ---- FrameDecryptor holder --------------------------------------------
++
++    public static final class MediaDecryptor implements FrameDecryptor {
++        private long nativePtr;
++
++        /** Phase 2: noop passthrough. */
++        public MediaDecryptor() {
++            this.nativePtr = nativeCreateNoopDecryptor();
++        }
++
++        /**
++         * Phase 3: AES-128-GCM. videoPrefix must match what the peer's
++         * encryptor used; mismatch makes the decrypt's permissive
++         * passthrough kick in for every frame.
++         */
++        public MediaDecryptor(byte[] key, byte[] salt, int keyId, int videoPrefix) {
++            this.nativePtr = nativeCreateMediaDecryptor(key, salt, keyId, videoPrefix);
++        }
++
++        @Override
++        public long getNativeFrameDecryptor() {
++            return nativePtr;
++        }
++
++        public void release() {
++            if (nativePtr != 0) {
++                nativeReleaseDecryptor(nativePtr);
++                nativePtr = 0;
++            }
++        }
++    }
++}
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+index 996648c..9f0c6b3 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+@@ -38,6 +38,12 @@ import java.util.concurrent.ExecutionException;
+ 
+ @ReactModule(name = "WebRTCModule")
+ public class WebRTCModule extends ReactContextBaseJavaModule {
++    static {
++        // Force load of the Sylk E2EE native lib + sanity JNI call.
++        // Phase 1 verification only — Phase 2 will replace this with real
++        // FrameEncryptor / FrameDecryptor wiring.
++        SylkE2EE.touch();
++    }
+     static final String TAG = WebRTCModule.class.getCanonicalName();
+ 
+     PeerConnectionFactory mFactory;
+@@ -591,6 +597,184 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+         }
+     }
+ 
++    /** Sylk E2EE: returns the SYLK_E2EE_BUILD string compiled into the
++     *  loaded sylk_e2ee .so. JS reads this at app boot, compares to the
++     *  hard-coded EXPECTED_SYLK_E2EE_BUILD constant, and warns loudly if
++     *  they don't match (typically means stale .cxx cache or patch-package
++     *  didn't run). */
++    @ReactMethod
++    public void getSylkE2EEBuild(Promise promise) {
++        try {
++            promise.resolve(SylkE2EE.getBuild());
++        } catch (Throwable t) {
++            promise.reject(new Exception(t));
++        }
++    }
++
++    /** Sylk E2EE: install a noop FrameEncryptor (Phase 2 verification — passes
++     *  audio frames through unchanged). Phase 3 will replace this with an
++     *  AES-128-GCM encryptor that takes a key argument. */
++    @ReactMethod
++    public void senderInstallNoopEncryption(int id, String senderId, Promise promise) {
++        ThreadUtils.runOnExecutor(() -> {
++            try {
++                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
++                if (pco == null) {
++                    promise.reject(new Exception("Peer Connection not initialized: " + id));
++                    return;
++                }
++                RtpSender sender = pco.getSender(senderId);
++                if (sender == null) {
++                    promise.reject(new Exception("Sender not found: " + senderId));
++                    return;
++                }
++                SylkE2EE.MediaEncryptor enc = new SylkE2EE.MediaEncryptor();
++                sender.setFrameEncryptor(enc);
++                // Do NOT call enc.release() — libwebrtc's scoped_refptr now
++                // owns the only reference. It Releases on sender teardown.
++                Log.i(TAG, "[SylkZRTP] installed noop encryptor on sender " + senderId);
++                promise.resolve(null);
++            } catch (Throwable t) {
++                Log.e(TAG, "[SylkZRTP] senderInstallNoopEncryption failed", t);
++                promise.reject(new Exception(t));
++            }
++        });
++    }
++
++    /** Sylk E2EE: install a noop FrameDecryptor on a receiver. */
++    @ReactMethod
++    public void receiverInstallNoopDecryption(int id, String receiverId, Promise promise) {
++        ThreadUtils.runOnExecutor(() -> {
++            try {
++                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
++                if (pco == null) {
++                    promise.reject(new Exception("Peer Connection not initialized: " + id));
++                    return;
++                }
++                RtpReceiver target = null;
++                for (RtpReceiver r : pco.getPeerConnection().getReceivers()) {
++                    if (r.id().equals(receiverId)) { target = r; break; }
++                }
++                if (target == null) {
++                    promise.reject(new Exception("Receiver not found: " + receiverId));
++                    return;
++                }
++                SylkE2EE.MediaDecryptor dec = new SylkE2EE.MediaDecryptor();
++                target.setFrameDecryptor(dec);
++                Log.i(TAG, "[SylkZRTP] installed noop decryptor on receiver " + receiverId);
++                promise.resolve(null);
++            } catch (Throwable t) {
++                Log.e(TAG, "[SylkZRTP] receiverInstallNoopDecryption failed", t);
++                promise.reject(new Exception(t));
++            }
++        });
++    }
++
++    /** Decode a hex string to bytes. Returns null on parse error. */
++    private static byte[] decodeHex(String hex) {
++        if (hex == null) {
++            return null;
++        }
++        int len = hex.length();
++        if ((len & 1) != 0) {
++            return null;
++        }
++        byte[] out = new byte[len / 2];
++        for (int i = 0; i < len; i += 2) {
++            int hi = Character.digit(hex.charAt(i), 16);
++            int lo = Character.digit(hex.charAt(i + 1), 16);
++            if (hi < 0 || lo < 0) {
++                return null;
++            }
++            out[i / 2] = (byte) ((hi << 4) | lo);
++        }
++        return out;
++    }
++
++    /** Sylk E2EE Phase 3: install a keyed AES-128-GCM FrameEncryptor.
++     *  key is hex-encoded 16 bytes; salt is hex-encoded 8 bytes.
++     *  videoPrefix is the codec-determined number of plaintext bytes
++     *  to leave at the start of each video frame (VP8=1, VP9=3, H264=2,
++     *  AV1=1; audio always uses 0 internally). */
++    @ReactMethod
++    public void senderInstallMediaEncryption(int id, String senderId, String keyHex, String saltHex, int keyId, int videoPrefix, Promise promise) {
++        ThreadUtils.runOnExecutor(() -> {
++            try {
++                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
++                if (pco == null) {
++                    promise.reject(new Exception("Peer Connection not initialized: " + id));
++                    return;
++                }
++                RtpSender sender = pco.getSender(senderId);
++                if (sender == null) {
++                    promise.reject(new Exception("Sender not found: " + senderId));
++                    return;
++                }
++                byte[] key = decodeHex(keyHex);
++                byte[] salt = decodeHex(saltHex);
++                if (key == null || key.length != 16) {
++                    promise.reject(new Exception("Invalid key (need 16 bytes hex)"));
++                    return;
++                }
++                if (salt == null || salt.length != 8) {
++                    promise.reject(new Exception("Invalid salt (need 8 bytes hex)"));
++                    return;
++                }
++                SylkE2EE.touch();
++                SylkE2EE.MediaEncryptor enc = new SylkE2EE.MediaEncryptor(key, salt, keyId, videoPrefix);
++                sender.setFrameEncryptor(enc);
++                // libwebrtc's scoped_refptr now owns the only reference.
++                Log.i(TAG, "[SylkZRTP] installed AES-GCM encryptor on sender " + senderId + " keyId=" + keyId + " videoPrefix=" + videoPrefix);
++                promise.resolve(null);
++            } catch (Throwable t) {
++                Log.e(TAG, "[SylkZRTP] senderInstallMediaEncryption failed", t);
++                promise.reject(new Exception(t));
++            }
++        });
++    }
++
++    /** Sylk E2EE Phase 3: install a keyed AES-128-GCM FrameDecryptor.
++     *  videoPrefix must match the peer's encryptor — both sides agree
++     *  on the codec via SDP and compute the same prefix in JS. */
++    @ReactMethod
++    public void receiverInstallMediaDecryption(int id, String receiverId, String keyHex, String saltHex, int keyId, int videoPrefix, Promise promise) {
++        ThreadUtils.runOnExecutor(() -> {
++            try {
++                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
++                if (pco == null) {
++                    promise.reject(new Exception("Peer Connection not initialized: " + id));
++                    return;
++                }
++                RtpReceiver target = null;
++                for (RtpReceiver r : pco.getPeerConnection().getReceivers()) {
++                    if (r.id().equals(receiverId)) { target = r; break; }
++                }
++                if (target == null) {
++                    promise.reject(new Exception("Receiver not found: " + receiverId));
++                    return;
++                }
++                byte[] key = decodeHex(keyHex);
++                byte[] salt = decodeHex(saltHex);
++                if (key == null || key.length != 16) {
++                    promise.reject(new Exception("Invalid key (need 16 bytes hex)"));
++                    return;
++                }
++                if (salt == null || salt.length != 8) {
++                    promise.reject(new Exception("Invalid salt (need 8 bytes hex)"));
++                    return;
++                }
++                SylkE2EE.touch();
++                SylkE2EE.MediaDecryptor dec = new SylkE2EE.MediaDecryptor(key, salt, keyId, videoPrefix);
++                target.setFrameDecryptor(dec);
++                Log.i(TAG, "[SylkZRTP] installed AES-GCM decryptor on receiver " + receiverId + " keyId=" + keyId + " videoPrefix=" + videoPrefix);
++                promise.resolve(null);
++            } catch (Throwable t) {
++                Log.e(TAG, "[SylkZRTP] receiverInstallMediaDecryption failed", t);
++                promise.reject(new Exception(t));
++            }
++        });
++    }
++
+     @ReactMethod
+     public void senderSetParameters(int id, String senderId, ReadableMap options, Promise promise) {
+         ThreadUtils.runOnExecutor(() -> {
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h
+new file mode 100644
+index 0000000..136b57d
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h
+@@ -0,0 +1,49 @@
++// SylkZRTPBridge.h
++//
++// Public Obj-C surface for the iOS Sylk ZRTP native bridge. Counterpart of
++// the Android SylkE2EE.java holders. Two helper functions are exposed for
++// the WebRTC RN module categories to call into.
++
++#import <Foundation/Foundation.h>
++#import <WebRTC/RTCRtpSender.h>
++#import <WebRTC/RTCRtpReceiver.h>
++
++NS_ASSUME_NONNULL_BEGIN
++
++@interface SylkZRTPBridge : NSObject
++
++/// Install a noop FrameEncryptor on the given Objective-C RTCRtpSender.
++/// Returns YES on success, NO if the wrapper's private ivar couldn't be
++/// reached (the only failure mode in practice — version-skew with the
++/// JitsiWebRTC framework).
+++ (BOOL)installNoopEncryptorOnSender:(id<RTC_OBJC_TYPE(RTCRtpSender)>)sender;
++
++/// Install a noop FrameDecryptor on the given Objective-C RTCRtpReceiver.
+++ (BOOL)installNoopDecryptorOnReceiver:(id<RTC_OBJC_TYPE(RTCRtpReceiver)>)receiver;
++
++/// Phase 3: install a keyed AES-128-GCM FrameEncryptor on the given sender.
++/// `key` must be 16 bytes, `salt` must be 8 bytes. `keyId` is the byte placed
++/// in the per-frame header (must match what the peer's decryptor expects).
++/// `videoPrefix` is the codec-determined number of plaintext bytes left at
++/// the start of each video frame (VP8=1, VP9=3, H264=2, AV1=1).
+++ (BOOL)installMediaEncryptorOnSender:(id<RTC_OBJC_TYPE(RTCRtpSender)>)sender
++                                  key:(NSData *)key
++                                 salt:(NSData *)salt
++                                keyId:(uint8_t)keyId
++                          videoPrefix:(uint8_t)videoPrefix;
++
++/// Phase 3: install a keyed AES-128-GCM FrameDecryptor on the given receiver.
+++ (BOOL)installMediaDecryptorOnReceiver:(id<RTC_OBJC_TYPE(RTCRtpReceiver)>)receiver
++                                    key:(NSData *)key
++                                   salt:(NSData *)salt
++                                  keyId:(uint8_t)keyId
++                            videoPrefix:(uint8_t)videoPrefix;
++
++/// Returns the SYLK_E2EE_BUILD string compiled into this binary. JS reads
++/// this at app boot and compares against its hard-coded expected value to
++/// detect stale .framework / patch-package skew.
+++ (NSString *)sylkE2EEBuild;
++
++@end
++
++NS_ASSUME_NONNULL_END
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm
+new file mode 100644
+index 0000000..0dab21f
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm
+@@ -0,0 +1,949 @@
++// SylkZRTPBridge.mm
++//
++// Obj-C++ implementation of the iOS Sylk ZRTP native bridge.
++// Phase 2: noop FrameEncryptor / FrameDecryptor (passthrough memcpy).
++// Phase 3 will replace memcpy with AES-128-GCM.
++//
++// The fundamental challenge on iOS: the JitsiWebRTC.framework's Obj-C SDK
++// does NOT expose setFrameEncryptor: / setFrameDecryptor: as Cocoa methods,
++// even though the underlying webrtc::RtpSenderInterface / RtpReceiverInterface
++// have them. To install our encryptor we have to:
++//   1. Reach the wrapper's private `_nativeRtpSender` / `_nativeRtpReceiver`
++//      ivar via the Objective-C runtime (it's a scoped_refptr<RtpSenderInterface>
++//      = exactly one pointer in memory layout).
++//   2. Cast the ivar bytes to webrtc::RtpSenderInterface* and call the C++
++//      virtual SetFrameEncryptor() through our compat header's vtable.
++//
++// If the framework version's ivar name ever changes, this stops working —
++// it logs all ivar names on first failure to help adjust.
++
++#import "SylkZRTPBridge.h"
++
++#import <Foundation/Foundation.h>
++#import <objc/runtime.h>
++#import <atomic>
++#import <cstring>
++#import <cstdint>
++#import <map>
++#import <vector>
++
++#import <CommonCrypto/CommonCrypto.h>
++#import <CommonCrypto/CommonCryptor.h>
++
++#import "sylk_webrtc_compat.h"
++
++#define SZLOG(fmt, ...) NSLog((@"[SylkZRTP] " fmt), ##__VA_ARGS__)
++
++// Mirror of Android's SYLK_E2EE_BUILD. Bump in BOTH places when the wire
++// format / prefix size / framing changes, then rebuild both platforms.
++#define SYLK_E2EE_BUILD "build-2026-05-02-public-aesgcm"
++
++// Log once per process load. +load runs before any other code in this
++// translation unit, so its output is the very first SylkZRTP line in the
++// device log — easy to grep and confirm both phones match.
++__attribute__((constructor))
++static void SylkZRTPLogBuild(void) {
++    SZLOG(@"native lib loaded; build=%s", SYLK_E2EE_BUILD);
++}
++
++// ---- AES-128-GCM frame format constants -----------------------------------
++//
++// Wire format identical to Android (see MediaEncryptorJni.cpp):
++//   [1B header v|keyId][4B BE counter][ciphertext][16B GCM tag]
++// IV  = salt(8) || counter_be(4)  -> 12 bytes
++// AAD = header(1) || counter_be(4) -> 5 bytes
++namespace sylkzrtp {
++
++static constexpr size_t kKeyLen      = 16;
++static constexpr size_t kSaltLen     = 8;
++static constexpr size_t kIvLen       = 12;
++static constexpr size_t kTagLen      = 16;
++static constexpr size_t kHeaderLen   = 1;
++static constexpr size_t kCounterLen  = 4;
++static constexpr size_t kFrameOverhead = kHeaderLen + kCounterLen + kTagLen; // 21
++
++static inline uint8_t MakeHeader(uint8_t version, uint8_t keyId) {
++    // version in high 4 bits, keyId in low 4. Phase 3 = version 1.
++    return (uint8_t)(((version & 0x0F) << 4) | (keyId & 0x0F));
++}
++
++static inline void BuildIV(const uint8_t salt[kSaltLen], uint32_t counter, uint8_t out[kIvLen]) {
++    std::memcpy(out, salt, kSaltLen);
++    out[kSaltLen + 0] = (uint8_t)((counter >> 24) & 0xFF);
++    out[kSaltLen + 1] = (uint8_t)((counter >> 16) & 0xFF);
++    out[kSaltLen + 2] = (uint8_t)((counter >>  8) & 0xFF);
++    out[kSaltLen + 3] = (uint8_t)( counter        & 0xFF);
++}
++
++static inline void BuildAAD(uint8_t header, uint32_t counter, uint8_t out[kHeaderLen + kCounterLen]) {
++    out[0] = header;
++    out[1] = (uint8_t)((counter >> 24) & 0xFF);
++    out[2] = (uint8_t)((counter >> 16) & 0xFF);
++    out[3] = (uint8_t)((counter >>  8) & 0xFF);
++    out[4] = (uint8_t)( counter        & 0xFF);
++}
++
++// AES-128-GCM implementation built on top of public CommonCrypto only.
++//
++// We previously used CommonCrypto's CCCryptorGCMOneshotEncrypt /
++// CCCryptorGCMOneshotDecrypt, but those symbols live in CommonCryptoSPI.h
++// (private SPI). The Mac App Store validator now flags references to
++// _CCCryptorGCMOneshotEncrypt / _CCCryptorGCMOneshotDecrypt and rejects
++// the upload (validation error: "references non-public symbols").
++//
++// The replacement here uses only documented, public CommonCrypto APIs:
++//   * CCCrypt(kCCAlgorithmAES, kCCOptionECBMode, ...) — AES-ECB single-
++//     block, used for the GCM hash subkey H = E_K(0) and the per-block
++//     tag pre-image E_K(J0).
++//   * CCCryptorCreateWithMode(kCCModeCTR, ...) — AES-CTR streaming
++//     cipher for plaintext / ciphertext, with the initial counter
++//     block J0+1.
++//   * GHASH (the GF(2^128) polynomial hash) is implemented in pure C —
++//     no platform crypto available for it, but it doesn't need any
++//     beyond AES-ECB for the H subkey computation done above.
++//
++// The wire format (12-byte IV from salt||counter, 16-byte tag, AAD =
++// header||counter) is BYTE-IDENTICAL to the prior implementation and
++// to the Android side, so existing peers continue to interop. Verified
++// against NIST SP 800-38D test vectors before shipping.
++static inline void XorBlock(uint8_t* a, const uint8_t* b, size_t n) {
++    for (size_t i = 0; i < n; i++) a[i] ^= b[i];
++}
++
++// Single-block AES-ECB encrypt using public CommonCrypto.
++// CCCrypt() supports ECB via kCCOptionECBMode; one-shot is fine for 16 B.
++static bool AesEcbEncryptBlock(const uint8_t key[kKeyLen],
++                               const uint8_t in[16],
++                               uint8_t out[16]) {
++    size_t produced = 0;
++    CCCryptorStatus s = CCCrypt(
++        kCCEncrypt,
++        kCCAlgorithmAES,
++        kCCOptionECBMode,           // no padding, no IV
++        key, kKeyLen,
++        /*iv*/ nullptr,
++        in, 16,
++        out, 16,
++        &produced);
++    return s == kCCSuccess && produced == 16;
++}
++
++// AES-CTR over `in` of any length, using `initialCounter` as the
++// initial 16-byte counter block (CC increments per block internally).
++static bool AesCtrCrypt(const uint8_t key[kKeyLen],
++                        const uint8_t initialCounter[16],
++                        const uint8_t* in, size_t inLen,
++                        uint8_t* out) {
++    if (inLen == 0) return true;
++    CCCryptorRef ref = nullptr;
++    CCCryptorStatus s = CCCryptorCreateWithMode(
++        kCCEncrypt,
++        kCCModeCTR,
++        kCCAlgorithmAES,
++        ccNoPadding,
++        initialCounter,             // 16-byte initial counter block
++        key, kKeyLen,
++        /*tweak*/ nullptr, 0,
++        /*numRounds*/ 0,
++        /*options*/ kCCModeOptionCTR_BE,
++        &ref);
++    if (s != kCCSuccess || !ref) return false;
++    size_t produced = 0;
++    s = CCCryptorUpdate(ref, in, inLen, out, inLen, &produced);
++    CCCryptorRelease(ref);
++    return s == kCCSuccess && produced == inLen;
++}
++
++// V <- V * H over GF(2^128) per NIST SP 800-38D (right-shift form).
++// All inputs are big-endian 16-byte arrays; bit 0 of a byte is the MSB.
++static void GhashMul(uint8_t V[16], const uint8_t H[16]) {
++    uint8_t Z[16] = {0};
++    uint8_t W[16];
++    std::memcpy(W, V, 16);
++    for (int i = 0; i < 128; i++) {
++        const int byte = i >> 3;
++        const int bit  = 7 - (i & 7);
++        if ((H[byte] >> bit) & 1) {
++            XorBlock(Z, W, 16);
++        }
++        // W >>= 1, with reduction by R = 0xE1 || 0^120 if LSB was set.
++        const bool lsb = (W[15] & 1) != 0;
++        for (int j = 15; j > 0; j--) {
++            W[j] = (uint8_t)((W[j] >> 1) | ((W[j - 1] & 1) << 7));
++        }
++        W[0] = (uint8_t)(W[0] >> 1);
++        if (lsb) W[0] ^= 0xe1;
++    }
++    std::memcpy(V, Z, 16);
++}
++
++// Mix `data` of any length into the running GHASH state Y, padding the
++// final partial block with zero bytes per spec.
++static void GhashUpdate(uint8_t Y[16], const uint8_t H[16],
++                        const uint8_t* data, size_t len) {
++    while (len >= 16) {
++        XorBlock(Y, data, 16);
++        GhashMul(Y, H);
++        data += 16;
++        len  -= 16;
++    }
++    if (len > 0) {
++        uint8_t tmp[16] = {0};
++        std::memcpy(tmp, data, len);
++        XorBlock(Y, tmp, 16);
++        GhashMul(Y, H);
++    }
++}
++
++// J0 = IV(12 B) || 0x00000001  — the recommended GCM init counter
++// when IV length == 96 bits. Matches the IV layout we build in
++// BuildIV() above (salt(8) || counter_be(4)).
++static inline void BuildJ0(const uint8_t iv12[kIvLen], uint8_t J0[16]) {
++    std::memcpy(J0, iv12, 12);
++    J0[12] = 0; J0[13] = 0; J0[14] = 0; J0[15] = 1;
++}
++
++// Increment the rightmost 32-bit word of an initial counter block by 1
++// (with carry confined to those 32 bits, per GCM spec).
++static inline void Inc32(uint8_t block[16]) {
++    for (int i = 15; i >= 12; i--) {
++        block[i] = (uint8_t)(block[i] + 1);
++        if (block[i] != 0) break;
++    }
++}
++
++// Build the final GHASH length block: aadBits (uint64 BE), ctBits (uint64 BE).
++static inline void BuildLenBlock(size_t aadLen, size_t ctLen, uint8_t out[16]) {
++    const uint64_t aadBits = (uint64_t)aadLen * 8;
++    const uint64_t ctBits  = (uint64_t)ctLen  * 8;
++    for (int i = 0; i < 8; i++) {
++        out[i]     = (uint8_t)((aadBits >> (56 - 8 * i)) & 0xff);
++        out[8 + i] = (uint8_t)((ctBits  >> (56 - 8 * i)) & 0xff);
++    }
++}
++
++// One-shot AES-128-GCM encrypt. Output buffer must be at least
++// inLen + kTagLen. Writes ciphertext then 16-byte tag, returns true on
++// success. IV must be exactly kIvLen (12) bytes.
++static bool AesGcmEncrypt(const uint8_t* key,
++                          const uint8_t* iv,
++                          const uint8_t* aad, size_t aadLen,
++                          const uint8_t* in,  size_t inLen,
++                          uint8_t* out) {
++    // 1. Derive H = E_K(0).
++    uint8_t H[16] = {0};
++    uint8_t zero[16] = {0};
++    if (!AesEcbEncryptBlock(key, zero, H)) return false;
++
++    // 2. J0 = IV || 0x00000001.
++    uint8_t J0[16];
++    BuildJ0(iv, J0);
++
++    // 3. Encrypt plaintext with AES-CTR starting at J0+1.
++    uint8_t counter1[16];
++    std::memcpy(counter1, J0, 16);
++    Inc32(counter1);
++    if (!AesCtrCrypt(key, counter1, in, inLen, out)) return false;
++
++    // 4. Compute GHASH over AAD || ciphertext || lenBlock.
++    uint8_t S[16] = {0};
++    GhashUpdate(S, H, aad, aadLen);
++    GhashUpdate(S, H, out, inLen);
++
++    uint8_t lenBlock[16];
++    BuildLenBlock(aadLen, inLen, lenBlock);
++    XorBlock(S, lenBlock, 16);
++    GhashMul(S, H);
++
++    // 5. tag = E_K(J0) XOR S.
++    uint8_t Ej0[16];
++    if (!AesEcbEncryptBlock(key, J0, Ej0)) return false;
++    XorBlock(Ej0, S, 16);
++    std::memcpy(out + inLen, Ej0, kTagLen);
++    return true;
++}
++
++// One-shot AES-128-GCM decrypt. inLen MUST include tag (>= 16 bytes).
++// Writes plaintext (= inLen - 16 bytes) to out. Returns true on success
++// (tag verified), false otherwise. Tag verification is constant-time —
++// we never write plaintext on tag mismatch.
++static bool AesGcmDecrypt(const uint8_t* key,
++                          const uint8_t* iv,
++                          const uint8_t* aad, size_t aadLen,
++                          const uint8_t* in,  size_t inLen,
++                          uint8_t* out) {
++    if (inLen < kTagLen) return false;
++    const size_t ctLen = inLen - kTagLen;
++    const uint8_t* ct  = in;
++    const uint8_t* tag = in + ctLen;
++
++    // 1. H = E_K(0).
++    uint8_t H[16] = {0};
++    uint8_t zero[16] = {0};
++    if (!AesEcbEncryptBlock(key, zero, H)) return false;
++
++    // 2. J0 = IV || 0x00000001.
++    uint8_t J0[16];
++    BuildJ0(iv, J0);
++
++    // 3. Compute expected tag via GHASH over AAD || ciphertext || lenBlock.
++    uint8_t S[16] = {0};
++    GhashUpdate(S, H, aad, aadLen);
++    GhashUpdate(S, H, ct, ctLen);
++
++    uint8_t lenBlock[16];
++    BuildLenBlock(aadLen, ctLen, lenBlock);
++    XorBlock(S, lenBlock, 16);
++    GhashMul(S, H);
++
++    uint8_t expected[16];
++    if (!AesEcbEncryptBlock(key, J0, expected)) return false;
++    XorBlock(expected, S, 16);
++
++    // 4. Constant-time tag compare. Refuse to write plaintext on mismatch.
++    uint8_t diff = 0;
++    for (size_t i = 0; i < kTagLen; i++) diff |= (uint8_t)(expected[i] ^ tag[i]);
++    if (diff != 0) return false;
++
++    // 5. Decrypt with AES-CTR starting at J0+1.
++    uint8_t counter1[16];
++    std::memcpy(counter1, J0, 16);
++    Inc32(counter1);
++    return AesCtrCrypt(key, counter1, ct, ctLen, out);
++}
++
++}  // namespace sylkzrtp
++
++// ---- noop encryptor / decryptor C++ classes -------------------------------
++
++namespace sylkzrtp {
++
++class NoopFrameEncryptor : public webrtc::FrameEncryptorInterface {
++ public:
++    NoopFrameEncryptor() : ref_count_(0) {
++        SZLOG(@"NoopFrameEncryptor ctor %p", this);
++    }
++
++    int Encrypt(cricket::MediaType /*media_type*/,
++                uint32_t /*ssrc*/,
++                rtc::ArrayView<const uint8_t> /*additional_data*/,
++                rtc::ArrayView<const uint8_t> frame,
++                rtc::ArrayView<uint8_t> encrypted_frame,
++                size_t* bytes_written) override {
++        if (encrypted_frame.size() < frame.size()) return -1;
++        std::memcpy(encrypted_frame.data(), frame.data(), frame.size());
++        *bytes_written = frame.size();
++        return 0;
++    }
++
++    size_t GetMaxCiphertextByteSize(cricket::MediaType /*media_type*/,
++                                    size_t frame_size) override {
++        return frame_size;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) {
++            delete this;
++            return webrtc::RefCountReleaseStatus::kDroppedLastRef;
++        }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~NoopFrameEncryptor() override {
++        SZLOG(@"NoopFrameEncryptor dtor %p", this);
++    }
++
++ private:
++    mutable std::atomic<int> ref_count_;
++};
++
++class NoopFrameDecryptor : public webrtc::FrameDecryptorInterface {
++ public:
++    NoopFrameDecryptor() : ref_count_(0) {
++        SZLOG(@"NoopFrameDecryptor ctor %p", this);
++    }
++
++    Result Decrypt(cricket::MediaType /*media_type*/,
++                   const std::vector<uint32_t>& /*csrcs*/,
++                   rtc::ArrayView<const uint8_t> /*additional_data*/,
++                   rtc::ArrayView<const uint8_t> encrypted_frame,
++                   rtc::ArrayView<uint8_t> frame) override {
++        if (frame.size() < encrypted_frame.size()) {
++            return Result(Status::kFailedToDecrypt, 0);
++        }
++        std::memcpy(frame.data(), encrypted_frame.data(), encrypted_frame.size());
++        return Result(Status::kOk, encrypted_frame.size());
++    }
++
++    size_t GetMaxPlaintextByteSize(cricket::MediaType /*media_type*/,
++                                   size_t encrypted_frame_size) override {
++        return encrypted_frame_size;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) {
++            delete this;
++            return webrtc::RefCountReleaseStatus::kDroppedLastRef;
++        }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~NoopFrameDecryptor() override {
++        SZLOG(@"NoopFrameDecryptor dtor %p", this);
++    }
++
++ private:
++    mutable std::atomic<int> ref_count_;
++};
++
++// ---- Phase 3: keyed AES-128-GCM encryptor / decryptor --------------------
++
++class MediaFrameEncryptor : public webrtc::FrameEncryptorInterface {
++ public:
++    MediaFrameEncryptor(const uint8_t* key, const uint8_t* salt,
++                        uint8_t keyId, uint8_t videoPrefix)
++        : ref_count_(0), keyId_(keyId & 0x0F),
++          videoPrefix_(videoPrefix), counter_(0) {
++        std::memcpy(key_,  key,  kKeyLen);
++        std::memcpy(salt_, salt, kSaltLen);
++        SZLOG(@"MediaFrameEncryptor ctor %p keyId=%u videoPrefix=%u",
++              this, (unsigned)keyId_, (unsigned)videoPrefix_);
++    }
++
++    // Codec-dependent number of bytes left plaintext at start of each
++    // video frame (VP8=1, VP9=3, H264=2, AV1=1). JS computes the value
++    // from the negotiated codec and passes it via the constructor.
++    size_t UnencryptedPrefixForMediaType(cricket::MediaType mt) const {
++        return mt == cricket::MEDIA_TYPE_VIDEO ? (size_t)videoPrefix_ : 0;
++    }
++
++    int Encrypt(cricket::MediaType media_type,
++                uint32_t /*ssrc*/,
++                rtc::ArrayView<const uint8_t> /*additional_data*/,
++                rtc::ArrayView<const uint8_t> frame,
++                rtc::ArrayView<uint8_t> encrypted_frame,
++                size_t* bytes_written) override {
++        // One-shot proof-of-life log on the FIRST call to Encrypt — needed
++        // to confirm libwebrtc on this iOS framework is actually invoking
++        // our FrameEncryptor in the outgoing media path. If this never
++        // logs, SetFrameEncryptor accepted our object but the framework
++        // doesn't run frames through it.
++        static std::atomic<bool> g_encryptLogged{false};
++        bool expected = false;
++        if (g_encryptLogged.compare_exchange_strong(expected, true)) {
++            SZLOG(@"[SylkZRTP][encrypt] FIRST CALL — Encrypt() invoked, media_type=%d frameSize=%zu prefix=%zu",
++                  (int)media_type, frame.size(),
++                  UnencryptedPrefixForMediaType(media_type));
++        }
++
++        const size_t prefix = UnencryptedPrefixForMediaType(media_type);
++        if (frame.size() < prefix) return -1;
++        const size_t needed = frame.size() + kFrameOverhead;
++        if (encrypted_frame.size() < needed) return -1;
++
++        const uint32_t counter = counter_.fetch_add(1, std::memory_order_relaxed) + 1;
++        const uint8_t header = MakeHeader(/*version=*/1, keyId_);
++
++        uint8_t iv[kIvLen];
++        BuildIV(salt_, counter, iv);
++
++        uint8_t aad[kHeaderLen + kCounterLen];
++        BuildAAD(header, counter, aad);
++
++        uint8_t* out = encrypted_frame.data();
++        // 1. Plaintext prefix (codec descriptor bytes) copied as-is.
++        if (prefix > 0) {
++            std::memcpy(out, frame.data(), prefix);
++        }
++        // 2. Our 5-byte header (version|keyId + 32-bit BE counter).
++        out[prefix + 0] = header;
++        out[prefix + 1] = aad[1];
++        out[prefix + 2] = aad[2];
++        out[prefix + 3] = aad[3];
++        out[prefix + 4] = aad[4];
++        // 3. Encrypt only the bytes AFTER the prefix.
++        if (!AesGcmEncrypt(key_, iv, aad, sizeof(aad),
++                           frame.data() + prefix, frame.size() - prefix,
++                           out + prefix + kHeaderLen + kCounterLen)) {
++            return -1;
++        }
++        *bytes_written = needed;
++        return 0;
++    }
++
++    size_t GetMaxCiphertextByteSize(cricket::MediaType /*media_type*/,
++                                    size_t frame_size) override {
++        return frame_size + kFrameOverhead;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) {
++            delete this;
++            return webrtc::RefCountReleaseStatus::kDroppedLastRef;
++        }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~MediaFrameEncryptor() override {
++        SZLOG(@"MediaFrameEncryptor dtor %p", this);
++    }
++
++ private:
++    mutable std::atomic<int> ref_count_;
++    uint8_t key_[kKeyLen];
++    uint8_t salt_[kSaltLen];
++    uint8_t keyId_;
++    uint8_t videoPrefix_;   // bytes left plaintext at start of each video frame
++    std::atomic<uint32_t> counter_;
++};
++
++class MediaFrameDecryptor : public webrtc::FrameDecryptorInterface {
++ public:
++    MediaFrameDecryptor(const uint8_t* key, const uint8_t* salt,
++                        uint8_t keyId, uint8_t videoPrefix)
++        : ref_count_(0), keyId_(keyId & 0x0F), videoPrefix_(videoPrefix) {
++        std::memcpy(key_,  key,  kKeyLen);
++        std::memcpy(salt_, salt, kSaltLen);
++        SZLOG(@"MediaFrameDecryptor ctor %p keyId=%u videoPrefix=%u",
++              this, (unsigned)keyId_, (unsigned)videoPrefix_);
++    }
++
++    // Must match MediaFrameEncryptor's prefix or every frame fails the
++    // tag check and falls through to permissive passthrough.
++    size_t UnencryptedPrefixForMediaType(cricket::MediaType mt) const {
++        return mt == cricket::MEDIA_TYPE_VIDEO ? (size_t)videoPrefix_ : 0;
++    }
++
++    // Permissive decrypt — same policy as the Android side.
++    // If the frame doesn't look encrypted (wrong header / too short / tag
++    // mismatch), pass it through unchanged. Lets us decrypt the peer's
++    // encrypted frames while the peer's sender_enc isn't yet installed.
++    Result Decrypt(cricket::MediaType media_type,
++                   const std::vector<uint32_t>& /*csrcs*/,
++                   rtc::ArrayView<const uint8_t> /*additional_data*/,
++                   rtc::ArrayView<const uint8_t> encrypted_frame,
++                   rtc::ArrayView<uint8_t> frame) override {
++        const size_t prefix = UnencryptedPrefixForMediaType(media_type);
++
++        // One-line diagnostic counters, sampled at exponential decay so
++        // we don't spam the log (~50/sec/track when video is flowing).
++        // Updated by passthrough() via the lambda capture.
++        static std::atomic<uint64_t> g_total{0};
++        static std::atomic<uint64_t> g_short{0};
++        static std::atomic<uint64_t> g_hdrMismatch{0};
++        static std::atomic<uint64_t> g_smallOut{0};
++        static std::atomic<uint64_t> g_tagFail{0};
++        static std::atomic<uint64_t> g_ok{0};
++
++        auto bumpAndMaybeLog = [&]() {
++            const uint64_t n = g_total.fetch_add(1, std::memory_order_relaxed) + 1;
++            // Log on n=1, 10, 100, 1000, 10000, ...
++            uint64_t k = n; bool logIt = (n == 1);
++            while (k > 0 && (k % 10) == 0) { logIt = true; k /= 10; if (k == 1) break; if ((k % 10) != 0) { logIt = false; break; } }
++            if (n <= 10 || (n % 100) == 0) {
++                SZLOG(@"[SylkZRTP][decrypt-stats] total=%llu short=%llu hdrBad=%llu smallOut=%llu tagFail=%llu ok=%llu",
++                      (unsigned long long)n,
++                      (unsigned long long)g_short.load(),
++                      (unsigned long long)g_hdrMismatch.load(),
++                      (unsigned long long)g_smallOut.load(),
++                      (unsigned long long)g_tagFail.load(),
++                      (unsigned long long)g_ok.load());
++            }
++        };
++
++        auto passthrough = [&]() -> Result {
++            if (frame.size() < encrypted_frame.size()) {
++                return Result(Status::kFailedToDecrypt, 0);
++            }
++            std::memcpy(frame.data(), encrypted_frame.data(), encrypted_frame.size());
++            return Result(Status::kOk, encrypted_frame.size());
++        };
++
++        if (encrypted_frame.size() < prefix + kFrameOverhead) {
++            g_short.fetch_add(1, std::memory_order_relaxed);
++            bumpAndMaybeLog();
++            return passthrough();
++        }
++        const uint8_t* in = encrypted_frame.data();
++        const uint8_t header = in[prefix];
++        const uint8_t version = (header >> 4) & 0x0F;
++        const uint8_t keyId   =  header       & 0x0F;
++        if (version != 1 || keyId != keyId_) {
++            const uint64_t bad = g_hdrMismatch.fetch_add(1, std::memory_order_relaxed) + 1;
++            if (bad <= 5 || (bad % 200) == 0) {
++                SZLOG(@"[SylkZRTP][decrypt] header mismatch: got version=%u keyId=%u (want version=1 keyId=%u) frameLen=%zu prefix=%zu",
++                      (unsigned)version, (unsigned)keyId, (unsigned)keyId_,
++                      encrypted_frame.size(), prefix);
++            }
++            bumpAndMaybeLog();
++            return passthrough();
++        }
++        const uint32_t counter =
++            ((uint32_t)in[prefix + 1] << 24) | ((uint32_t)in[prefix + 2] << 16) |
++            ((uint32_t)in[prefix + 3] <<  8) |  (uint32_t)in[prefix + 4];
++
++        const size_t ctTagLen     = encrypted_frame.size() - prefix - (kHeaderLen + kCounterLen);
++        const size_t plaintextLen = ctTagLen - kTagLen;
++        const size_t outLen       = prefix + plaintextLen;
++        if (frame.size() < outLen) {
++            g_smallOut.fetch_add(1, std::memory_order_relaxed);
++            bumpAndMaybeLog();
++            return passthrough();
++        }
++
++        uint8_t iv[kIvLen];
++        BuildIV(salt_, counter, iv);
++
++        uint8_t aad[kHeaderLen + kCounterLen];
++        BuildAAD(header, counter, aad);
++
++        // Copy the plaintext prefix bytes back, decrypt the rest into
++        // frame[prefix..].
++        if (prefix > 0) {
++            std::memcpy(frame.data(), in, prefix);
++        }
++        if (!AesGcmDecrypt(key_, iv, aad, sizeof(aad),
++                           in + prefix + kHeaderLen + kCounterLen, ctTagLen,
++                           frame.data() + prefix)) {
++            const uint64_t bad = g_tagFail.fetch_add(1, std::memory_order_relaxed) + 1;
++            if (bad <= 5 || (bad % 200) == 0) {
++                SZLOG(@"[SylkZRTP][decrypt] GCM tag check FAILED: counter=%u keyId=%u prefix=%zu frameLen=%zu (this means the encryptor's bytes don't match the AAD/IV we computed — usually a key/salt mismatch or wire-format skew)",
++                      (unsigned)counter, (unsigned)keyId, prefix, encrypted_frame.size());
++                // Dump the first 32 bytes of the encrypted frame for hex inspection.
++                NSMutableString *hex = [NSMutableString stringWithCapacity:96];
++                size_t dumpLen = encrypted_frame.size() > 32 ? 32 : encrypted_frame.size();
++                for (size_t i = 0; i < dumpLen; i++) {
++                    [hex appendFormat:@"%02x ", encrypted_frame.data()[i]];
++                }
++                SZLOG(@"[SylkZRTP][decrypt]   first %zu bytes: %@", dumpLen, hex);
++            }
++            bumpAndMaybeLog();
++            return passthrough();
++        }
++        g_ok.fetch_add(1, std::memory_order_relaxed);
++        bumpAndMaybeLog();
++        return Result(Status::kOk, outLen);
++    }
++
++    // Output buffer must hold either plaintext (encrypted_size - 21)
++    // or a passthrough copy (= encrypted_size).
++    size_t GetMaxPlaintextByteSize(cricket::MediaType /*media_type*/,
++                                   size_t encrypted_frame_size) override {
++        return encrypted_frame_size;
++    }
++
++    void AddRef() const override {
++        ref_count_.fetch_add(1, std::memory_order_relaxed);
++    }
++    webrtc::RefCountReleaseStatus Release() const override {
++        const int prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
++        if (prev == 1) {
++            delete this;
++            return webrtc::RefCountReleaseStatus::kDroppedLastRef;
++        }
++        return webrtc::RefCountReleaseStatus::kOtherRefsRemained;
++    }
++
++ protected:
++    ~MediaFrameDecryptor() override {
++        SZLOG(@"MediaFrameDecryptor dtor %p", this);
++    }
++
++ private:
++    mutable std::atomic<int> ref_count_;
++    uint8_t key_[kKeyLen];
++    uint8_t salt_[kSaltLen];
++    uint8_t keyId_;
++    uint8_t videoPrefix_;   // bytes left plaintext at start of each video frame
++};
++
++}  // namespace sylkzrtp
++
++// ---- runtime-ivar unwrap helpers ------------------------------------------
++
++// Find a pointer-sized ivar by trying a list of likely names. On failure
++// dumps the wrapper's ivar list to NSLog so the caller can update the list.
++static void* GetPointerIvarBytes(NSObject* obj, const char* const* candidates,
++                                 size_t numCandidates) {
++    Class cls = [obj class];
++    for (size_t i = 0; i < numCandidates; i++) {
++        Ivar iv = class_getInstanceVariable(cls, candidates[i]);
++        if (iv) {
++            ptrdiff_t offset = ivar_getOffset(iv);
++            return (char*)(__bridge void*)obj + offset;
++        }
++    }
++    // Diagnostic dump — only fires when none of the candidate names matched.
++    unsigned int count = 0;
++    Ivar* list = class_copyIvarList(cls, &count);
++    SZLOG(@"could not find a candidate ivar on %s; full ivar list:",
++          class_getName(cls));
++    for (unsigned int i = 0; i < count; i++) {
++        SZLOG(@"  ivar %u: name=%s type=%s",
++              i, ivar_getName(list[i]), ivar_getTypeEncoding(list[i]));
++    }
++    free(list);
++    return nullptr;
++}
++
++static webrtc::RtpSenderInterface* GetNativeRtpSender(id<RTC_OBJC_TYPE(RTCRtpSender)> objcSender) {
++    static const char* candidates[] = {
++        "_nativeRtpSender", "nativeRtpSender",
++        "_nativeRtpSenderRefPtr", "nativeRtpSenderRefPtr",
++        "_nativeSender", "nativeSender",
++    };
++    void* bytes = GetPointerIvarBytes((NSObject*)objcSender, candidates,
++                                      sizeof(candidates) / sizeof(candidates[0]));
++    if (!bytes) return nullptr;
++    // The ivar is a scoped_refptr<RtpSenderInterface> = exactly one pointer.
++    webrtc::RtpSenderInterface** native = (webrtc::RtpSenderInterface**)bytes;
++    return *native;
++}
++
++static webrtc::RtpReceiverInterface* GetNativeRtpReceiver(id<RTC_OBJC_TYPE(RTCRtpReceiver)> objcReceiver) {
++    static const char* candidates[] = {
++        "_nativeRtpReceiver", "nativeRtpReceiver",
++        "_nativeRtpReceiverRefPtr", "nativeRtpReceiverRefPtr",
++        "_nativeReceiver", "nativeReceiver",
++    };
++    void* bytes = GetPointerIvarBytes((NSObject*)objcReceiver, candidates,
++                                      sizeof(candidates) / sizeof(candidates[0]));
++    if (!bytes) return nullptr;
++    webrtc::RtpReceiverInterface** native = (webrtc::RtpReceiverInterface**)bytes;
++    return *native;
++}
++
++// ---- Obj-C surface --------------------------------------------------------
++
++// Informal-protocol category declarations for the framework's Obj-C
++// `setFrameEncryptor:` / `setFrameDecryptor:` selectors. These selectors
++// exist on RTCRtpSender / RTCRtpReceiver in the prebuilt
++// JitsiWebRTC.framework — proven by the strings dump showing
++// `-[RTCRtpSender ... setFrameEncryptor:]` and the type encoding
++// `v24@0:8{scoped_refptr<webrtc::FrameEncryptorInterface>=^{...}}16`
++// (i.e. a method that takes a scoped_refptr by value). They're just not
++// publicly declared in the framework headers.
++//
++// Calling the Obj-C entrypoint instead of the C++
++// `native->SetFrameEncryptor()` lets the framework's wrapper run any
++// thread-dispatch / state-bookkeeping it needs (capturing the encryptor
++// in an Obj-C ivar, marshalling onto the signaling thread, etc.). The
++// C++ direct path appears to register our object but never wire it into
++// the encode/decode pipeline on this prebuilt framework.
++//
++// The selectors take a struct {scoped_refptr<...> = pointer} which on
++// arm64 is passed in one register, exactly like a raw pointer. So the
++// type encoding lines up with what the compiler emits for these calls.
++@interface NSObject (SylkE2EE_FrameEncryption)
++- (void)setFrameEncryptor:(rtc::scoped_refptr<webrtc::FrameEncryptorInterface>)encryptor;
++- (void)setFrameDecryptor:(rtc::scoped_refptr<webrtc::FrameDecryptorInterface>)decryptor;
++@end
++
++// Keep strong references to every installed encryptor/decryptor so their
++// refcount doesn't drop to zero the instant the install function returns.
++//
++// On iOS M124, the prebuilt JitsiWebRTC.framework's
++// RtpSenderInterface::SetFrameEncryptor / RtpReceiverInterface::SetFrameDecryptor
++// take a scoped_refptr by value but apparently don't keep the strong ref
++// internally — the dtor of our MediaFrameEncryptor fires within
++// microseconds of the install completing, leaving the sender/receiver
++// without any encryptor. Result: outgoing frames go on the wire
++// unencrypted (or with garbage padding) and incoming encrypted frames
++// fall through to the decoder as ciphertext → garbled audio + frozen
++// video, but ONLY after the ZRTP handshake completes (the first ~3s of
++// plaintext flow fine because no encryption is even attempted yet).
++//
++// Holding the scoped_refptr in this static map keeps the refcount > 0
++// for the lifetime of the call. Entries are cleared when the same
++// sender/receiver gets a new encryptor/decryptor installed (replacing
++// the old one), or stay alive through the call's natural teardown.
++static NSLock *g_sylkRefLock = nil;
++static std::map<webrtc::RtpSenderInterface*,
++                rtc::scoped_refptr<webrtc::FrameEncryptorInterface>> *
++    g_senderEncryptors = nullptr;
++static std::map<webrtc::RtpReceiverInterface*,
++                rtc::scoped_refptr<webrtc::FrameDecryptorInterface>> *
++    g_receiverDecryptors = nullptr;
++
++static void EnsureSylkRefMaps() {
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        g_sylkRefLock = [[NSLock alloc] init];
++        g_senderEncryptors = new std::map<webrtc::RtpSenderInterface*,
++            rtc::scoped_refptr<webrtc::FrameEncryptorInterface>>();
++        g_receiverDecryptors = new std::map<webrtc::RtpReceiverInterface*,
++            rtc::scoped_refptr<webrtc::FrameDecryptorInterface>>();
++    });
++}
++
++static void RetainEncryptor(webrtc::RtpSenderInterface* native,
++                            rtc::scoped_refptr<webrtc::FrameEncryptorInterface> enc) {
++    EnsureSylkRefMaps();
++    [g_sylkRefLock lock];
++    (*g_senderEncryptors)[native] = enc;
++    const size_t total = g_senderEncryptors->size();
++    [g_sylkRefLock unlock];
++    SZLOG(@"RetainEncryptor: stored ref for sender=%p (total live encryptors=%zu)",
++          native, total);
++}
++
++static void RetainDecryptor(webrtc::RtpReceiverInterface* native,
++                            rtc::scoped_refptr<webrtc::FrameDecryptorInterface> dec) {
++    EnsureSylkRefMaps();
++    [g_sylkRefLock lock];
++    (*g_receiverDecryptors)[native] = dec;
++    const size_t total = g_receiverDecryptors->size();
++    [g_sylkRefLock unlock];
++    SZLOG(@"RetainDecryptor: stored ref for receiver=%p (total live decryptors=%zu)",
++          native, total);
++}
++
++@implementation SylkZRTPBridge
++
+++ (BOOL)installNoopEncryptorOnSender:(id<RTC_OBJC_TYPE(RTCRtpSender)>)sender {
++    if (!sender) return NO;
++    webrtc::RtpSenderInterface* native = GetNativeRtpSender(sender);
++    if (!native) {
++        SZLOG(@"installNoopEncryptorOnSender: native pointer not found");
++        return NO;
++    }
++    auto* enc = new sylkzrtp::NoopFrameEncryptor();
++    enc->AddRef();   // intentional leak — see Phase 3 install below
++    rtc::scoped_refptr<webrtc::FrameEncryptorInterface> ref(enc);
++    native->SetFrameEncryptor(ref);
++    RetainEncryptor(native, ref);   // belt-and-suspenders
++    SZLOG(@"installed noop encryptor on sender %p (native=%p)", sender, native);
++    return YES;
++}
++
+++ (BOOL)installNoopDecryptorOnReceiver:(id<RTC_OBJC_TYPE(RTCRtpReceiver)>)receiver {
++    if (!receiver) return NO;
++    webrtc::RtpReceiverInterface* native = GetNativeRtpReceiver(receiver);
++    if (!native) {
++        SZLOG(@"installNoopDecryptorOnReceiver: native pointer not found");
++        return NO;
++    }
++    auto* dec = new sylkzrtp::NoopFrameDecryptor();
++    dec->AddRef();   // intentional leak — see Phase 3 install below
++    rtc::scoped_refptr<webrtc::FrameDecryptorInterface> ref(dec);
++    native->SetFrameDecryptor(ref);
++    RetainDecryptor(native, ref);   // belt-and-suspenders
++    SZLOG(@"installed noop decryptor on receiver %p (native=%p)", receiver, native);
++    return YES;
++}
++
+++ (BOOL)installMediaEncryptorOnSender:(id<RTC_OBJC_TYPE(RTCRtpSender)>)sender
++                                  key:(NSData *)key
++                                 salt:(NSData *)salt
++                                keyId:(uint8_t)keyId
++                          videoPrefix:(uint8_t)videoPrefix {
++    if (!sender) return NO;
++    if (!key || key.length != sylkzrtp::kKeyLen) {
++        SZLOG(@"installMediaEncryptorOnSender: bad key length %lu",
++              (unsigned long)(key ? key.length : 0));
++        return NO;
++    }
++    if (!salt || salt.length != sylkzrtp::kSaltLen) {
++        SZLOG(@"installMediaEncryptorOnSender: bad salt length %lu",
++              (unsigned long)(salt ? salt.length : 0));
++        return NO;
++    }
++    webrtc::RtpSenderInterface* native = GetNativeRtpSender(sender);
++    if (!native) {
++        SZLOG(@"installMediaEncryptorOnSender: native pointer not found");
++        return NO;
++    }
++    auto* enc = new sylkzrtp::MediaFrameEncryptor(
++        (const uint8_t*)key.bytes,
++        (const uint8_t*)salt.bytes,
++        keyId, videoPrefix);
++    // Intentional leak (see decryptor side). Belt-and-suspenders.
++    enc->AddRef();
++    rtc::scoped_refptr<webrtc::FrameEncryptorInterface> ref(enc);
++
++    // Try the Obj-C wrapper's setFrameEncryptor: selector first. The
++    // wrapper does additional bookkeeping (thread dispatch + Obj-C ivar
++    // retention) that the bare C++ call skips. If the wrapper's selector
++    // doesn't exist for some reason, fall back to the direct C++ call.
++    SEL sel = @selector(setFrameEncryptor:);
++    if ([(NSObject*)sender respondsToSelector:sel]) {
++        [(NSObject*)sender setFrameEncryptor:ref];
++        SZLOG(@"installed AES-GCM encryptor via Obj-C setFrameEncryptor: on %p"
++              @" (native=%p) keyId=%u videoPrefix=%u",
++              sender, native, (unsigned)keyId, (unsigned)videoPrefix);
++    } else {
++        native->SetFrameEncryptor(ref);
++        SZLOG(@"installed AES-GCM encryptor via C++ SetFrameEncryptor on sender=%p"
++              @" (native=%p) keyId=%u videoPrefix=%u (Obj-C selector not found)",
++              sender, native, (unsigned)keyId, (unsigned)videoPrefix);
++    }
++    RetainEncryptor(native, ref);   // belt-and-suspenders
++    return YES;
++}
++
+++ (BOOL)installMediaDecryptorOnReceiver:(id<RTC_OBJC_TYPE(RTCRtpReceiver)>)receiver
++                                    key:(NSData *)key
++                                   salt:(NSData *)salt
++                                  keyId:(uint8_t)keyId
++                            videoPrefix:(uint8_t)videoPrefix {
++    if (!receiver) return NO;
++    if (!key || key.length != sylkzrtp::kKeyLen) {
++        SZLOG(@"installMediaDecryptorOnReceiver: bad key length %lu",
++              (unsigned long)(key ? key.length : 0));
++        return NO;
++    }
++    if (!salt || salt.length != sylkzrtp::kSaltLen) {
++        SZLOG(@"installMediaDecryptorOnReceiver: bad salt length %lu",
++              (unsigned long)(salt ? salt.length : 0));
++        return NO;
++    }
++    webrtc::RtpReceiverInterface* native = GetNativeRtpReceiver(receiver);
++    if (!native) {
++        SZLOG(@"installMediaDecryptorOnReceiver: native pointer not found");
++        return NO;
++    }
++    auto* dec = new sylkzrtp::MediaFrameDecryptor(
++        (const uint8_t*)key.bytes,
++        (const uint8_t*)salt.bytes,
++        keyId, videoPrefix);
++    // Intentional leak. Belt-and-suspenders.
++    dec->AddRef();
++    rtc::scoped_refptr<webrtc::FrameDecryptorInterface> ref(dec);
++
++    // Same pattern as encryptor — Obj-C path first, C++ fallback.
++    SEL sel = @selector(setFrameDecryptor:);
++    if ([(NSObject*)receiver respondsToSelector:sel]) {
++        [(NSObject*)receiver setFrameDecryptor:ref];
++        SZLOG(@"installed AES-GCM decryptor via Obj-C setFrameDecryptor: on %p"
++              @" (native=%p) keyId=%u videoPrefix=%u",
++              receiver, native, (unsigned)keyId, (unsigned)videoPrefix);
++    } else {
++        native->SetFrameDecryptor(ref);
++        SZLOG(@"installed AES-GCM decryptor via C++ SetFrameDecryptor on receiver=%p"
++              @" (native=%p) keyId=%u videoPrefix=%u (Obj-C selector not found)",
++              receiver, native, (unsigned)keyId, (unsigned)videoPrefix);
++    }
++    RetainDecryptor(native, ref);   // belt-and-suspenders
++    return YES;
++}
++
+++ (NSString *)sylkE2EEBuild {
++    return @SYLK_E2EE_BUILD;
++}
++
++@end
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h
+new file mode 100644
+index 0000000..ad044aa
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h
+@@ -0,0 +1,10 @@
++// WebRTCModule+SylkZRTP.h
++//
++// React Native bridge methods for the iOS Sylk ZRTP native install.
++// Counterpart of the Android senderInstallNoopEncryption / receiverInstallNoopDecryption
++// @ReactMethod handlers in WebRTCModule.java.
++
++#import "WebRTCModule.h"
++
++@interface WebRTCModule (SylkZRTP)
++@end
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.mm b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.mm
+new file mode 100644
+index 0000000..a18f6ff
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.mm
+@@ -0,0 +1,222 @@
++// WebRTCModule+SylkZRTP.mm
++//
++// React Native bridge methods (RCT_EXPORT_METHOD) for the iOS noop
++// FrameEncryptor / FrameDecryptor install. The JS side calls these via
++// senderInstallNoopEncryption / receiverInstallNoopDecryption — same names
++// as on Android. .mm so we can include sylk_webrtc_compat.h and call the
++// C++ helper indirectly through SylkZRTPBridge (which is Obj-C++ itself).
++
++#import "WebRTCModule+SylkZRTP.h"
++#import "WebRTCModule+RTCPeerConnection.h"
++
++#import <WebRTC/RTCPeerConnection.h>
++#import <WebRTC/RTCRtpSender.h>
++#import <WebRTC/RTCRtpReceiver.h>
++
++#import "SylkZRTPBridge.h"
++
++// Decode a hex string to NSData. Returns nil on parse error.
++static NSData *SylkDecodeHex(NSString *hex) {
++    if (!hex) return nil;
++    NSUInteger len = hex.length;
++    if ((len & 1) != 0) return nil;
++    NSMutableData *out = [NSMutableData dataWithLength:len / 2];
++    uint8_t *bytes = (uint8_t *)out.mutableBytes;
++    const char *cstr = hex.UTF8String;
++    for (NSUInteger i = 0; i < len; i += 2) {
++        char hi = cstr[i];
++        char lo = cstr[i + 1];
++        int hiv = (hi >= '0' && hi <= '9') ? hi - '0'
++                : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
++                : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
++        int lov = (lo >= '0' && lo <= '9') ? lo - '0'
++                : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
++                : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
++        if (hiv < 0 || lov < 0) return nil;
++        bytes[i / 2] = (uint8_t)((hiv << 4) | lov);
++    }
++    return out;
++}
++
++@implementation WebRTCModule (SylkZRTP)
++
++// Returns the SYLK_E2EE_BUILD string compiled into this binary so the JS
++// side can verify the loaded native code matches its expected build.
++// Mismatch => stale build / patch-package didn't run / wrong .framework.
++RCT_EXPORT_METHOD(getSylkE2EEBuild
++                  : (RCTPromiseResolveBlock)resolve
++                  rejecter
++                  : (RCTPromiseRejectBlock)reject) {
++    NSString *build = [SylkZRTPBridge sylkE2EEBuild];
++    resolve(build ?: @"unknown");
++}
++
++RCT_EXPORT_METHOD(senderInstallNoopEncryption
++                  : (nonnull NSNumber *)pcId senderId
++                  : (nonnull NSString *)senderId resolver
++                  : (RCTPromiseResolveBlock)resolve rejecter
++                  : (RCTPromiseRejectBlock)reject) {
++    RTCPeerConnection *peerConnection = self.peerConnections[pcId];
++    if (!peerConnection) {
++        reject(@"E_NO_PC", @"Peer Connection not initialized", nil);
++        return;
++    }
++
++    id<RTC_OBJC_TYPE(RTCRtpSender)> targetSender = nil;
++    for (id<RTC_OBJC_TYPE(RTCRtpSender)> s in peerConnection.senders) {
++        if ([s.senderId isEqualToString:senderId]) {
++            targetSender = s;
++            break;
++        }
++    }
++    if (!targetSender) {
++        reject(@"E_NO_SENDER", [NSString stringWithFormat:@"Sender not found: %@", senderId], nil);
++        return;
++    }
++
++    BOOL ok = [SylkZRTPBridge installNoopEncryptorOnSender:targetSender];
++    if (!ok) {
++        reject(@"E_INSTALL_FAILED",
++               @"Could not unwrap native RTCRtpSender — see [SylkZRTP] logs for ivar list", nil);
++        return;
++    }
++    resolve(nil);
++}
++
++RCT_EXPORT_METHOD(receiverInstallNoopDecryption
++                  : (nonnull NSNumber *)pcId receiverId
++                  : (nonnull NSString *)receiverId resolver
++                  : (RCTPromiseResolveBlock)resolve rejecter
++                  : (RCTPromiseRejectBlock)reject) {
++    RTCPeerConnection *peerConnection = self.peerConnections[pcId];
++    if (!peerConnection) {
++        reject(@"E_NO_PC", @"Peer Connection not initialized", nil);
++        return;
++    }
++
++    id<RTC_OBJC_TYPE(RTCRtpReceiver)> targetReceiver = nil;
++    for (id<RTC_OBJC_TYPE(RTCRtpReceiver)> r in peerConnection.receivers) {
++        if ([r.receiverId isEqualToString:receiverId]) {
++            targetReceiver = r;
++            break;
++        }
++    }
++    if (!targetReceiver) {
++        reject(@"E_NO_RECEIVER",
++               [NSString stringWithFormat:@"Receiver not found: %@", receiverId], nil);
++        return;
++    }
++
++    BOOL ok = [SylkZRTPBridge installNoopDecryptorOnReceiver:targetReceiver];
++    if (!ok) {
++        reject(@"E_INSTALL_FAILED",
++               @"Could not unwrap native RTCRtpReceiver — see [SylkZRTP] logs for ivar list", nil);
++        return;
++    }
++    resolve(nil);
++}
++
++// ---- Phase 3: keyed AES-128-GCM install --------------------------------
++
++RCT_EXPORT_METHOD(senderInstallMediaEncryption
++                  : (nonnull NSNumber *)pcId senderId
++                  : (nonnull NSString *)senderId keyHex
++                  : (nonnull NSString *)keyHex saltHex
++                  : (nonnull NSString *)saltHex keyId
++                  : (nonnull NSNumber *)keyId videoPrefix
++                  : (nonnull NSNumber *)videoPrefix resolver
++                  : (RCTPromiseResolveBlock)resolve rejecter
++                  : (RCTPromiseRejectBlock)reject) {
++    RTCPeerConnection *peerConnection = self.peerConnections[pcId];
++    if (!peerConnection) {
++        reject(@"E_NO_PC", @"Peer Connection not initialized", nil);
++        return;
++    }
++    NSData *key  = SylkDecodeHex(keyHex);
++    NSData *salt = SylkDecodeHex(saltHex);
++    if (!key || key.length != 16) {
++        reject(@"E_BAD_KEY",  @"Invalid key (need 16 bytes hex)", nil);
++        return;
++    }
++    if (!salt || salt.length != 8) {
++        reject(@"E_BAD_SALT", @"Invalid salt (need 8 bytes hex)", nil);
++        return;
++    }
++
++    id<RTC_OBJC_TYPE(RTCRtpSender)> targetSender = nil;
++    for (id<RTC_OBJC_TYPE(RTCRtpSender)> s in peerConnection.senders) {
++        if ([s.senderId isEqualToString:senderId]) {
++            targetSender = s;
++            break;
++        }
++    }
++    if (!targetSender) {
++        reject(@"E_NO_SENDER", [NSString stringWithFormat:@"Sender not found: %@", senderId], nil);
++        return;
++    }
++
++    BOOL ok = [SylkZRTPBridge installMediaEncryptorOnSender:targetSender
++                                                        key:key
++                                                       salt:salt
++                                                      keyId:(uint8_t)keyId.intValue
++                                                videoPrefix:(uint8_t)videoPrefix.intValue];
++    if (!ok) {
++        reject(@"E_INSTALL_FAILED",
++               @"Could not install AES-GCM encryptor — see [SylkZRTP] logs", nil);
++        return;
++    }
++    resolve(nil);
++}
++
++RCT_EXPORT_METHOD(receiverInstallMediaDecryption
++                  : (nonnull NSNumber *)pcId receiverId
++                  : (nonnull NSString *)receiverId keyHex
++                  : (nonnull NSString *)keyHex saltHex
++                  : (nonnull NSString *)saltHex keyId
++                  : (nonnull NSNumber *)keyId videoPrefix
++                  : (nonnull NSNumber *)videoPrefix resolver
++                  : (RCTPromiseResolveBlock)resolve rejecter
++                  : (RCTPromiseRejectBlock)reject) {
++    RTCPeerConnection *peerConnection = self.peerConnections[pcId];
++    if (!peerConnection) {
++        reject(@"E_NO_PC", @"Peer Connection not initialized", nil);
++        return;
++    }
++    NSData *key  = SylkDecodeHex(keyHex);
++    NSData *salt = SylkDecodeHex(saltHex);
++    if (!key || key.length != 16) {
++        reject(@"E_BAD_KEY",  @"Invalid key (need 16 bytes hex)", nil);
++        return;
++    }
++    if (!salt || salt.length != 8) {
++        reject(@"E_BAD_SALT", @"Invalid salt (need 8 bytes hex)", nil);
++        return;
++    }
++
++    id<RTC_OBJC_TYPE(RTCRtpReceiver)> targetReceiver = nil;
++    for (id<RTC_OBJC_TYPE(RTCRtpReceiver)> r in peerConnection.receivers) {
++        if ([r.receiverId isEqualToString:receiverId]) {
++            targetReceiver = r;
++            break;
++        }
++    }
++    if (!targetReceiver) {
++        reject(@"E_NO_RECEIVER",
++               [NSString stringWithFormat:@"Receiver not found: %@", receiverId], nil);
++        return;
++    }
++
++    BOOL ok = [SylkZRTPBridge installMediaDecryptorOnReceiver:targetReceiver
++                                                          key:key
++                                                         salt:salt
++                                                        keyId:(uint8_t)keyId.intValue
++                                                  videoPrefix:(uint8_t)videoPrefix.intValue];
++    if (!ok) {
++        reject(@"E_INSTALL_FAILED",
++               @"Could not install AES-GCM decryptor — see [SylkZRTP] logs", nil);
++        return;
++    }
++    resolve(nil);
++}
++
++@end
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/sylk_webrtc_compat.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/sylk_webrtc_compat.h
+new file mode 100644
+index 0000000..dce4e05
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/sylk_webrtc_compat.h
+@@ -0,0 +1,137 @@
++// sylk_webrtc_compat.h  (iOS copy — identical to Android's)
++//
++// Minimal slice of the WebRTC M124 public C++ API needed to implement
++// FrameEncryptorInterface and FrameDecryptorInterface. Mirrors the upstream
++// declarations exactly so our derived classes share the same vtable layout
++// as the JitsiWebRTC.framework binary at runtime.
++
++#ifndef SYLK_WEBRTC_COMPAT_H_
++#define SYLK_WEBRTC_COMPAT_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++namespace cricket {
++
++enum MediaType {
++    MEDIA_TYPE_AUDIO,
++    MEDIA_TYPE_VIDEO,
++    MEDIA_TYPE_DATA,
++    MEDIA_TYPE_UNSUPPORTED,
++};
++
++}  // namespace cricket
++
++namespace webrtc {
++
++enum class RefCountReleaseStatus { kDroppedLastRef, kOtherRefsRemained };
++
++class RefCountInterface {
++ public:
++    virtual void AddRef() const = 0;
++    virtual RefCountReleaseStatus Release() const = 0;
++ protected:
++    virtual ~RefCountInterface() {}
++};
++
++}  // namespace webrtc
++
++namespace rtc {
++
++using RefCountInterface = ::webrtc::RefCountInterface;
++using RefCountReleaseStatus = ::webrtc::RefCountReleaseStatus;
++
++template <typename T>
++class ArrayView final {
++ public:
++    ArrayView() : data_(nullptr), size_(0) {}
++    ArrayView(T* data, size_t size) : data_(data), size_(size) {}
++    T* data() const { return data_; }
++    size_t size() const { return size_; }
++    bool empty() const { return size_ == 0; }
++ private:
++    T* data_;
++    size_t size_;
++};
++
++// Bare-bones scoped_refptr matching upstream layout (single T* member).
++// We only need it to wrap a raw pointer when calling into WebRTC's
++// SetFrameEncryptor / SetFrameDecryptor; behaviour matches webrtc's:
++// constructor calls AddRef, destructor calls Release.
++template <class T>
++class scoped_refptr {
++ public:
++    scoped_refptr() : ptr_(nullptr) {}
++    explicit scoped_refptr(T* p) : ptr_(p) { if (ptr_) ptr_->AddRef(); }
++    scoped_refptr(const scoped_refptr<T>& r) : ptr_(r.ptr_) { if (ptr_) ptr_->AddRef(); }
++    ~scoped_refptr() { if (ptr_) ptr_->Release(); }
++    T* get() const { return ptr_; }
++    T* operator->() const { return ptr_; }
++ private:
++    T* ptr_;
++};
++
++}  // namespace rtc
++
++namespace webrtc {
++
++class FrameEncryptorInterface : public rtc::RefCountInterface {
++ public:
++    ~FrameEncryptorInterface() override {}
++
++    virtual int Encrypt(cricket::MediaType media_type,
++                        uint32_t ssrc,
++                        rtc::ArrayView<const uint8_t> additional_data,
++                        rtc::ArrayView<const uint8_t> frame,
++                        rtc::ArrayView<uint8_t> encrypted_frame,
++                        size_t* bytes_written) = 0;
++
++    virtual size_t GetMaxCiphertextByteSize(cricket::MediaType media_type,
++                                            size_t frame_size) = 0;
++};
++
++class FrameDecryptorInterface : public rtc::RefCountInterface {
++ public:
++    enum class Status { kOk, kRecoverable, kFailedToDecrypt, kUnknown };
++
++    struct Result {
++        Result(Status s, size_t b) : status(s), bytes_written(b) {}
++        bool IsOk() const { return status == Status::kOk; }
++        const Status status;
++        const size_t bytes_written;
++    };
++
++    ~FrameDecryptorInterface() override {}
++
++    virtual Result Decrypt(cricket::MediaType media_type,
++                           const std::vector<uint32_t>& csrcs,
++                           rtc::ArrayView<const uint8_t> additional_data,
++                           rtc::ArrayView<const uint8_t> encrypted_frame,
++                           rtc::ArrayView<uint8_t> frame) = 0;
++
++    virtual size_t GetMaxPlaintextByteSize(cricket::MediaType media_type,
++                                           size_t encrypted_frame_size) = 0;
++};
++
++// Forward declarations for the WebRTC native interfaces — we only ever
++// hold pointers, never call methods on them directly. SetFrameEncryptor /
++// SetFrameDecryptor is invoked by reading the private `_nativeRtpSender`
++// / `_nativeRtpReceiver` ivar from the Objective-C wrapper and casting.
++class RtpSenderInterface {
++ public:
++    virtual void SetFrameEncryptor(rtc::scoped_refptr<FrameEncryptorInterface> frame_encryptor) = 0;
++ protected:
++    virtual ~RtpSenderInterface() {}
++};
++
++class RtpReceiverInterface {
++ public:
++    virtual void SetFrameDecryptor(rtc::scoped_refptr<FrameDecryptorInterface> frame_decryptor) = 0;
++ protected:
++    virtual ~RtpReceiverInterface() {}
++};
++
++}  // namespace webrtc
++
++#endif  // SYLK_WEBRTC_COMPAT_H_
+diff --git a/node_modules/react-native-webrtc/react-native-webrtc.podspec b/node_modules/react-native-webrtc/react-native-webrtc.podspec
+index 51af1f0..4f8f7ea 100644
+--- a/node_modules/react-native-webrtc/react-native-webrtc.podspec
++++ b/node_modules/react-native-webrtc/react-native-webrtc.podspec
+@@ -15,7 +15,9 @@ Pod::Spec.new do |s|
+   s.platforms           = { :ios => '12.0', :osx => '10.13', :tvos => '16.0' }
+ 
+   s.preserve_paths      = 'ios/**/*'
+-  s.source_files        = 'ios/**/*.{h,m}'
++  # Add .mm so the Sylk ZRTP Obj-C++ bridge files (SylkZRTPBridge.mm,
++  # WebRTCModule+SylkZRTP.mm) are compiled into the static lib.
++  s.source_files        = 'ios/**/*.{h,m,mm}'
+   s.libraries           = 'c', 'sqlite3', 'stdc++'
+   s.framework           = 'AudioToolbox','AVFoundation', 'CoreAudio', 'CoreGraphics', 'CoreVideo', 'GLKit', 'VideoToolbox'
+   s.dependency          'React-Core'
+diff --git a/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts b/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
+index 228fce0..1c0a030 100644
+--- a/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
++++ b/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
+@@ -46,6 +46,30 @@ export default class RTCRtpReceiver {
+         );
+     }
+ 
++    /**
++     * Sylk ZRTP: install a FrameDecryptor on this receiver.
++     *
++     * - Zero-arg form: install a Phase 2 noop FrameDecryptor.
++     * - With (keyHex, saltHex, keyId): install the Phase 3 AES-128-GCM
++     *   FrameDecryptor. `keyHex` must be 32 hex chars (16 bytes), `saltHex`
++     *   must be 16 hex chars (8 bytes). `keyId` must match the peer's
++     *   encryptor.
++     */
++    async setMediaDecryption(keyHex?: string, saltHex?: string, keyId?: number, videoPrefix?: number): Promise<void> {
++        if (typeof keyHex === 'string' && typeof saltHex === 'string') {
++            await WebRTCModule.receiverInstallMediaDecryption(
++                this._peerConnectionId,
++                this._id,
++                keyHex,
++                saltHex,
++                keyId ?? 0,
++                videoPrefix ?? 3,
++            );
++            return;
++        }
++        await WebRTCModule.receiverInstallNoopDecryption(this._peerConnectionId, this._id);
++    }
++
+     getParameters(): RTCRtpReceiveParameters {
+         return this._rtpParameters;
+     }
+diff --git a/node_modules/react-native-webrtc/src/RTCRtpSender.ts b/node_modules/react-native-webrtc/src/RTCRtpSender.ts
+index 4366b32..2d0e6f9 100644
+--- a/node_modules/react-native-webrtc/src/RTCRtpSender.ts
++++ b/node_modules/react-native-webrtc/src/RTCRtpSender.ts
+@@ -54,6 +54,31 @@ export default class RTCRtpSender {
+         this._rtpParameters = new RTCRtpSendParameters(newParameters);
+     }
+ 
++    /**
++     * Sylk ZRTP: install a FrameEncryptor on this sender.
++     *
++     * - Zero-arg form: install a Phase 2 noop FrameEncryptor (frames pass
++     *   through unchanged). Used during the noop verification path.
++     * - With (keyHex, saltHex, keyId): install the Phase 3 AES-128-GCM
++     *   FrameEncryptor. `keyHex` must be 32 hex chars (16 bytes), `saltHex`
++     *   must be 16 hex chars (8 bytes). `keyId` is the 4-bit ID placed in
++     *   the per-frame header (must match the peer's decryptor).
++     */
++    async setMediaEncryption(keyHex?: string, saltHex?: string, keyId?: number, videoPrefix?: number): Promise<void> {
++        if (typeof keyHex === 'string' && typeof saltHex === 'string') {
++            await WebRTCModule.senderInstallMediaEncryption(
++                this._peerConnectionId,
++                this._id,
++                keyHex,
++                saltHex,
++                keyId ?? 0,
++                videoPrefix ?? 3,   // safe default if caller forgets
++            );
++            return;
++        }
++        await WebRTCModule.senderInstallNoopEncryption(this._peerConnectionId, this._id);
++    }
++
+     getStats() {
+         return WebRTCModule.senderGetStats(this._peerConnectionId, this._id).then(data =>
+             /* On both Android and iOS it is faster to construct a single

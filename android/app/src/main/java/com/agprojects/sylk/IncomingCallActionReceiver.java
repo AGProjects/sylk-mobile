@@ -7,6 +7,7 @@ import android.util.Log;
 import android.os.Bundle;
 
 import android.os.Build;
+import android.telecom.DisconnectCause;
 import androidx.core.app.NotificationManagerCompat;
 
 import com.facebook.react.ReactApplication;
@@ -21,7 +22,7 @@ import com.agprojects.sylk.ReactEventEmitter;
 
 public class IncomingCallActionReceiver extends BroadcastReceiver {
 
-    private static final String LOG_TAG = "[SYLK_ACT_RECEIVE]";
+    private static final String LOG_TAG = "SYLK_APP";
     
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -32,7 +33,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				Log.d(LOG_TAG, "  EXTRA: " + key + " = " + extras.get(key));
+				Log.d(LOG_TAG, "[CallAct]   EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 
@@ -45,16 +46,32 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
 		boolean phoneLocked = "true".equals(phoneLockedStr);
 		int notificationId = intent.getIntExtra("notification-id", -1);
+		// Fall back to a deterministic notification-id when none was supplied
+		// (e.g. when this broadcast came from SylkCallConnectionService after
+		// the user pressed Answer/Reject on a paired BT car kit). Matches the
+		// id IncomingCallService uses.
+		if (notificationId == -1 && callUUID != null) {
+			notificationId = Math.abs(callUUID.hashCode());
+		}
 
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
-            Log.d(LOG_TAG, "User action: " + action + " for call: " + callUUID);
+            Log.d(LOG_TAG, "[CallAct] User action: " + action + " for call: " + callUUID);
             //Log.d(LOG_TAG, "event " + event);
+
+            // Keep the Telecom/BT-HFP state in sync immediately so the car
+            // kit's display flips out of "ringing" the moment the user taps,
+            // without waiting for IncomingCallService cleanup to land.
+            if (action.startsWith("ACTION_ACCEPT")) {
+                SylkTelecom.setActive(callUUID);
+            } else {
+                SylkTelecom.endCall(callUUID, DisconnectCause.REJECTED);
+            }
 
             // Cancel notification immediately
             if (notificationId != -1) {
                 NotificationManagerCompat.from(context).cancel(notificationId);
-                Log.d(LOG_TAG, "Notification canceled immediately: " + notificationId);
+                Log.d(LOG_TAG, "[CallAct] Notification canceled immediately: " + notificationId);
             }
 
 			//Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
@@ -85,7 +102,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 }
             }
         } else {
-                Log.d(LOG_TAG, "Unknown action received: " + action);
+                Log.d(LOG_TAG, "[CallAct] Unknown action received: " + action);
         }
     }
 }

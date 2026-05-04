@@ -18,14 +18,14 @@ class ShareViewController: SLComposeServiceViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        NSLog("[sylk_app] viewDidLoad called")
-        NSLog("[sylk_app] Extension context: \(String(describing: self.extensionContext))")
-        NSLog("[sylk_app] Input items count: \(self.extensionContext?.inputItems.count ?? 0)")
+        NSLog("[SYLK_APP] [ShareExt] viewDidLoad called")
+        NSLog("[SYLK_APP] [ShareExt] Extension context: \(String(describing: self.extensionContext))")
+        NSLog("[SYLK_APP] [ShareExt] Input items count: \(self.extensionContext?.inputItems.count ?? 0)")
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        NSLog("[sylk_app] viewDidAppear called")
+        NSLog("[SYLK_APP] [ShareExt] viewDidAppear called")
         handleSharedContent()
     }
 
@@ -35,14 +35,14 @@ class ShareViewController: SLComposeServiceViewController {
     // MARK: - Handle shared content
     private func handleSharedContent() {
         guard let items = extensionContext?.inputItems as? [NSExtensionItem], !items.isEmpty else {
-            NSLog("[sylk_app] No input items found")
+            NSLog("[SYLK_APP] [ShareExt] No input items found")
             return
         }
 
         // Count total attachments for notification logic
         remainingFilesToProcess = items.compactMap { $0.attachments }.flatMap { $0 }.count
         didPostNotification = false
-        NSLog("[sylk_app] Total attachments to process: \(remainingFilesToProcess)")
+        NSLog("[SYLK_APP] [ShareExt] Total attachments to process: \(remainingFilesToProcess)")
 
         // Accepted types (skip HEIC)
         let preferredTypes = [
@@ -62,23 +62,23 @@ class ShareViewController: SLComposeServiceViewController {
             for provider in attachments {
 
                 guard let typeIdentifier = provider.registeredTypeIdentifiers.first(where: { preferredTypes.contains($0) }) else {
-                    NSLog("[sylk_app] Skipping unsupported type(s): \(provider.registeredTypeIdentifiers)")
+                    NSLog("[SYLK_APP] [ShareExt] Skipping unsupported type(s): \(provider.registeredTypeIdentifiers)")
                     fileProcessingCompleted()
                     continue
                 }
 
-                NSLog("[sylk_app] Selected type: \(typeIdentifier)")
+                NSLog("[SYLK_APP] [ShareExt] Selected type: \(typeIdentifier)")
 
                 provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { [weak self] data, error in
                     guard let self = self else { return }
 
                     if let error = error {
-                        NSLog("[sylk_app] Error loading item: \(error.localizedDescription)")
+                        NSLog("[SYLK_APP] [ShareExt] Error loading item: \(error.localizedDescription)")
                         self.fileProcessingCompleted()
                         return
                     }
 
-                    NSLog("[sylk_app] Loaded item of type: \(typeIdentifier)")
+                    NSLog("[SYLK_APP] [ShareExt] Loaded item of type: \(typeIdentifier)")
                     self.processLoadedItem(data: data, typeIdentifier: typeIdentifier)
                 }
             }
@@ -95,7 +95,7 @@ class ShareViewController: SLComposeServiceViewController {
 
             if let fileData = fileData {
                 saveSharedFile(fileData, fileName: fileName)
-                NSLog("[sylk_app] Saved web link: \(url.absoluteString)")
+                NSLog("[SYLK_APP] [ShareExt] Saved web link: \(url.absoluteString)")
             }
 
             fileProcessingCompleted()
@@ -108,7 +108,7 @@ class ShareViewController: SLComposeServiceViewController {
             let ext = url.pathExtension.lowercased()
 
             if ext == "heic" || ext == "heif" {
-                NSLog("[sylk_app] Skipping HEIC/HEIF file: \(url)")
+                NSLog("[SYLK_APP] [ShareExt] Skipping HEIC/HEIF file: \(url)")
                 fileProcessingCompleted()
                 return
             }
@@ -118,7 +118,7 @@ class ShareViewController: SLComposeServiceViewController {
             do {
                 try streamCopyItem(from: url, fileName: fileName)
             } catch {
-                NSLog("[sylk_app] Streaming copy failed: \(error)")
+                NSLog("[SYLK_APP] [ShareExt] Streaming copy failed: \(error)")
             }
 
             fileProcessingCompleted()
@@ -150,7 +150,7 @@ class ShareViewController: SLComposeServiceViewController {
     // MARK: - File saving
     private func saveSharedFile(_ data: Data, fileName: String) {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId) else {
-            NSLog("[sylk_app] Could not get App Group container")
+            NSLog("[SYLK_APP] [ShareExt] Could not get App Group container")
             return
         }
 
@@ -158,9 +158,9 @@ class ShareViewController: SLComposeServiceViewController {
 
         do {
             try data.write(to: fileURL)
-            NSLog("[sylk_app] Saved shared file to: \(fileURL.path)")
+            NSLog("[SYLK_APP] [ShareExt] Saved shared file to: \(fileURL.path)")
         } catch {
-            NSLog("[sylk_app] Failed to save shared file: \(error)")
+            NSLog("[SYLK_APP] [ShareExt] Failed to save shared file: \(error)")
         }
     }
 
@@ -213,13 +213,13 @@ class ShareViewController: SLComposeServiceViewController {
             }
         }
 
-        NSLog("[sylk_app] Streamed copy saved to: \(destinationURL.path)")
+        NSLog("[SYLK_APP] [ShareExt] Streamed copy saved to: \(destinationURL.path)")
     }
 
     // MARK: - Notification handling
     private func fileProcessingCompleted() {
         remainingFilesToProcess -= 1
-        NSLog("[sylk_app] Remaining files: \(remainingFilesToProcess)")
+        NSLog("[SYLK_APP] [ShareExt] Remaining files: \(remainingFilesToProcess)")
 
         if remainingFilesToProcess <= 0 && !didPostNotification {
             didPostNotification = true
@@ -249,9 +249,9 @@ class ShareViewController: SLComposeServiceViewController {
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                NSLog("[sylk_app] Failed to post wake-up notification: \(error)")
+                NSLog("[SYLK_APP] [ShareExt] Failed to post wake-up notification: \(error)")
             } else {
-                NSLog("[sylk_app] Wake-up notification posted")
+                NSLog("[SYLK_APP] [ShareExt] Wake-up notification posted")
             }
 
             self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
@@ -273,7 +273,7 @@ class ShareViewController: SLComposeServiceViewController {
     private func openHostApp() {
         let urlString = "sylk://share?source=extension"
         guard let url = URL(string: urlString) else {
-            NSLog("[sylk_app] Invalid URL: \(urlString)")
+            NSLog("[SYLK_APP] [ShareExt] Invalid URL: \(urlString)")
             return
         }
 

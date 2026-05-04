@@ -27,7 +27,7 @@ RCT_EXPORT_METHOD(emitCachedAPNSToken)
 {
   dispatch_async(dispatch_get_main_queue(), ^{
     AppDelegate *app = (AppDelegate *)[UIApplication sharedApplication].delegate;
-    NSLog(@"[APNSTokenModule] emitCachedAPNSToken called, cached token = %@", app.cachedAPNSToken ?: @"<nil>");
+    NSLog(@"[SYLK_APP] [APNS] emitCachedAPNSToken called, cached token = %@", app.cachedAPNSToken ?: @"<nil>");
 
     if (app.cachedAPNSToken) {
         [self sendEventWithName:@"apnsToken" body:app.cachedAPNSToken];

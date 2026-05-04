@@ -1,0 +1,99 @@
+diff --git a/node_modules/@react-native-community/cli-platform-ios/build/commands/runIOS/index.js b/node_modules/@react-native-community/cli-platform-ios/build/commands/runIOS/index.js
+--- a/node_modules/@react-native-community/cli-platform-ios/build/commands/runIOS/index.js
++++ b/node_modules/@react-native-community/cli-platform-ios/build/commands/runIOS/index.js
+@@ -249,12 +249,15 @@
+   if (args.binaryPath && selectedDevice.type === 'catalyst') {
+     throw new (_cliTools().CLIError)('binary-path was specified for catalyst device, which is not supported.');
+   }
+-  const isIOSDeployInstalled = _child_process().default.spawnSync('ios-deploy', ['--version'], {
+-    encoding: 'utf8'
+-  });
+-  if (isIOSDeployInstalled.error) {
+-    throw new (_cliTools().CLIError)(`Failed to install the app on the device because we couldn't execute the "ios-deploy" command. Please install it by running "${_chalk().default.bold('brew install ios-deploy')}" and try again.`);
+-  }
++  // PATCHED: install + launch via Apple's modern `xcrun devicectl`
++  // instead of the legacy `ios-deploy`. ios-deploy can still INSTALL
++  // on iOS 17+ but cannot LAUNCH because Apple replaced the
++  // DeveloperDiskImage.dmg model with on-device Developer Mode +
++  // devicectl. Symptom on RN 0.73 + iOS 17/18/26: build succeeds,
++  // ios-deploy bails with `Unable to locate DeveloperDisk…`, the app
++  // doesn't appear, and run-ios exits with `Successfully built the
++  // app` and no install/launch lines. devicectl is what Xcode itself
++  // uses; works on iOS 17 / 18 / 26. Requires Xcode 15+.
+   if (selectedDevice.type === 'catalyst') {
+     const buildOutput = await (0, _buildProject.buildProject)(xcodeProject, selectedDevice.udid, mode, scheme, args);
+     const appPath = await getBuildPath(xcodeProject, mode, buildOutput, scheme, args.target, true);
+@@ -271,16 +274,47 @@
+     } else {
+       appPath = args.binaryPath;
+     }
+-    const iosDeployInstallArgs = ['--bundle', appPath, '--id', selectedDevice.udid, '--justlaunch'];
+-    _cliTools().logger.info(`Installing and launching your app on ${selectedDevice.name}`);
+-    const iosDeployOutput = _child_process().default.spawnSync('ios-deploy', iosDeployInstallArgs, {
++    // ── Install via devicectl ──
++    // We CAPTURE stdout/stderr (encoding: 'utf8', no `stdio: 'inherit'`)
++    // and log them through the same logger that prints other run-ios
++    // info lines. `stdio: 'inherit'` was originally cleaner, but inside
++    // the child process Metro spawns via execa() the inherited stdio
++    // is non-TTY and devicectl was either buffering or stalling — the
++    // observed symptom was: build finishes, "Successfully built the
++    // app" prints, then complete silence for minutes. Capturing
++    // explicitly fixes that and gives us full visibility into the
++    // install/launch progress.
++    _cliTools().logger.info(`Installing your app on ${selectedDevice.name}`);
++    const installResult = _child_process().default.spawnSync('xcrun', ['devicectl', 'device', 'install', 'app', '--device', selectedDevice.udid, appPath], {
++      encoding: 'utf8'
++    });
++    if (installResult.stdout) _cliTools().logger.info(installResult.stdout.trim());
++    if (installResult.stderr) _cliTools().logger.info(installResult.stderr.trim());
++    if (installResult.status !== 0) {
++      throw new (_cliTools().CLIError)(`Failed to install the app on the device via "xcrun devicectl" (exit ${installResult.status}). Make sure Xcode 15+ is installed, the device is unlocked, and Developer Mode is enabled (Settings → Privacy & Security → Developer Mode).`);
++    }
++    // ── Read CFBundleIdentifier from the built .app's Info.plist ──
++    // We need the bundle id to ask devicectl to launch the app — the
++    // .app path alone isn't enough.
++    const bundleIdResult = _child_process().default.spawnSync('plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', `${appPath}/Info.plist`], {
++      encoding: 'utf8'
++    });
++    const bundleId = (bundleIdResult.stdout || '').trim();
++    if (!bundleId) {
++      throw new (_cliTools().CLIError)(`Failed to read CFBundleIdentifier from ${appPath}/Info.plist`);
++    }
++    // ── Launch via devicectl ──
++    _cliTools().logger.info(`Launching ${bundleId} on ${selectedDevice.name}`);
++    const launchResult = _child_process().default.spawnSync('xcrun', ['devicectl', 'device', 'process', 'launch', '--device', selectedDevice.udid, bundleId], {
+       encoding: 'utf8'
+     });
+-    if (iosDeployOutput.error) {
+-      throw new (_cliTools().CLIError)(`Failed to install the app on the device. We've encountered an error in "ios-deploy" command: ${iosDeployOutput.error.message}`);
++    if (launchResult.stdout) _cliTools().logger.info(launchResult.stdout.trim());
++    if (launchResult.stderr) _cliTools().logger.info(launchResult.stderr.trim());
++    if (launchResult.status !== 0) {
++      throw new (_cliTools().CLIError)(`Failed to launch the app on the device via "xcrun devicectl" (exit ${launchResult.status}).`);
+     }
+   }
+-  return _cliTools().logger.success('Installed the app on the device.');
++  return _cliTools().logger.success('Installed and launched the app on the device.');
+ }
+ function bootSimulator(selectedSimulator) {
+   const simulatorFullName = formattedDeviceName(selectedSimulator);
+@@ -292,7 +326,18 @@
+   const targets = settings.map(({
+     target: settingsTarget
+   }) => settingsTarget);
+-  let selectedTarget = targets[0];
++  // PATCHED: pick the first target whose WRAPPER_EXTENSION === 'app'
++  // by default rather than blindly trusting targets[0]. With recent
++  // CocoaPods + RN setups the first target in `xcodebuild
++  // -showBuildSettings -json` output is often a Pods static library
++  // like `React` (WRAPPER_EXTENSION = undefined), which made the
++  // upstream code throw `Failed to get the target build directory.`
++  // and silently kill `run-ios` after `Successfully built the app`.
++  // The user-facing symptom: build succeeds, no install/launch lines,
++  // app never appears. By searching for the actual app target we
++  // recover automatically without requiring `--target`.
++  const appTargetIndex = settings.findIndex(s => s.buildSettings.WRAPPER_EXTENSION === 'app');
++  let selectedTarget = appTargetIndex >= 0 ? targets[appTargetIndex] : targets[0];
+   if (target) {
+     if (!targets.includes(target)) {
+       _cliTools().logger.info(`Target ${_chalk().default.bold(target)} not found for scheme ${_chalk().default.bold(scheme)}, automatically selected target ${_chalk().default.bold(selectedTarget)}`);

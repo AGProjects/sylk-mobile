@@ -1,0 +1,5 @@
+Added support for RFC6189
+Fix location sharing bugs
+Added preferences panel
+Added speedometers to calls
+Bug fixes

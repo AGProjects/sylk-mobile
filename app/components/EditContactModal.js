@@ -51,7 +51,10 @@ const EditContactModal = ({
   toggleReadReceipts,
   storageUsage,
   deleteAccountUrl,
-  openDeleteAccount
+  openDeleteAccount,
+  preferredVideoCodec,
+  setPreferredVideoCodec,
+  encryptionMode,
 }) => {
   const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
@@ -61,6 +64,14 @@ const EditContactModal = ({
   const [tags, setTags] = useState([]);
   const [tagsText, setTagsText] = useState('');
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  // Per-contact encryption mode override.
+  // null  → follow the device default (set in Preferences → Encryption)
+  // 'sdes' / 'zrtp_optional' / 'zrtp_mandatory' → override for this
+  // contact regardless of the device default
+  const [contactEncryption, setContactEncryption] = useState(
+    (selectedContact && selectedContact.localProperties
+      && selectedContact.localProperties.encryptionMode) || null
+  );
 
   // Reset all form fields whenever modal opens or props change
   useEffect(() => {
@@ -74,8 +85,12 @@ const EditContactModal = ({
       initialTags = [...new Set(initialTags.map(t => t.trim().toLowerCase()))];
       setTags(initialTags);
       setTagsText(initialTags.join(', '));
+      setContactEncryption(
+        (selectedContact && selectedContact.localProperties
+          && selectedContact.localProperties.encryptionMode) || null
+      );
     }
-  }, [show, propUri, propDisplayName, propOrg, propEmail]);
+  }, [show, propUri, propDisplayName, propOrg, propEmail, selectedContact]);
 
 	useEffect(() => {
 	  setTagsText(tags.join(', '));
@@ -123,7 +138,11 @@ const getTotalPrettyStorage = (entity) => {
       displayName: displayName.trim(),
       organization: organization.trim(),
       email: email.toLowerCase(),
-      tags
+      tags,
+      // Per-contact encryption-mode override. null → clear the
+      // override (revert to device default). saveContactByUser merges
+      // localProperties and treats null/undefined as "delete this key".
+      localProperties: { encryptionMode: contactEncryption || null },
     };
     saveContactByUser(contact, selectedContact);
     close();
@@ -463,6 +482,71 @@ const getTotalPrettyStorage = (entity) => {
                         <Text> Read receipts</Text>
                       </View>
                     )}
+
+                    {/* Video codec preference is device-wide (set in
+                        Preferences → Video Codecs). No per-contact
+                        override — every outgoing call uses the same
+                        codec on this phone. */}
+
+                    {/* Per-contact encryption mode override. The first
+                        button shows the current device default and is
+                        rendered grayed-out; tapping it clears any
+                        override. The remaining buttons are the modes
+                        that AREN'T already the device default
+                        (otherwise the default button is the same as a
+                        regular button — redundant). Mirrors the old
+                        per-contact codec UI. */}
+                    {!myself && selectedContact && (() => {
+                      const deviceDefault = encryptionMode || 'zrtp_optional';
+                      // Only zRTP modes are exposed; SRTP/DTLS is the
+                      // always-on transport-layer fallback.
+                      const ENC_OPTIONS = [
+                        { value: 'zrtp_optional',  label: 'zRTP optional' },
+                        { value: 'zrtp_mandatory', label: 'zRTP mandatory' },
+                      ];
+                      const defaultLabel = (
+                        ENC_OPTIONS.find(o => o.value === deviceDefault) || {}
+                      ).label || deviceDefault;
+                      const others = ENC_OPTIONS.filter(o => o.value !== deviceDefault);
+                      // Stored override that matches the device default
+                      // is functionally equivalent to no override.
+                      const usingDefault = contactEncryption == null
+                          || contactEncryption === deviceDefault;
+                      return (
+                        <View style={{ marginTop: 8, marginBottom: 8 }}>
+                          <Text style={{ fontSize: 12, fontWeight: '600', marginBottom: 4 }}>
+                            Encryption for this contact
+                          </Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                            <Button
+                              key="default"
+                              mode={usingDefault ? 'contained' : 'outlined'}
+                              compact
+                              disabled={usingDefault}
+                              style={{ marginRight: 6, marginBottom: 4, opacity: 0.7 }}
+                              labelStyle={{ color: '#888' }}
+                              onPress={() => setContactEncryption(null)}
+                            >
+                              {`Default (${defaultLabel})`}
+                            </Button>
+                            {others.map(opt => {
+                              const selected = contactEncryption === opt.value;
+                              return (
+                                <Button
+                                  key={opt.value}
+                                  mode={selected ? 'contained' : 'outlined'}
+                                  compact
+                                  style={{ marginRight: 6, marginBottom: 4 }}
+                                  onPress={() => setContactEncryption(opt.value)}
+                                >
+                                  {opt.label}
+                                </Button>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      );
+                    })()}
 
                     <View style={styles.buttonRow}>
                       {/* Matches the DeleteHistoryModal / DeleteFileTransfers

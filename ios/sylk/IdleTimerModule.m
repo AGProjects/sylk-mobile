@@ -9,7 +9,7 @@ RCT_EXPORT_METHOD(setIdleTimerDisabled:(BOOL)disabled)
 {
   dispatch_async(dispatch_get_main_queue(), ^{
     [UIApplication sharedApplication].idleTimerDisabled = disabled;
-    NSLog(@"[sylk_app] idleTimerDisabled = %@", disabled ? @"YES" : @"NO");
+    NSLog(@"[SYLK_APP] [Idle] idleTimerDisabled = %@", disabled ? @"YES" : @"NO");
   });
 }
 

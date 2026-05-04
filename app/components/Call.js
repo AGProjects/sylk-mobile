@@ -10,6 +10,7 @@ import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
 import utils from '../utils';
+import { startZrtpForCall } from './CallZrtp';
 
 // import {
 //   ConnectionStateChangedEvent,
@@ -102,7 +103,7 @@ class Call extends Component {
                       selectedAudioDevice: this.props.selectedAudioDevice,
                       iceServers: this.props.iceServers,
                       insets: this.props.insets,
-                      isLandscape: this.props.isLandscape
+                      isLandscape: this.props.isLandscape,
                       }
     }
 
@@ -324,6 +325,21 @@ class Call extends Component {
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
             const currentCall = this.state.call;
+
+            // ZRTP simulation: caller-side kick-off. Only the outgoing leg
+            // sends the probe; the callee waits for it and replies inside
+            // dispatchIncomingE2EE (driven from app.js's Account dispatch).
+            // Transport is account.sendMessage so the message rides the
+            // standard PGP-chat path; recipient-side filtering by call_id
+            // ensures only the device in the call acts on it.
+            // Silent no-op if the contact has no PGP public key cached.
+            if (this.state.direction === 'outgoing' && this.props.callContact && this.props.myKeys && this.props.account) {
+                try {
+                    startZrtpForCall(currentCall, this.props.account, this.props.callContact, this.props.myKeys);
+                } catch (e) {
+                    utils.timestampedLog('[ZRTP] startZrtpForCall threw:', e);
+                }
+            }
 
             if (currentCall) {
                 remoteStreams = currentCall.getRemoteStreams();
@@ -589,10 +605,23 @@ class Call extends Component {
                         selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
+                        markZrtpVerified = {this.props.markZrtpVerified}
+                        shareLocationFromCall = {this.props.shareLocationFromCall}
+                        requestLocationFromCall = {this.props.requestLocationFromCall}
 					/>
                 );
             } else {
-                if (this.state.call !== null && (this.state.call.state === 'established' || (this.state.call.state === 'terminated' && this.state.reconnectingCall))) {
+                if (this.state.call !== null && (
+                        this.state.call.state === 'established'
+                        || (this.state.call.state === 'terminated' && this.state.reconnectingCall)
+                        // Skip the LocalMedia preview flash on incoming
+                        // video. Render VideoBox immediately; it triggers
+                        // mediaPlaying() in componentDidMount the same way
+                        // AudioCallBox does for incoming audio, and falls
+                        // back to props.localMedia for the local-stream
+                        // ref until the SDP answer attaches the sender.
+                        || this.state.direction === 'incoming'
+                    )) {
 
                     box = (
                         <VideoBox
@@ -601,6 +630,7 @@ class Call extends Component {
                             photo = {this.state.photo}
                             hangupCall = {this.hangupCall}
                             call = {this.state.call}
+                            markZrtpVerified = {this.props.markZrtpVerified}
                             accountId={this.state.accountId}
                             connection = {this.state.connection}
                             localMedia = {this.state.localMedia}
@@ -643,6 +673,8 @@ class Call extends Component {
 							insets = {this.state.insets}
 							enableFullScreen = {this.props.enableFullScreen}
 							disableFullScreen = {this.props.disableFullScreen}
+                            shareLocationFromCall = {this.props.shareLocationFromCall}
+                            requestLocationFromCall = {this.props.requestLocationFromCall}
 						/>
                     );
                 } else {
@@ -710,6 +742,9 @@ class Call extends Component {
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
 					insets = {this.state.insets}
+                    markZrtpVerified = {this.props.markZrtpVerified}
+                    shareLocationFromCall = {this.props.shareLocationFromCall}
+                    requestLocationFromCall = {this.props.requestLocationFromCall}
 				/>
             );
         }

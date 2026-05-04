@@ -66,5 +66,10 @@ class MainApplication : Application(), ReactApplication {
       load()
     }
     ReactNativeFlipper.initializeFlipper(this, reactNativeHost.reactInstanceManager)
+
+    // Eagerly register our self-managed PhoneAccount so the Telecom framework
+    // already knows about it the moment the first FCM push arrives. Idempotent
+    // and a no-op on Android < O.
+    SylkTelecom.register(this)
   }
 }

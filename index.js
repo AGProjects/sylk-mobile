@@ -3,6 +3,10 @@
  */
 
 import { AppRegistry } from 'react-native';
+import debug from 'debug';
+// Silence the per-second rn-webrtc:pc:DEBUG getStats spam at the source.
+// Set to 'rn-webrtc:*,-rn-webrtc:pc:DEBUG' if you want other rn-webrtc namespaces.
+debug.disable('rn-webrtc:*');
 import App from './app/app';
 import { name as appName } from './app.json';
 import './firebase-messaging'

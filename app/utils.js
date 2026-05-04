@@ -44,7 +44,14 @@ function log2file(text) {
     // and previously we only console.logged after its promise resolved —
     // which is why Metro showed `Registration state changed:` and similar
     // messages out of order relative to surrounding console.log lines.
-    console.log(text);
+    //
+    // The `[APPLOG]` tag is added ONLY to the console line so devs can
+    // grep Metro output (and metro.log via logs.sh) for everything that
+    // ended up in the on-device log file. The file itself, the in-app
+    // Show Logs viewer, the clipboard copy, and the support-email
+    // attachment all see the clean, untagged text — `[APPLOG]` is a
+    // dev-tooling marker, not user-facing content.
+    console.log('[APPLOG] ' + text);
 
     RNFS.appendFile(logfile, text + '\r\n', 'utf8')
       .catch((err) => {
@@ -91,6 +98,11 @@ function timestampedLog() {
     ':' +
     appendLeadingZeroes(current_datetime.getSeconds());
 
+  // The `[APPLOG]` tag for grep-from-Metro lives in `log2file`'s
+  // console.log only — see the comment there. The file/viewer payload
+  // we build here is just `<timestamp> <message>` so it's
+  // human-readable in the in-app Show Logs viewer and in the support
+  // email attachment.
   let message = formatted_date;
 
   for (let i = 0; i < arguments.length; i++) {
@@ -1228,7 +1240,7 @@ function deepEqual(a, b) {
 }
 
 const availableAudioDevicesIconsMap = {
-	BUILTIN_EARPIECE: 'phone',
+	BUILTIN_EARPIECE: 'phone-in-talk',
 	WIRED_HEADSET: 'headphones',
 	USB_HEADSET: 'usb',
 	BLUETOOTH_SCO: 'bluetooth-audio',

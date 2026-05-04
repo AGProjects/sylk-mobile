@@ -40,10 +40,10 @@ RCT_EXPORT_METHOD(setActiveChat:(NSString *)jid)
 {
     if (jid != nil && [jid length] > 0) {
         activeChatJID = [jid copy];
-        NSLog(@"[SharedDataModule] Active chat set to %@", activeChatJID);
+        NSLog(@"[SYLK_APP] [SharedData] Active chat set to %@", activeChatJID);
     } else {
         activeChatJID = nil;
-        NSLog(@"[SharedDataModule] Active chat cleared");
+        NSLog(@"[SYLK_APP] [SharedData] Active chat cleared");
     }
 }
 

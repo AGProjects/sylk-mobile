@@ -35,7 +35,7 @@ public class ThumbnailService extends IntentService {
     public static final String EXTRA_RESULT_PATH  = "resultPath";
     public static final String EXTRA_RESULT_ERROR = "errorMessage";
 
-    private static final String TAG = "ThumbnailService";
+    private static final String TAG = "SYLK_APP";
 
     public ThumbnailService() {
         super("ThumbnailService");
@@ -78,7 +78,7 @@ public class ThumbnailService extends IntentService {
             resultPath = "file://" + out.getAbsolutePath();
 
         } catch (Throwable t) {
-            Log.e(TAG, "Extraction failed for " + uri, t);
+            Log.e(TAG, "[Thumbs] Extraction failed for " + uri, t);
             errorMessage = t.getClass().getSimpleName() + ": " + t.getMessage();
         }
 

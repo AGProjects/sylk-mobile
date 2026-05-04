@@ -87,7 +87,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     private Runnable periodicRunnable = null;
     private int periodicIntervalMs = 0; // 0 = disabled
     private BluetoothScoManager scoManager;
-    private static final String TAG = "SYLK";
+    private static final String TAG = "SYLK_APP";
     private final AudioManager audioManager;
     private int origAudioMode = AudioManager.MODE_INVALID;
     private boolean started = false;
@@ -138,12 +138,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         instance = this;
         registerReceivers();
         reactContext.addLifecycleEventListener(this);
-        Log.d(TAG, "AudioRouteModule init");
+        Log.d(TAG, "[Audio] AudioRouteModule init");
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             startCommunicationDeviceListener();
         } else {
-            Log.d(TAG, "Communication device listener not supported on this Android version");
+            Log.d(TAG, "[Audio] Communication device listener not supported on this Android version");
         }
     }
 
@@ -170,7 +170,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     private void startFoldObserver() {
         Activity activity = getCurrentActivity();
         if (activity == null) {
-            Log.d(TAG, "[FoldDiag] startFoldObserver: no activity yet");
+            Log.d(TAG, "[Audio] [FoldDiag] startFoldObserver: no activity yet");
             return;
         }
         if (windowInfoTracker != null && foldObservedActivity == activity) {
@@ -214,7 +214,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             ? foldObservedActivity.getWindowManager().getDefaultDisplay()
                             : null;
 
-                    Log.d(TAG, "[FoldDiag] layout"
+                    Log.d(TAG, "[Audio] [FoldDiag] layout"
                             + " state=" + state
                             + " orientation=" + orientation
                             + " occlusion=" + occlusion
@@ -227,10 +227,10 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             };
 
             windowInfoTracker.addWindowLayoutInfoListener(activity, mainExecutor, foldStateCallback);
-            Log.d(TAG, "[FoldDiag] observer started for activity=" + activity.getClass().getSimpleName());
+            Log.d(TAG, "[Audio] [FoldDiag] observer started for activity=" + activity.getClass().getSimpleName());
         } catch (Throwable t) {
             // Safety net: don't let a Jetpack/WindowManager issue crash the audio module.
-            Log.e(TAG, "[FoldDiag] failed to start fold observer", t);
+            Log.e(TAG, "[Audio] [FoldDiag] failed to start fold observer", t);
             windowInfoTracker = null;
             foldObservedActivity = null;
         }
@@ -241,7 +241,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             try {
                 windowInfoTracker.removeWindowLayoutInfoListener(foldStateCallback);
             } catch (Throwable t) {
-                Log.w(TAG, "[FoldDiag] error removing listener: " + t.getMessage());
+                Log.w(TAG, "[Audio] [FoldDiag] error removing listener: " + t.getMessage());
             }
         }
         windowInfoTracker = null;
@@ -269,7 +269,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 sensorManager = (SensorManager) reactContext.getSystemService(Context.SENSOR_SERVICE);
             }
             if (sensorManager == null) {
-                Log.w(TAG, "[FoldDiag] no SensorManager available");
+                Log.w(TAG, "[Audio] [FoldDiag] no SensorManager available");
                 return;
             }
 
@@ -277,13 +277,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             // returns null on devices without the sensor, so no SDK_INT guard needed
             // beyond a simple try/catch on older runtime classes.
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                Log.d(TAG, "[FoldDiag] hinge sensor not supported on this Android version");
+                Log.d(TAG, "[Audio] [FoldDiag] hinge sensor not supported on this Android version");
                 return;
             }
 
             hingeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE);
             if (hingeSensor == null) {
-                Log.d(TAG, "[FoldDiag] no TYPE_HINGE_ANGLE sensor on this device");
+                Log.d(TAG, "[Audio] [FoldDiag] no TYPE_HINGE_ANGLE sensor on this device");
                 return;
             }
 
@@ -307,18 +307,18 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
                 @Override
                 public void onAccuracyChanged(Sensor sensor, int accuracy) {
-                    Log.d(TAG, "[FoldDiag] hinge accuracy=" + accuracy);
+                    Log.d(TAG, "[Audio] [FoldDiag] hinge accuracy=" + accuracy);
                 }
             };
 
             boolean registered = sensorManager.registerListener(
                     hingeListener, hingeSensor, SensorManager.SENSOR_DELAY_NORMAL);
-            Log.d(TAG, "[FoldDiag] hinge sensor registered=" + registered
+            Log.d(TAG, "[Audio] [FoldDiag] hinge sensor registered=" + registered
                     + " name=" + hingeSensor.getName()
                     + " vendor=" + hingeSensor.getVendor()
                     + " maxRange=" + hingeSensor.getMaximumRange());
         } catch (Throwable t) {
-            Log.e(TAG, "[FoldDiag] failed to start hinge sensor", t);
+            Log.e(TAG, "[Audio] [FoldDiag] failed to start hinge sensor", t);
             hingeListener = null;
             hingeSensor = null;
         }
@@ -330,7 +330,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 sensorManager.unregisterListener(hingeListener);
             }
         } catch (Throwable t) {
-            Log.w(TAG, "[FoldDiag] error unregistering hinge listener: " + t.getMessage());
+            Log.w(TAG, "[Audio] [FoldDiag] error unregistering hinge listener: " + t.getMessage());
         }
         hingeListener = null;
         hingeSensor = null;
@@ -362,7 +362,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         boolean isFolded = computeIsFolded();
         if (isFolded == lastIsFolded) return;
         lastIsFolded = isFolded;
-        Log.d(TAG, "[FoldDiag] isFolded -> " + isFolded
+        Log.d(TAG, "[Audio] [FoldDiag] isFolded -> " + isFolded
                 + " (hinge=" + (Float.isNaN(lastHingeAngle) ? "NA" : lastHingeAngle)
                 + " fold=" + lastFoldState + "/" + lastFoldOrientation + ")");
         sendReactNativeEvent();
@@ -373,6 +373,22 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         return "AudioRouteModule";
     }
 
+    // Required by RN's NativeEventEmitter so it can call into the module
+    // to track listener counts. Without these, the JS side prints
+    //   `new NativeEventEmitter()` was called with a non-null argument
+    //   without the required `addListener` / `removeListeners` method
+    // on every boot. We don't track counts here (events fire regardless),
+    // so the implementations are intentional no-ops.
+    @ReactMethod
+    public void addListener(String eventName) {
+        // no-op
+    }
+
+    @ReactMethod
+    public void removeListeners(double count) {
+        // no-op
+    }
+
     public static void routeToBluetooth() {
         if (instance != null) {
             //
@@ -381,7 +397,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     public static void onHeadsetEvent() {
         if (instance != null) {
-            Log.d(TAG, "Static onHeadsetEvent() invoked");
+            Log.d(TAG, "[Audio] Static onHeadsetEvent() invoked");
             instance.sendReactNativeEvent();
         }
     }
@@ -398,7 +414,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
 	private void acquireAudioFocus() {
 		audioFocusListener = focusChange -> {
-			Log.d(TAG, "AudioFocus change: " + focusChange);
+			Log.d(TAG, "[Audio] AudioFocus change: " + focusChange);
 		};
 	
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -431,7 +447,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 String typeName = getDeviceTypeName(deviceInfo.getType());
                 int deviceId = deviceInfo.getId();
             
-                Log.d(TAG, "Communication device changed to " + deviceId + " " + deviceName + " " + typeName);
+                Log.d(TAG, "[Audio] Communication device changed to " + deviceId + " " + deviceName + " " + typeName);
             
                 sendReactNativeEvent();
             }
@@ -488,12 +504,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                         if (profileState == lastHeadsetProfileState) return;
                         lastHeadsetProfileState = profileState;
                     
-                        Log.d(TAG, "BT profile state=" + headsetProfileStateToString(profileState));
-                                        
+                        Log.d(TAG, "[Audio] BT profile state=" + headsetProfileStateToString(profileState));
+
                         // Notify JS so the device list updates on all Android versions.
                         // Auto-route to BT only on API 31+ (uses getAvailableCommunicationDevices).
                         if (profileState == BluetoothProfile.STATE_CONNECTED) {
-                            Log.d(TAG, "BT headset connected");
+                            Log.d(TAG, "[Audio] BT headset connected");
                             sendReactNativeEvent(); // update device list on old Android
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 handler.postDelayed(() -> {
@@ -505,7 +521,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                                             btDevice.put("name", device.getProductName() != null
                                                     ? device.getProductName().toString() : "UNKNOWN");
                                             btDevice.put("type", "BLUETOOTH_SCO");
-                                            Log.d(TAG, "Auto routing to BLUETOOTH");
+                                            Log.d(TAG, "[Audio] Auto routing to BLUETOOTH");
                                             switchAudioRoute(btDevice);
                                             break;
                                         }
@@ -534,7 +550,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
                         if (scoState == lastScoState) return;
 
-                        Log.d(TAG, "BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
+                        Log.d(TAG, "[Audio] BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
 
                         int prevScoState = lastScoState;
                         lastScoState = scoState; // UPDATE THE MODULE FIELD
@@ -551,7 +567,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     }
 
                     case AudioManager.ACTION_AUDIO_BECOMING_NOISY:
-                        Log.d(TAG, "ACTION_HEADSET_PLUG event");
+                        Log.d(TAG, "[Audio] ACTION_HEADSET_PLUG event");
                         sendReactNativeEvent();
                         break;
     
@@ -562,25 +578,25 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                             handler.postDelayed(() -> {
                                 List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
-                                Log.d(TAG, "HEADSET plugged event");
+                                Log.d(TAG, "[Audio] HEADSET plugged event");
                                 for (AudioDeviceInfo device : devices) {
                                     if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
                                         Map<String, String> wiredDevice = new HashMap<>();
                                         wiredDevice.put("id", String.valueOf(device.getId()));
                                         wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
                                         wiredDevice.put("type", "WIRED_HEADSET");
-                                        Log.d(TAG, "Auto route to wired headset");
+                                        Log.d(TAG, "[Audio] Auto route to wired headset");
                                         switchAudioRoute(wiredDevice);
                                     } else if (device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
                                         Map<String, String> wiredDevice = new HashMap<>();
                                         wiredDevice.put("id", String.valueOf(device.getId()));
                                         wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
                                         wiredDevice.put("type", "USB_HEADSET");
-                                        Log.d(TAG, "Auto route to USB headset");
+                                        Log.d(TAG, "[Audio] Auto route to USB headset");
                                         switchAudioRoute(wiredDevice);
                                     } else {
                                         String typeName = getDeviceTypeName(device.getType());
-                                        Log.d(TAG, "Audio device: " + device.getId() + " Type: " + device.getType() + " " + typeName);
+                                        Log.d(TAG, "[Audio] Audio device: " + device.getId() + " Type: " + device.getType() + " " + typeName);
                                     }
                                 }
                             }, 50);
@@ -641,16 +657,16 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         if (started) return;
         started = true;
     
-        Log.d(TAG, "AudioRouteModule start");
-    
+        Log.d(TAG, "[Audio] AudioRouteModule start");
+
         try {
             // Capture original audio state
             origAudioMode = audioManager.getMode();
-            Log.d(TAG, "Original audio mode: " + getAudioModeDescription(origAudioMode));
-    
+            Log.d(TAG, "[Audio] Original audio mode: " + getAudioModeDescription(origAudioMode));
+
             // Set communication mode
             audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-            Log.d(TAG, "Audio mode switched to: IN_COMMUNICATION");
+            Log.d(TAG, "[Audio] Audio mode switched to: IN_COMMUNICATION");
 
 			acquireAudioFocus();
 
@@ -667,7 +683,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                         for (AudioDeviceInfo device : devices) {
                             int deviceType = device.getType();
                             if (deviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                                Log.d(TAG, "auto route to BLUETOOTH_SCO");
+                                Log.d(TAG, "[Audio] auto route to BLUETOOTH_SCO");
                                 Map<String, String> btDevice = new HashMap<>();
                                 btDevice.put("id", String.valueOf(device.getId()));
                                 btDevice.put("name", device.getProductName() != null
@@ -678,7 +694,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             }
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "Error routing to BT device on headset connect", e);
+                        Log.e(TAG, "[Audio] Error routing to BT device on headset connect", e);
                     }
                 });
 
@@ -688,7 +704,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 scoManager.setScoConnectedListener(() -> {
                     try {
                         if (pendingBtDevice != null) {
-                            Log.d(TAG, "SCO connected — applying pending BT route: " + pendingBtDevice);
+                            Log.d(TAG, "[Audio] SCO connected — applying pending BT route: " + pendingBtDevice);
                             Map<String, String> device = pendingBtDevice;
                             pendingBtDevice = null;
                             // Re-look up the device by type in case id changed
@@ -697,7 +713,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             for (AudioDeviceInfo d : devices) {
                                 if (getDeviceTypeName(d.getType()).equals(targetType)) {
                                     boolean result = audioManager.setCommunicationDevice(d);
-                                    Log.d(TAG, "Pending BT setCommunicationDevice result=" + result
+                                    Log.d(TAG, "[Audio] Pending BT setCommunicationDevice result=" + result
                                         + " device=" + d.getId() + " " + d.getProductName());
                                     sendReactNativeEvent();
                                     break;
@@ -708,7 +724,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             sendReactNativeEvent();
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "Error applying pending BT route on SCO connected", e);
+                        Log.e(TAG, "[Audio] Error applying pending BT route on SCO connected", e);
                     }
                 });
             }
@@ -731,21 +747,21 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     try {
                         device.put(key, deviceMap.getString(key));
                     } catch (Exception e) {
-                        Log.w(TAG, "Skipping non-string value for key: " + key, e);
+                        Log.w(TAG, "[Audio] Skipping non-string value for key: " + key, e);
                     }
                 }
-                Log.d(TAG, "Starting with device: " + device.toString());
-    
+                Log.d(TAG, "[Audio] Starting with device: " + device.toString());
+
                 boolean switched = switchAudioRoute(device);
                 if (!switched) {
-                    Log.w(TAG, "Failed to switch audio route to " + device.get("type"));
+                    Log.w(TAG, "[Audio] Failed to switch audio route to " + device.get("type"));
                 }
             }
     
             promise.resolve(true);
     
         } catch (Exception e) {
-            Log.e(TAG, "Error starting audio route", e);
+            Log.e(TAG, "[Audio] Error starting audio route", e);
             promise.reject("ERROR", e);
         }
     }
@@ -830,11 +846,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         if (!started) return;    
         started = false;
 
-        Log.d(TAG, "AudioRouteModule stop");
+        Log.d(TAG, "[Audio] AudioRouteModule stop");
 
         pendingBtDevice = null;
         audioManager.setMode(origAudioMode);
-        Log.d(TAG, "Audio mode restored to original " + getAudioModeDescription(origAudioMode));
+        Log.d(TAG, "[Audio] Audio mode restored to original " + getAudioModeDescription(origAudioMode));
 
         try {
             if (scoManager != null) {
@@ -845,7 +861,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             }
             promise.resolve(true);
         } catch (Exception e) {
-            Log.e(TAG, "Error stopping Bluetooth SCO", e);
+            Log.e(TAG, "[Audio] Error stopping Bluetooth SCO", e);
             promise.reject("ERROR", e);
         }
     }
@@ -881,7 +897,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 device.put(key, deviceMap.getString(key));
             }
     
-            Log.d(TAG, "setActiveDevice " + device);
+            Log.d(TAG, "[Audio] setActiveDevice " + device);
     
             boolean switched = switchAudioRoute(device);
     
@@ -892,7 +908,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             }
     
         } catch (Exception e) {
-            Log.e(TAG, "setActiveDevice ERROR", e);
+            Log.e(TAG, "[Audio] setActiveDevice ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -912,7 +928,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
         sb.append("]");
     
-        Log.d(TAG, sb.toString());
+        Log.d(TAG, "[Audio] " + sb.toString());
     }
     
     private void sendReactNativeEvent() {
@@ -971,7 +987,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     ? "NA"
                     : String.format("%.1f", lastHingeAngle);
 
-            Log.d(TAG, "[AudioDiag] emit"
+            Log.d(TAG, "[Audio] [AudioDiag] emit"
                     + " mode=" + getAudioModeDescription(mode)
                     + " selected=" + (selectedType != null ? selectedType : "NONE")
                     + "(" + (selectedInfo.get("name") != null ? selectedInfo.get("name") : "-") + ")"
@@ -1007,12 +1023,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     //Log.w(TAG, "RN event emitted");
 
                 } catch (Exception e) {
-                    Log.e(TAG, "Emit failed", e);
+                    Log.e(TAG, "[Audio] Emit failed", e);
                 }
             });
     
         } catch (Exception e) {
-            Log.e(TAG, "sendReactNativeEvent ERROR", e);
+            Log.e(TAG, "[Audio] sendReactNativeEvent ERROR", e);
         }
     }
 
@@ -1029,7 +1045,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
             promise.resolve(map);
         } catch (Exception e) {
-            Log.e(TAG, "getCurrentRoute ERROR", e);
+            Log.e(TAG, "[Audio] getCurrentRoute ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1057,13 +1073,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
         // Add this check at the top:
 		if (audioManager.getMode() != AudioManager.MODE_IN_COMMUNICATION) {
-			Log.w(TAG, "Audio mode was reset, restoring MODE_IN_COMMUNICATION");
+			Log.w(TAG, "[Audio] Audio mode was reset, restoring MODE_IN_COMMUNICATION");
 			audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
 		}
     
         String type = deviceMap.get("type");
         String idStr = deviceMap.get("id");
-        Log.d(TAG, "Switch audio route to audio device: " + deviceMap);
+        Log.d(TAG, "[Audio] Switch audio route to audio device: " + deviceMap);
     
         try {
             List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
@@ -1108,11 +1124,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
 					if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
 						// Try the modern API first.
-						Log.d(TAG, "Switching to BUILTIN_SPEAKER via setCommunicationDevice (API 31+)");
+						Log.d(TAG, "[Audio] Switching to BUILTIN_SPEAKER via setCommunicationDevice (API 31+)");
 						boolean result = audioManager.setCommunicationDevice(selectedDevice);
 						AudioDeviceInfo actual = audioManager.getCommunicationDevice();
 						int actualId = actual != null ? actual.getId() : -1;
-						Log.d(TAG, "setCommunicationDevice(BUILTIN_SPEAKER) result=" + result
+						Log.d(TAG, "[Audio] setCommunicationDevice(BUILTIN_SPEAKER) result=" + result
 							+ " communicationDevice=" + actualId);
 
 						// On Motorola RAZR (and similar OEMs) setCommunicationDevice returns true
@@ -1123,7 +1139,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 							currentRoute = type;
 							return true;
 						}
-						Log.w(TAG, "setCommunicationDevice did not take effect (OEM override), "
+						Log.w(TAG, "[Audio] setCommunicationDevice did not take effect (OEM override), "
 							+ "falling back to MODE_NORMAL + setSpeakerphoneOn");
 					}
 					// Workaround for Motorola RAZR 60 (and similar OEMs) where the audio HAL
@@ -1135,11 +1151,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 					//   3. setSpeakerphoneOn(true)
 					// We do NOT switch back to IN_COMMUNICATION while speaker is active.
 					// The earpiece path below restores IN_COMMUNICATION when speaker is deselected.
-					Log.d(TAG, "Forcing speaker: clearCommunicationDevice + MODE_IN_CALL + setSpeakerphoneOn(true)");
+					Log.d(TAG, "[Audio] Forcing speaker: clearCommunicationDevice + MODE_IN_CALL + setSpeakerphoneOn(true)");
 					audioManager.clearCommunicationDevice();
 					audioManager.setMode(AudioManager.MODE_IN_CALL);
 					audioManager.setSpeakerphoneOn(true);
-					Log.d(TAG, "isSpeakerphoneOn=" + audioManager.isSpeakerphoneOn()
+					Log.d(TAG, "[Audio] isSpeakerphoneOn=" + audioManager.isSpeakerphoneOn()
 						+ " mode=" + getAudioModeDescription(audioManager.getMode()));
 					currentRoute = type;
 					return true;
@@ -1147,7 +1163,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 					// BT routing: do NOT call clearCommunicationDevice() here —
 					// clearing the routing context before SCO establishment prevents
 					// the system from establishing SCO on Motorola and similar devices.
-					Log.d(TAG, "Routing to BT, disabling speakerphone");
+					Log.d(TAG, "[Audio] Routing to BT, disabling speakerphone");
 					audioManager.setSpeakerphoneOn(false);
 					audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
 
@@ -1157,7 +1173,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 						// OnCommunicationDeviceChangedListener fires when routing completes.
 						pendingBtDevice = null;
 						boolean result = audioManager.setCommunicationDevice(selectedDevice);
-						Log.d(TAG, "BT setCommunicationDevice result=" + result
+						Log.d(TAG, "[Audio] BT setCommunicationDevice result=" + result
 							+ " device=" + selectedDevice.getId() + " " + selectedDevice.getProductName());
 						return result;
 					}
@@ -1165,13 +1181,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 					// API < 31: legacy SCO path
 					if (scoManager != null) {
 						if (lastScoState == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
-							Log.d(TAG, "SCO already connected, routing directly to BT");
+							Log.d(TAG, "[Audio] SCO already connected, routing directly to BT");
 							pendingBtDevice = null;
 							boolean result = audioManager.setCommunicationDevice(selectedDevice);
-							Log.d(TAG, "BT setCommunicationDevice result=" + result);
+							Log.d(TAG, "[Audio] BT setCommunicationDevice result=" + result);
 							return result;
 						} else {
-							Log.d(TAG, "SCO not connected, starting legacy SCO and deferring BT route");
+							Log.d(TAG, "[Audio] SCO not connected, starting legacy SCO and deferring BT route");
 							audioManager.setCommunicationDevice(selectedDevice);
 							pendingBtDevice = new HashMap<>(deviceMap);
 							scoManager.startScoIfNeeded();
@@ -1179,14 +1195,14 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 						}
 					}
 					boolean result = audioManager.setCommunicationDevice(selectedDevice);
-					Log.d(TAG, "BT setCommunicationDevice result=" + result);
+					Log.d(TAG, "[Audio] BT setCommunicationDevice result=" + result);
 					return result;
 
 				} else {
 					// Earpiece, wired headset, etc.
 					// clearCommunicationDevice() releases the HAL speaker lock so that
 					// the subsequent setCommunicationDevice(earpiece/wired) takes effect.
-                    Log.d(TAG, "setSpeakerphoneOff + clearCommunicationDevice, restoring MODE_IN_COMMUNICATION");
+                    Log.d(TAG, "[Audio] setSpeakerphoneOff + clearCommunicationDevice, restoring MODE_IN_COMMUNICATION");
 					audioManager.setSpeakerphoneOn(false);
 					audioManager.clearCommunicationDevice();
 					audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
@@ -1195,19 +1211,19 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 boolean result = audioManager.setCommunicationDevice(selectedDevice);
 
                 if (result) {
-                    Log.d(TAG, "requested change to " + selectedDevice.getId() + " " + selectedDevice.getProductName() + " " + type + " " + getAudioDeviceTypeFromString(type));
+                    Log.d(TAG, "[Audio] requested change to " + selectedDevice.getId() + " " + selectedDevice.getProductName() + " " + type + " " + getAudioDeviceTypeFromString(type));
                 } else {
-                    Log.d(TAG, "setCommunicationDevice failed to switch");
+                    Log.d(TAG, "[Audio] setCommunicationDevice failed to switch");
                 }
 
                 return result;
             } else {
-                Log.d(TAG, "No matching AudioDeviceInfo found for device: " + deviceMap);
+                Log.d(TAG, "[Audio] No matching AudioDeviceInfo found for device: " + deviceMap);
                 return false;
             }
     
         } catch (Exception e) {
-            Log.e(TAG, "switchAudioRouteInternal ERROR", e);
+            Log.e(TAG, "[Audio] switchAudioRouteInternal ERROR", e);
             return false;
         }
     }
@@ -1217,7 +1233,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 		for (AudioDeviceInfo device : devices) {
 			if (getDeviceTypeName(device.getType()).equals(currentRoute)) {
 				audioManager.setCommunicationDevice(device);
-				Log.d(TAG, "Re-applied route to " + currentRoute);
+				Log.d(TAG, "[Audio] Re-applied route to " + currentRoute);
 				return;
 			}
 		}
@@ -1241,7 +1257,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 info.put("id", deviceId);
                 info.put("type", typeName);
                 currentRoute = typeName;
-                Log.d(TAG, "Current device: " + deviceId + " " + productName + " " + typeName);
+                Log.d(TAG, "[Audio] Current device: " + deviceId + " " + productName + " " + typeName);
                 return info;
             }
 
@@ -1251,7 +1267,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             // a route (e.g. speaker) without updating the CommunicationDevice.
             // Log the mode and a few quick HAL flags so we can reason about what
             // the system actually thinks the route is.
-            Log.w(TAG, "[AudioDiag] getCommunicationDevice()=null"
+            Log.w(TAG, "[Audio] [AudioDiag] getCommunicationDevice()=null"
                     + " mode=" + getAudioModeDescription(audioManager.getMode())
                     + " speakerOn=" + audioManager.isSpeakerphoneOn()
                     + " scoOn=" + audioManager.isBluetoothScoOn()
@@ -1270,7 +1286,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             WritableArray inputs = getAudioInputs();
             promise.resolve(inputs);
         } catch (Exception e) {
-            Log.e(TAG, "getAudioInputs ERROR", e);
+            Log.e(TAG, "[Audio] getAudioInputs ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1282,7 +1298,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             WritableArray outputs = getAudioOutputs();
             promise.resolve(outputs);
         } catch (Exception e) {
-            Log.e(TAG, "getAudioInputs ERROR", e);
+            Log.e(TAG, "[Audio] getAudioInputs ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1318,7 +1334,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
             inputsArray.pushMap(inputDevice);
     
-            Log.d(TAG, "Input Device: " + typeName + ", Name: " + productName + ", ID: " + device.getId());
+            Log.d(TAG, "[Audio] Input Device: " + typeName + ", Name: " + productName + ", ID: " + device.getId());
         }
     
         return inputsArray;
@@ -1365,7 +1381,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
             outputsArray.pushMap(outputDevice);
     
-            Log.d(TAG, "Output Device: " + getDeviceTypeName(type) + ", Name: " + productName + ", ID: " + device.getId());
+            Log.d(TAG, "[Audio] Output Device: " + getDeviceTypeName(type) + ", Name: " + productName + ", ID: " + device.getId());
         }
     
         return outputsArray;

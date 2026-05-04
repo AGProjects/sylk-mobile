@@ -8,6 +8,7 @@ import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-a
 import { Keyboard } from 'react-native';
 import BackgroundTimer from 'react-native-background-timer';
 import uuid from 'react-native-uuid';
+import utils from '../utils';
 
 // Geolocation is an optional native dependency. Guard the require so that
 // the app still boots if the pod/AAR hasn't been installed yet — callers
@@ -78,6 +79,7 @@ import CallMeMaybeModal from './CallMeMaybeModal';
 import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
+import PreferencesModal from './PreferencesModal';
 import DeleteAccountModal from './DeleteAccountModal';
 import GenerateKeysModal from './GenerateKeysModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
@@ -115,6 +117,24 @@ class NavigationBar extends Component {
         // time chosen by the user is reached.
         this.LOCATION_REPEAT_MS = 60 * 1000;
 
+        // "Until I return" auto-stop thresholds. A caregiver share starts
+        // by recording the user's position and arming a state machine:
+        //   • departure — wait until the user has moved more than
+        //     UNTIL_RETURN_DEPARTURE_M from the recorded origin. The
+        //     first tick is by definition AT the origin, so without the
+        //     departure gate the share would self-stop immediately
+        //     ("you're already home").
+        //   • return — once departed, the moment a tick lands within
+        //     UNTIL_RETURN_RETURN_M of the origin we treat it as
+        //     "the user is back" and stop the share. Same threshold for
+        //     symmetry; a slightly looser return ring would just mean
+        //     the share lingers slightly longer than necessary, while a
+        //     tighter ring risks missing the return when GPS noise
+        //     pushes the fix a few metres outside the boundary.
+        // Both values are in metres.
+        this.UNTIL_RETURN_DEPARTURE_M = 100;
+        this.UNTIL_RETURN_RETURN_M   = 100;
+
         // Map<uri, { intervalId, expiresAt }>  — tracks an active
         // "share location" timer per contact so the user can run
         // several shares in parallel and we can cancel them cleanly.
@@ -126,6 +146,7 @@ class NavigationBar extends Component {
             keyMenuVisible: false,
             showDeleteFileTransfers: false,
             showEditContactModal: false,
+            showPreferencesModal: false,
             // Opened from the EditContactModal "Delete account" link when
             // myself=true. Confirms & then calls props.deleteAccount() to
             // wipe this account from the device and sign out.
@@ -386,6 +407,15 @@ class NavigationBar extends Component {
                     destination: (entry.tickExtras
                         && entry.tickExtras.destination) || null,
                     originMetadataId: entry.originMetadataId || null,
+                    // "Until I return" state machine snapshot.
+                    // Persisted so a kill-restart while the user is
+                    // out doesn't reset the departed flag back to
+                    // false — that would suppress the auto-stop on
+                    // their next return. Both fields are null/false
+                    // for non-untilIReturn shares and harmless to
+                    // serialize.
+                    untilReturnOrigin: entry.untilReturnOrigin || null,
+                    untilReturnDeparted: !!entry.untilReturnDeparted,
                 };
             }
             storage.set(ACTIVE_SHARES_STORAGE_KEY, map).catch((e) => {
@@ -492,9 +522,17 @@ class NavigationBar extends Component {
                         destination: e.destination || undefined,
                         resumeOriginMetadataId: e.originMetadataId || null,
                         suppressAnnouncement: true,
+                        // Carry the "Until I return" state machine
+                        // snapshot through the resume so we don't
+                        // re-arm the gate from scratch when the user
+                        // is mid-trip. startLocationSharing reads
+                        // these on the entry it builds via
+                        // resumeUntilReturnOrigin / resumeUntilReturnDeparted.
+                        resumeUntilReturnOrigin: e.untilReturnOrigin || null,
+                        resumeUntilReturnDeparted: !!e.untilReturnDeparted,
                     });
             } catch (err) {
-                console.log('[location] resume failed for', uri,
+                utils.timestampedLog('[location] resume failed for', uri,
                     err && err.message ? err.message : err);
             }
         }
@@ -735,7 +773,7 @@ class NavigationBar extends Component {
                                 onOptOut: async () => {
                                     try { await storage.remove(KEY); }
                                     catch (e) { /* noop */ }
-                                    console.log('[location] user opted out — disclosure flag cleared');
+                                    utils.timestampedLog('[location] user opted out — disclosure flag cleared');
                                     this.setState({
                                         locationDisclosurePending: null,
                                         locationDisclosureAcknowledged: false,
@@ -782,6 +820,9 @@ class NavigationBar extends Component {
                 break;
             case 'displayName':
                 this.toggleEditContactModal();
+                break;
+            case 'preferences':
+                this.setState({ showPreferencesModal: true });
                 break;
             case 'speakerphone':
                 this.props.toggleSpeakerPhone();
@@ -853,6 +894,9 @@ class NavigationBar extends Component {
             case 'toggleAutoAnswer':
                 this.props.toggleAutoAnswer(this.props.selectedContact);
                 break;
+            case 'toggleCaregiver':
+                this.props.toggleCaregiver(this.props.selectedContact);
+                break;
             case 'toggleBlocked':
                 this.props.toggleBlocked(this.props.selectedContact);
                 break;
@@ -915,7 +959,7 @@ class NavigationBar extends Component {
         // taps straight through.
         const acknowledged = await this._ensureLocationDisclosureAcknowledged();
         if (!acknowledged) {
-            console.log('[location] showShareLocationModal: disclosure declined — not opening picker');
+            utils.timestampedLog('[location] showShareLocationModal: disclosure declined — not opening picker');
             return;
         }
 
@@ -942,7 +986,7 @@ class NavigationBar extends Component {
             hasPermission = false;
         }
         if (!hasPermission) {
-            console.log('[location] showShareLocationModal: OS permission not granted — picker stays closed');
+            utils.timestampedLog('[location] showShareLocationModal: OS permission not granted — picker stays closed');
             // Show a one-tap-to-Settings alert so the user has a
             // recovery path. Mirrors the alert wording from
             // shareLocationOnce / startLocationSharing.
@@ -1529,13 +1573,48 @@ class NavigationBar extends Component {
             ? coords.longitude.toFixed(5) : '?';
         const acc = coords && typeof coords.accuracy === 'number'
             ? ` ±${Math.round(coords.accuracy)}m` : '';
-        console.log(`[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})`);
+        // Distance-from-origin breadcrumb. The receiver can't compute this on
+        // its own (origin is captured per-share on the sender), so we stamp it
+        // here. Useful for "I see 17 ticks but didn't move much" — comparing
+        // each tick's distFromOrigin tells the recipient at a glance whether
+        // the sender was actually progressing or jittering near home. Falls
+        // back to '?' if we don't have an origin yet (very first origin tick,
+        // or this isn't an "until I return" share).
+        const liveEntry = this.locationTimers && this.locationTimers[uri];
+        let distFromOriginStr = '';
+        if (liveEntry
+                && liveEntry.untilReturnOrigin
+                && coords
+                && typeof coords.latitude === 'number'
+                && typeof coords.longitude === 'number') {
+            const o = liveEntry.untilReturnOrigin;
+            if (typeof o.latitude === 'number' && typeof o.longitude === 'number') {
+                const d = this._haversineMeters(o, coords);
+                if (Number.isFinite(d)) {
+                    distFromOriginStr = ` distFromOrigin=${Math.round(d)}m`;
+                }
+            }
+        }
+        // Promoted from console.log → timestampedLog so it lands in the
+        // on-device log file (Show logs / "Support needed…"). The previous
+        // build only had this on the dev console, so a "17 ticks but stuck"
+        // report from a phone in the field had no per-tick evidence to
+        // correlate with — just an aggregate counter.
+        utils.timestampedLog(
+            `[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})${distFromOriginStr}`
+        );
         // Record the just-reported coords on the timer entry so
         // _shouldSendUpdateTick's stationary gate can compare future
         // ticks against this baseline. Only meaningful when this is
         // a real coord (placeholder origin ticks land here too with
         // null lat/lng — those shouldn't poison the baseline).
-        const liveEntry = this.locationTimers && this.locationTimers[uri];
+        // Stamp lastReportedAt alongside the coords so the stationary
+        // gate's heartbeat override has a reliable "last actually
+        // shipped" timestamp; using lastSentMs would conflate "tick
+        // attempted" with "tick that left the device" (a gated tick
+        // updates lastSentMs but not lastReportedCoords/At).
+        // (`liveEntry` was already resolved above for the
+        // distFromOrigin breadcrumb — reuse it.)
         if (liveEntry
                 && coords
                 && typeof coords.latitude === 'number'
@@ -1544,12 +1623,100 @@ class NavigationBar extends Component {
                 latitude: coords.latitude,
                 longitude: coords.longitude,
             };
+            liveEntry.lastReportedAt = Date.now();
         }
         // Fire the destination-arrival heads-up if this tick's coords
         // landed within DEST_ARRIVAL_THRESHOLD_M of the shared meeting
         // destination. Once-per-session, gated on the entry flag.
         this._maybeFireDestinationArrival(uri, coords);
+        // "Until I return" auto-stop. Runs after every successful
+        // tick so the cadence matches the heartbeat (~1/min). Owns
+        // its own state machine on the timer entry — see
+        // _evaluateUntilReturnGate for the departure→return logic.
+        this._evaluateUntilReturnGate(uri, coords);
         return mId;
+    }
+
+    // State machine for the caregiver-only "Until I return" share. The
+    // share starts immediately, the first valid tick records the
+    // origin, and the share auto-stops the moment a later tick reports
+    // a position within UNTIL_RETURN_RETURN_M of that origin — but ONLY
+    // after the user has previously moved more than
+    // UNTIL_RETURN_DEPARTURE_M away (the "departed" flag). Without the
+    // departed gate the share would terminate on its very first
+    // GPS-confirming tick, since the first tick is by definition at
+    // the origin.
+    //
+    // No-op for any kind other than 'untilIReturn'; the regular
+    // expires-at timer handles the 8h fallback ceiling for the
+    // never-returns case (set in startLocationSharing via durationMs).
+    //
+    // Idempotent: if the tick is missing valid coords, or the entry
+    // disappeared between scheduling and now, we just bail.
+    _evaluateUntilReturnGate(uri, coords) {
+        const entry = this.locationTimers && this.locationTimers[uri];
+        if (!entry || entry.kind !== 'untilIReturn') return;
+        if (!coords
+                || typeof coords.latitude !== 'number'
+                || typeof coords.longitude !== 'number') {
+            return;
+        }
+        // First valid tick: record the origin and the initial phase.
+        // We DON'T evaluate the gate on the same tick that captures
+        // the origin — origin↔current distance is 0 by construction
+        // and the departed flag is still false, so the gate would do
+        // nothing anyway, but starting the math on the next tick keeps
+        // the state machine easier to reason about.
+        if (!entry.untilReturnOrigin) {
+            entry.untilReturnOrigin = {
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+            };
+            entry.untilReturnDeparted = false;
+            try {
+                utils.timestampedLog(
+                    `[location] [untilIReturn] origin captured for ${uri} → `
+                    + `${coords.latitude.toFixed(5)},${coords.longitude.toFixed(5)} `
+                    + `— share will auto-stop when you return after moving ≥${this.UNTIL_RETURN_DEPARTURE_M} m away`
+                );
+            } catch (e) { /* noop */ }
+            return;
+        }
+        const distance = this._haversineMeters(entry.untilReturnOrigin, {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+        });
+        if (!Number.isFinite(distance)) return;
+        if (!entry.untilReturnDeparted) {
+            // Phase 1: waiting for the user to physically leave the
+            // origin neighbourhood. Until they do, every tick stays
+            // "near home" and we don't terminate the share.
+            if (distance > this.UNTIL_RETURN_DEPARTURE_M) {
+                entry.untilReturnDeparted = true;
+                try {
+                    utils.timestampedLog(
+                        `[location] [untilIReturn] departure detected for ${uri} `
+                        + `(${Math.round(distance)} m from origin) — now watching for return`
+                    );
+                } catch (e) { /* noop */ }
+            }
+            return;
+        }
+        // Phase 2: user has departed. As soon as we see a tick that
+        // lands them back inside the return ring, terminate the
+        // share. stopLocationSharing handles the system note, persisted
+        // state, foreground service teardown, etc.; we just signal
+        // the reason so future log-grep / analytics can tell why
+        // this share ended.
+        if (distance <= this.UNTIL_RETURN_RETURN_M) {
+            try {
+                utils.timestampedLog(
+                    `[location] [untilIReturn] return detected for ${uri} `
+                    + `(${Math.round(distance)} m from origin) — stopping share`
+                );
+            } catch (e) { /* noop */ }
+            this.stopLocationSharing(uri, {reason: 'returned'});
+        }
     }
 
     // ===== Destination arrival heads-up =====
@@ -1600,7 +1767,7 @@ class NavigationBar extends Component {
         try {
             const utils = require('../utils');
             utils.timestampedLog(
-                `[meet] ARRIVED at meeting point (${Math.round(dist)} m from destination) — ${uri}`
+                `[location] [meet] ARRIVED at meeting point (${Math.round(dist)} m from destination) — ${uri}`
             );
         } catch (e) { /* noop */ }
 
@@ -1695,26 +1862,27 @@ class NavigationBar extends Component {
         if (!entry) {
             return true;
         }
-        // Stationary gate. If we already shipped a real-coords tick
-        // for this session and the new fix is within 10 m of the
-        // last reported one, swallow the tick: it doesn't carry new
-        // information for the receiver, just adds a chat-bubble
-        // refresh and burns network. 10 m is well inside consumer-GPS
-        // noise, so a stationary phone reporting drift gets filtered;
-        // a real walk of 10 m is a meaningful step that gets through.
-        // Placeholder ticks (null lat/lng) are gated separately by
-        // the privacy-radius branch below and don't update
-        // lastReportedCoords, so they don't poison this comparison.
-        const STILL_THRESHOLD_M = 10;
-        if (entry.lastReportedCoords
-                && coords
-                && typeof coords.latitude === 'number'
-                && typeof coords.longitude === 'number') {
-            const moved = this._haversineMeters(entry.lastReportedCoords, coords);
-            if (Number.isFinite(moved) && moved < STILL_THRESHOLD_M) {
-                return false;
-            }
-        }
+        // Stationary gate has been REMOVED in favour of a per-minute
+        // heartbeat tick. The previous "if you haven't moved 10 m,
+        // skip the tick" filter saved bandwidth but had two costs the
+        // user pushed back on:
+        //   1. The sender's app log went silent — no proof the share
+        //      was still alive while the phone sat on a desk.
+        //   2. The receiver's bubble timestamp + tick counter froze
+        //      at the origin tick and never advanced for the entire
+        //      X-hour window.
+        // Both are now addressed by always emitting a tick at the
+        // throttle cadence (LOCATION_REPEAT_MS = 60 s), regardless of
+        // movement. A 4 h share at 60 s cadence is ~240 metadata
+        // messages — at ~500 bytes encrypted, that's ~120 KB total,
+        // which is well within budget for an active chat. The
+        // privacy-radius branch below still applies normally so the
+        // "Until we meet" 1 km exclusion still hides the user's
+        // starting point.
+        // The lastReportedCoords / lastReportedAt fields are still
+        // stamped by sendLocationMetadata so future tuning (e.g. a
+        // user-toggleable "low bandwidth" mode that re-enables the
+        // gate) has the data to work with.
         const radiusMeters = Number(entry.excludeOriginRadiusMeters) || 0;
         if (radiusMeters <= 0) {
             return true;
@@ -1734,7 +1902,7 @@ class NavigationBar extends Component {
             const utils = require('../utils');
             try {
                 utils.timestampedLog(
-                    `[meet] privacy radius active for ${uri} — your starting point will be hidden until you move ${radiusLabel} away`
+                    `[location] [meet] privacy radius active for ${uri} — your starting point will be hidden until you move ${radiusLabel} away`
                 );
             } catch (e) {
                 console.log('[location] origin point captured for', uri,
@@ -1753,7 +1921,7 @@ class NavigationBar extends Component {
             const utils = require('../utils');
             try {
                 utils.timestampedLog(
-                    `[meet] privacy radius cleared for ${uri} (${Math.round(meters)} m from origin) — your live location is now being shared`
+                    `[location] [meet] privacy radius cleared for ${uri} (${Math.round(meters)} m from origin) — your live location is now being shared`
                 );
             } catch (e) {
                 console.log('[location] privacy radius cleared for', uri,
@@ -2264,7 +2432,7 @@ class NavigationBar extends Component {
         if (entry.paused) return true;
         entry.paused = true;
         try { this._persistActiveShares(); } catch (e) { /* noop */ }
-        console.log('[location] paused share for', uri,
+        utils.timestampedLog('[location] paused share for', uri,
             'origin=', entry.originMetadataId);
         return true;
     }
@@ -2300,7 +2468,7 @@ class NavigationBar extends Component {
             );
         } catch (e) { /* noop — next periodic tick will catch up */ }
         try { this._persistActiveShares(); } catch (e) { /* noop */ }
-        console.log('[location] resumed share for', uri,
+        utils.timestampedLog('[location] resumed share for', uri,
             'origin=', entry.originMetadataId);
         return true;
     }
@@ -2526,6 +2694,15 @@ class NavigationBar extends Component {
                     case 'expired':
                         note = `\uD83D\uDCCD Live location sharing expired at ${stoppedAt}`;
                         break;
+                    case 'returned':
+                        // "Until I return" auto-stop \u2014 the user came
+                        // back inside the return ring. Distinct copy
+                        // so the caregiver who's looking at the chat
+                        // can tell the share ended because the user
+                        // got home, not because they hit Stop or it
+                        // timed out.
+                        note = `\uD83D\uDCCD Live location sharing stopped at ${stoppedAt} (returned to starting point)`;
+                        break;
                     case 'deleted':
                         note = `\uD83D\uDCCD Stopped sharing live location at ${stoppedAt} (message deleted)`;
                         break;
@@ -2623,7 +2800,7 @@ class NavigationBar extends Component {
         Object.keys(this.locationTimers).forEach((uri) => {
             const entry = this.locationTimers[uri];
             if (entry && entry.inReplyTo === deletedRequestId) {
-                console.log('[location] stopSharesRepliesTo: stopping share with', uri,
+                utils.timestampedLog('[location] stopSharesRepliesTo: stopping share with', uri,
                     'because its original request', deletedRequestId, 'was deleted by the peer');
                 stopped.push(uri);
                 // Pass deletedId so the cleanup block skips propagating
@@ -2652,7 +2829,7 @@ class NavigationBar extends Component {
     sendMeetingEndSignal(uri, sessionId, opts = {}) {
         if (!uri || !sessionId) return;
         if (!this.props.sendMessage) {
-            console.log('[location] sendMeetingEndSignal: sendMessage prop not wired');
+            utils.timestampedLog('[location] sendMeetingEndSignal: sendMessage prop not wired');
             return;
         }
         const mId = uuid.v4();
@@ -2685,10 +2862,10 @@ class NavigationBar extends Component {
         };
         try {
             this.props.sendMessage(uri, msg, 'application/sylk-message-metadata');
-            console.log('[location] sent meeting_end signal to', uri,
+            utils.timestampedLog('[location] sent meeting_end signal to', uri,
                 'session=', sessionId);
         } catch (e) {
-            console.log('[location] sendMeetingEndSignal failed',
+            utils.timestampedLog('[location] sendMeetingEndSignal failed',
                 e && e.message ? e.message : e);
         }
     }
@@ -2713,7 +2890,7 @@ class NavigationBar extends Component {
         Object.keys(this.locationTimers).forEach((uri) => {
             const entry = this.locationTimers[uri];
             if (entry && entry.meetingSessionId === sessionId) {
-                console.log('[location] stopSharesForMeetingSession: stopping share with', uri,
+                utils.timestampedLog('[location] stopSharesForMeetingSession: stopping share with', uri,
                     'because peer ended meeting session', sessionId,
                     'remoteReason=', remoteReason || '(none)');
                 stopped.push(uri);
@@ -2769,7 +2946,7 @@ class NavigationBar extends Component {
             this._startingShares = new Set();
         }
         if (this._startingShares.has(uri) || this.locationTimers[uri]) {
-            console.log('[location] startLocationSharing: ignoring duplicate — share already active or in-flight for', uri);
+            utils.timestampedLog('[location] startLocationSharing: ignoring duplicate — share already active or in-flight for', uri);
             return;
         }
         this._startingShares.add(uri);
@@ -2787,7 +2964,7 @@ class NavigationBar extends Component {
         if (!opts.resumeOriginMetadataId) {
             const acknowledged = await this._ensureLocationDisclosureAcknowledged();
             if (!acknowledged) {
-                console.log('[location] startLocationSharing: disclosure declined for', uri);
+                utils.timestampedLog('[location] startLocationSharing: disclosure declined for', uri);
                 this._startingShares.delete(uri);
                 return;
             }
@@ -2904,6 +3081,14 @@ class NavigationBar extends Component {
                 announcementText = 'I want to meet up with you';
             } else if (kind === 'meetingAccept') {
                 announcementText = 'I want to meet with you, too!';
+            } else if (kind === 'untilIReturn') {
+                // Distinct copy from the "for X hours" form so the
+                // caregiver immediately understands the share will
+                // self-stop on return rather than running for the
+                // full ceiling. The 8h ceiling is mentioned in the
+                // modal's disclosure text and on the bubble; we keep
+                // the announcement short.
+                announcementText = 'I am sharing the location with you until I return';
             } else {
                 announcementText = `I am sharing the location with you for ${periodLabel}`;
             }
@@ -3280,11 +3465,29 @@ class NavigationBar extends Component {
                 if (!this._shouldSendUpdateTick(uri, effective)) {
                     return;
                 }
+                // Heartbeat the very first tick too. The 60 s
+                // watchPosition / interval paths each have their own
+                // tickAttempts increment + log, but the initial
+                // getCurrentCoordinates().then() bypasses both — without
+                // this bump, attempt counters start at 0 for the first
+                // minute even though a tick is going out. Bump here so
+                // the user sees "attempt=1" in the log line that pairs
+                // with the bubble's "↻ 1" counter the moment the share
+                // starts.
+                const _initEntry = this.locationTimers && this.locationTimers[uri];
+                if (_initEntry) {
+                    _initEntry.tickAttempts = (_initEntry.tickAttempts || 0) + 1;
+                    try {
+                        utils.timestampedLog(
+                            `[location] heartbeat → ${uri} attempt=${_initEntry.tickAttempts} kind=${_initEntry.kind || 'fixed'} (initial fix)`
+                        );
+                    } catch (e) { /* noop */ }
+                }
                 this.sendLocationMetadata(
                     uri, effective, expiresIso, originMetadataId, tickExtras
                 );
             }).catch((err) => {
-                console.log('[location] initial getCurrentCoordinates failed',
+                utils.timestampedLog('[location] initial getCurrentCoordinates failed',
                     err && err.message ? err.message : err);
             });
         }
@@ -3374,6 +3577,15 @@ class NavigationBar extends Component {
                 // we don't ship a fresh announcement message on resume.
                 kind,
                 periodLabel,
+                // "Until I return" state machine — see
+                // _evaluateUntilReturnGate. On a fresh start both
+                // fields are reset (origin captured by the first
+                // valid tick; departed flips when the user moves
+                // beyond the threshold). On a kill-restart resume
+                // we restore whatever was persisted so the gate
+                // doesn't lose its "I've already left" memory.
+                untilReturnOrigin: opts.resumeUntilReturnOrigin || null,
+                untilReturnDeparted: !!opts.resumeUntilReturnDeparted,
             };
             this.locationTimers[uri] = entry;
             this._persistActiveShares();
@@ -3416,6 +3628,24 @@ class NavigationBar extends Component {
                                 return;
                             }
                             current.lastSentMs = nowMs;
+                            // Per-minute heartbeat log. Fires here —
+                            // AFTER the LOCATION_REPEAT_MS throttle but
+                            // BEFORE the privacy-radius / send path —
+                            // so the user always sees an "I'm alive"
+                            // line in the app log every minute, even
+                            // when the actual tick gets swallowed
+                            // (privacy radius, peer not yet paired,
+                            // GPS dropout). entry.tickAttempts is the
+                            // sender-side counter that increments
+                            // every minute regardless of send outcome
+                            // — surfaces in the bubble's footer next
+                            // to the timestamp.
+                            current.tickAttempts = (current.tickAttempts || 0) + 1;
+                            try {
+                                utils.timestampedLog(
+                                    `[location] heartbeat → ${uri} attempt=${current.tickAttempts} kind=${current.kind || 'fixed'}`
+                                );
+                            } catch (e) { /* noop */ }
                             const c = position && position.coords ? position.coords : {};
                             const realCoords = {
                                 latitude: c.latitude,
@@ -3448,7 +3678,7 @@ class NavigationBar extends Component {
                         (error) => {
                             const msg = error && error.message ? error.message : String(error);
                             const code = error && error.code;
-                            console.log('[location] iOS watchPosition error', msg, 'code=', code);
+                            utils.timestampedLog('[location] iOS watchPosition error', msg, 'code=', code);
                             // code 1 == PERMISSION_DENIED (library constant RNCPositionErrorDenied).
                             // Leaving the share "running" after permission was pulled would
                             // leave a stale timer + menu entry with no ticks going out; tear
@@ -3514,7 +3744,7 @@ class NavigationBar extends Component {
                     );
                     entry.watchId = watchId;
                 } catch (e) {
-                    console.log('[location] iOS watchPosition failed to start',
+                    utils.timestampedLog('[location] iOS watchPosition failed to start',
                         e && e.message ? e.message : e);
                 }
             }
@@ -3566,6 +3796,21 @@ class NavigationBar extends Component {
                     this.stopLocationSharing(uri, {reason: 'expired'});
                     return;
                 }
+                // Per-minute heartbeat log. Fires at the start of
+                // every interval tick BEFORE sendLocationUpdate
+                // (which can swallow the tick on a privacy-radius
+                // gate or GPS read failure). Mirrors the iOS path
+                // above so app logs show a uniform "I'm alive" line
+                // every minute regardless of platform.
+                const _entryNow = this.locationTimers && this.locationTimers[uri];
+                if (_entryNow) {
+                    _entryNow.tickAttempts = (_entryNow.tickAttempts || 0) + 1;
+                    try {
+                        utils.timestampedLog(
+                            `[location] heartbeat → ${uri} attempt=${_entryNow.tickAttempts} kind=${_entryNow.kind || 'fixed'}`
+                        );
+                    } catch (e) { /* noop */ }
+                }
                 // Subsequent ticks carry metadataId = origin's _id so the
                 // receiver updates the existing bubble in place rather than
                 // rendering a new one.
@@ -3595,6 +3840,10 @@ class NavigationBar extends Component {
                 // Same persistence-resume metadata as the iOS branch.
                 kind,
                 periodLabel,
+                // "Until I return" state machine — see the iOS
+                // branch above for the rationale on each field.
+                untilReturnOrigin: opts.resumeUntilReturnOrigin || null,
+                untilReturnDeparted: !!opts.resumeUntilReturnDeparted,
             };
             this._persistActiveShares();
         }
@@ -3689,7 +3938,7 @@ class NavigationBar extends Component {
     async shareLocationOnce(uri, opts = {}) {
         if (!uri) return;
         if (!this.props.sendMessage) {
-            console.log('[location] shareLocationOnce: sendMessage prop not wired');
+            utils.timestampedLog('[location] shareLocationOnce: sendMessage prop not wired');
             return;
         }
         // Prominent Disclosure (Google Play). Same gate as
@@ -3697,7 +3946,7 @@ class NavigationBar extends Component {
         // dialog and any data collection. Declining cleanly aborts.
         const acknowledged = await this._ensureLocationDisclosureAcknowledged();
         if (!acknowledged) {
-            console.log('[location] shareLocationOnce: disclosure declined for', uri);
+            utils.timestampedLog('[location] shareLocationOnce: disclosure declined for', uri);
             return;
         }
         let hasPermission;
@@ -3777,7 +4026,7 @@ class NavigationBar extends Component {
                     'outgoing');
             }
         } catch (err) {
-            console.log('[location] shareLocationOnce failed',
+            utils.timestampedLog('[location] shareLocationOnce failed',
                 err && err.message ? err.message : err);
         }
     }
@@ -3797,7 +4046,7 @@ class NavigationBar extends Component {
     requestPeerLocation(uri) {
         if (!uri) return;
         if (!this.props.sendMessage) {
-            console.log('[location] requestPeerLocation: sendMessage prop not wired');
+            utils.timestampedLog('[location] requestPeerLocation: sendMessage prop not wired');
             return;
         }
         try {
@@ -3853,7 +4102,7 @@ class NavigationBar extends Component {
             // system line right next to it just clutters the
             // conversation.
         } catch (e) {
-            console.log('[location] requestPeerLocation failed',
+            utils.timestampedLog('[location] requestPeerLocation failed',
                 e && e.message ? e.message : e);
         }
     }
@@ -3864,14 +4113,14 @@ class NavigationBar extends Component {
     // expiresAt the requester chose so both sides tear down in sync.
     startMeetingAcceptance(uri, {requestId, expiresAt, periodLabel, excludeOriginRadiusMeters, destination}) {
         if (!uri || !requestId || typeof expiresAt !== 'number') {
-            console.log('[location] startMeetingAcceptance: missing required args',
+            utils.timestampedLog('[location] startMeetingAcceptance: missing required args',
                 uri, requestId, expiresAt);
             return;
         }
         const now = Date.now();
         const durationMs = Math.max(0, expiresAt - now);
         if (durationMs === 0) {
-            console.log('[location] startMeetingAcceptance: request already expired', requestId);
+            utils.timestampedLog('[location] startMeetingAcceptance: request already expired', requestId);
             return;
         }
         this.startLocationSharing(
@@ -4027,10 +4276,6 @@ class NavigationBar extends Component {
     render() {
         const bellIcon = this.props.dnd ? 'bell-off' : 'bell';
 
-        if (this.state.menuVisible && !this.props.appStoreVersion) {
-            //this.props.checkVersionFunc()
-        }
-        
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
 
@@ -4103,6 +4348,7 @@ class NavigationBar extends Component {
         let favoriteTitle = isFavorite ? '✓ Favorite' : 'Favorite';
         let favoriteIcon = (this.props.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
         let autoAnswerTitle = this.props.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
+        let caregiverTitle = this.props.selectedContact?.localProperties?.caregiver ? '✓ Caregiver' : 'Caregiver';
 		let autoAnswerModeTitle = this.props.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
   
         let extraMenu = false;
@@ -4111,9 +4357,6 @@ class NavigationBar extends Component {
         let showEditModal = this.state.showEditContactModal;
 
         let showBackButton = this.props.selectedContact || this.props.sharingAction;
-
-        let hasUpdate = this.props.appStoreVersion && this.props.appStoreVersion.version > VersionNumber.appVersion;
-        let updateTitle = hasUpdate ? 'Update Sylk...' : 'Check for updates...';
 
         let isAnonymous = this.props.selectedContact && (this.props.selectedContact.uri.indexOf('@guest.') > -1 || this.props.selectedContact.uri.indexOf('anonymous@') > -1);
         let isCallableUri = !isConference && !this.props.inCall && !isAnonymous && tags.indexOf('blocked') === -1;
@@ -4668,18 +4911,15 @@ class NavigationBar extends Component {
                         {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
 
-                        {/* Location group — bracketed by Dividers ABOVE
-                            and BELOW so all three location-related
-                            entries (Share, Request, Policy) read as a
-                            single grouped section in the kebab. Both
-                            Dividers always render because the policy
-                            item itself always renders. Share / Request
-                            items above the policy entry are still
-                            gated on contact-state predicates (key
-                            present, bidirectional chat, not blocked,
-                            etc.); when those predicates fail the
-                            section collapses to just the policy entry
-                            sitting between the same two Dividers. */}
+                        {/* Location group — Share / Request items only.
+                            Bracketed by Dividers ABOVE and BELOW when
+                            visible. Gated on contact-state predicates
+                            (key present, bidirectional chat, not blocked,
+                            etc.). The Location privacy policy entry used
+                            to live alongside these but moved to the
+                            general (no-contact-selected) kebab; it's a
+                            device-wide setting and doesn't need to live
+                            inside every per-contact menu. */}
                         {(() => {
                             const _uri = this.props.selectedContact && this.props.selectedContact.uri;
                             const sharing = !!(_uri && this.state.activeLocationShares[_uri]);
@@ -4688,9 +4928,6 @@ class NavigationBar extends Component {
                                 this.props.selectedContact.publicKey
                             );
                             const bidir = this._hasBidirectionalChat(_uri);
-                            // Same gating predicates that previously
-                            // returned null for the whole section — now
-                            // gate ONLY the share / request items.
                             const contactOk =
                                 tags.indexOf('blocked') === -1
                                 && !isConference
@@ -4701,69 +4938,26 @@ class NavigationBar extends Component {
                             const shareItemsVisible = contactOk
                                 && (sharing || hasContactKey)
                                 && (sharing || bidir);
-                            // Policy item visibility:
-                            //   • Android only — the in-app Prominent
-                            //     Disclosure is a Google Play
-                            //     requirement; iOS uses CoreLocation's
-                            //     usage-string flow at the OS level
-                            //     and the panel doesn't apply there.
-                            //   • shareItemsVisible  → show (the user can
-                            //     tap Share / Request right above and
-                            //     should be able to read the policy or
-                            //     opt out alongside it)
-                            //   • locationDisclosureAcknowledged → show
-                            //     (the user has previously consented;
-                            //     keep the entry available everywhere
-                            //     so they can revisit / opt out at any
-                            //     time)
-                            //   • neither → hide. A user who has never
-                            //     consented and is in a chat where
-                            //     sharing isn't surfaced has no use
-                            //     for the policy entry on its own.
-                            const policyItemVisible = Platform.OS === 'android'
-                                && (shareItemsVisible
-                                    || this.state.locationDisclosureAcknowledged);
-                            // If neither share/request nor policy
-                            // would render, the whole location section
-                            // collapses (no orphaned dividers).
-                            if (!shareItemsVisible && !policyItemVisible) return null;
+                            if (!shareItemsVisible) return null;
                             return (
                                 <React.Fragment>
                                     <Divider />
-                                    {shareItemsVisible ? (
-                                        <React.Fragment>
-                                            <Menu.Item
-                                                onPress={() => this.handleMenu('shareLocation')}
-                                                icon={sharing ? "map-marker-off" : "map-marker"}
-                                                title={sharing ? "Stop sharing location" : "Share location..."}
-                                            />
-                                            {/* Request location is only useful
-                                                when there's no live share in
-                                                flight — once we're already
-                                                sharing, the peer has our
-                                                position; asking for theirs
-                                                instead is a separate flow. */}
-                                            {!sharing && bidir ? (
-                                                <Menu.Item
-                                                    onPress={() => this.handleMenu('requestLocation')}
-                                                    icon="map-marker-question"
-                                                    title="Request location..."
-                                                />
-                                            ) : null}
-                                        </React.Fragment>
-                                    ) : null}
-                                    {/* Policy item — visible when share
-                                        items are shown above OR when the
-                                        user has previously opted in
-                                        (state.locationDisclosureAcknowledged).
-                                        Modal adapts to current consent
-                                        state: [Not now]/[I agree] before
-                                        agreement, [Close]/[Opt out] after. */}
-                                    {policyItemVisible ? (
+                                    <Menu.Item
+                                        onPress={() => this.handleMenu('shareLocation')}
+                                        icon={sharing ? "map-marker-off" : "map-marker"}
+                                        title={sharing ? "Stop sharing location" : "Share location..."}
+                                    />
+                                    {/* Request location is only useful
+                                        when there's no live share in
+                                        flight — once we're already
+                                        sharing, the peer has our
+                                        position; asking for theirs
+                                        instead is a separate flow. */}
+                                    {!sharing && bidir ? (
                                         <Menu.Item
-                                            onPress={() => this.handleMenu('viewLocationDisclosure')}
-                                            icon="shield-account"
-                                            title="Location privacy policy..."
+                                            onPress={() => this.handleMenu('requestLocation')}
+                                            icon="map-marker-question"
+                                            title="Request location..."
                                         />
                                     ) : null}
                                     <Divider />
@@ -4848,6 +5042,20 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
                         : null}
 
+                        {/* Caregiver — gated on the same conditions as
+                            Auto-answer above (favorite contact, not a
+                            conference / anonymous / blocked / test row,
+                            outside of a call or active message search).
+                            Sits immediately below Auto-answer so the
+                            two favorite-only attributes group together
+                            visually, and toggleFavorite scrubs the tag
+                            on un-favorite, so the option only ever
+                            renders when the underlying state can
+                            actually carry it. */}
+                        {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
+                        <Menu.Item onPress={() => this.handleMenu('toggleCaregiver')} title={caregiverTitle}/>
+                        : null}
+
                         {!this.props.inCall && tags.indexOf('test') === -1 && !isFavorite?
                         <Divider />
                         : null}
@@ -4898,14 +5106,17 @@ class NavigationBar extends Component {
 						<Divider />
                         : null}
 
-                        {false ? <Menu.Item onPress={() => this.handleMenu('checkUpdate')} icon="update" title={updateTitle} /> :null}
                         {extraMenu ?
                         <View>
 
                         <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
                         </View>
                         : null}
-                        <Menu.Item onPress={() => this.handleMenu('proximity')} icon={proximityIcon} title={proximityTitle} />
+                        {/* (Proximity sensor moved into Preferences →
+                            it's a per-account behaviour preference,
+                            not a frequent-use action that belongs in
+                            the main menu. The toggle is reachable
+                            from "Preferences..." below.) */}
 
 
                         {!this.props.inCall ?
@@ -4914,6 +5125,10 @@ class NavigationBar extends Component {
 
                        {!this.props.syncConversations && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact)  ?
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
+                        : null}
+
+                       {!this.props.inCall ?
+                        <Menu.Item onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
                         : null}
  
                       {(!this.props.syncConversations && !this.props.inCall && Platform.OS === "ios" && this.props.hasAutoAnswerContacts) ?
@@ -4955,8 +5170,21 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
                          : null }
 
+                        {/* Location privacy policy — Android only. The
+                            in-app Prominent Disclosure is a Google Play
+                            requirement; iOS uses CoreLocation's usage-
+                            string flow at the OS level and the panel
+                            doesn't apply there. Lives in the general
+                            (no-contact-selected) kebab because it's a
+                            device-wide setting; the modal adapts to
+                            current consent state — [Not now]/[I agree]
+                            before agreement, [Close]/[Opt out] after. */}
+                        {Platform.OS === 'android' && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
+                        <Menu.Item onPress={() => this.handleMenu('viewLocationDisclosure')} icon="shield-account" title="Location privacy policy..."/>
+                         : null }
+
                         {!(this.props.isFolded && !this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="file" title="Logs" />
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="email-send" title="Support needed…" />
                         : null}
 
                         {!this.props.inCall ?
@@ -4970,7 +5198,6 @@ class NavigationBar extends Component {
                     show={this.state.showAboutModal}
                     close={this.toggleAboutModal}
                     currentVersion={VersionNumber.appVersion}
-                    appStoreVersion={this.props.appStoreVersion}
                     buildId={this.props.buildId}
                     toggleDevMode={this.props.toggleDevMode}
                     devMode={this.props.devMode}
@@ -5038,6 +5265,9 @@ class NavigationBar extends Component {
  				    storageUsage={this.props.storageUsage}
  				    deleteAccountUrl={this.props.deleteAccountUrl}
  				    openDeleteAccount={this.openDeleteAccountModal}
+ 				    preferredVideoCodec={this.props.preferredVideoCodec}
+ 				    setPreferredVideoCodec={this.props.setPreferredVideoCodec}
+ 				    encryptionMode={this.props.encryptionMode}
                 />
 
                 <DeleteAccountModal
@@ -5045,6 +5275,17 @@ class NavigationBar extends Component {
                     close={this.closeDeleteAccountModal}
                     onConfirm={this.confirmDeleteAccount}
                     accountId={this.props.accountId}
+                />
+
+                <PreferencesModal
+                    show={this.state.showPreferencesModal}
+                    close={() => this.setState({ showPreferencesModal: false })}
+                    preferredVideoCodec={this.props.preferredVideoCodec}
+                    setPreferredVideoCodec={this.props.setPreferredVideoCodec}
+                    encryptionMode={this.props.encryptionMode}
+                    setEncryptionMode={this.props.setEncryptionMode}
+                    proximity={this.props.proximity}
+                    toggleProximity={this.props.toggleProximity}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -5078,6 +5319,18 @@ class NavigationBar extends Component {
                     onConfirm={this.onShareLocationConfirmed}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
                     displayName={this.props.selectedContact ? this.props.selectedContact.name : null}
+                    /* Surfaces the caregiver-only "Until I return" option
+                       in the modal. We check both the localProperties
+                       mirror and the tags list so a contact with only
+                       one of them set (e.g. legacy tag-only data, or a
+                       half-applied multi-device sync) still gets the
+                       feature — same defensive read pattern toggleAutoAnswer
+                       relies on. */
+                    isCaregiver={!!(this.props.selectedContact
+                        && ((this.props.selectedContact.localProperties
+                                && this.props.selectedContact.localProperties.caregiver)
+                            || (Array.isArray(this.props.selectedContact.tags)
+                                && this.props.selectedContact.tags.indexOf('caregiver') > -1)))}
                 />
 
                 {/* Google Play Prominent Disclosure. Shown the first time
@@ -5196,6 +5449,7 @@ NavigationBar.propTypes = {
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
     toggleAutoAnswer   : PropTypes.func,
+    toggleCaregiver    : PropTypes.func,
     saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,
     favoriteUris       : PropTypes.array,
@@ -5212,8 +5466,6 @@ NavigationBar.propTypes = {
     showCallMeMaybeModal: PropTypes.bool,
     toggleCallMeMaybeModal : PropTypes.func,
     showConferenceModalFunc : PropTypes.func,
-    appStoreVersion : PropTypes.object,
-    checkVersionFunc: PropTypes.func,
     refetchMessages: PropTypes.func,
     showExportPrivateKeyModal: PropTypes.bool,
     showExportPrivateKeyModalFunc: PropTypes.func,

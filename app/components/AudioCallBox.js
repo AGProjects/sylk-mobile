@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
-import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, Dimensions } from 'react-native';
-import { IconButton, Dialog, Text, ActivityIndicator, Menu } from 'react-native-paper';
+import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, TouchableOpacity, Dimensions } from 'react-native';
+import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 
@@ -8,10 +8,12 @@ import EscalateConferenceModal from './EscalateConferenceModal';
 import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
 import UserIcon from './UserIcon';
+import { getZrtpSession } from './CallZrtp';
 import utils from '../utils';
 import LoadingScreen from './LoadingScreen';
 
 import TrafficStats from './BarChart';
+import AudioSpeedometer from './AudioSpeedometer';
 
 import styles from '../assets/styles/AudioCall';
 
@@ -60,7 +62,21 @@ class AudioCallBox extends Component {
 			selectedAudioDevice         : this.props.selectedAudioDevice,
 			insets                      : this.props.insets,
 			isLandscape                 : this.props.isLandscape,
-			audioDevicePickerVisible    : false
+			audioDevicePickerVisible    : false,
+            // ZRTP indicator state. null = not started, 'probing' = in
+            // negotiation (yellow), 'key-agreed' = active (green), 'failed'
+            // (silent — call stays SDES-only).
+            zrtpState                   : null,
+            zrtpDialogVisible           : false,
+            // Shown when the call is in zRTP-mandatory mode and the
+            // handshake fails (no PGP key, incompatible codec, or 10s
+            // timeout). Lets the user choose whether to terminate the
+            // call or continue without end-to-end encryption.
+            zrtpMandatoryFailedVisible  : false,
+            zrtpMandatoryFailedInfo     : null,
+            // Toggle between the AudioSpeedometer (default) and the
+            // legacy TrafficStats bar-chart. Tap the stats area to flip.
+            showOldStats                : false
         };
 
         this.remoteAudio = React.createRef();
@@ -85,6 +101,18 @@ class AudioCallBox extends Component {
                     break;
             }
             this.props.call.statistics.on('stats', this.statistics);
+            // ZRTP: emitted by CallZrtp.js whenever per-call session state
+            // changes (probing / key-agreed / failed).
+            this.state.call.on('zrtpStateChanged', this.zrtpStateChanged);
+            // Mandatory-mode handshake failure: surface the warning
+            // dialog so the user can pick End call vs Continue.
+            this.state.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            // Catch up if the session already finished its handshake before
+            // this component mounted (e.g. after a Fast Refresh / reload).
+            const existing = getZrtpSession(this.state.call);
+            if (existing && existing.state) {
+                this.setState({ zrtpState: existing.state });
+            }
         }
 
         if (this.state.selectedContacts && this.state.selectedContacts.length > 0) {
@@ -92,10 +120,89 @@ class AudioCallBox extends Component {
         }
     }
 
+    zrtpStateChanged(newState) {
+        if (this.unmounted) {
+            return;
+        }
+        this.setState({ zrtpState: newState });
+    }
+
+    // Fired by CallZrtp.js when zRTP-mandatory mode fails to agree on
+    // keys (no public PGP key for peer, codec incompatible with our
+    // FrameEncryptor, or the 10s timer ran out). The user gets to
+    // decide: terminate (mandatory enforcement honored) or continue
+    // without E2E (downgrade to optional).
+    zrtpMandatoryFailed(info) {
+        if (this.unmounted) return;
+        utils.timestampedLog('[ZRTP] AudioCallBox received zrtpMandatoryFailed:', info);
+        this.setState({
+            zrtpMandatoryFailedVisible: true,
+            zrtpMandatoryFailedInfo: info,
+        });
+    }
+
+    _onZrtpMandatoryEndCall() {
+        this.setState({ zrtpMandatoryFailedVisible: false });
+        if (this.state.call) {
+            try { this.state.call.terminate(); } catch (e) {}
+        }
+    }
+
+    _onZrtpMandatoryContinue() {
+        this.setState({ zrtpMandatoryFailedVisible: false });
+    }
+
+    /** Determine the verification status for the badge. Anchored to the
+     *  peer's PGP public key (a stable per-peer value), NOT to the per-call
+     *  SAS — the SAS legitimately differs every call due to fresh ephemeral
+     *  X25519 keys (forward secrecy).
+     *    'unverified' — encrypted but no prior verification, or a legacy
+     *                   record without a stored publicKey
+     *    'verified'   — prior verification exists and the peer's PGP key
+     *                   still matches
+     *    'mismatch'   — prior verification exists but the peer's PGP key
+     *                   has changed since (key rotation OR potential MITM)
+     */
+    _zrtpVerificationStatus() {
+        if (this.state.zrtpState !== 'key-agreed') return null;
+        const session = getZrtpSession(this.state.call);
+        if (!session || !session.sas) return null;
+        const stored = this.props.callContact
+            && this.props.callContact.localProperties
+            && this.props.callContact.localProperties.zrtp;
+        if (!stored || !stored.publicKey) return 'unverified';
+        const currentKey = this.props.callContact && this.props.callContact.publicKey;
+        if (currentKey && stored.publicKey === currentKey) return 'verified';
+        return 'mismatch';
+    }
+
+    _onZrtpBadgePress() {
+        if (this.state.zrtpState === 'key-agreed') {
+            this.setState({ zrtpDialogVisible: true });
+        }
+    }
+
+    _onZrtpVerifyConfirm() {
+        const session = getZrtpSession(this.state.call);
+        if (!session || !session.sas) {
+            this.setState({ zrtpDialogVisible: false });
+            return;
+        }
+        if (this.props.markZrtpVerified && this.state.remoteUri) {
+            this.props.markZrtpVerified(this.state.remoteUri, session.sas.chars, session.sas.emojis);
+        }
+        this.setState({ zrtpDialogVisible: false });
+        // Force a re-render so badge flips from "encrypted" to "verified".
+        this.forceUpdate();
+    }
+
     componentWillUnmount() {
         console.log('AudioCallBox will unmount');
+        this.unmounted = true;
         if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
+            this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
+            this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
         }
 
         if (this.state.call != null && this.state.call.statistics != null) {
@@ -119,11 +226,21 @@ class AudioCallBox extends Component {
             // Remove previous listener safely
             if (this.state.call != null && this.state.call.removeListener) {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
+                this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
+                this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
             }
 
             // Attach new listener if available
             if (nextProps.call && nextProps.call.on) {
                 nextProps.call.on('stateChanged', this.callStateChanged);
+                nextProps.call.on('zrtpStateChanged', this.zrtpStateChanged);
+                nextProps.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+                // Catch up: if the session already reached key-agreed on a
+                // prior mount, pull its state so the badge shows immediately.
+                const existing = getZrtpSession(nextProps.call);
+                if (existing && existing.state) {
+                    this.setState({ zrtpState: existing.state });
+                }
             }
 
             if (nextProps.call && nextProps.call.state === 'established') {
@@ -131,7 +248,7 @@ class AudioCallBox extends Component {
                 this.setState({reconnectingCall: false});
             }
 
-            this.setState({ call: nextProps.call });
+            this.setState({ call: nextProps.call, zrtpState: null });
         }
 
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
@@ -171,6 +288,12 @@ class AudioCallBox extends Component {
             this.attachStream(this.state.call);
             this.setState({reconnectingCall: false});
         }
+        if (newState === 'terminated') {
+            // Hide ZRTP pill (and dismiss any open verification dialog) the
+            // moment the call ends, even though the AudioCallBox component
+            // sticks around for a few seconds for the wrap-up UI.
+            this.setState({ zrtpState: null, zrtpDialogVisible: false });
+        }
     }
 
     attachStream(call) {
@@ -195,26 +318,50 @@ class AudioCallBox extends Component {
     }
 
     statistics(stats) {
-        const { audio } = stats.data;
-        const { remote: { audio: remoteAudio } } = stats.data;
-
-        const inboundAudio = audio?.inbound?.[0];
+        // The previous version of this function early-returned whenever
+        // any of remote-inbound / local-inbound / local-outbound was
+        // absent, which left audioGraphData empty on builds where the
+        // peer's inbound rtp record isn't surfaced to JS — that in turn
+        // hid the TrafficStats bar-chart entirely (BarChart.js renders
+        // nothing when data is empty). Be defensive instead: fall back
+        // to whatever stats are available so the bar-chart and the
+        // speedometer always see something to draw.
+        const { audio, connection } = stats.data || {};
+        const remoteAudio   = stats.data?.remote?.audio;
+        const inboundAudio  = audio?.inbound?.[0];
         const outboundAudio = audio?.outbound?.[0];
         const remoteInbound = remoteAudio?.inbound?.[0];
 
-        if (!remoteInbound || !inboundAudio || !outboundAudio) return;
-        
+        if (!inboundAudio && !outboundAudio) return;
+
+        // RTT: prefer the remote-inbound report (peer-measured RTT for
+        // OUR upstream) and fall back to the ICE pair's currentRTT,
+        // which is always populated for established calls.
+        const rttSec = (remoteInbound && typeof remoteInbound.roundTripTime === 'number')
+            ? remoteInbound.roundTripTime
+            : (connection?.currentRoundTripTime || 0);
+        const latency = (rttSec / 2) * 1000;
+
+        // Codec: try remote-inbound first (peer's view of the codec we
+        // send), then either local rtp record. mimeType comes back as
+        // "audio/opus" — strip the prefix.
+        const rawCodec = remoteInbound?.mimeType
+                      || inboundAudio?.mimeType
+                      || outboundAudio?.mimeType
+                      || '';
+        const audioCodec = (rawCodec.split?.('/')?.[1]) || rawCodec || '';
+
         const addData = {
-            timestamp: audio.timestamp,
-            incomingBitrate: inboundAudio.bitrate || 0,
-            outgoingBitrate: outboundAudio.bitrate || 0,
-            latency: (remoteInbound.roundTripTime || 0) / 2 * 1000,
-            jitter: inboundAudio.jitter || 0,
-            packetsLostOutbound: remoteInbound.packetLossRate || 0,
-            packetsLostInbound: inboundAudio.packetLossRate || 0,
-            packetRateOutbound: outboundAudio.packetRate || 0,
-            packetRateInbound: inboundAudio.packetRate || 0,
-            audioCodec: (remoteInbound.mimeType?.split?.('/')?.[1]) || ''
+            timestamp: audio?.timestamp || Date.now(),
+            incomingBitrate: inboundAudio?.bitrate || 0,
+            outgoingBitrate: outboundAudio?.bitrate || 0,
+            latency,
+            jitter: inboundAudio?.jitter || 0,
+            packetsLostOutbound: remoteInbound?.packetLossRate || 0,
+            packetsLostInbound: inboundAudio?.packetLossRate || 0,
+            packetRateOutbound: outboundAudio?.packetRate || 0,
+            packetRateInbound: inboundAudio?.packetRate || 0,
+            audioCodec
         };
 
         this.setState(state => ({
@@ -387,6 +534,65 @@ class AudioCallBox extends Component {
         }
     }
 
+    toggleStatsView() {
+        this.setState(s => ({ showOldStats: !s.showOldStats }));
+    }
+
+    /** Render BOTH the AudioSpeedometer and the legacy TrafficStats
+     *  bar-chart, hiding the inactive one with display:'none' instead
+     *  of conditional mounting. This keeps the speedometer's
+     *  call.statistics listener attached across toggles, so its
+     *  needles don't reset to zero (or stale-snapshot) every time the
+     *  user flips views. The whole block is wrapped in a
+     *  TouchableOpacity — a single tap anywhere on the stats flips
+     *  between the two views. The ZRTP badge (passed in via `footer`)
+     *  sits below either view in the same spot so users always see
+     *  verification state in the same place.
+     */
+    renderStatsBlock(remountKey, footer) {
+        // No useful stats before the media starts flowing — hide the
+        // whole block until the call reaches 'established'. The ZRTP
+        // badge that normally rides along with the stats is still
+        // rendered (without the dial) so the user sees verification
+        // state during ringing.
+        const cs = this.state.call && this.state.call.state;
+        const isConnected = cs === 'established' || cs === 'accepted';
+        if (!isConnected) {
+            return footer || null;
+        }
+
+        const showOld = this.state.showOldStats;
+        return (
+            <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={this.toggleStatsView}
+            >
+                <View style={{ display: showOld ? 'flex' : 'none' }}>
+                    <TrafficStats
+                        key={'cb-stats-' + remountKey}
+                        isTablet={this.props.isTablet}
+                        isLandscape={this.state.isLandscape}
+                        isFolded={this.props.isFolded}
+                        data={this.state.audioGraphData}
+                        media="audio"
+                        footer={showOld ? footer : null}
+                    />
+                </View>
+                <View style={{
+                    display: showOld ? 'none' : 'flex',
+                    alignItems: 'center',
+                }}>
+                    <AudioSpeedometer
+                        key={'cb-spd-' + remountKey}
+                        call={this.state.call}
+                        audioCodec={this.props.audioCodec}
+                    />
+                    {!showOld ? footer : null}
+                </View>
+            </TouchableOpacity>
+        );
+    }
+
 	renderAudioDeviceButtons() {
 	  const { availableAudioDevices, selectedAudioDevice, call } = this.state;
 	  //console.log('renderAudioDeviceButtons', selectedAudioDevice);
@@ -510,8 +716,121 @@ class AudioCallBox extends Component {
         let extraButtonContainerClass = {};       
         let container = styles.container;
         
+        // ZRTP indicator — rendered inline below the TrafficStats packet
+        // loss graph. Hidden during the transient "negotiating" stage and
+        // only shown once keys are agreed (so the user doesn't see a
+        // yellow pill flash on every setup). Distinct look once the user
+        // has verified SAS for this contact.
+        // Tap the pill (when key-agreed) to open the SAS verification modal.
+        const renderZrtpBadge = () => {
+            if (this.state.zrtpState !== 'key-agreed') {
+                return null;
+            }
+            let bg, label;
+            const status = this._zrtpVerificationStatus();
+            if (status === 'verified') {
+                bg = 'rgba(0, 170, 80, 0.9)';     // green — verified
+                label = '🔒 zRTP verified';
+            } else if (status === 'mismatch') {
+                bg = 'rgba(200, 30, 30, 0.9)';    // red — failed/MITM
+                label = '⚠ SAS changed';
+            } else {
+                bg = 'rgba(230, 120, 0, 0.95)';   // orange — unverified
+                label = '🔒 zRTP encrypted (tap to verify)';
+            }
+            const isTappable = true;
+            const inner = (
+                <View style={{
+                    backgroundColor: bg,
+                    paddingVertical: 3,
+                    paddingHorizontal: 10,
+                    borderRadius: 10,
+                }}>
+                    <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>{label}</Text>
+                </View>
+            );
+            return (
+                <View style={{ alignItems: 'center', marginTop: 26 }}>
+                    {isTappable ? (
+                        <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
+                    ) : inner}
+                </View>
+            );
+        };
+
+        // ZRTP SAS verification dialog — opened by tapping the green pill.
+        const zrtpSession = this.state.zrtpDialogVisible ? getZrtpSession(this.state.call) : null;
+        const zrtpSas = zrtpSession && zrtpSession.sas;
+        const verificationStatus = this._zrtpVerificationStatus();
+        const stored = this.props.callContact
+            && this.props.callContact.localProperties
+            && this.props.callContact.localProperties.zrtp;
+
         return (
             <View style={[styles.container, {borderColor: 'blue', borderWidth: 0}, extraStyles]}>
+                <Portal>
+                    <Dialog
+                        visible={this.state.zrtpDialogVisible}
+                        onDismiss={() => this.setState({ zrtpDialogVisible: false })}
+                    >
+                        <Dialog.Title>Verify zRTP encryption</Dialog.Title>
+                        <Dialog.Content>
+                            <Text style={{ marginBottom: 12 }}>
+                                Compare these with the other party. Both phones must show the same letters AND emojis.
+                            </Text>
+                            {zrtpSas ? (
+                                <View style={{ alignItems: 'center', marginVertical: 12 }}>
+                                    <Text style={{ fontSize: 36, fontWeight: 'bold', letterSpacing: 8 }}>{zrtpSas.chars}</Text>
+                                    <Text style={{ fontSize: 32, marginTop: 6, letterSpacing: 6 }}>{zrtpSas.emojis}</Text>
+                                </View>
+                            ) : (
+                                <Text>Waiting for handshake to complete…</Text>
+                            )}
+                            {verificationStatus === 'verified' && stored && (
+                                <Text style={{ color: 'green', marginTop: 8 }}>
+                                    ✓ Previously verified on {new Date(stored.verifiedAt).toLocaleString()}
+                                </Text>
+                            )}
+                            {verificationStatus === 'mismatch' && stored && (
+                                <Text style={{ color: 'red', marginTop: 8 }}>
+                                    ⚠ The other party's identity key has changed since the last verification on {new Date(stored.verifiedAt).toLocaleString()}. They may have reinstalled — or this could be a MITM. Re-verify carefully before tapping Match.
+                                </Text>
+                            )}
+                        </Dialog.Content>
+                        <Dialog.Actions>
+                            <Button onPress={() => this.setState({ zrtpDialogVisible: false })}>Close</Button>
+                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Match</Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                    {/* zRTP mandatory-mode handshake failure prompt. */}
+                    <Dialog
+                        visible={this.state.zrtpMandatoryFailedVisible}
+                        onDismiss={this._onZrtpMandatoryContinue}
+                        dismissable={false}
+                    >
+                        <Dialog.Title>End-to-end encryption failed</Dialog.Title>
+                        <Dialog.Content>
+                            <Text>
+                                The zRTP key exchange did not complete. You set
+                                encryption to "mandatory" in Preferences, but the
+                                other party may not support it.
+                                {'\n\n'}
+                                You can end the call now, or continue without
+                                end-to-end encryption. The call will still be
+                                encrypted between your phone and the SylkServer
+                                relay (DTLS), but the relay can read the media.
+                            </Text>
+                        </Dialog.Content>
+                        <Dialog.Actions>
+                            <Button onPress={this._onZrtpMandatoryContinue}>
+                                Continue
+                            </Button>
+                            <Button mode="contained" onPress={this._onZrtpMandatoryEndCall}>
+                                End call
+                            </Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                </Portal>
                 <CallOverlay style={styles.callStatus}
                     show={true}
                     remoteUri={this.state.remoteUri}
@@ -534,6 +853,8 @@ class AudioCallBox extends Component {
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
 					insets = {this.state.insets}
+					shareLocationFromCall = {this.props.shareLocationFromCall}
+					requestLocationFromCall = {this.props.requestLocationFromCall}
                 />
 
 				{this.props.isFolded ? (
@@ -546,14 +867,22 @@ class AudioCallBox extends Component {
 							</TouchableWithoutFeedback>
 						</View>
 						<View style={styles.foldedStatsColumn}>
-							<TrafficStats
-								key={'cb-stats-' + _callRemountKey}
-								isTablet={this.props.isTablet}
-								isLandscape={this.state.isLandscape}
-								isFolded={this.props.isFolded}
-								data={this.state.audioGraphData}
-								media="audio"
-							/>
+							{this.renderStatsBlock(_callRemountKey, renderZrtpBadge())}
+						</View>
+					</View>
+				) : this.state.isLandscape && !this.props.isTablet ? (
+					/* Landscape on a regular phone: two-column layout — caller
+					   info on the left, stats (with ZRTP badge) on the right. */
+					<View key={'cb-landscape-row-' + _callRemountKey} style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', transform: [{ translateY: -20 }] }}>
+							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
+							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+								<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{this.state.remoteUri}</Text>
+							</TouchableWithoutFeedback>
+						</View>
+						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+							{this.renderStatsBlock(_callRemountKey, renderZrtpBadge())}
 						</View>
 					</View>
 				) : (
@@ -595,13 +924,7 @@ class AudioCallBox extends Component {
 							  </View>
 							  )}
 
-						<TrafficStats
-							key={'cb-stats-' + _callRemountKey}
-							isTablet={this.props.isTablet}
-							isLandscape={this.state.isLandscape}
-							data={this.state.audioGraphData}
-							media="audio"
-						/>
+						{this.renderStatsBlock(_callRemountKey, renderZrtpBadge())}
 					</>
 				)}
 

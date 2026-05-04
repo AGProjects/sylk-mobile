@@ -1,0 +1,6 @@
+Improve location sharing features
+Improve maps navigation for location sharing
+Added audio and Video speedometers
+Search for messages improvments
+Added healthcare features (caretaker role)
+Bug fixes

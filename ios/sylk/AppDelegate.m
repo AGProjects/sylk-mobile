@@ -64,7 +64,7 @@
     
     self.moduleName = @"Sylk";
 
-    NSLog(@"[sylk_app] Application launch");
+    NSLog(@"[SYLK_APP] [App] Application launch");
 
   if ([FIRApp defaultApp] == nil) {
     [FIRApp configure];
@@ -110,7 +110,7 @@
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-    NSLog(@"[sylk_app] Application ready");
+    NSLog(@"[SYLK_APP] [App] Application ready");
     for (NSString *uuid in self.autoAnswerTimers.allKeys) {
         [self cancelAutoAnswerForUUID:uuid];
     }
@@ -155,7 +155,7 @@
     ];
 
     for (NSString *dir in searchDirs) {
-        //NSLog(@"[DB Debug] Recursively searching in: %@", dir);
+        //NSLog(@"[SYLK_APP] [DB] Recursively searching in: %@", dir);
 
         NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:dir];
         NSString *file;
@@ -164,14 +164,14 @@
         while ((file = [enumerator nextObject])) {
             if ([[file lastPathComponent] isEqualToString:dbName]) {
                 NSString *fullPath = [dir stringByAppendingPathComponent:file];
-                NSLog(@"[DB Debug] Found sylk.db at: %@", fullPath);
+                NSLog(@"[SYLK_APP] [DB] Found sylk.db at: %@", fullPath);
                 found = YES;
                 break; // stop at first match
             }
         }
 
         if (!found) {
-            //NSLog(@"[DB Debug] sylk.db not found in %@", dir);
+            //NSLog(@"[SYLK_APP] [DB] sylk.db not found in %@", dir);
         }
     }
 }
@@ -193,13 +193,13 @@
             NSString *fullDir = [baseDir stringByAppendingPathComponent:sub];
             NSString *dbPath = [fullDir stringByAppendingPathComponent:dbName];
             if ([fm fileExistsAtPath:dbPath]) {
-                //NSLog(@"[sylk_app] Found database at: %@", dbPath);
+                //NSLog(@"[SYLK_APP] [App] Found database at: %@", dbPath);
                 return dbPath;
             }
         }
     }
 
-    NSLog(@"[sylk_app] sylk.db not found in any known location");
+    NSLog(@"[SYLK_APP] [App] sylk.db not found in any known location");
     return nil;
 }
 
@@ -210,13 +210,13 @@
     @try {
         NSString *dbPath = [self sylkDatabasePath];
         if (!dbPath) {
-            NSLog(@"[sylk_app] Database file not found");
+            NSLog(@"[SYLK_APP] [App] Database file not found");
             return nil;
         }
 
         sqlite3 *db = NULL;
         if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to open database at path %@", dbPath);
+            NSLog(@"[SYLK_APP] [App] Failed to open database at path %@", dbPath);
             return nil;
         }
 
@@ -272,13 +272,13 @@
 
             sqlite3_finalize(stmt);
         } else {
-            NSLog(@"[sylk_app] Failed to prepare statement for getContact");
+            NSLog(@"[SYLK_APP] [App] Failed to prepare statement for getContact");
         }
 
         sqlite3_close(db);
 
     } @catch (NSException *exception) {
-        NSLog(@"[sylk_app] Exception in getContact: %@ - %@", exception.name, exception.reason);
+        NSLog(@"[SYLK_APP] [App] Exception in getContact: %@ - %@", exception.name, exception.reason);
     }
 
     if (contact) {
@@ -286,7 +286,7 @@
             ? [contact.tags componentsJoinedByString:@","]
             : @"<none>";
 
-        NSLog(@"[sylk_app] Contact found: %@ | tags: %@", contact.displayName, joined);
+        NSLog(@"[SYLK_APP] [App] Contact found: %@ | tags: %@", contact.displayName, joined);
     }
 
     return contact;
@@ -341,7 +341,7 @@
             contactTags:(NSArray<NSString *> * _Nullable)contactTags {
 
     if (!account || account.length == 0) {
-        NSLog(@"[sylk_app] isAccountActive called with nil or empty account, returning NO");
+        NSLog(@"[SYLK_APP] [App] isAccountActive called with nil or empty account, returning NO");
         return NO;
     }
 
@@ -349,7 +349,7 @@
     NSString *dbPath = [self sylkDatabasePath];
 
     if (!dbPath || ![fm fileExistsAtPath:dbPath]) {
-        NSLog(@"[sylk_app] Database file not found at %@, returning NO", dbPath);
+        NSLog(@"[SYLK_APP] [App] Database file not found at %@, returning NO", dbPath);
         return NO;
     }
 
@@ -362,13 +362,13 @@
 
     @try {
         if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to open database, returning NO");
+            NSLog(@"[SYLK_APP] [App] Failed to open database, returning NO");
             return NO;
         }
 
         NSString *query = @"SELECT active, dnd, reject_anonymous, reject_non_contacts FROM accounts WHERE account = ?";
         if (sqlite3_prepare_v2(db, [query UTF8String], -1, &stmt, NULL) != SQLITE_OK) {
-            NSLog(@"[sylk_app] Failed to prepare statement, returning NO");
+            NSLog(@"[SYLK_APP] [App] Failed to prepare statement, returning NO");
             return NO;
         }
 
@@ -380,7 +380,7 @@
             rejectAnonymous = (sqlite3_column_text(stmt, 2) && sqlite3_column_text(stmt, 2)[0] == '1');
             rejectNonContacts = (sqlite3_column_text(stmt, 3) && sqlite3_column_text(stmt, 3)[0] == '1');
 
-            NSLog(@"[sylk_app] account flags: active=%@ dnd=%@ rejectAnonymous=%@ rejectNonContacts=%@",
+            NSLog(@"[SYLK_APP] [App] account flags: active=%@ dnd=%@ rejectAnonymous=%@ rejectNonContacts=%@",
                   isActive ? @"YES" : @"NO",
                   isDnd ? @"YES" : @"NO",
                   rejectAnonymous ? @"YES" : @"NO",
@@ -388,7 +388,7 @@
         }
 
     } @catch (NSException *ex) {
-        NSLog(@"[sylk_app] Exception checking account status: %@ - %@", ex.name, ex.reason);
+        NSLog(@"[SYLK_APP] [App] Exception checking account status: %@ - %@", ex.name, ex.reason);
         return NO;
     } @finally {
         if (stmt) sqlite3_finalize(stmt);
@@ -399,27 +399,27 @@
 
     // Only allow calls from known contacts
     if (rejectNonContacts && !contactTags) {
-        NSLog(@"[sylk_app] Caller %@ not in contacts, rejecting call", fromUri);
+        NSLog(@"[SYLK_APP] [App] Caller %@ not in contacts, rejecting call", fromUri);
         [self showRejectedCallNotification:fromUri reason:@"not in contacts list"];
         return NO;
     }
 
     // Anonymous caller check
     if (([fromUri containsString:@"anonymous"] || [fromUri containsString:@"@guest."]) && rejectAnonymous) {
-        NSLog(@"[sylk_app] Anonymous caller %@ rejected", fromUri);
+        NSLog(@"[SYLK_APP] [App] Anonymous caller %@ rejected", fromUri);
         [self showRejectedCallNotification:fromUri reason:@"anonymous caller"];
         return NO;
     }
 
     // Do Not Disturb
     if (isDnd) {
-        NSLog(@"[sylk_app] DND active, rejecting call from %@", fromUri);
+        NSLog(@"[SYLK_APP] [App] DND active, rejecting call from %@", fromUri);
         [self showRejectedCallNotification:fromUri reason:@"Do not disturb now"];
         return NO;
     }
 
     if (!isActive) {
-        NSLog(@"[sylk_app] Account %@ is not active, rejecting call", account);
+        NSLog(@"[SYLK_APP] [App] Account %@ is not active, rejecting call", account);
         return NO;
     }
 
@@ -447,7 +447,7 @@
             openURL:(NSURL *)url
             options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
 {
-    NSLog(@"[sylk_share] openURL called: %@", url.absoluteString);
+    NSLog(@"[SYLK_APP] [App] openURL called: %@", url.absoluteString);
 
     if ([url.scheme isEqualToString:@"sylk"] &&
         [url.host isEqualToString:@"share"]) {
@@ -463,7 +463,7 @@
         }
 
         if ([source isEqualToString:@"extension"]) {
-            NSLog(@"[sylk_share] Launched from Share Extension");
+            NSLog(@"[SYLK_APP] [App] Launched from Share Extension");
             return YES;
         }
     }
@@ -479,7 +479,9 @@
 {
     // Full APNS payload
        NSDictionary *userInfo = notification.request.content.userInfo;
-       NSLog(@"[sylk_app] willPresentNotification userInfo: %@", userInfo);
+       // %s + UTF8String of [obj description] to bypass unified-logging <private> redaction.
+       NSLog(@"[SYLK_APP] [App] willPresentNotification userInfo: %s",
+             [[userInfo description] UTF8String]);
 
        // Your custom payload (the inner "data" dict)
        NSDictionary *data = userInfo[@"data"];
@@ -510,7 +512,7 @@
                                   [event isEqualToString:@"meeting_succeeded"] ||
                                   [event isEqualToString:@"meeting_proximity_alert"]);
        if (isMeetingMilestone) {
-           NSLog(@"[sylk_app] presenting meeting milestone banner event=%@ from=%@", event, fromUri);
+           NSLog(@"[SYLK_APP] [App] presenting meeting milestone banner event=%@ from=%@", event, fromUri);
            UNNotificationPresentationOptions mpOptions;
            if (@available(iOS 14.0, *)) {
                mpOptions = UNNotificationPresentationOptionBanner |
@@ -526,7 +528,7 @@
 
        NSString *activeChat = [[NSUserDefaults standardUserDefaults] stringForKey:@"activeChatJID"];
        if (activeChat != nil && [fromUri isEqualToString:[activeChat lowercaseString]]) {
-           NSLog(@"[sylk_app] Skip notification for active chat with %@", fromUri);
+           NSLog(@"[SYLK_APP] [App] Skip notification for active chat with %@", fromUri);
            completionHandler(UNNotificationPresentationOptionNone); // do not show banner/sound
            return;
        }
@@ -535,12 +537,19 @@
        BOOL allow = [self shouldDisplayMessageFromPayload:data];
 
        if (!allow) {
-           NSLog(@"[sylk_app] Skip notification");
+           NSLog(@"[SYLK_APP] [App] Skip notification");
            completionHandler(UNNotificationPresentationOptionNone);
            return;
        }
 
-        NSLog(@"[sylk_app] willPresentNotification event=%@ from=%@ to=%@", event, fromUri, toUri);
+        // Use %s + [obj UTF8String] instead of %@ so iOS unified
+        // logging doesn't redact the values to <private>. NSLog routes
+        // through os_log with default privacy = private for %@; %s is
+        // treated as public.
+        NSLog(@"[SYLK_APP] [App] willPresentNotification event=%s from=%s to=%s",
+              [(event   ?: @"(nil)") UTF8String],
+              [(fromUri ?: @"(nil)") UTF8String],
+              [(toUri   ?: @"(nil)") UTF8String]);
 
   // iOS 14+ split UNNotificationPresentationOptionAlert into .banner (the bubble
   // at the top of the screen) and .list (the entry in Notification Center).
@@ -608,7 +617,7 @@ continueUserActivity:(NSUserActivity *)userActivity
 - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
 {
     NSString *hexToken = [self hexStringFromDeviceToken:deviceToken];
-    NSLog(@"[sylk_app] Device token: %@", hexToken);
+    NSLog(@"[SYLK_APP] [App] Device token: %@", hexToken);
 
     // Send token to RN via APNSTokenModule
     // APNSTokenModule *module = [self.bridge moduleForClass:[APNSTokenModule class]];
@@ -625,7 +634,7 @@ continueUserActivity:(NSUserActivity *)userActivity
 
 - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
 {
-  NSLog(@"[sylk_app] Failed to register for remote notifications: %@", error);
+  NSLog(@"[SYLK_APP] [App] Failed to register for remote notifications: %@", error);
   [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
 }
 
@@ -645,7 +654,11 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
     NSString *fromUri = [[coerceString(data[@"from_uri"]) lowercaseString] copy];
     NSString *toUri = [[coerceString(data[@"to_uri"]) lowercaseString] copy];
 
-    NSLog(@"[sylk_app] Received %@ notification from %@ to %@", event, fromUri, toUri);
+    // %s + UTF8String to bypass unified-logging <private> redaction.
+    NSLog(@"[SYLK_APP] [App] Received %s notification from %s to %s",
+          [(event   ?: @"(nil)") UTF8String],
+          [(fromUri ?: @"(nil)") UTF8String],
+          [(toUri   ?: @"(nil)") UTF8String]);
 
     // --- Handle 'cancel' event (existing logic) ---
     if ([event isEqualToString:@"cancel"]) {
@@ -660,12 +673,12 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
 
     // --- Handle 'message' event  ---
     if ([event isEqualToString:@"message"]) {
-        //NSLog(@"[sylk_app] Incoming message payload: %@", userInfo);
+        //NSLog(@"[SYLK_APP] [App] Incoming message payload: %@", userInfo);
 
         BOOL allow = [self shouldDisplayMessageFromPayload:data];
         
         if (!allow) {
-            NSLog(@"[sylk_app] Message notification suppressed");
+            NSLog(@"[SYLK_APP] [App] Message notification suppressed");
             return completionHandler(UIBackgroundFetchResultNoData);
         }
     }
@@ -723,14 +736,14 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSString *account = [[coerceString(userInfo[@"account"]) lowercaseString] copy];
     NSString *remoteDisplayName = coerceString(userInfo[@"from_display_name"]);
 
-    NSLog(@"[sylk_app] calluuid = %@", calluuid);
-    NSLog(@"[sylk_app] callId = %@", callId);
-    NSLog(@"[sylk_app] mediaType = %@", mediaType);
-    NSLog(@"[sylk_app] remoteDisplayName = %@", remoteDisplayName);
-    NSLog(@"[sylk_app] fromUri = %@", fromUri);
-    NSLog(@"[sylk_app] toUri = %@", toUri);
-    NSLog(@"[sylk_app] account = %@", account);
-    NSLog(@"[sylk_app] Received push %@ from %@ to %@", event, fromUri, toUri);
+    NSLog(@"[SYLK_APP] [App] calluuid = %@", calluuid);
+    NSLog(@"[SYLK_APP] [App] callId = %@", callId);
+    NSLog(@"[SYLK_APP] [App] mediaType = %@", mediaType);
+    NSLog(@"[SYLK_APP] [App] remoteDisplayName = %@", remoteDisplayName);
+    NSLog(@"[SYLK_APP] [App] fromUri = %@", fromUri);
+    NSLog(@"[SYLK_APP] [App] toUri = %@", toUri);
+    NSLog(@"[SYLK_APP] [App] account = %@", account);
+    NSLog(@"[SYLK_APP] [App] Received push %@ from %@ to %@", event, fromUri, toUri);
 
     NSString *callerName = fromUri; // default fallback
 
@@ -741,12 +754,12 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         return;
     }
 
-    NSLog(@"[sylk_app] Raw Payload: %@", userInfo);
+    NSLog(@"[SYLK_APP] [App] Raw Payload: %@", userInfo);
 
     BOOL allow = [self shouldDisplayMessageFromPayload:userInfo];
     
     if (!allow) {
-        NSLog(@"[sylk_app] Notification suppressed");
+        NSLog(@"[SYLK_APP] [App] Notification suppressed");
         if (completion) completion();
         return;
     }
@@ -782,25 +795,25 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         callerName = remoteDisplayName;
     }
 
-    NSLog(@"[sylk_app] displayName = %@", displayName);
+    NSLog(@"[SYLK_APP] [App] displayName = %@", displayName);
 
     if (tags) {
-        NSLog(@"[sylk_app] Contact tags for %@: %@",
+        NSLog(@"[SYLK_APP] [App] Contact tags for %@: %@",
               fromUri,
               tags.count ? [tags componentsJoinedByString:@", "] : @"<none>");
     } else {
-        NSLog(@"[sylk_app] Contact %@ not found in contacts (tags=nil)", fromUri);
+        NSLog(@"[SYLK_APP] [App] Contact %@ not found in contacts (tags=nil)", fromUri);
     }
 
     autoAnswer = [self shouldAutoAnswer:tags];
     if (autoAnswer) {
-        NSLog(@"[sylk_app] must autoAnswer");
+        NSLog(@"[SYLK_APP] [App] must autoAnswer");
     }
 
     BOOL shouldScheduleAutoAnswer = autoAnswer && [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
     
     if (autoAnswer && [UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
-        NSLog(@"[sylk_app] Cannot auto-answer if the app is not active");
+        NSLog(@"[SYLK_APP] [App] Cannot auto-answer if the app is not active");
     }
     
     // --- pass payload to RN side ---
@@ -809,7 +822,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     // --- report to CallKit only if app is not active ---
     [RNVoipPushNotificationManager addCompletionHandler:calluuid completionHandler:completion];
     
-    NSLog(@"[sylk_app] REPORTING CALL WITH NAME: %@", callerName);
+    NSLog(@"[SYLK_APP] [App] REPORTING CALL WITH NAME: %@", callerName);
 
     @try {
         [RNCallKeep reportNewIncomingCall: calluuid
@@ -831,11 +844,11 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         if (shouldScheduleAutoAnswer) {
             [self scheduleAutoAnswerForUUID:calluuid delay:15];
         } else {
-            NSLog(@"[sylk_app] Auto-answer is disabled");
+            NSLog(@"[SYLK_APP] [App] Auto-answer is disabled");
         }
         
     } @catch (NSException *ex) {
-        NSLog(@"[sylk_app] Exception reporting CallKit call: %@ - %@", ex.name, ex.reason);
+        NSLog(@"[SYLK_APP] [App] Exception reporting CallKit call: %@ - %@", ex.name, ex.reason);
         if (completion) completion();
     }
 }
@@ -849,14 +862,14 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         return @"";
     };
 
-    NSLog(@"[sylk_app] -- shouldDisplayMessageFromPayload: %@", data);
+    NSLog(@"[SYLK_APP] [App] -- shouldDisplayMessageFromPayload: %@", data);
 
     // ---- 1. Read and validate event ----
     NSString *event = [[coerceString(data[@"event"]) stringByTrimmingCharactersInSet:
                         [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
 
     if (event.length == 0) {
-        NSLog(@"[sylk_app] Missing event");
+        NSLog(@"[SYLK_APP] [App] Missing event");
         return NO;
     }
 
@@ -867,7 +880,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 	BOOL isMessage         = [event isEqualToString:@"message"];
 
 	if (!isIncomingSession && !isIncomingConf && !isCancel && !isMessage) {
-        NSLog(@"[sylk_app] Unsupported event");
+        NSLog(@"[SYLK_APP] [App] Unsupported event");
 		return NO;
 	}
 
@@ -878,7 +891,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     toUri = [[toUri stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
 
     if (toUri.length == 0) {
-        NSLog(@"[sylk_app] Missing toUri");
+        NSLog(@"[SYLK_APP] [App] Missing toUri");
         return NO;
     }
 
@@ -886,7 +899,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     fromUri = [[fromUri stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
 
     if (fromUri.length == 0) {
-        NSLog(@"[sylk_app] Missing fromUri");
+        NSLog(@"[SYLK_APP] [App] Missing fromUri");
         return NO;
     }
 
@@ -896,20 +909,24 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 		NSString *messageId = coerceString(data[@"message_id"]);
 		messageId = [messageId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 		if (messageId.length == 0) {
-			NSLog(@"[sylk_app] Message error: missing messageId");
+			NSLog(@"[SYLK_APP] [App] Message error: missing messageId");
 			return NO;
 		}
 
         UIApplicationState state = [UIApplication sharedApplication].applicationState;
         if (state == UIApplicationStateActive) {
-            NSLog(@"[sylk_app] App is foreground and active");
+            NSLog(@"[SYLK_APP] [App] App is foreground and active");
         } else if (state == UIApplicationStateInactive) {
-            NSLog(@"[sylk_app] App is foreground but inactive");
+            NSLog(@"[SYLK_APP] [App] App is foreground but inactive");
         } else if (state == UIApplicationStateBackground) {
-            NSLog(@"[sylk_app] App is in the background");
+            NSLog(@"[SYLK_APP] [App] App is in the background");
         }
 
-        NSLog(@"[sylk_app] Message %@ from %@ to %@", messageId, fromUri, lookupAccount);
+        // %s + UTF8String to bypass unified-logging <private> redaction.
+        NSLog(@"[SYLK_APP] [App] Message %s from %s to %s",
+              [(messageId     ?: @"(nil)") UTF8String],
+              [(fromUri       ?: @"(nil)") UTF8String],
+              [(lookupAccount ?: @"(nil)") UTF8String]);
 
         return YES;
 	}
@@ -918,7 +935,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 		NSString *callId = coerceString(data[@"session-id"]);
 		callId = [callId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 		if (callId.length == 0) {
-			NSLog(@"[sylk_app] Missing call id");
+			NSLog(@"[SYLK_APP] [App] Missing call id");
 			return NO;
 		}
 
@@ -932,7 +949,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 							 lowercaseString];
 		
 			if (lookupAccount.length == 0) {
-				NSLog(@"[sylk_app] Missing account for conference request");
+				NSLog(@"[SYLK_APP] [App] Missing account for conference request");
 				return NO;
 			}
 		}
@@ -941,7 +958,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 			lookupAccount = toUri;
 		}
 
-		NSLog(@"[sylk_app] %@ %@ from %@ to %@", event, callId, fromUri, lookupAccount);
+		NSLog(@"[SYLK_APP] [App] %@ %@ from %@ to %@", event, callId, fromUri, lookupAccount);
 	}
 
     Contact *contact = nil;
@@ -955,19 +972,19 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSArray<NSString *> *tags = contact ? contact.tags : @[];
 
 	if (![self isAccountActive:lookupAccount fromUri:fromUri contactTags:tags]) {
-		NSLog(@"[sylk_app] Request rejected by account rules");
+		NSLog(@"[SYLK_APP] [App] Request rejected by account rules");
 		return NO;
 	}
 
 	// Blocked?
 	if ([self isBlocked:tags]) {
-		NSLog(@"[sylk_app] Message from %@ is blocked", fromUri);
+		NSLog(@"[SYLK_APP] [App] Message from %@ is blocked", fromUri);
 		return NO;
 	}
 
 	// Muted?
 	if ([self isMuted:tags]) {
-		NSLog(@"[sylk_app] Skipping notification: user %@ is muted", fromUri);
+		NSLog(@"[SYLK_APP] [App] Skipping notification: user %@ is muted", fromUri);
 		return NO;
 	}
 
@@ -977,7 +994,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
 - (void)answerCallWithUUID:(NSString *)uuidString
 {
-    NSLog(@"[sylk_app] Auto-answer now for call UUID %@", uuidString);
+    NSLog(@"[SYLK_APP] [App] Auto-answer now for call UUID %@", uuidString);
 
     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
     if (!uuid) return;
@@ -992,9 +1009,9 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     [controller requestTransaction:transaction completion:^(NSError * _Nullable error) {
         if (error) {
-            NSLog(@"[sylk_app] Auto-answer failed: %@", error);
+            NSLog(@"[SYLK_APP] [App] Auto-answer failed: %@", error);
         } else {
-            NSLog(@"[sylk_app] Auto-answer succeeded for %@", uuidString);
+            NSLog(@"[SYLK_APP] [App] Auto-answer succeeded for %@", uuidString);
         }
     }];
 }
@@ -1002,15 +1019,15 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 - (void)cancelAutoAnswerForUUID:(NSString *)uuid
 {
     NSString *key = [self normalizedUUID:uuid];
-    //NSLog(@"[sylk_app] cancelAutoAnswerForUUID %@", key);
+    //NSLog(@"[SYLK_APP] [App] cancelAutoAnswerForUUID %@", key);
     
     dispatch_source_t timer = self.autoAnswerTimers[key];
     if (timer) {
         dispatch_source_cancel(timer);
         [self.autoAnswerTimers removeObjectForKey:key];
-        NSLog(@"[sylk_app] Auto-answer cancelled for %@", key);
+        NSLog(@"[SYLK_APP] [App] Auto-answer cancelled for %@", key);
     } else {
-        //NSLog(@"[sylk_app] Auto-answer timer not found %@", key);
+        //NSLog(@"[SYLK_APP] [App] Auto-answer timer not found %@", key);
     }
 }
 
@@ -1033,7 +1050,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSString *key = [self normalizedUUID:uuid];
     
     dispatch_source_set_event_handler(timer, ^{
-        //NSLog(@"[sylk_app] Auto-answer firing for %@", key);
+        //NSLog(@"[SYLK_APP] [App] Auto-answer firing for %@", key);
         [weakSelf answerCallWithUUID:key];
         [weakSelf cancelAutoAnswerForUUID:key];
     });
@@ -1041,7 +1058,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     dispatch_resume(timer);
     self.autoAnswerTimers[key] = timer;
 
-    NSLog(@"[sylk_app] Auto-answer scheduled in %.0fs for %@", delay, uuid);
+    NSLog(@"[SYLK_APP] [App] Auto-answer scheduled in %.0fs for %@", delay, uuid);
 }
 
 - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAction *)action
@@ -1058,7 +1075,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     if (!uuid) return;
 
-    NSLog(@"[sylk_app] RNCallKeep Call answered by user %@", uuid);
+    NSLog(@"[SYLK_APP] [App] RNCallKeep Call answered by user %@", uuid);
 
     [self cancelAutoAnswerForUUID:uuid];
 }
@@ -1070,7 +1087,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     if (!uuid) return;
 
-    NSLog(@"[sylk_app] RNCallKeep Call ended by user %@", uuid);
+    NSLog(@"[SYLK_APP] [App] RNCallKeep Call ended by user %@", uuid);
 
     [self cancelAutoAnswerForUUID:uuid];
 }

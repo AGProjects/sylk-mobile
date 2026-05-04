@@ -34,6 +34,7 @@ import ConferenceDrawerParticipantList from './ConferenceDrawerParticipantList';
 import ConferenceDrawerSpeakerSelection from './ConferenceDrawerSpeakerSelection';
 import ConferenceDrawerSpeakerSelectionWrapper from './ConferenceDrawerSpeakerSelectionWrapper';
 import ConferenceHeader from './ConferenceHeader';
+import NetworkSpeedometer from './NetworkSpeedometer';
 import ConferenceCarousel from './ConferenceCarousel';
 import ConferenceParticipant from './ConferenceParticipant';
 import ConferenceMatrixParticipant from './ConferenceMatrixParticipant';
@@ -103,7 +104,7 @@ function useLogChanges(label, value) {
 const conferenceHeaderHeight = 60;
 
   const availableAudioDevicesIconsMap = {
-	BUILTIN_EARPIECE: 'phone',
+	BUILTIN_EARPIECE: 'phone-in-talk',
 	WIRED_HEADSET: 'headphones',
 	BLUETOOTH_SCO: 'bluetooth-audio',
 	BUILTIN_SPEAKER: 'volume-high',
@@ -121,6 +122,12 @@ const AUDIO_DEVICE_PICKER_MODE = 'floating';
 //   false - always show the small corner rectangle (legacy behavior)
 const SOLO_SELF_FULLSCREEN = true;
 
+// If a participant doesn't deliver any inbound video for this many ms,
+// hide their tile and recompute the grid; restore it the moment data
+// flows again. Tuned to ride out short hiccups without blanking the
+// grid on every brief stall.
+const PARTICIPANT_STALL_MS = 20000;
+
 
 class ConferenceBox extends Component {
     constructor(props) {
@@ -136,6 +143,16 @@ class ConferenceBox extends Component {
         this.latency = new Map();
 
         this.mediaLost = new Map();
+
+        // Per-participant codec info (mimeType subtype, e.g. "VP8", "H264", "opus")
+        this.videoCodec = new Map();
+        this.audioCodec = new Map();
+
+        // Wall-clock timestamp (ms) of the last sample where this
+        // participant's inbound video bytes increased. Used to time-out
+        // tiles whose remote has stopped sending video for >
+        // PARTICIPANT_STALL_MS, then restore them when data flows again.
+        this.lastVideoActivity = new Map();
 
         this.sampleInterval = 1;
 
@@ -208,6 +225,12 @@ class ConferenceBox extends Component {
             audioMuted: this.props.muted,
             videoMuted: !this.props.inFocus,
             videoMutedbyUser: false,
+            // Track which camera is active so the self-thumbnail and
+            // large self-view only mirror when the front camera is in
+            // use. WebRTC's getUserMedia defaults to the front camera
+            // on mobile, so we start at 'front' and flip on each
+            // _switchCamera() call below.
+            cameraFacing: 'front',
             messages: this.props.messages,
             participants: participants,
             showInviteModal: false,
@@ -234,6 +257,10 @@ class ConferenceBox extends Component {
             enableMyVideo: true,
             offset          : 0,
             statistics: [],
+            // IDs of participants whose inbound video has been silent for
+            // PARTICIPANT_STALL_MS. Tile hidden + grid recalculated until
+            // data resumes.
+            stalledParticipants: new Set(),
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
 			audioDevicePickerVisible: false,
@@ -1344,6 +1371,8 @@ class ConferenceBox extends Component {
 			this.packetLoss = this.packetLoss || new Map();
 			this.latency = this.latency || new Map();
 			this.mediaLost = this.mediaLost || new Map();
+			this.videoCodec = this.videoCodec || new Map();
+			this.audioCodec = this.audioCodec || new Map();
 	
 			if (this.state.participants.length === 0) {
 				// console.log("No participants, resetting bandwidth");
@@ -1391,13 +1420,25 @@ class ConferenceBox extends Component {
 					let totalAudioBandwidth = 0,
 						totalVideoBandwidth = 0,
 						bandwidthUpload = 0;
-	
+
+					// Capture codecIds on the active RTP streams for this
+					// participant; resolved to codec names after the forEach
+					// pass via stats.get(codecId).mimeType.
+					let inboundAudioCodecId  = null;
+					let inboundVideoCodecId  = null;
+					let outboundAudioCodecId = null;
+					let outboundVideoCodecId = null;
+
 					stats.forEach(report => {
 						try {
 							const kind = report.kind; // "audio" or "video"
 	
 							// --- Inbound media (received from remote)
 							if (report.type === "inbound-rtp" && identity !== 'myself') {
+								if (report.codecId) {
+									if (kind === 'audio') inboundAudioCodecId = report.codecId;
+									else if (kind === 'video') inboundVideoCodecId = report.codecId;
+								}
 								const { bytesReceived, packetsReceived, packetsLost } = report;
 								if (bytesReceived !== undefined) {
 									const lastBytes = kind === 'audio'
@@ -1412,6 +1453,17 @@ class ConferenceBox extends Component {
 									} else if (kind === 'video') {
 										totalVideoBandwidth += speed;
 										this.videoBandwidth.set(p.id, speed);
+										// Refresh activity timestamp whenever
+										// inbound video bytes increase, so the
+										// stall-detector below can tell who
+										// has gone silent. We initialize on
+										// first sight too, otherwise a
+										// participant who never delivered any
+										// frames yet (still negotiating) would
+										// look stalled from the start.
+										if (diff > 0 || !this.lastVideoActivity.has(p.id)) {
+											this.lastVideoActivity.set(p.id, Date.now());
+										}
 										this.videoBytesReceived.set(p.id, bytesReceived);
 									}
 									// console.log(`[${identity}] ${kind} inbound speed: ${speed} kbps`);
@@ -1433,6 +1485,10 @@ class ConferenceBox extends Component {
 	
 							// --- Outbound media (sent by us)
 							if (report.type === "outbound-rtp" && identity === 'myself') {
+								if (report.codecId) {
+									if (kind === 'audio') outboundAudioCodecId = report.codecId;
+									else if (kind === 'video') outboundVideoCodecId = report.codecId;
+								}
 								const { bytesSent, packetsSent } = report;
 								if (bytesSent !== undefined) {
 									const lastBytes = kind === 'audio'
@@ -1472,6 +1528,33 @@ class ConferenceBox extends Component {
 						}
 					});
 	
+					// --- Resolve codec name from codecId references.
+					//     For each remote participant, the inbound-rtp record
+					//     points at a codec record with mimeType e.g. "video/VP8".
+					//     For 'myself' we look at the outbound side instead.
+					const codecName = (codecId) => {
+						if (!codecId) return null;
+						let entry = null;
+						try { entry = stats.get ? stats.get(codecId) : null; } catch (e) { entry = null; }
+						if (!entry) {
+							// Fallback: scan stats for a matching id (older RN-WebRTC).
+							stats.forEach(r => { if (!entry && r && r.id === codecId) entry = r; });
+						}
+						if (!entry || !entry.mimeType) return null;
+						const parts = entry.mimeType.split('/');
+						return parts.length > 1 ? parts[1] : entry.mimeType;
+					};
+
+					const vCodec = identity === 'myself'
+						? codecName(outboundVideoCodecId)
+						: codecName(inboundVideoCodecId);
+					const aCodec = identity === 'myself'
+						? codecName(outboundAudioCodecId)
+						: codecName(inboundAudioCodecId);
+
+					if (vCodec) this.videoCodec.set(p.id, vCodec);
+					if (aCodec) this.audioCodec.set(p.id, aCodec);
+
 					// --- Compute packet loss %
 					const audioPacketLoss = audioPackets > 0 ? Math.floor(audioPacketsLost / audioPackets * 100) : 100;
 					const videoPacketLoss = videoPackets > 0 ? Math.floor(videoPacketsLost / videoPackets * 100) : 100;
@@ -1495,6 +1578,31 @@ class ConferenceBox extends Component {
 					console.error("Error getting stats for participant", identity, err);
 				}
 			}
+
+			// Re-evaluate the stalled set: any participant whose inbound
+			// video bytes haven't moved for PARTICIPANT_STALL_MS gets its
+			// tile hidden until data resumes. The set is only setState'd
+			// when membership actually changes — avoids re-renders every
+			// poll.
+			const now = Date.now();
+			const newStalled = new Set();
+			for (const p of this.state.participants) {
+				const lastTs = this.lastVideoActivity.get(p.id);
+				if (lastTs && (now - lastTs) > PARTICIPANT_STALL_MS) {
+					newStalled.add(p.id);
+				}
+			}
+			const prevStalled = this.state.stalledParticipants || new Set();
+			const sameSize = prevStalled.size === newStalled.size;
+			let same = sameSize;
+			if (sameSize) {
+				for (const id of newStalled) {
+					if (!prevStalled.has(id)) { same = false; break; }
+				}
+			}
+			if (!same) {
+				this.setState({ stalledParticipants: newStalled });
+			}
 		} catch (err) {
 			console.error("Error in getConnectionStats", err);
 		}
@@ -1507,6 +1615,14 @@ class ConferenceBox extends Component {
         this.latency.delete(p.id);
         this.packetLoss.delete(p.id);
         this.mediaLost.delete(p.id);
+        if (this.videoCodec) this.videoCodec.delete(p.id);
+        if (this.audioCodec) this.audioCodec.delete(p.id);
+        if (this.lastVideoActivity) this.lastVideoActivity.delete(p.id);
+        if (this.state.stalledParticipants && this.state.stalledParticipants.has(p.id)) {
+            const next = new Set(this.state.stalledParticipants);
+            next.delete(p.id);
+            this.setState({ stalledParticipants: next });
+        }
         
         //console.log(this.participantStats);
         
@@ -1716,6 +1832,11 @@ class ConferenceBox extends Component {
         if (localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
             track._switchCamera();
+            // Keep cameraFacing in sync so the self-PIP and large
+            // self-view stop mirroring when the back camera is on.
+            this.setState({
+                cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front'
+            });
         }
     }
 
@@ -1868,37 +1989,59 @@ class ConferenceBox extends Component {
 		});
 	}
 
+    // Participants whose tile should currently be visible — excludes any
+    // who've gone silent for >PARTICIPANT_STALL_MS. Used by both
+    // showMyself and getVideoLayout so the grid recomputes around the
+    // smaller live set.
+    get visibleParticipants() {
+        const stalled = this.state.stalledParticipants || new Set();
+        if (stalled.size === 0) return this.state.participants;
+        return this.state.participants.filter(p => !stalled.has(p.id));
+    }
+
     get showMyself() {
         if (this.state.chatView && !this.props.audioOnly) {
 			return true;
         }
 
-		if (this.state.participants.length == 3) {
+		// 1 remote → split-screen self+remote (case handled in
+		// videos[]). 3 remote → 2x2 grid with self as 4th tile.
+		// Either way the floating PIP is redundant.
+		const visibleCount = this.visibleParticipants.length;
+		if (visibleCount === 1 || visibleCount === 3) {
 			return false;
 		}
-		
+
 		if (this.amIspeaker) {
-			return false;		
+			return false;
 		}
-		
+
 		if (!this.state.enableMyVideo) {
 			return false;
 		}
-				
+
 		if (this.state.showDrawer) {
 			return false;
 		}
-		        
+
         return !this.state.videoMuted && !this.state.chatView;
     }
-    
+
 	getVideoLayout() {
-		const count = Math.min(this.state.participants.length, 4); // max 4 participants
+		// We render a 50/50 split when there's exactly ONE remote
+		// participant (us + them = 2 tiles). For 0 remotes we still
+		// fill the screen with the lone tile (just us / placeholder).
+		const remoteCount = this.visibleParticipants.length;
+		// Effective tile count: 1 remote → 2 tiles (self + remote);
+		// otherwise straight from remoteCount, capped at 4.
+		const count = remoteCount === 1
+			? 2
+			: Math.min(remoteCount, 4);
 		const isLandscape = this.state.isLandscape;
-	
+
 		let container = {};
 		let item = {};
-	
+
 		switch (count) {
 			case 1:
 				container = { flexDirection: 'column', flexWrap: 'nowrap', justifyContent: 'center', alignItems: 'center' };
@@ -1906,11 +2049,11 @@ class ConferenceBox extends Component {
 				break;
 			case 2:
 				if (isLandscape) {
-					// 2 participants → 2 columns
+					// 2 tiles → 2 columns
 					container = { flexDirection: 'row', flexWrap: 'nowrap' };
 					item = { width: '50%', height: '100%' };
 				} else {
-					// 2 participants → 2 rows
+					// 2 tiles → 2 rows
 					container = { flexDirection: 'column', flexWrap: 'nowrap' };
 					item = { width: '100%', height: '50%' };
 				}
@@ -1923,7 +2066,7 @@ class ConferenceBox extends Component {
 				item = { width: '50%', height: '50%' };
 				break;
 		}
-	
+
 		return { container, item };
 	}
 
@@ -2122,7 +2265,7 @@ class ConferenceBox extends Component {
             'animated'      : true,
             'fadeIn'        : true,
             'large'         : true,
-            'mirror'        : !this.props.call.sharingScreen && !this.props.generatedVideoTrack,
+            'mirror'        : !this.props.call.sharingScreen && !this.props.generatedVideoTrack && this.state.cameraFacing !== 'back',
             'fit'           : this.props.call.sharingScreen
         });
 
@@ -2670,6 +2813,10 @@ class ConferenceBox extends Component {
 					/>
 				</View>
 
+				{/* No floating speedometer in this audio-only conference
+				    render path. The video render path (separate return
+				    below) handles the i-icon + landscape-navbar toggle. */}
+
 				<View style={[styles.buttonsContainer]}>
 					{sessionButtons}
 				</View>
@@ -2778,8 +2925,14 @@ class ConferenceBox extends Component {
 			const activeSpeakers = this.state.activeSpeakers;
 			const activeSpeakersCount = activeSpeakers.length;
 
+			const stalled = this.state.stalledParticipants || new Set();
+
 			if (activeSpeakersCount > 0) {
 				activeSpeakers.forEach((p) => {
+					// Hide tile entirely while inbound video is stalled
+					// (>20s with no bytes received). Restored as soon as
+					// data resumes — see getConnectionStats.
+					if (stalled.has(p.id)) return;
 					status = '';
 					if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
 						status = 'Muted';
@@ -2806,6 +2959,7 @@ class ConferenceBox extends Component {
 						}
 					}
 
+
 					videos.push(
 						<ConferenceMatrixParticipant
 							key={p.id}
@@ -2823,7 +2977,7 @@ class ConferenceBox extends Component {
 					} else if (this.packetLoss.has(p.id) && this.packetLoss.get(p.id) > 3) {
 						if (this.packetLoss.get(p.id) === 100) {
 							status = 'No media';
-							return;
+							// fall through so the drawer still lists them
 						} else {
 							status = this.packetLoss.get(p.id) + '% loss';
 						}
@@ -2831,7 +2985,11 @@ class ConferenceBox extends Component {
 						status = this.latency.get(p.id) + ' ms delay';
 					}
 
-					if (this.state.activeSpeakers.indexOf(p) === -1) {
+
+					// Side-list of off-screen video tiles: skip when
+					// stalled or fully lossy ("No media").
+					if (!stalled.has(p.id) && status !== 'No media'
+						&& this.state.activeSpeakers.indexOf(p) === -1) {
 						participants.push(
 							<ConferenceParticipant
 								key={p.id}
@@ -2854,10 +3012,17 @@ class ConferenceBox extends Component {
 
 				});
 			} else {
-			    //console.log('====='); 
+			    //console.log('=====');
 				let vtrack;
-				if (this.state.participants.length == 3) {
-					//console.log('Added video of myself');
+				// Push "myself" into the video tile list when:
+				//   - exactly 1 remote participant → 2 tiles, 50/50 split
+				//   - exactly 3 remote participants → 4 tiles, 2x2 grid
+				// For other counts (0, 2, 4+), leave self as the floating
+				// PIP managed elsewhere by `showMyself`. Use the visible
+				// (non-stalled) count so the grid recalculates around
+				// remotes whose video has gone silent.
+				const visibleCount = this.visibleParticipants.length;
+				if (visibleCount === 1 || visibleCount === 3) {
 					videos.push(
 						<ConferenceParticipantSelf
 						  key="myself2"
@@ -2867,12 +3032,17 @@ class ConferenceBox extends Component {
 						  audioMuted={this.state.audioMuted}
 						  isLandscape={this.state.isLandscape}
 						  generatedVideoTrack={this.props.generatedVideoTrack}
+						  cameraFacing={this.state.cameraFacing}
 						  big={true}
 						/>
 					);
 				}
 
 				this.state.participants.forEach((p, idx) => {
+					// We still want stalled participants to show in the
+					// drawer below, so we don't early-return — instead
+					// each tile push is gated.
+					const isStalled = stalled.has(p.id);
 					status = '';
 					if (this.mediaLost.has(p.id) && this.mediaLost.get(p.id)) {
 						status = 'Muted';
@@ -2889,6 +3059,7 @@ class ConferenceBox extends Component {
 						status = this.latency.get(p.id) + ' ms';
 					}
 
+
 					if (p.streams && p.streams.length > 0) {
 						if (p.streams[0].getVideoTracks().length > 0) {
 							vtrack = p.streams[0].getVideoTracks()[0];
@@ -2900,27 +3071,29 @@ class ConferenceBox extends Component {
 						}
 					}
 					//console.log(p.identity.uri, 'video added');
-					videos.push(
-						<ConferenceMatrixParticipant
-							key = {p.id}
-							participant = {p}
-							pauseVideo={(idx >= 4)}
-							status={status}
-						/>
-					);
-
-					if (idx >= 4 || idx >= 2 && this.props.isTablet === false) {
-						participants.push(
-							<ConferenceParticipant
-								key={p.id}
-								participant={p}
-								selected={this.onVideoSelected}
-								pauseVideo={true}
-								display={true}
+					if (!isStalled) {
+						videos.push(
+							<ConferenceMatrixParticipant
+								key = {p.id}
+								participant = {p}
+								pauseVideo={(idx >= 4)}
 								status={status}
-								isLandscape={this.state.isLandscape}
 							/>
 						);
+
+						if (idx >= 4 || idx >= 2 && this.props.isTablet === false) {
+							participants.push(
+								<ConferenceParticipant
+									key={p.id}
+									participant={p}
+									selected={this.onVideoSelected}
+									pauseVideo={true}
+									display={true}
+									status={status}
+									isLandscape={this.state.isLandscape}
+								/>
+							);
+						}
 					}
 
 					drawerParticipants.push(
@@ -3340,6 +3513,60 @@ class ConferenceBox extends Component {
 
 				: null}
 
+				{/* Fullscreen-only "i" info icon at top-right; tap to
+				    reveal speedometer; tap dials to collapse back.
+				    In landscape (not fullscreen) the speedometer is
+				    rendered inside the navbar via navbarExtras.
+				    In portrait (not fullscreen) nothing is shown — use the
+				    i icon after going fullscreen. */}
+				{this.fullScreen && this.state.call && !this.props.audioOnly ? (
+					<View
+						style={{
+							position: 'absolute',
+							top: (this.state.insets && this.state.insets.top ? this.state.insets.top : 0) + 12,
+							right: (this.state.insets && this.state.insets.right ? this.state.insets.right : 0) + 4,
+							zIndex: 9999,
+						}}
+					>
+						{this.state.showUsage ? (
+							<TouchableOpacity
+								activeOpacity={0.7}
+								onPress={() => this.setState({ showUsage: false })}
+								style={{
+									backgroundColor: 'rgba(0,0,0,0.35)',
+									borderRadius: 6,
+									paddingHorizontal: 4,
+									paddingVertical: 2,
+								}}
+							>
+								<NetworkSpeedometer
+									call={this.state.call}
+									showResolution
+								/>
+							</TouchableOpacity>
+						) : (
+							<TouchableOpacity
+								activeOpacity={0.7}
+								onPress={() => this.setState({ showUsage: true })}
+								style={{
+									width: 32,
+									height: 32,
+									borderRadius: 16,
+									backgroundColor: 'rgba(0,0,0,0.45)',
+									alignItems: 'center',
+									justifyContent: 'center',
+								}}
+							>
+								<Icon
+									name="information-outline"
+									size={20}
+									color="#ffffff"
+								/>
+							</TouchableOpacity>
+						)}
+					</View>
+				) : null}
+
 				{!this.fullScreen && !this.props.isLandscape && !this.state.showDrawer ?
 				<View style={buttonsContainer} pointerEvents="box-none">
 					{buttons.bottom}
@@ -3487,6 +3714,7 @@ class ConferenceBox extends Component {
 					  audioMuted={this.state.audioMuted}
 					  isLandscape={this.state.isLandscape}
 					  generatedVideoTrack={this.props.generatedVideoTrack}
+					  cameraFacing={this.state.cameraFacing}
 					  big={SOLO_SELF_FULLSCREEN && !this.props.audioOnly && this.state.participants.length === 0}
 					/>
 				  </TouchableOpacity>

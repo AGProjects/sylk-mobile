@@ -1,0 +1,4 @@
+Location sharing fixes
+Support for Hands-free Bluetooth display on incoming calls
+Improve calls menus
+Added Preferences panel

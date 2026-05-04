@@ -31,7 +31,7 @@ import android.os.Build;
 
 
 public class BluetoothScoManager {
-    private static final String TAG = "SYLK";
+    private static final String TAG = "SYLK_APP";
 
     private final AudioManager audioManager;
     private final BluetoothAdapter bluetoothAdapter;
@@ -59,7 +59,7 @@ public class BluetoothScoManager {
             public void onReceive(Context context, Intent intent) {
 				if (BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED.equals(intent.getAction())) {
 					int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED);
-					Log.d(TAG, "BluetoothHeadset profile state=" + profileStateToString(state));
+					Log.d(TAG, "[BTSco] BluetoothHeadset profile state=" + profileStateToString(state));
 				
 					if (state == BluetoothProfile.STATE_CONNECTED) {
 						if (eventListener != null) {
@@ -91,7 +91,7 @@ public class BluetoothScoManager {
 
                         if (retryCount < MAX_RETRIES) {
                             retryCount++;
-                            Log.d(TAG, "SCO disconnected, retrying in " + RETRY_DELAY_MS + "ms (retry " + retryCount + ")");
+                            Log.d(TAG, "[BTSco] SCO disconnected, retrying in " + RETRY_DELAY_MS + "ms (retry " + retryCount + ")");
                             handler.postDelayed(BluetoothScoManager.this::startScoIfNeeded, RETRY_DELAY_MS);
                         }
                     } else if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
@@ -120,7 +120,7 @@ public class BluetoothScoManager {
                 public void onServiceDisconnected(int profile) {
                     if (profile == BluetoothProfile.HEADSET) {
                         bluetoothHeadset = null;
-                        Log.d(TAG, "BluetoothHeadset proxy disconnected");
+                        Log.d(TAG, "[BTSco] BluetoothHeadset proxy disconnected");
                         stopScoIfActive();
                     }
                 }
@@ -163,13 +163,13 @@ public class BluetoothScoManager {
 		userRequestedSco = true;
 		retryCount = 0; // reset retry counter — user explicitly wants BT
         if (isHeadsetConnected() && !audioManager.isBluetoothScoOn()) {
-            Log.d(TAG, "Starting Bluetooth SCO...");
+            Log.d(TAG, "[BTSco] Starting Bluetooth SCO...");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // startBluetoothSco() is deprecated on API 31+ and is a no-op on many
                 // OEM devices (including Motorola). On API 31+ the system establishes
                 // SCO automatically when setCommunicationDevice(BLUETOOTH_SCO) is called,
                 // so we only use the legacy path on older Android.
-                Log.d(TAG, "API 31+: SCO establishment handled by setCommunicationDevice");
+                Log.d(TAG, "[BTSco] API 31+: SCO establishment handled by setCommunicationDevice");
             } else {
                 audioManager.startBluetoothSco();
                 audioManager.setBluetoothScoOn(true);
@@ -179,7 +179,7 @@ public class BluetoothScoManager {
 
 	public void stopScoIfActive() {
 		if (audioManager.isBluetoothScoOn()) {
-			Log.d(TAG, "Stopping Bluetooth SCO...");
+			Log.d(TAG, "[BTSco] Stopping Bluetooth SCO...");
 			audioManager.clearCommunicationDevice();
 			audioManager.stopBluetoothSco();
 			audioManager.setBluetoothScoOn(false);
@@ -192,12 +192,12 @@ public class BluetoothScoManager {
         try {
             context.unregisterReceiver(headsetReceiver);
         } catch (Exception e) {
-            Log.w(TAG, "Headset receiver already unregistered");
+            Log.w(TAG, "[BTSco] Headset receiver already unregistered");
         }
         try {
             context.unregisterReceiver(scoStateReceiver);
         } catch (Exception e) {
-            Log.w(TAG, "SCO receiver already unregistered");
+            Log.w(TAG, "[BTSco] SCO receiver already unregistered");
         }
         if (bluetoothAdapter != null && bluetoothHeadset != null) {
             bluetoothAdapter.closeProfileProxy(BluetoothProfile.HEADSET, bluetoothHeadset);

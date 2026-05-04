@@ -13,7 +13,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 public class CallEventModule extends ReactContextBaseJavaModule {
 
-    private static final String LOG_TAG = "[SYLK CALL EVENT]";
+    private static final String LOG_TAG = "SYLK_APP";
 
     // Last queued event (single-shot)
     private static WritableMap lastEvent = null;
@@ -35,7 +35,7 @@ public class CallEventModule extends ReactContextBaseJavaModule {
      */
     public static synchronized void setLastEvent(WritableMap event) {
         lastEvent = event;
-        Log.d(LOG_TAG, "Event stored for when RN is listening for events");
+        Log.d(LOG_TAG, "[CallEvt] Event stored for when RN is listening for events");
     }
 
     /**
@@ -44,7 +44,7 @@ public class CallEventModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public synchronized void markRNready() {
         rnReady = true;
-        Log.d(LOG_TAG, "RN is now listening for events");
+        Log.d(LOG_TAG, "[CallEvt] RN is now listening for events");
 
         // If an event arrived early, emit it now
         emitStoredEvent();
@@ -81,11 +81,11 @@ public class CallEventModule extends ReactContextBaseJavaModule {
                 .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                 .emit("IncomingCallAction", lastEvent);
 
-            Log.d(LOG_TAG, "Queued event emitted to RN");
+            Log.d(LOG_TAG, "[CallEvt] Queued event emitted to RN");
             lastEvent = null;
 
         } catch (Exception e) {
-            Log.e(LOG_TAG, "Failed to emit queued event to RN", e);
+            Log.e(LOG_TAG, "[CallEvt] Failed to emit queued event to RN", e);
         }
     }
 }

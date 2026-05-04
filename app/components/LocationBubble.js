@@ -4,8 +4,10 @@ import {
     TouchableOpacity,
     Text,
     Linking,
+    Share,
     StyleSheet,
     Platform,
+    Dimensions,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 // FastImage replaces RN's built-in <Image> for the map tile grid
@@ -17,6 +19,18 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 // Android, SDWebImage on iOS) so once the user has viewed a tile
 // it renders from disk on the next paint, even with no network.
 import FastImage from 'react-native-fast-image';
+// react-native-svg is the standard RN path-drawing surface; we use
+// it here ONLY for the trail polyline overlay on top of the
+// stitched tile grid. The Polyline itself is cheap (a single SVG
+// child sized to the map frame) and stays a sibling of the
+// FastImage tiles + pin overlays so transforms applied to the map
+// frame propagate uniformly.
+import Svg, { Polyline as SvgPolyline, Circle as SvgCircle } from 'react-native-svg';
+// Reused from the audio-message bubble: a thin draggable scrubber
+// with a needle. Same behaviour we need for "drag through the GPS
+// timeline" — onSeekStart/Change/Release callbacks expose the
+// dragged percentage, which we map to a trail index here.
+import AudioProgressSlider from './AudioProgressSlider';
 import * as storage from '../storage';
 
 // Per-sharing-entity zoom override. LOCAL setting — this is a viewer
@@ -64,8 +78,14 @@ import { GiftedChatContext } from 'react-native-gifted-chat/lib/GiftedChatContex
 // fits comfortably inside the standard chat-message column on every
 // phone we ship to (smallest usable width is ~360 dp; the bubble
 // reserves ~30 px of side padding).
-const MAP_WIDTH = 300;
-const MAP_HEIGHT = 200;
+// Default map dimensions for the inline chat-bubble rendering. The
+// fullscreen viewer (long-press → "Full screen") shadows these per-render
+// with Dimensions.get('window') to maximise the map. Both StaticMap and
+// the outer LocationBubble accept `mapWidth` / `mapHeight` props that
+// default to these constants — see the `const MAP_WIDTH = ...` shadows
+// at the top of each function body.
+const DEFAULT_MAP_WIDTH = 300;
+const DEFAULT_MAP_HEIGHT = 200;
 const TILE_SIZE = 256;           // slippy-map tiles are always 256px square
 const DEFAULT_ZOOM = 15;         // ~1 block of visible area
 const MIN_ZOOM = 3;              // continent-level; we refuse to go wider.
@@ -103,7 +123,17 @@ function latLngToTileFrac(latitude, longitude, zoom) {
 // bounding box of every valid point still fits. Generalised to N
 // points so we can show owner + peer + destination together; degrades
 // gracefully when only one is known.
-function pickZoomToFitPoints(points, padding = 40) {
+//
+// `mapWidth` / `mapHeight` are passed in (rather than read from
+// module-level constants) because the fullscreen viewer renders the
+// SAME bubble at window dimensions — at fullscreen size the bounding
+// box that fits "comfortably" is much larger and the auto-fit can
+// stay at a higher zoom. Without these parameters the function would
+// pick the inline-bubble's tighter zoom regardless of frame size, and
+// the map would render too far out for the available canvas. Defaults
+// to the inline dimensions so any caller that doesn't pass them stays
+// on the original behaviour.
+function pickZoomToFitPoints(points, padding = 40, mapWidth = DEFAULT_MAP_WIDTH, mapHeight = DEFAULT_MAP_HEIGHT) {
     const valid = (points || []).filter(
         (p) => p
             && typeof p.latitude === 'number'
@@ -133,7 +163,7 @@ function pickZoomToFitPoints(points, padding = 40) {
         }
         const dxPx = (maxX - minX) * TILE_SIZE;
         const dyPx = (maxY - minY) * TILE_SIZE;
-        if (dxPx + padding * 2 <= MAP_WIDTH && dyPx + padding * 2 <= MAP_HEIGHT) {
+        if (dxPx + padding * 2 <= mapWidth && dyPx + padding * 2 <= mapHeight) {
             return z;
         }
     }
@@ -258,7 +288,42 @@ const StaticMap = memo((props) => {
         destinationLongitude,
         ownerInitials,
         peerInitials,
+        trail,
+        // Optional override: when the parent bubble is being scrubbed
+        // through its trail, these point at the trail position
+        // currently selected by the slider. The owner avatar is
+        // re-anchored to this point so the user can visually follow
+        // their movement without us re-fitting the camera (auto-zoom
+        // still uses the full trail bbox so the line stays in frame).
+        scrubLatitude,
+        scrubLongitude,
+        // Pan offset in pixels — applied as a uniform translate to
+        // every absolutely-positioned child (tiles + polyline + pins
+        // + start dot). Positive panX shifts content LEFT (= the
+        // camera moved RIGHT, panned east). Driven by the bubble's
+        // four directional arrows; recenter button resets to (0, 0).
+        // The 5x5 tile grid we render around the centre gives ~512 px
+        // of pan headroom in every direction before edges go grey.
+        panX = 0,
+        panY = 0,
+        // True when the parent bubble's "current location" button
+        // has been tapped: the map should centre on the owner's
+        // latest GPS fix (the `latitude`/`longitude` props) rather
+        // than the centroid of all visible points. Scrub override
+        // still wins over this — actively dragging the slider
+        // pivots the map around the scrubbed point.
+        centerOnOwner = false,
+        // Map dimensions. Default to the inline-bubble size; the
+        // fullscreen viewer overrides these with Dimensions.get('window')
+        // so the same StaticMap fills the whole screen without any other
+        // code changes. The `MAP_WIDTH` / `MAP_HEIGHT` shadows below
+        // mean the rest of the projection / tile / pin math reads
+        // these dynamically with zero source-line changes.
+        mapWidth = DEFAULT_MAP_WIDTH,
+        mapHeight = DEFAULT_MAP_HEIGHT,
     } = props;
+    const MAP_WIDTH = mapWidth;
+    const MAP_HEIGHT = mapHeight;
 
     // owner = local user; peer = the other party. Either side may be
     // missing on the very first tick of an incoming bubble (peerCoords
@@ -275,23 +340,47 @@ const StaticMap = memo((props) => {
     const hasDestination =
         typeof destinationLatitude === 'number' &&
         typeof destinationLongitude === 'number';
+    const hasScrub =
+        typeof scrubLatitude === 'number' &&
+        typeof scrubLongitude === 'number';
 
-    const owner = hasOwner ? { latitude, longitude } : null;
+    // The owner pin's effective coordinates: scrub override wins so
+    // the avatar tracks the slider; otherwise fall back to the
+    // share's latest tick. The bounding box for auto-zoom is computed
+    // from latitude/longitude (the latest-tick value), so dragging
+    // doesn't reflow the map — the avatar simply moves along the
+    // visible polyline.
+    const owner = hasScrub
+        ? { latitude: scrubLatitude, longitude: scrubLongitude }
+        : (hasOwner ? { latitude, longitude } : null);
     const peer = hasPeer ? { latitude: peerLatitude, longitude: peerLongitude } : null;
     const destination = hasDestination
         ? { latitude: destinationLatitude, longitude: destinationLongitude }
         : null;
 
+    // Sanitise the optional trail. Filter out null/NaN entries so we
+    // can rely on every member being a valid {latitude, longitude}
+    // pair (the timestamp field is optional from here on — we only
+    // need it if a future variant draws speed/colour, today the
+    // polyline is uniform).
+    const trailPoints = Array.isArray(trail)
+        ? trail.filter((p) => p
+            && typeof p.latitude === 'number'
+            && typeof p.longitude === 'number')
+        : [];
+    const hasTrail = trailPoints.length >= 2;
+
     // Collect every point we want visible. The frame is sized +
     // centred to fit the bounding box of whichever ones are known
     // so the user sees the full picture: where they are, where the
-    // peer is, and where they're heading. Falls back to a sensible
-    // default if everything is missing (shouldn't happen — caller
-    // already gates on hasCoords).
+    // peer is, where they're heading, AND the full path travelled
+    // so far. Falls back to a sensible default if everything is
+    // missing (shouldn't happen — caller already gates on hasCoords).
     const visiblePoints = [];
     if (owner) visiblePoints.push(owner);
     if (peer) visiblePoints.push(peer);
     if (destination) visiblePoints.push(destination);
+    for (const p of trailPoints) visiblePoints.push(p);
 
     // Explicit `zoom` prop wins unconditionally — this is what lets
     // LocationBubble's +/- controls override the auto-fit value. Falls
@@ -300,12 +389,30 @@ const StaticMap = memo((props) => {
     const zoom = (typeof props.zoom === 'number')
         ? Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, props.zoom))
         : (visiblePoints.length > 1
-            ? pickZoomToFitPoints(visiblePoints)
+            ? pickZoomToFitPoints(visiblePoints, 40, MAP_WIDTH, MAP_HEIGHT)
             : DEFAULT_ZOOM);
 
-    const center = visiblePoints.length > 1
-        ? centroid(visiblePoints)
-        : (visiblePoints[0] || {latitude: 0, longitude: 0});
+    // Centre point of the rendered map.
+    //   • Slider ENGAGED (hasScrub true) → centre on the scrubbed
+    //     point. Zoom and pan operations pivot around it, so the
+    //     user can drill into a historical position with the point
+    //     staying under their finger.
+    //   • centerOnOwner true (current-location button) → centre on
+    //     the owner's latest GPS fix. The avatar pin lands in the
+    //     middle of the frame at the user's chosen zoom level.
+    //   • Otherwise → centroid of visible points (auto-fit framing
+    //     so the whole trail / peer / destination cluster is in
+    //     view).
+    let center;
+    if (hasScrub) {
+        center = { latitude: scrubLatitude, longitude: scrubLongitude };
+    } else if (centerOnOwner && hasOwner) {
+        center = { latitude, longitude };
+    } else if (visiblePoints.length > 1) {
+        center = centroid(visiblePoints);
+    } else {
+        center = visiblePoints[0] || {latitude: 0, longitude: 0};
+    }
 
     const centerFrac = latLngToTileFrac(center.latitude, center.longitude, zoom);
     const xTile = Math.floor(centerFrac.xFrac);
@@ -460,26 +567,142 @@ const StaticMap = memo((props) => {
         </View>
     );
 
+    // Trail polyline. Project every trail point through the same
+    // tile-frame transform we use for pins, then connect them with
+    // an SVG polyline. The start point gets a small "A" disc so the
+    // user can tell which end of the path is the origin (current
+    // position is already marked by the owner avatar, which sits at
+    // the LAST trail point). pointerEvents="none" so the overlay
+    // doesn't intercept the bubble's tap-to-open-maps gesture.
+    let trailPolyline = null;
+    let trailStartMarker = null;
+    if (hasTrail) {
+        const projected = trailPoints.map((p) => project(p.latitude, p.longitude));
+        const pointsAttr = projected
+            .map((q) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`)
+            .join(' ');
+        trailPolyline = (
+            <Svg
+                key="trail-svg"
+                width={MAP_WIDTH}
+                height={MAP_HEIGHT}
+                style={{ position: 'absolute', left: 0, top: 0 }}
+                pointerEvents="none"
+            >
+                {/* Soft white halo behind the coloured stroke so the
+                    path stays legible against busy map tiles (roads,
+                    shaded relief) without us having to vary stroke
+                    colour per zoom level. */}
+                <SvgPolyline
+                    points={pointsAttr}
+                    stroke="#ffffff"
+                    strokeOpacity={0.75}
+                    strokeWidth={6}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                />
+                <SvgPolyline
+                    points={pointsAttr}
+                    stroke="#E74C3C"
+                    strokeOpacity={0.95}
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                />
+                {/* Small filled circle at the trail's start so it's
+                    visually distinct from the avatar at the current
+                    position. Black dot inside a white halo, sized
+                    smaller than the avatar so it reads as a
+                    secondary marker. */}
+                <SvgCircle
+                    cx={projected[0].x}
+                    cy={projected[0].y}
+                    r={5}
+                    fill="#ffffff"
+                    stroke="#000000"
+                    strokeWidth={1.5}
+                />
+                <SvgCircle
+                    cx={projected[0].x}
+                    cy={projected[0].y}
+                    r={2}
+                    fill="#000000"
+                />
+            </Svg>
+        );
+        // Tiny "A" label adjacent to the start dot, drawn as a
+        // separate <View> (rather than SvgText) because RN's font
+        // rendering inside react-native-svg is uneven across
+        // platforms — a plain Text node is portable and matches the
+        // initials avatar typography.
+        const startProj = projected[0];
+        trailStartMarker = (
+            <View
+                key="trail-start-label"
+                pointerEvents="none"
+                style={{
+                    position: 'absolute',
+                    left: startProj.x + 6,
+                    top: startProj.y - 14,
+                    backgroundColor: 'rgba(255,255,255,0.85)',
+                    borderRadius: 4,
+                    paddingHorizontal: 3,
+                    paddingVertical: 1,
+                }}
+            >
+                <Text style={{ fontSize: 10, fontWeight: '700', color: '#000' }}>A</Text>
+            </View>
+        );
+    }
+
+    // The mapFrame clips its children with overflow:hidden. The
+    // inner translate-View shifts every absolutely-positioned child
+    // (tiles, polyline, start dot, pins) by (-panX, -panY) so the
+    // user sees a panned region of the map. Tiles outside the
+    // ±~640 px headroom we pre-render show as grey, which is fine —
+    // the recenter button is one tap away.
+    const _panTransform = [
+        { translateX: -Number(panX) || 0 },
+        { translateY: -Number(panY) || 0 },
+    ];
     return (
-        <View style={styles.mapFrame}>
-            {tiles}
-            {/* Destination keeps a flag-style pin — it's a place,
-                not a person, so an avatar circle would be misleading.
-                Map-marker icon, green, anchored bottom-tip on the
-                projected pixel. */}
-            {destinationPos ? (
-                <View
-                    pointerEvents="none"
-                    style={[
-                        styles.pin,
-                        { left: destinationPos.x - 14, top: destinationPos.y - 26 },
-                    ]}
-                >
-                    <Icon name="map-marker" size={28} color="#27AE60" />
-                </View>
-            ) : null}
-            {peerPos ? renderAvatar(peerPos, '#2E86DE', peerInitials, 'peer-avatar') : null}
-            {ownerPos ? renderAvatar(ownerPos, '#E74C3C', ownerInitials, 'owner-avatar') : null}
+        <View style={[styles.mapFrame, {width: MAP_WIDTH, height: MAP_HEIGHT}]}>
+            <View
+                style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    width: MAP_WIDTH,
+                    height: MAP_HEIGHT,
+                    transform: _panTransform,
+                }}
+            >
+                {tiles}
+                {/* Trail rendered ABOVE the tiles but BELOW the pins so
+                    the avatar/destination markers stay readable on top
+                    of the polyline. */}
+                {trailPolyline}
+                {trailStartMarker}
+                {/* Destination keeps a flag-style pin — it's a place,
+                    not a person, so an avatar circle would be misleading.
+                    Map-marker icon, green, anchored bottom-tip on the
+                    projected pixel. */}
+                {destinationPos ? (
+                    <View
+                        pointerEvents="none"
+                        style={[
+                            styles.pin,
+                            { left: destinationPos.x - 14, top: destinationPos.y - 26 },
+                        ]}
+                    >
+                        <Icon name="map-marker" size={28} color="#27AE60" />
+                    </View>
+                ) : null}
+                {peerPos ? renderAvatar(peerPos, '#2E86DE', peerInitials, 'peer-avatar') : null}
+                {ownerPos ? renderAvatar(ownerPos, '#E74C3C', ownerInitials, 'owner-avatar') : null}
+            </View>
         </View>
     );
 });
@@ -487,7 +710,23 @@ const StaticMap = memo((props) => {
 // Prototype bubble for a live-location message. Renders inside the normal
 // GiftedChat bubble wrapper (via renderMessageText) so the bubble background
 // and tail still come from ChatBubble.
-const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName, peerName }) => {
+const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, ownerName, peerName, fullScreen = false }) => {
+    // Per-render map dimensions. Inline bubble keeps the cosy
+    // 300x200 tile grid; the fullscreen viewer (long-press → "Full
+    // screen") fills the whole window — minus the Modal padding /
+    // close-button gutter we leave at the bottom of the screen — so
+    // the user can read street-level detail without leaving the chat.
+    // Both values are captured into MAP_WIDTH / MAP_HEIGHT shadows
+    // immediately so the rest of the function (auto-fit math, scale
+    // label, scrubber width, pan-button positions) reads them
+    // transparently.
+    const _winDims = fullScreen ? Dimensions.get('window') : null;
+    const MAP_WIDTH = fullScreen
+        ? Math.max(280, Math.floor(_winDims.width - 16))
+        : DEFAULT_MAP_WIDTH;
+    const MAP_HEIGHT = fullScreen
+        ? Math.max(280, Math.floor(_winDims.height - 220))
+        : DEFAULT_MAP_HEIGHT;
     // We need GiftedChat's own context here so we can hand it back to the
     // host's `onLongMessagePress(context, message)` — the ActionSheet APIs
     // that contextual menu uses live on `context.actionSheet()`.
@@ -500,6 +739,34 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
     // AsyncStorage on every change so reopening the chat restores the
     // user's last pick.
     const [zoomOverride, setZoomOverride] = useState(null);
+
+    // "Focus on latest" mode. When true, StaticMap re-centres on
+    // the owner's latest GPS fix (instead of the centroid of all
+    // visible points), without touching the zoom level. Toggled on
+    // by the current-location button and cleared by the restore
+    // button or by re-engaging the slider — those actions take
+    // priority for centring.
+    const [focusedOnLatest, setFocusedOnLatest] = useState(false);
+
+    // Pan offset in pixels. {x: 0, y: 0} = no pan, view centered on
+    // the auto-fit centroid (or whatever StaticMap's centering math
+    // picks). Positive x = pan east (camera moves right, content
+    // shifts left); positive y = pan south (content shifts up). Each
+    // tap of the four directional arrows on the map applies a fixed
+    // pixel step. The recenter button resets this to {0, 0} so the
+    // bubble snaps back to its auto-fit framing — also handy when
+    // the user has wandered off the trail and wants to find it again.
+    const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+
+    // Trail scrubber state. `null` = not interacting; the bubble
+    // shows the latest GPS fix as the owner avatar. A numeric index
+    // (0..trail.length-1) means the user is dragging the slider —
+    // we reposition the avatar to that historical tick and surface
+    // its timestamp in a small label above the slider so the user
+    // can answer "where was I at 14:32?". Reset implicitly when the
+    // user lifts their finger (onSeek release fires through to
+    // setScrubIndex(null)).
+    const [scrubIndex, setScrubIndex] = useState(null);
 
     // Last-known-good coords cache. The sender's GPS can drop out
     // mid-share (entering a tunnel, walking into a building, OS
@@ -518,25 +785,45 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
     // because the chat scrolled). Late-arriving values get applied via
     // setZoomOverride; the dependency array deliberately keys only on
     // messageKey so we don't refetch on every parent re-render.
-    useEffect(() => {
-        if (!messageKey) return undefined;
-        let cancelled = false;
-        storage.get(ZOOM_STORAGE_PREFIX + messageKey).then((saved) => {
-            if (cancelled) return;
-            if (typeof saved === 'number'
-                    && isFinite(saved)
-                    && saved >= MIN_ZOOM
-                    && saved <= MAX_ZOOM) {
-                setZoomOverride(saved);
-            }
-        }).catch(() => {
-            // Storage failures are non-fatal — the bubble just falls
-            // back to auto-zoom for this open.
-        });
-        return () => { cancelled = true; };
-    }, [messageKey]);
+    // (Removed) Persisted zoom restore.
+    //
+    // We used to read the user's last-chosen zoom from AsyncStorage
+    // here on mount and apply it as the override, so reopening a
+    // share kept the same zoom level the user was previously using.
+    // That conflicted with the "initial load must fit the whole
+    // trail" requirement: as the trail grew over the course of a
+    // share, the saved zoom (locked to an earlier, smaller
+    // bounding box) became too tight, and the trail's start point
+    // would land off-screen. The user reported "if I zoom out I
+    // can find the start and end points but not at the initial
+    // load" — exactly this situation.
+    //
+    // Now the bubble always opens at auto-fit (whatever zoom level
+    // contains every owner / peer / destination / trail point).
+    // The +/- buttons still adjust the in-session zoom, but those
+    // overrides are transient — closing and reopening the chat
+    // resets to auto-fit. If we want a smarter "remember zoom but
+    // never below auto-fit" behaviour later, we can compare the
+    // saved value to autoZoom on load and clamp; for now the
+    // simpler dropped-persistence answer matches the "show me my
+    // whole path" expectation.
 
     const meta = metadata || currentMessage?.metadata;
+
+    // Meet-session detection — the umbrella that covers BOTH sides of
+    // a meet-up handshake:
+    //   • `meeting_request: true`  → requester's origin bubble
+    //   • `in_reply_to` set        → accepter's reply bubble
+    // For a meet-up the bubble's job is unambiguous: show BOTH parties
+    // on a single map with the live distance between them. There is no
+    // value in showing the historical trail polyline (the path each
+    // person took to converge is just visual noise) nor in exposing a
+    // scrubber slider (there is nothing meaningful to scrub through).
+    // Plain timed shares ("for 4h", "until I return", etc.) keep both
+    // because for those the path IS the story. Declared early so the
+    // auto-fit + trail-rendering passes below can branch on it without
+    // tripping the const TDZ.
+    const isMeetSession = !!(meta && (meta.meeting_request === true || meta.in_reply_to));
 
     // Compute peer-coords derived values with null-safe guards so the
     // hooks below can run unconditionally (rules-of-hooks — we cannot
@@ -663,12 +950,26 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
         // something else (long-press accelerator, etc.) calls us.
         if (!hasCoords) return;
 
-        // Pick the right anchor point for the external map. We
-        // intentionally hand off ONE point — not a directions URL —
-        // so Google Maps / Apple Maps drops a single pin and lets
-        // the user tap Directions themselves and pick walking /
-        // driving / transit / cycling. No route line is auto-drawn.
-        // Priority:
+        // Single-point handoff to Google Maps / Apple Maps.
+        //
+        // Earlier we tried opening a Google Maps directions URL with
+        // the trail's points as waypoints, hoping the receiver would
+        // see a path A → … → B. The actual result was Google routing
+        // between every consecutive pair via its road network — a
+        // chaotic multi-leg car route through suburbia rather than
+        // the GPS polyline we wanted. Google Maps' URL scheme has no
+        // "drop these N pins without routing" mode, so any waypoint
+        // approach inevitably triggers routing.
+        //
+        // Instead, the inline static-map preview in this bubble is
+        // the canonical "see the path" view (it already renders the
+        // full GPS polyline + start dot + current avatar with
+        // pixel-accurate alignment). The external open is just the
+        // pragmatic "navigate from here / show me on Google Maps"
+        // gesture, so we hand off ONE point and let the user pick
+        // walking/driving/transit themselves.
+        //
+        // Three cases keep the original priority:
         //   1. The shared meeting destination (green pin) — that's
         //      the actionable place when this is a meet share.
         //   2. The peer's last known position (blue pin) — used when
@@ -727,6 +1028,11 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
     // like at this exact moment — both for seeding the +/- buttons when
     // the user hasn't picked anything yet, and for keeping the disabled
     // states accurate at the boundaries.
+    //
+    // The trail (when present) is included so the auto-fit zooms out
+    // far enough to show the entire path A → … → B, not just the
+    // current position. Each trail point is treated as a regular
+    // bounding-box contributor.
     const _autoZoomPoints = [];
     if (hasCoords) _autoZoomPoints.push({ latitude, longitude });
     if (hasPeer) _autoZoomPoints.push({ latitude: peerLatitude, longitude: peerLongitude });
@@ -735,8 +1041,25 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
             && typeof meta.destination.longitude === 'number') {
         _autoZoomPoints.push(meta.destination);
     }
+    // Trail points are folded into the auto-fit ONLY for plain timed
+    // shares — for those, "show me the whole path" is the goal. Meet
+    // sessions deliberately exclude them (we want the auto-fit zoom to
+    // frame the two participants + destination, not the meandering
+    // path each one took to get there). isMeetSession is computed
+    // further down but the order of `const`s in this function makes
+    // it available here when read; if the bubble adds a destination it
+    // still contributes to the bounding box above.
+    if (!isMeetSession && Array.isArray(trail)) {
+        for (const p of trail) {
+            if (p
+                    && typeof p.latitude === 'number'
+                    && typeof p.longitude === 'number') {
+                _autoZoomPoints.push({latitude: p.latitude, longitude: p.longitude});
+            }
+        }
+    }
     const autoZoom = _autoZoomPoints.length > 1
-        ? pickZoomToFitPoints(_autoZoomPoints)
+        ? pickZoomToFitPoints(_autoZoomPoints, 40, MAP_WIDTH, MAP_HEIGHT)
         : DEFAULT_ZOOM;
     // The zoom we actually render at: the saved override if the user
     // has interacted, otherwise the auto-fit value.
@@ -768,37 +1091,224 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
     const mapWidthMeters = metersPerPixel * MAP_WIDTH;
     const scaleLabel = formatDistance(mapWidthMeters);
 
-    const persistZoom = (next) => {
-        if (!messageKey) return;
-        storage.set(ZOOM_STORAGE_PREFIX + messageKey, next).catch(() => {
-            // Persistence failure is benign — the in-memory value still
-            // takes effect for the rest of this session, just won't
-            // survive a reopen. No user feedback needed.
-        });
-    };
     const adjustZoom = (delta) => {
         const base = (typeof zoomOverride === 'number') ? zoomOverride : autoZoom;
         const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, base + delta));
         if (next === base && typeof zoomOverride === 'number') {
             // Already at the cap — nothing to update.
+            console.log('[APPLOG] [map] ' + messageKey + ' zoom ' + (delta > 0 ? '+' : '-')
+                + ' ignored (at cap, zoom=' + base + ')');
             return;
         }
+        console.log('[APPLOG] [map] ' + messageKey + ' zoom ' + (delta > 0 ? '+' : '-')
+            + ' ' + base + ' -> ' + next
+            + (typeof zoomOverride === 'number' ? ' (override)' : ' (was auto-fit ' + autoZoom + ')'));
         setZoomOverride(next);
-        persistZoom(next);
+        // (Removed) AsyncStorage persistence of the user's zoom
+        // choice. Each chat reopen now starts at auto-fit so the
+        // full trail is visible — see the comment on the disabled
+        // useEffect above for the full rationale.
     };
 
-    // Wrapped in a plain View (not TouchableOpacity) so a stray tap on the
-    // map or info area no longer fires openMap / hijacks the user to an
-    // external maps app. All intentional actions now live in the footer
-    // bar below: menu-dots for message actions (single tap), Open in Maps
-    // for the handoff that the whole bubble used to trigger. Long-press
-    // anywhere on the card is kept as a fallback for parity with other
-    // message bubbles — GiftedChat itself routes long-presses on the
-    // surrounding bubble to the same handler, so this is mostly a
-    // belt-and-braces safety net for touches that land on our custom
-    // content before they bubble up.
+    // Single-tap behaviour:
+    //   • Plain shares (one-shot OR live X-hour timed) and meeting-request
+    //     replies route a tap straight to the external maps app — same
+    //     thing the bottom-right "open in maps" icon does. Saves the user
+    //     having to aim for the small footer icon when they just want
+    //     directions.
+    //   • Meeting REQUEST origin bubbles (meeting_request:true) keep the
+    //     no-op tap behaviour so the bubble's contextual action ("Accept
+    //     meeting request" in the long-press kebab) stays the obvious
+    //     primary action — bouncing to maps from a meeting invite would
+    //     be a confusing detour.
+    // Long-press always opens the message contextual menu via triggerMenu,
+    // matching every other bubble in the chat.
+    const isMeetupRequest = !!(meta && meta.meeting_request === true);
+    const tapOpensMap = !isMeetupRequest;
+    // `isMeetSession` is computed near the top of LocationBubble (right
+    // after `meta` is established) so the auto-fit zoom and trail
+    // rendering passes can branch on it without tripping the const TDZ.
+
+    // Slider JSX assembled here so we can render it as a SIBLING of
+    // the bubble's tap-to-open-maps TouchableOpacity (in the return
+    // below) rather than a descendant. When the slider was nested
+    // inside the TouchableOpacity, the parent's responder grabbed
+    // each touch before the slider's PanResponder could claim it
+    // — the user reported "can't grab the slider anymore". Hoisting
+    // the JSX to a sibling lets the slider's gesture handlers stand
+    // alone with no responder competition; the bubble's tap-anywhere-
+    // to-open-maps still works on the map + info area above.
+    const _scrubValidTrail = Array.isArray(trail)
+        ? trail.filter(p => p
+            && typeof p.latitude === 'number'
+            && typeof p.longitude === 'number')
+        : [];
+    let scrubberBlock = null;
+    // Meet-session bubbles never show the slider (see `isMeetSession`
+    // comment above) — the merged single-map / two-pin / live-distance
+    // view is the whole point, and a scrubber would imply a history to
+    // step through that doesn't apply.
+    if (!isMeetSession && _scrubValidTrail.length >= 2) {
+        const _maxIndex = _scrubValidTrail.length - 1;
+        // Index → percentage. When not scrubbing, the needle sits
+        // at the end (latest tick).
+        const _scrubIdx = typeof scrubIndex === 'number'
+            ? Math.max(0, Math.min(_maxIndex, scrubIndex))
+            : _maxIndex;
+        const _progressPct = (_scrubIdx / _maxIndex) * 100;
+        const _formatTickTime = (ms) => {
+            if (!Number.isFinite(ms) || ms <= 0) return '';
+            const d = new Date(ms);
+            const now = new Date();
+            const sameDay = d.getFullYear() === now.getFullYear()
+                && d.getMonth() === now.getMonth()
+                && d.getDate() === now.getDate();
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            if (sameDay) return `${hh}:${mm}`;
+            const day = String(d.getDate()).padStart(2, '0');
+            const mon = String(d.getMonth() + 1).padStart(2, '0');
+            return `${day}/${mon} ${hh}:${mm}`;
+        };
+        const _formatShareTime = (ms) => {
+            if (!Number.isFinite(ms) || ms <= 0) return '';
+            const d = new Date(ms);
+            try {
+                return d.toLocaleString();
+            } catch (e) {
+                return d.toISOString();
+            }
+        };
+        const _scrubPoint = _scrubValidTrail[_scrubIdx];
+        const _scrubTs = _scrubPoint ? _scrubPoint.timestamp : null;
+        const _scrubLabel = _formatTickTime(_scrubTs);
+        const _isScrubbing = typeof scrubIndex === 'number';
+        const _doShare = () => {
+            if (!_scrubPoint) return;
+            const lat = _scrubPoint.latitude;
+            const lng = _scrubPoint.longitude;
+            const when = _formatShareTime(_scrubTs);
+            const url = `https://maps.google.com/?q=${lat},${lng}`;
+            const message = when
+                ? `📍 Position on ${when}\n${url}`
+                : `📍 Position\n${url}`;
+            Share.share({ message }).catch((err) => {
+                console.log('[location] scrub share failed',
+                    err && err.message ? err.message : err);
+            });
+        };
+        scrubberBlock = (
+            <View style={[styles.scrubWrap, {width: MAP_WIDTH}]}>
+                <View style={styles.scrubLabelRow}>
+                    <Text
+                        style={[
+                            styles.scrubLabel,
+                            {color: subColor, opacity: _isScrubbing ? 1 : 0.7, flexShrink: 1},
+                        ]}
+                        numberOfLines={1}
+                    >
+                        {_isScrubbing
+                            ? `${_scrubLabel}  •  point ${_scrubIdx + 1}/${_scrubValidTrail.length}`
+                            : `Latest: ${_scrubLabel}  •  ${_scrubValidTrail.length} points`}
+                    </Text>
+                    <View style={styles.scrubActions}>
+                        <TouchableOpacity
+                            onPress={_doShare}
+                            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                            accessibilityLabel="Share this point"
+                            style={styles.scrubActionBtn}
+                        >
+                            <Icon
+                                name="share-variant"
+                                size={14}
+                                color={textColor}
+                            />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+                <AudioProgressSlider
+                    progress={_progressPct}
+                    width={MAP_WIDTH}
+                    height={4}
+                    knobWidth={4}
+                    knobHeight={16}
+                    // Blue colour family matches the peer-pin tone
+                    // (#2E86DE) used elsewhere on the map. A unified
+                    // blue for the slider reads as "navigation /
+                    // timeline UI" instead of competing with the
+                    // owner-avatar red, which previously made the
+                    // bar look like an extension of the avatar.
+                    color={isIncoming ? 'rgba(255,255,255,0.9)' : '#2E86DE'}
+                    unfilledColor={isIncoming
+                        ? 'rgba(255,255,255,0.35)'
+                        : 'rgba(46,134,222,0.25)'}
+                    onSeekStart={() => {
+                        // Plain console.log (no [APPLOG] tag) — start /
+                        // move are dev-grade traces useful when
+                        // debugging gesture handling, not the kind
+                        // of user-meaningful event the [APPLOG]
+                        // stream is meant to summarise.
+                        console.log('[map] ' + messageKey + ' slider start at idx=' + _scrubIdx
+                            + '/' + _maxIndex
+                            + ' total=' + _scrubValidTrail.length);
+                        setScrubIndex(_scrubIdx);
+                    }}
+                    onSeekChange={(pct) => {
+                        const idx = Math.round((pct / 100) * _maxIndex);
+                        const clamped = Math.max(0, Math.min(_maxIndex, idx));
+                        // Per-move trace was here — fired many
+                        // times per second during a drag and never
+                        // turned out to be useful, just noise. The
+                        // start trace + the [APPLOG] release line
+                        // already cover every interesting moment
+                        // of a slider interaction. Re-enable below
+                        // if a future regression needs to inspect
+                        // individual gesture frames.
+                        // console.log('[map] ' + messageKey + ' slider move idx=' + clamped
+                        //     + '/' + _maxIndex
+                        //     + ' pct=' + pct.toFixed(1));
+                        setScrubIndex(clamped);
+                    }}
+                    onSeek={(pct) => {
+                        const idx = Math.round((pct / 100) * _maxIndex);
+                        const clamped = Math.max(0, Math.min(_maxIndex, idx));
+                        const _trailPoint = _scrubValidTrail[clamped];
+                        const _whenStr = _trailPoint && Number.isFinite(_trailPoint.timestamp)
+                            ? new Date(_trailPoint.timestamp).toISOString()
+                            : '(no-ts)';
+                        const _coordsStr = _trailPoint
+                                && typeof _trailPoint.latitude === 'number'
+                                && typeof _trailPoint.longitude === 'number'
+                            ? _trailPoint.latitude.toFixed(5) + ',' + _trailPoint.longitude.toFixed(5)
+                            : '(no-coords)';
+                        // High-level summary: "user scrolled the
+                        // slider to point N of M, GPS fix at
+                        // <timestamp>, coords lat,lng". One line
+                        // per release — the only event the user
+                        // actually performed — tagged [APPLOG] so
+                        // it shows up in the user-action stream.
+                        console.log('[APPLOG] [map] ' + messageKey + ' slider scrolled to point '
+                            + (clamped + 1) + '/' + (_maxIndex + 1)
+                            + ' at ' + _whenStr
+                            + ' coords=' + _coordsStr);
+                        setScrubIndex(clamped);
+                    }}
+                />
+            </View>
+        );
+    }
+
     return (
-        <View style={styles.card}>
+        <View style={[styles.card, fullScreen && {width: MAP_WIDTH + 16}]}>
+            {/* The map+info area used to also open the external maps
+                viewer on a single tap, but accidental thumb-touches
+                kept hijacking the chat into Google Maps. The
+                bottom-right "Open in Maps" footer icon is now the
+                ONLY way to launch the external viewer; the map
+                itself is reserved for zoom and pan controls.
+                Long-press still opens the contextual menu — that's
+                the standard message-bubble gesture and doesn't
+                conflict with map interactions. */}
             <TouchableOpacity
                 activeOpacity={1}
                 onLongPress={triggerMenu}
@@ -810,7 +1320,7 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                     map's bounding box (top-right and bottom-right
                     corners) regardless of the surrounding TouchableOpacity
                     layout. */}
-                <View style={styles.mapWrapper}>
+                <View style={[styles.mapWrapper, {width: MAP_WIDTH, height: MAP_HEIGHT}]}>
                 {hasCoords ? (() => {
                     // Goal: both ends of a meet share render the SAME
                     // map — same colour anchored to the same person —
@@ -841,6 +1351,21 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                     const blueInitials = initialsFromName(
                         isIncoming ? ownerName : peerName
                     );
+                    // Resolve the scrub override (if any) into a
+                    // concrete lat/lng pair to forward to StaticMap.
+                    // Filter the trail to valid points first so the
+                    // index lines up with what the slider's percentage
+                    // mapping uses below.
+                    const _scrubTrail = Array.isArray(trail)
+                        ? trail.filter(p => p
+                            && typeof p.latitude === 'number'
+                            && typeof p.longitude === 'number')
+                        : [];
+                    const _scrubPoint = (typeof scrubIndex === 'number'
+                            && scrubIndex >= 0
+                            && scrubIndex < _scrubTrail.length)
+                        ? _scrubTrail[scrubIndex]
+                        : null;
                     return (
                         <StaticMap
                             latitude={latitude}
@@ -862,6 +1387,20 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                             ownerInitials={redInitials}
                             peerInitials={blueInitials}
                             zoom={effectiveZoom}
+                            // Meet-session bubbles never draw the trail
+                            // polyline. The two participants are always
+                            // shown on the same map with the live
+                            // distance — historical paths are noise in
+                            // that context. (Plain timed shares keep
+                            // the trail.)
+                            trail={isMeetSession ? undefined : trail}
+                            scrubLatitude={_scrubPoint ? _scrubPoint.latitude : undefined}
+                            scrubLongitude={_scrubPoint ? _scrubPoint.longitude : undefined}
+                            panX={panOffset.x}
+                            panY={panOffset.y}
+                            centerOnOwner={focusedOnLatest}
+                            mapWidth={MAP_WIDTH}
+                            mapHeight={MAP_HEIGHT}
                         />
                     );
                 })() : (
@@ -872,7 +1411,7 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                     // has immediate visual confirmation that the share
                     // started. The same bubble will rerender as the
                     // StaticMap branch once the follow-up tick lands.
-                    <View style={[styles.mapFrame, styles.placeholderFrame]}>
+                    <View style={[styles.mapFrame, styles.placeholderFrame, {width: MAP_WIDTH, height: MAP_HEIGHT}]}>
                         <Icon
                             name="crosshairs-gps"
                             size={32}
@@ -917,9 +1456,139 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                         >
                             <Icon name="minus" size={18} color="#222" />
                         </TouchableOpacity>
+                        {/* Pan compass: ↑ ← ⊙ → ↓, anchored to the
+                            BOTTOM-LEFT corner so it doesn't compete
+                            with the existing zoom buttons in the
+                            right-edge gutter. Each direction shifts
+                            the rendered pan offset by PAN_STEP px;
+                            the centre button (crosshairs-gps) clears
+                            both the pan offset AND the zoom override
+                            so the user can always get back to the
+                            auto-fit "show me my whole trail" view in
+                            one tap. The 5x5 tile pre-render gives ~640
+                            px of headroom in any direction before
+                            edges go grey. */}
+                        {(() => {
+                            const PAN_STEP = 60;
+                            const pan = (dx, dy) => () => setPanOffset((prev) => {
+                                const next = {x: prev.x + dx, y: prev.y + dy};
+                                console.log('[APPLOG] [map] ' + messageKey + ' pan '
+                                    + (dx > 0 ? '→ ' : dx < 0 ? '← ' : '')
+                                    + (dy > 0 ? '↓ ' : dy < 0 ? '↑ ' : '')
+                                    + 'offset (' + next.x + ',' + next.y + ')');
+                                return next;
+                            });
+                            // "Current location" — recenter the map
+                            // on the latest GPS fix and put it in
+                            // the middle of the frame, WITHOUT
+                            // changing the zoom level the user has
+                            // dialled in. Sets the focusedOnLatest
+                            // flag so StaticMap centres on the
+                            // owner instead of the visible-points
+                            // centroid, clears the pan offset, and
+                            // disengages the slider (so the avatar
+                            // is at the latest tick again).
+                            // zoomOverride is intentionally
+                            // untouched — that's the "keep my zoom"
+                            // promise.
+                            const focusCurrent = () => {
+                                console.log('[APPLOG] [map] ' + messageKey + ' focus current — recenter on latest tick');
+                                setPanOffset({x: 0, y: 0});
+                                setScrubIndex(null);
+                                setFocusedOnLatest(true);
+                            };
+                            // "Restore" — back to the bubble's
+                            // load-time view. Auto-fit zoom (whatever
+                            // pickZoomToFitPoints picks for the
+                            // visible-points bbox) + no pan + no
+                            // scrub + no owner focus. The full reset.
+                            const restoreView = () => {
+                                console.log('[APPLOG] [map] ' + messageKey + ' restore — auto-fit, clear pan/zoom/slider/focus');
+                                setPanOffset({x: 0, y: 0});
+                                setZoomOverride(null);
+                                setScrubIndex(null);
+                                setFocusedOnLatest(false);
+                            };
+                            return (
+                                <>
+                                    <TouchableOpacity
+                                        onPress={pan(0, -PAN_STEP)}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        accessibilityLabel="Pan up"
+                                        style={[styles.panBtn, styles.panBtnUp, fullScreen && {left: (MAP_WIDTH / 2) - 11}]}
+                                    >
+                                        <Icon name="chevron-up" size={14} color="#222" />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        onPress={pan(-PAN_STEP, 0)}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        accessibilityLabel="Pan left"
+                                        style={[styles.panBtn, styles.panBtnLeft, fullScreen && {top: (MAP_HEIGHT / 2) - 11}]}
+                                    >
+                                        <Icon name="chevron-left" size={14} color="#222" />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        onPress={focusCurrent}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        accessibilityLabel="Snap to current location"
+                                        style={styles.recenterBtn}
+                                    >
+                                        <Icon name="crosshairs-gps" size={18} color="#222" />
+                                    </TouchableOpacity>
+                                    {/* Fourth view-control button —
+                                        the "restore as loaded"
+                                        affordance. Sits in the
+                                        BOTTOM-LEFT corner so the
+                                        right edge stays a clean rail
+                                        of zoom + / current-location /
+                                        zoom -. Uses arrow-expand-all
+                                        to suggest "fit everything in
+                                        view", which is what auto-fit
+                                        does. Doesn't disturb the
+                                        zoom factor's persistence
+                                        because zoomOverride was
+                                        already non-persistent (see
+                                        the load-state comment near
+                                        the top of the bubble). */}
+                                    <TouchableOpacity
+                                        onPress={restoreView}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        accessibilityLabel="Restore initial map view"
+                                        style={styles.restoreBtn}
+                                    >
+                                        <Icon name="arrow-expand-all" size={18} color="#222" />
+                                    </TouchableOpacity>
+                                    {/* Pan-right is back — the
+                                        middle-right slot opened up
+                                        again when current-location
+                                        moved to the top-left corner,
+                                        so the cardinal compass is
+                                        complete (↑ ← → ↓) without
+                                        clashing with the right-edge
+                                        zoom +/-. */}
+                                    <TouchableOpacity
+                                        onPress={pan(PAN_STEP, 0)}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        accessibilityLabel="Pan right"
+                                        style={[styles.panBtn, styles.panBtnRight, fullScreen && {top: (MAP_HEIGHT / 2) - 11}]}
+                                    >
+                                        <Icon name="chevron-right" size={14} color="#222" />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        onPress={pan(0, PAN_STEP)}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        accessibilityLabel="Pan down"
+                                        style={[styles.panBtn, styles.panBtnDown, fullScreen && {left: (MAP_WIDTH / 2) - 11}]}
+                                    >
+                                        <Icon name="chevron-down" size={14} color="#222" />
+                                    </TouchableOpacity>
+                                </>
+                            );
+                        })()}
                     </>
                 ) : null}
                 </View>
+
 
                 <View style={styles.info}>
                     {/* Title row — "Current location" on the left,
@@ -936,12 +1605,27 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                             numberOfLines={1}
                         >
                             {isOneShot
-                                ? 'Shared location'
+                                // One-shot share: a single GPS fix, no
+                                // follow-up ticks. The bubble represents
+                                // "where I am right now" — labelled
+                                // "Current location" so the title reads
+                                // as a snapshot rather than implying an
+                                // ongoing stream.
+                                ? 'Current location'
                                 : (isExpired
                                     ? 'Location (expired)'
                                     : (isStale
                                         ? 'Last known location'
-                                        : (hasCoords ? 'Current location' : 'Current location (acquiring)')))}
+                                        // Continuous (X-hour) share —
+                                        // this includes both plain
+                                        // timed shares and meeting
+                                        // requests. The bubble is a
+                                        // live, updating stream, so
+                                        // "Sharing location" reads as
+                                        // an active verb that
+                                        // distinguishes it from the
+                                        // one-shot snapshot above.
+                                        : (hasCoords ? 'Sharing location' : 'Sharing location (acquiring)')))}
                         </Text>
                         {hasCoords && scaleLabel ? (
                             <Text
@@ -998,6 +1682,14 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                 </View>
             </TouchableOpacity>
 
+            {/* Trail scrubber, rendered as a sibling of the
+                tap-to-open-maps TouchableOpacity (not a descendant)
+                so the slider's PanResponder owns its own touch
+                surface — nesting it inside the TouchableOpacity made
+                the parent's responder swallow drags before the
+                slider could claim them. */}
+            {scrubberBlock}
+
             {/* Footer action bar — mirrors the small action strip image
                 bubbles have. Menu on the left (single tap → same contextual
                 menu other bubbles open on long-press); "expires in …" in
@@ -1007,20 +1699,31 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
                 bubble to open maps" behaviour, which was firing on any
                 accidental touch. */}
             <View style={styles.footer}>
-                <TouchableOpacity
-                    onPress={triggerMenu}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    accessibilityLabel="Message options"
-                    style={styles.footerButton}
-                >
-                    {/* Hamburger ("sandwich") — matches the menu affordance
-                        used on the other bubbles in the chat. */}
-                    <Icon
-                        name="menu"
-                        size={20}
-                        color={textColor}
-                    />
-                </TouchableOpacity>
+                {/* Footer kebab is suppressed in fullscreen mode. The
+                    contextual menu (Reply/Pin/Forward/Delete/Share/…)
+                    only makes sense in the chat-list context — most
+                    actions need the surrounding messages list to land
+                    correctly (Forward needs a target picker, Pin needs
+                    the chat header, Reply switches focus to the input
+                    box, etc.). In the immersive fullscreen viewer the
+                    user's intent is "look at the map" — exit fullscreen
+                    first if they want to operate on the message. */}
+                {!fullScreen && (
+                    <TouchableOpacity
+                        onPress={triggerMenu}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityLabel="Message options"
+                        style={styles.footerButton}
+                    >
+                        {/* Hamburger ("sandwich") — matches the menu affordance
+                            used on the other bubbles in the chat. */}
+                        <Icon
+                            name="menu"
+                            size={20}
+                            color={textColor}
+                        />
+                    </TouchableOpacity>
+                )}
                 <Text
                     style={[styles.footerExpires, { color: subColor }]}
                     numberOfLines={1}
@@ -1053,19 +1756,21 @@ const LocationBubble = memo(({ currentMessage, metadata, onLongPress, ownerName,
 const styles = StyleSheet.create({
     card: {
         padding: 8,
-        width: MAP_WIDTH + 16, // card padding
+        width: DEFAULT_MAP_WIDTH + 16, // card padding
     },
     // Wraps the map frame and the absolutely-positioned zoom buttons so
     // the +/- controls anchor to the map's edges rather than to the
-    // surrounding card padding.
+    // surrounding card padding. Width/height for the FULLSCREEN viewer
+    // are applied as inline-style overrides at the JSX call site —
+    // these defaults serve the inline chat bubble.
     mapWrapper: {
-        width: MAP_WIDTH,
-        height: MAP_HEIGHT,
+        width: DEFAULT_MAP_WIDTH,
+        height: DEFAULT_MAP_HEIGHT,
         position: 'relative',
     },
     mapFrame: {
-        width: MAP_WIDTH,
-        height: MAP_HEIGHT,
+        width: DEFAULT_MAP_WIDTH,
+        height: DEFAULT_MAP_HEIGHT,
         borderRadius: 8,
         overflow: 'hidden',
         backgroundColor: '#e9ecef',
@@ -1100,6 +1805,108 @@ const styles = StyleSheet.create({
     // is also disabled via `disabled={true}`.
     zoomBtnDisabled: {
         opacity: 0.4,
+    },
+    // Pan controls spread to the cardinal edges of the map so
+    // they're easy to hit without thumb-stretching to a clustered
+    // corner cross. Each button is 30 px (matching the zoom +/-
+    // size for visual parity); the recenter button (crosshairs)
+    // sits in the BOTTOM-LEFT corner where it doesn't compete with
+    // the zoom +/- pinned to the right edge.
+    //
+    //   ┌─────[↑]─────┐
+    //   │             │
+    //  [←]           [→]
+    //   │             │
+    //   ⊙────[↓]──────┘
+    //
+    // The cardinal arrows' `left` / `top` for the centre-axis
+    // buttons land them dead-centre on the map's width / height.
+    // Cardinal pan arrows. 22 px is ~25 % smaller than the zoom +/-
+    // (30 px) which keeps the directional arrows visually subordinate
+    // to the zoom controls. They also hug the edge of the map at a
+    // 3 px gutter (vs 8 px for zoom) so they intrude minimally on
+    // the rendered tile area.
+    panBtn: {
+        position: 'absolute',
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: '#000',
+        shadowOpacity: 0.18,
+        shadowRadius: 2,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+    },
+    // Centre-axis offset: (MAP_WIDTH / 2) - (button width / 2)
+    //                  = (MAP_HEIGHT / 2) - (button height / 2)
+    // Up — top-centre, 3 px from top edge.
+    // The cardinal arrows' centre-axis offset uses the DEFAULT bubble
+    // dimensions; the fullscreen viewer applies inline-style overrides
+    // at the JSX call site so the arrows stay centred when the map
+    // grows. (See `panBtnUp/Down/Left/Right` JSX in LocationBubble.)
+    panBtnUp:     { top: 3,    left: (DEFAULT_MAP_WIDTH / 2) - 11 },
+    // Down — bottom-centre.
+    panBtnDown:   { bottom: 3, left: (DEFAULT_MAP_WIDTH / 2) - 11 },
+    // Left — middle-left edge.
+    panBtnLeft:   { left: 3,   top: (DEFAULT_MAP_HEIGHT / 2) - 11 },
+    // Right — middle-right edge. Sits between the zoom + (top-right)
+    // and zoom - (bottom-right) buttons.
+    panBtnRight:  { right: 3,  top: (DEFAULT_MAP_HEIGHT / 2) - 11 },
+    // Recenter / "back to original view" button. Sized to match the
+    // zoom +/- (30 px) since it shares their semantic weight — they
+    // all reset the framing in one tap — and pinned to the RIGHT
+    // edge between zoom + (top-right) and zoom - (bottom-right) so
+    // the three primary view-control buttons cluster vertically. The
+    // smaller cardinal arrows hug the OPPOSITE three edges (top,
+    // left, bottom) so the right edge stays a clean control rail.
+    // Current-location button: "snap me to my latest GPS fix at the
+    // current zoom factor". Pinned to the TOP-LEFT corner so the
+    // four primary view controls — zoom + (top-right), zoom -
+    // (bottom-right), restore (bottom-left), current-location
+    // (top-left) — form one button at each map corner. The cardinal
+    // pan arrows stay along the edge midpoints.
+    recenterBtn: {
+        position: 'absolute',
+        left: 8,
+        top: 8,
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: '#000',
+        shadowOpacity: 0.18,
+        shadowRadius: 2,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+    },
+    // 4th view-control button: "restore initial map view". Sized to
+    // match the zoom +/- and current-location buttons (30 px) and
+    // pinned to the BOTTOM-LEFT corner so the four primary view
+    // controls form a corner cross when imagined together (zoom +
+    // top-right, current-location middle-right, zoom - bottom-right,
+    // restore bottom-left). The smaller cardinal pan arrows (22 px)
+    // continue to ride the top, middle-left, and bottom edges
+    // without crowding the corners.
+    restoreBtn: {
+        position: 'absolute',
+        left: 8,
+        bottom: 8,
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: '#000',
+        shadowOpacity: 0.18,
+        shadowRadius: 2,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
     },
     // Title row beneath the map: "Current location" on the left, the
     // map-width scale label ("↔ 1.2 km") on the right. flexDirection
@@ -1137,6 +1944,57 @@ const styles = StyleSheet.create({
     },
     info: {
         marginTop: 6,
+    },
+    // Trail scrubber wrapper: thin 4 px slider with a 16 px needle
+    // sitting between the map and the info section. Vertical padding
+    // is provided by AudioProgressSlider's own touch-target padding,
+    // so we just give the wrapper a small top margin to separate it
+    // visually from the map's tile grid.
+    scrubWrap: {
+        marginTop: 4,
+        width: DEFAULT_MAP_WIDTH,
+    },
+    scrubLabelRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    scrubLabel: {
+        fontSize: 11,
+    },
+    // Right-side cluster on the scrubber label row: share icon,
+    // optional Live pill. flex layout so they sit snug against
+    // each other and right-align beside the timestamp label.
+    scrubActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    scrubActionBtn: {
+        paddingHorizontal: 4,
+        paddingVertical: 2,
+    },
+    // Live pill: a tiny rounded indicator + "Live" word that doubles
+    // as a "return to latest" reset button. Matches the visual
+    // language of streaming-app live badges (red dot, thin border)
+    // so the affordance reads as "you're paused, tap to resume".
+    scrubLivePill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginLeft: 6,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 10,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
+    scrubLiveDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        marginRight: 4,
+    },
+    scrubLiveText: {
+        fontSize: 10,
+        fontWeight: '600',
     },
     title: {
         fontSize: 15,

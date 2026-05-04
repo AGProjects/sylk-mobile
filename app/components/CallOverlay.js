@@ -11,6 +11,7 @@ import { Colors } from 'react-native-paper';
 import SylkAppbarContent from './SylkAppbarContent';
 import { Platform, Dimensions} from 'react-native';
 import utils from '../utils';
+import NetworkSpeedometer from './NetworkSpeedometer';
 
 import styles from '../assets/styles/AudioCall';
 
@@ -43,7 +44,9 @@ class CallOverlay extends React.Component {
             reconnectingCall: this.props.reconnectingCall,
             isLandscape: this.props.isLandscape,
             menuVisible: false,
-            showUsage: false,
+            // Show the network speedometers by default; user can hide
+            // via the menu's 'Hide bandwidth' item.
+            showUsage: true,
             enableMyVideo: this.props.enableMyVideo,
 		    availableAudioDevices: this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
@@ -103,7 +106,7 @@ class CallOverlay extends React.Component {
                            direction: nextProps.call ? nextProps.call.direction : null});
         }
 
-        if ('showUsage' in nextProps) {
+        if ('showUsage' in nextProps && nextProps.showUsage !== undefined) {
 			this.setState({showUsage: nextProps.showUsage});
         }
 
@@ -169,13 +172,65 @@ class CallOverlay extends React.Component {
                 this.props.toggleMyVideo();
                 break;
 			case 'toggleUsage':
-				this.setState({showUsage: !this.state.showUsage});
+				// Prefer the parent-owned toggle (VideoBox) so the
+				// fullscreen speedometer overlay tracks the same flag.
+				if (typeof this.props.toggleUsage === 'function') {
+					this.props.toggleUsage();
+				} else {
+					this.setState({showUsage: !this.state.showUsage});
+				}
                 break;
             case 'swapVideo':
                 this.props.swapVideo();
                 break;
             case 'aspectRatio':
                 this.props.toggleAspectRatio();
+                break;
+            case 'chat':
+                // Same handler as the green chat button in the bottom
+                // button bar (AudioCallBox.props.goBackFunc) — pops the
+                // call view back to the chat for the active peer
+                // without ending the call.
+                if (typeof this.props.goBackFunc === 'function') {
+                    this.props.goBackFunc();
+                }
+                break;
+            case 'shareLocation':
+                // Mirrors the chat-header kebab "Share location..." item.
+                // Delegates up to app.js → NavigationBar.handleMenu so
+                // the disclosure / OS-permission / duration-picker flow
+                // is exactly the same as outside a call.
+                //
+                // Two-step: first pop back to the peer's chat view
+                // (goBackFunc) so the modal (and the resulting "▶️
+                // Live location sharing started" system note +
+                // location bubble) land on a visible surface; THEN —
+                // after a small defer so the route change and the
+                // selectedContact setState in goBackToHomeFromCall
+                // have settled — fire the share action. Without the
+                // defer, NavigationBar.showShareLocationModal()'s
+                // setState races with the call→chat re-render and
+                // the modal silently never appears (we land on the
+                // chat with no picker). Same shape for requestLocation
+                // below.
+                if (typeof this.props.goBackFunc === 'function') {
+                    this.props.goBackFunc();
+                }
+                if (typeof this.props.shareLocationFromCall === 'function') {
+                    setTimeout(() => {
+                        this.props.shareLocationFromCall();
+                    }, 150);
+                }
+                break;
+            case 'requestLocation':
+                if (typeof this.props.goBackFunc === 'function') {
+                    this.props.goBackFunc();
+                }
+                if (typeof this.props.requestLocationFromCall === 'function') {
+                    setTimeout(() => {
+                        this.props.requestLocationFromCall();
+                    }, 150);
+                }
                 break;
             default:
                 break;
@@ -255,7 +310,10 @@ class CallOverlay extends React.Component {
             }
 
             //console.log(' --- render overlay', this.state.callState, this.state.call);
-            if (this.props.info && this.state.showUsage) {
+            // info is now visualized via <NetworkSpeedometer/> below.
+            // Keep the text fallback only when the speedometer can't
+            // attach (no call yet) — useful while dialing.
+            if (this.props.info && this.state.showUsage && !this.state.call) {
                 callDetail = callDetail + ' ' + this.props.info;
             }
 
@@ -279,16 +337,15 @@ class CallOverlay extends React.Component {
 			
 			let appBarContainer = {
 				backgroundColor: 'rgba(34,34,34,.7)',
-				borderWidth : 0,
-				borderColor: 'red',
 				height: 60,
-				marginLeft: this.state.isLandscape ? - rightInset - leftInset: 0,
+				// Restore the bleed-up so the appbar background merges
+				// with the video container behind it (same look as
+				// before Xcode 26).
+				marginLeft: this.state.isLandscape
+					? -Math.max(leftInset, rightInset)
+					: 0,
 				marginTop: -topInset,
 				width: this.state.isLandscape ? width - rightInset - leftInset: width,
-				// Ensure the appbar paints (and hit-tests) above the sibling
-				// video container. On iOS the video container is shifted up by
-				// -topInset and its TouchableWithoutFeedback (toggleFullScreen)
-				// would otherwise intercept taps on BackAction/menu icons.
 				zIndex: 1000,
 				elevation: 10,
 			}
@@ -336,16 +393,95 @@ class CallOverlay extends React.Component {
 						dark={true}
 						>
 					<Appbar.BackAction key={'co-back-' + _overlayRemountKey} onPress={() => {this.props.goBackFunc()}} />
-					<SylkAppbarContent
-						key={'co-content-' + _overlayRemountKey}
-						title={mediaLabel} subtitle={callDetail}
-					/>
+					{/* Two-line caller info. We can't use Paper's
+					    Appbar.Content here because Paper 5 / V3 only
+					    renders the `subtitle` prop in V2 themes — in
+					    V3 it silently drops the second line and
+					    centers the title alone, vertically.
+					    Hand-rolled stack: title on the row
+					    centerline (matches BackAction / kebab) and
+					    subtitle just below it. Achieved by NOT
+					    centering the pair (which would put title in
+					    the top half) — instead we anchor the title's
+					    bottom edge at the row's centerline so the
+					    title sits in the upper half but with its
+					    visual baseline level with the icons, then
+					    the subtitle continues down past the
+					    centerline. */}
+					<View style={{
+						flex: 1,
+						// Match the main NavBar's title baseline (which
+						// uses SylkAppbarContent + NavigationBar's
+						// `title` (fontSize 16) and `subtitle`
+						// (fontSize 12) styles). Same font sizes and
+						// no lineHeight/marginTop overrides means
+						// React Native's text-line-box places the
+						// glyphs in the same vertical position in
+						// both headers, so the URI line sits at
+						// exactly the same y-offset whether the user
+						// is on ReadyBox or in a call.
+						marginLeft: 4,
+					}}>
+						<Text
+							numberOfLines={1}
+							ellipsizeMode="tail"
+							style={{
+								color: 'white',
+								fontSize: 16,
+							}}
+						>
+							{mediaLabel}
+						</Text>
+						<Text
+							numberOfLines={1}
+							ellipsizeMode="tail"
+							style={{
+								color: 'rgba(255,255,255,0.7)',
+								fontSize: 12,
+							}}
+						>
+							{callDetail}
+						</Text>
+					</View>
+
+					{/* Hide the navbar speedometer for audio calls — the
+					    AudioCallBox now renders its own larger
+					    speedometer in the call body, so the small dials
+					    in the header are redundant for audio. Video
+					    P2P calls keep the header speedometer because
+					    that's the primary readout when not in
+					    fullscreen — shown in both portrait and
+					    landscape. Conferences explicitly DO NOT use
+					    this header (ConferenceBox uses its own
+					    fullscreen-only i-icon overlay). */}
+					{this.state.call
+						&& this.state.callState === 'established'
+						&& this.state.media !== 'audio'
+						&& !this.props.hideSpeedometers ? (
+						<View
+							pointerEvents="none"
+							style={{
+								position: 'absolute',
+								right: 52,           // clear the kebab menu
+								top: 0,
+								bottom: 0,
+								justifyContent: 'center',
+							}}
+						>
+							<NetworkSpeedometer
+								key={'co-speedo-' + _overlayRemountKey}
+								call={this.state.call}
+								videoCodec={this.props.videoCodec}
+								audioCodec={this.props.audioCodec}
+							/>
+						</View>
+					) : null}
 
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
                     anchor={
-                    <View style={{ marginLeft: 50}}>
+                    <View style={{ marginLeft: 50 }}>
                         <Appbar.Action
                             key={'co-menu-' + _overlayRemountKey}
                             ref={this.menuRef}
@@ -405,7 +541,66 @@ class CallOverlay extends React.Component {
 						})}
 					</Menu>
 
+					{/* Chat + Share / Request location group — mirrors
+						the chat-header kebab and the green chat button
+						in the in-call button bar. "Chat..." matches
+						AudioCallBox's bottom-bar chat icon (goBackFunc:
+						return to the peer's chat without ending the
+						call). Share / Request location reuse the same
+						NavigationBar handlers as the per-contact menu
+						(disclosure → permission → duration picker).
+						Delimited with Dividers above and below so the
+						group reads as a single block. */}
+					{(typeof this.props.goBackFunc === 'function'
+					  || typeof this.props.shareLocationFromCall === 'function'
+					  || typeof this.props.requestLocationFromCall === 'function') && (
+						<>
+							<Divider />
+							{typeof this.props.goBackFunc === 'function' ? (
+								<Menu.Item
+									onPress={() => this.handleMenu('chat')}
+									icon="chat"
+									title="Chat..."
+								/>
+							) : null}
+							{/* Separate "go to chat" from the location
+								actions — the items below mutate
+								outgoing state (start a share / send a
+								request) while Chat is purely a view
+								switch, so they belong in their own
+								visual sub-group. */}
+							{typeof this.props.goBackFunc === 'function'
+							  && (typeof this.props.shareLocationFromCall === 'function'
+								  || typeof this.props.requestLocationFromCall === 'function') ? (
+								<Divider />
+							) : null}
+							{typeof this.props.shareLocationFromCall === 'function' ? (
+								<Menu.Item
+									onPress={() => this.handleMenu('shareLocation')}
+									icon="map-marker"
+									title="Share location..."
+								/>
+							) : null}
+							{typeof this.props.requestLocationFromCall === 'function' ? (
+								<Menu.Item
+									onPress={() => this.handleMenu('requestLocation')}
+									icon="map-marker-question"
+									title="Request location..."
+								/>
+							) : null}
+						</>
+					)}
+
+					{/* Extra breathing room above Hangup. The dropdown
+						items are tall enough that a fast double-tap
+						after dismissing one entry can land on the next
+						one — for Hangup that means an accidental call
+						termination, which is unrecoverable. The spacer
+						(plus the Divider above it) pushes Hangup ~24px
+						away from the previous item so it sits in its
+						own visual zone. */}
 					<Divider />
+					<View style={{ height: 24 }} />
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
                 </Menu>
@@ -444,7 +639,9 @@ CallOverlay.propTypes = {
     useInCallManger: PropTypes.bool,
     insets: PropTypes.object,
     aspectRatio: PropTypes.string,
-    toggleAspectRatio: PropTypes.func
+    toggleAspectRatio: PropTypes.func,
+    shareLocationFromCall: PropTypes.func,
+    requestLocationFromCall: PropTypes.func
 };
 
 export default CallOverlay;

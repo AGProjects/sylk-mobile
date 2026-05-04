@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing} from 'react-native';
+import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox } from 'react-native-paper';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import SoundLevel from "react-native-sound-level";
@@ -746,15 +746,22 @@ class ReadyBox extends Component {
     }
 
     handleSearch(inputText, contact) {
-        //console.log('handleSearch', inputText);
         if (this.state.searchMessages) {
             if (!inputText) {
-				this.props.toggleSearchMessages();
-				this.setState({searchString: ''});
-			} else {
-				this.setState({searchString: inputText});
-			}
-			return;
+                // Empty input in search-messages mode = the user
+                // tapped the clear icon (the × inside the Searchbar)
+                // OR cleared the field manually. Either way we
+                // close the search bar via toggleSearchMessages,
+                // which is also where the open/close log line fires.
+                console.log('[search] messages search cleared');
+                this.props.toggleSearchMessages();
+                this.setState({searchString: ''});
+            } else {
+                console.log('[search] messages query change',
+                    'len=' + inputText.length);
+                this.setState({searchString: inputText});
+            }
+            return;
         }
 
         //console.log('handleSearch contact =', contact);
@@ -1163,37 +1170,106 @@ class ReadyBox extends Component {
         }, 6000);
     }
 
-    get categoryItems() {
- 		let content_items = [];
+    // Filter half of the chat-bottom bar. These are the content-type
+    // chips on the left side: tap one to filter the chat to messages of
+    // that kind; tap again to clear. The list grows as we add new
+    // categories (most recently Locations), and on narrow phones it
+    // overflows the available width — the row that hosts these scrolls
+    // horizontally, while the sort toggles stay anchored on the right.
+    get categoryFilterItems() {
+        const items = [];
+        if (!this.props.selectedContact) return items;
 
-        if (this.props.selectedContact) {
-			content_items.push({key: 'text', title: 'Text', icon: 'text', enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
-			content_items.push({key: 'audio', title: 'Audio', icon: 'microphone', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
-			content_items.push({key: 'image', title: 'Image', icon: 'image', enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
-			content_items.push({key: 'video', title: 'Video', icon: 'video', enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
-			content_items.push({key: 'other', title: 'Other', icon: 'file', enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
+        // Mutually-exclusive content-type filters. Picking one
+        // narrows the chat to that type only; tapping the active
+        // chip again clears the filter. Pinned was here originally
+        // but moved to the right group (categorySortItems) — it's
+        // a CUMULATIVE modifier, not a content-type filter, so it
+        // belongs visually with the sort toggles on the other side
+        // of the splitter.
+        items.push({key: 'text',     title: 'Text',      icon: 'text',       enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
+        items.push({key: 'audio',    title: 'Audio',     icon: 'microphone', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
+        items.push({key: 'image',    title: 'Image',     icon: 'image',      enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
+        items.push({key: 'video',    title: 'Video',     icon: 'video',      enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
+        items.push({key: 'location', title: 'Locations', icon: 'map-marker', enabled: true, selected: this.state.messagesCategoryFilter === 'location'});
+        items.push({key: 'other',    title: 'Other',     icon: 'file',       enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
+        return items;
+    }
 
-            if ('pinned' in this.props.contentTypes) {
-                content_items.push({key: 'pinned', title: 'Pinned', enabled: true, selected: this.props.pinned});
+    // Sort half of the chat-bottom bar. Each pair is mutually exclusive
+    // (only one shown at a time via the `enabled` gate) and tapping the
+    // visible button flips to the alternative state. Pinned to the
+    // right side of the bar — never scrolls offscreen — so a quick
+    // glance at the bar always tells the user what sort is active.
+    // Rendered as icons (matching the filter chips) since the labels
+    // had already been pushed past the available width by the
+    // Locations filter.
+    //
+    // Sort-axis icons (clock = by time, harddisk = by size) are
+    // shown / hidden based on the active category filter:
+    //
+    //   • Locations active → hide BOTH axis icons. A live-location
+    //     tick stream has no meaningful "size", and time is the only
+    //     axis available — a single non-toggling icon would be noise.
+    //     Asc/desc still flips the chronological direction.
+    //
+    //   • Text active → hide BY-SIZE, keep BY-TIME. Plain text
+    //     messages technically have a byte size but ordering by it
+    //     isn't a useful workflow ("show me my longest-character
+    //     messages first"); time is the only axis users actually
+    //     reach for in a text-only view.
+    //
+    //   • Anything else (audio / image / video / other / pinned, or
+    //     no filter) → both axis icons remain available. These views
+    //     are file-based or mixed, where size-sort drives a real
+    //     "biggest assets first" use case.
+    //
+    // The asc/desc pair is always shown — the direction toggle is
+    // useful in every category, including text and locations.
+    get categorySortItems() {
+        const items = [];
+        if (!this.props.selectedContact) return items;
+        const cat = this.state.messagesCategoryFilter;
+        const inLocationFilter = cat === 'location';
+        const inTextFilter = cat === 'text';
+        // Pin is a CUMULATIVE modifier — it stacks on top of any
+        // content-type filter, not a replacement for one. Sits at
+        // the start of the right group right after the splitter so
+        // the user reads "exclusive content type filters" on the
+        // left, then the splitter, then "modifiers / sort options"
+        // on the right.
+        items.push({key: 'pinned', title: 'Pinned', icon: 'pin', enabled: true, selected: !!this.props.pinned});
+        if (!inLocationFilter) {
+            items.push({key: 'orderByTime', title: 'Sort: by time', icon: 'clock-outline', enabled: this.state.orderBy === 'timestamp', selected: false});
+            if (!inTextFilter) {
+                items.push({key: 'orderBySize', title: 'Sort: by size', icon: 'harddisk', enabled: this.state.orderBy === 'size', selected: false});
             }
+        }
+        items.push({key: 'orderAscending',  title: 'Order: ascending',  icon: 'arrow-up',   enabled: this.state.sortOrder === 'asc',  selected: false});
+        items.push({key: 'orderDescending', title: 'Order: descending', icon: 'arrow-down', enabled: this.state.sortOrder === 'desc', selected: false});
+        return items;
+    }
 
-			content_items.push({key: 'orderByTime', title: 'By Time', enabled: this.state.orderBy === 'timestamp', selected: false});
-			content_items.push({key: 'orderBySize', title: 'By Size', enabled:  this.state.orderBy === 'size', selected: false});
-            content_items.push({key: 'orderAscending', title: '↑ Asc', enabled: this.state.sortOrder === 'asc', selected: false});
-            content_items.push({key: 'orderDescending', title: '↓ Desc', enabled: this.state.sortOrder === 'desc', selected: false});
-
-            return content_items;
+    // Backward-compatible flat list used by callers that need the
+    // whole bar in one collection (no current callers other than this
+    // component, but the export is kept so external diagnostics /
+    // tests don't break). Equivalent to the previous shape: filters
+    // first, sort toggles last.
+    get categoryItems() {
+        if (this.props.selectedContact) {
+            return [...this.categoryFilterItems, ...this.categorySortItems];
         }
 
         if (this.showCategoryBar) {
-			content_items.push({key: 'orderByTime', title: 'Sort by most recent', enabled: this.state.orderBy === 'timestamp', selected: false});
-			content_items.push({key: 'orderBySize', title: 'Sort by storage', enabled:  this.state.orderBy === 'size', selected: false});
+            const content_items = [];
+            content_items.push({key: 'orderByTime', title: 'Sort by most recent', enabled: this.state.orderBy === 'timestamp', selected: false});
+            content_items.push({key: 'orderBySize', title: 'Sort by storage', enabled:  this.state.orderBy === 'size', selected: false});
             content_items.push({key: 'orderAscending', title: '↑ Ascending', enabled: this.state.sortOrder === 'asc', selected: false});
             content_items.push({key: 'orderDescending', title: '↓ Descending', enabled: this.state.sortOrder === 'desc', selected: false});
             return content_items;
         }
-        
-        return content_items;
+
+        return [];
     }
 
     get navigationItems() {
@@ -1310,30 +1386,234 @@ class ReadyBox extends Component {
             return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
         }
 
+        // Sort toggles render as IconButtons too — same compact
+        // footprint as the category icons next to them, so the
+        // bottom bar fits cleanly on narrow phones now that the
+        // Locations filter has pushed the row over the previous
+        // text-button budget. accessibilityLabel carries the
+        // human-readable title (kept on the categoryItems entry
+        // for exactly this purpose) so screen readers still get
+        // "Sort: by time" / "Order: ascending" rather than the
+        // bare icon name.
+        // Sort-axis toggles render as a stacked icon+label so the
+        // sort dimension is named explicitly underneath the
+        // pictogram. The icons alone (clock / harddisk) didn't
+        // communicate "by time" / "by size" reliably — users
+        // interpreted the harddisk as a storage device, not a sort
+        // axis. The little 9 px caption text fixes that without
+        // bringing back the wide text-button look the bar abandoned
+        // when Locations was added.
+        // Inline styles for the stacked sort-axis layout — kept in
+        // this function so the only place ReadyBox imports its
+        // styles from (../assets/styles/ReadyBox) doesn't need to
+        // grow new entries for an experimental UI tweak.
+        //
+        // The caption is positioned ABSOLUTELY at the bottom of the
+        // column, overlaying the lower edge of the IconButton's
+        // built-in padding. This way the icon itself is rendered at
+        // its natural position (no upward shift) and the label
+        // simply sits on top of the otherwise-empty bottom portion
+        // of the IconButton's hit area.
+        const _sortAxisColStyle = {
+            alignItems: 'center',
+            justifyContent: 'center',
+            // Match the ~36 px wide footprint of a default
+            // IconButton so the cardinal arrows beside this sit at
+            // the same vertical centre.
+            width: 36,
+            // Extra gutter between adjacent category icons so the
+            // row doesn't feel cramped. 6 px on each side =
+            // 12 px between two neighbouring icons.
+            marginHorizontal: 6,
+            // Caption is stacked BELOW the icon (not overlaid). The
+            // bar has space for the extra ~10 px of vertical room
+            // and reads more clearly with the text on its own row
+            // rather than lying on top of the icon's padding area.
+        };
+        const _sortAxisIconStyle = null; // icon keeps its default sizing
+        const _sortAxisLabelStyle = {
+            textAlign: 'center',
+            fontSize: 9,
+            // White text — the bar sits on the app's dark accent
+            // background and a coloured/grey caption disappeared
+            // against it. White at full opacity reads cleanly and
+            // matches the icon stroke colour Paper uses on dark
+            // surfaces.
+            color: '#fff',
+            // No background halo — the caption is plain text on
+            // whatever the bar's background is. Slight upward
+            // margin pull (-2 px) trims the gap between the icon's
+            // own padding and the caption baseline so the pair
+            // reads as one element.
+            marginTop: -2,
+            backgroundColor: 'transparent',
+        };
+        // Short caption for each filter / sort key so an overlay
+        // label can sit under every icon. Keys not in this map
+        // render as plain IconButtons (no caption overlay).
+        const _captionByKey = {
+            // Sort toggles
+            orderByTime: 'Time',
+            orderBySize: 'Size',
+            orderAscending: 'Asc',
+            orderDescending: 'Desc',
+            // Filter chips — labels picked to fit the 36 px column
+            // at 9 px font (~7 chars). "Place" stands in for the
+            // longer "Locations" filter title to keep the row
+            // visually uniform. "Pin" / "Pinned" both fit; Pin is
+            // shorter and matches the icon meaning.
+            text:     'Text',
+            audio:    'Audio',
+            image:    'Image',
+            video:    'Video',
+            location: 'Place',
+            other:    'Files',
+            pinned:   'Pin',
+        };
+        const _captionForKey = _captionByKey[key];
         if (key === "orderByTime") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
+            return (
+                <TouchableOpacity
+                    key={_bbRemountKey}
+                    onPress={() => {
+                        console.log('[sort] orderBy: timestamp -> size (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                        this.setState({orderBy: 'size'});
+                    }}
+                    accessibilityLabel={title}
+                    style={_sortAxisColStyle}
+                >
+                    <IconButton
+                        icon={icon || 'clock-outline'}
+                        size={18}
+                        style={[iconStyle, _sortAxisIconStyle]}
+                        onPress={() => {
+                            console.log('[sort] orderBy: timestamp -> size (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                            this.setState({orderBy: 'size'});
+                        }}
+                    />
+                    <Text style={_sortAxisLabelStyle} numberOfLines={1}>Time</Text>
+                </TouchableOpacity>
+            );
         }
 
         if (key === "orderBySize") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
+            return (
+                <TouchableOpacity
+                    key={_bbRemountKey}
+                    onPress={() => {
+                        console.log('[sort] orderBy: size -> timestamp (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                        this.setState({orderBy: 'timestamp'});
+                    }}
+                    accessibilityLabel={title}
+                    style={_sortAxisColStyle}
+                >
+                    <IconButton
+                        icon={icon || 'harddisk'}
+                        size={18}
+                        style={[iconStyle, _sortAxisIconStyle]}
+                        onPress={() => {
+                            console.log('[sort] orderBy: size -> timestamp (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                            this.setState({orderBy: 'timestamp'});
+                        }}
+                    />
+                    <Text style={_sortAxisLabelStyle} numberOfLines={1}>Size</Text>
+                </TouchableOpacity>
+            );
         }
 
+        // Asc / Desc icons get the same icon+caption overlay
+        // treatment as Time / Size, with the caption sitting in
+        // absolute position at the bottom of the column. Without
+        // the labels users couldn't reliably tell whether
+        // "ascending" meant oldest-first or newest-first; the
+        // captions remove the ambiguity at a glance.
         if (key === "orderAscending") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
+            return (
+                <TouchableOpacity
+                    key={_bbRemountKey}
+                    onPress={() => {
+                        console.log('[sort] sortOrder: asc -> desc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                        this.setState({sortOrder: 'desc'});
+                    }}
+                    accessibilityLabel={title}
+                    style={_sortAxisColStyle}
+                >
+                    <IconButton
+                        icon={icon || 'arrow-up'}
+                        size={18}
+                        style={[iconStyle, _sortAxisIconStyle]}
+                        onPress={() => {
+                            console.log('[sort] sortOrder: asc -> desc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                            this.setState({sortOrder: 'desc'});
+                        }}
+                    />
+                    <Text style={_sortAxisLabelStyle} numberOfLines={1}>Asc</Text>
+                </TouchableOpacity>
+            );
         }
 
         if (key === "orderDescending") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
+            return (
+                <TouchableOpacity
+                    key={_bbRemountKey}
+                    onPress={() => {
+                        console.log('[sort] sortOrder: desc -> asc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                        this.setState({sortOrder: 'asc'});
+                    }}
+                    accessibilityLabel={title}
+                    style={_sortAxisColStyle}
+                >
+                    <IconButton
+                        icon={icon || 'arrow-down'}
+                        size={18}
+                        style={[iconStyle, _sortAxisIconStyle]}
+                        onPress={() => {
+                            console.log('[sort] sortOrder: desc -> asc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
+                            this.setState({sortOrder: 'asc'});
+                        }}
+                    />
+                    <Text style={_sortAxisLabelStyle} numberOfLines={1}>Desc</Text>
+                </TouchableOpacity>
+            );
         }
 
         if (icon) {
- 			return (<IconButton
- 			         key={_bbRemountKey}
- 			         icon={icon}
-					 size={18}
- 			         style={iconStyle}
- 			         onPress={() => {this.filterHistory(key)}}
- 			         />);
+            // If we have a short caption registered for this key,
+            // wrap the icon in a column with the caption below.
+            // Same pattern the sort toggles use — the icon stays
+            // at its natural position and the caption sits on its
+            // own row, transparent background, ~9 px text. Without
+            // a caption the icon renders bare (kept for keys we
+            // don't have a short label for, or for one-off icons
+            // added without a caption).
+            if (_captionForKey) {
+                return (
+                    <TouchableOpacity
+                        key={_bbRemountKey}
+                        onPress={() => {this.filterHistory(key)}}
+                        accessibilityLabel={title}
+                        style={_sortAxisColStyle}
+                    >
+                        <IconButton
+                            icon={icon}
+                            size={18}
+                            style={[iconStyle, _sortAxisIconStyle]}
+                            onPress={() => {this.filterHistory(key)}}
+                        />
+                        <Text style={_sortAxisLabelStyle} numberOfLines={1}>
+                            {_captionForKey}
+                        </Text>
+                    </TouchableOpacity>
+                );
+            }
+            return (<IconButton
+                key={_bbRemountKey}
+                icon={icon}
+                size={18}
+                style={iconStyle}
+                accessibilityLabel={title}
+                onPress={() => {this.filterHistory(key)}}
+            />);
         }
 
         return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
@@ -1782,25 +2062,109 @@ class ReadyBox extends Component {
                     </View>
                     : null}
                     <View>
-                    {this.showCategoryBar?
-                    <View style={navigationContainer}>
-                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                            horizontal={true}
-                            ref={(ref) => { this.navigationRef = ref; }}
-                              onScrollToIndexFailed={info => {
-                                const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                wait.then(() => {
-                                  if (!this.props.selectedContact) {
-                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
-                                  }
-                                });
-                              }}
-                            data={this.categoryItems}
-                            extraData={this.state}
-                            keyExtractor={(item, index) => item.key}
-                            renderItem={this.renderNavigationItem}
-                        />
-                    </View>
+                    {this.showCategoryBar ?
+                        // Two-section bar.
+                        //   Left  (flex: 1)  — filter chips. Hosted in a horizontal
+                        //     FlatList so they scroll if the list outgrows the
+                        //     available width (the Locations addition pushed us
+                        //     over on narrow phones; future filters will keep
+                        //     adding to this row, so a scrollable container is
+                        //     a sustainable shape).
+                        //   Splitter         — a 1 px vertical hairline marking the
+                        //     boundary between filters and sort toggles, so the
+                        //     two groups read as visually distinct.
+                        //   Right (auto)     — sort toggles. Rendered inline (not
+                        //     in a FlatList, since the count is fixed and known)
+                        //     and pinned to the right edge of the bar so they
+                        //     never scroll out of view. The user can always see
+                        //     and tap the active sort.
+                        // The selectedContact branch uses this layout; the
+                        // contacts-list branch falls back to the historical
+                        // single FlatList rendering of `categoryItems`.
+                        this.props.selectedContact ?
+                        <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                                <FlatList
+                                    contentContainerStyle={styles.navigationButtonGroup}
+                                    horizontal={true}
+                                    showsHorizontalScrollIndicator={false}
+                                    ref={(ref) => { this.navigationRef = ref; }}
+                                    onScrollToIndexFailed={info => {
+                                        const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                        wait.then(() => {
+                                            if (!this.props.selectedContact) {
+                                                this.navigationRef.current?.scrollToIndex({ index: info.index, animated: false });
+                                            }
+                                        });
+                                    }}
+                                    data={this.categoryFilterItems}
+                                    extraData={this.state}
+                                    keyExtractor={(item, index) => item.key}
+                                    renderItem={this.renderNavigationItem}
+                                />
+                            </View>
+                            {/* Splitter between the two button
+                                groups. The bar's left half is the
+                                FILTER chips (which message type to
+                                show), the right half is the SORT
+                                toggles (how to order them). The
+                                hairline divider used to read like
+                                an accidental seam — bumping it to a
+                                solid 1 px line at 45 % opacity with
+                                more breathing room makes the two
+                                regions clearly distinct without
+                                taking real estate. The slight
+                                inset (marginVertical: 4) keeps the
+                                line visually shorter than the full
+                                bar height so it reads as a
+                                separator, not a column edge. */}
+                            <View style={{
+                                width: 1,
+                                alignSelf: 'stretch',
+                                marginVertical: 4,
+                                marginHorizontal: 8,
+                                backgroundColor: 'rgba(0,0,0,0.45)',
+                            }} />
+                            {/* Right group ("Sort"). A subtle
+                                background tint behind the cluster
+                                gives the row a second visual cue
+                                (icon-only on the left, soft-tinted
+                                on the right) so the user can tell
+                                "the things on the right are
+                                different in purpose from the things
+                                on the left" at a glance even before
+                                reading the icons. */}
+                            <View style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                backgroundColor: 'rgba(0,0,0,0.04)',
+                                borderRadius: 6,
+                                paddingHorizontal: 2,
+                            }}>
+                                {this.categorySortItems.map((item, index) => (
+                                    this.renderNavigationItem({ item, index })
+                                ))}
+                            </View>
+                        </View>
+                        :
+                        <View style={navigationContainer}>
+                            <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                                horizontal={true}
+                                ref={(ref) => { this.navigationRef = ref; }}
+                                onScrollToIndexFailed={info => {
+                                    const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                    wait.then(() => {
+                                        if (!this.props.selectedContact) {
+                                            this.navigationRef.current?.scrollToIndex({ index: info.index, animated: false });
+                                        }
+                                    });
+                                }}
+                                data={this.categoryItems}
+                                extraData={this.state}
+                                keyExtractor={(item, index) => item.key}
+                                renderItem={this.renderNavigationItem}
+                            />
+                        </View>
                     : null}
 
                     {false ?

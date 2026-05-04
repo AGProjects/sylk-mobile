@@ -257,7 +257,16 @@ class ConferenceHeader extends React.Component {
 		let appBarContainer = {
 			backgroundColor: 'rgba(34,34,34,.7)',
 			height: 60,
-			marginLeft: this.state.isLandscape ? - rightInset - leftInset: 0,
+			// Landscape: parent SafeAreaView already pushes us in by
+			// leftInset, AND Paper's outer Appbar wrapper adds its own
+			// paddingHorizontal = max(left, right). That stacks to
+			// 2 × leftInset of indent. Cancel Paper's padding so the
+			// visible content lands exactly at the safe-area boundary
+			// — same x as the video container below. Mirrors the fix
+			// applied in CallOverlay.
+			marginLeft: this.state.isLandscape
+				? -Math.max(leftInset, rightInset)
+				: 0,
 			marginTop: -topInset,
 			width: this.state.isLandscape ? width - rightInset - leftInset: width,
 		}
@@ -265,16 +274,10 @@ class ConferenceHeader extends React.Component {
 		if (Platform.OS === "ios") {
 			//appBarContainer.marginTop = 0;
 			if (this.state.isLandscape) {
-				// Paper's Appbar.Header renders an outer wrapper
-				// View that applies paddingHorizontal:
-				// Math.max(left, right) from real safe-area insets
-				// (see AppbarHeader.tsx). The style we pass here
-				// ends up on the INNER Appbar that lives inside
-				// that padded content box. To make the inner
-				// Appbar span the full window width edge-to-edge,
-				// we pull it left by the actual padding Paper
-				// applied (Math.max) and give it the parent's
-				// full width.
+				// On iOS, the conference is rendered through a container
+				// that already shifts the navbar to device x=0, so we only
+				// need to compensate for Paper's own paddingHorizontal
+				// (one paperPad), not the SafeAreaView's leftInset.
 				const paperPad = Math.max(leftInset, rightInset);
 				appBarContainer.marginLeft = -paperPad;
 				appBarContainer.width = width;
@@ -324,6 +327,16 @@ class ConferenceHeader extends React.Component {
 				}
 
 				{this.props.buttons.additional}
+
+				{/* Optional in-navbar content (e.g. landscape speedometer)
+				    rendered as a sibling of the right-side buttons so it
+				    sits inside the navbar's vertical band rather than
+				    floating below it. */}
+				{this.props.navbarExtras ? (
+				  <View style={{ marginLeft: 8, justifyContent: 'center' }}>
+				    {this.props.navbarExtras}
+				  </View>
+				) : null}
 
                 <Menu
                     visible={this.state.menuVisible}
@@ -425,7 +438,8 @@ ConferenceHeader.propTypes = {
     availableAudioDevices: PropTypes.array,
     selectedAudioDevice: PropTypes.string,
     selectAudioDevice: PropTypes.func,
-    insets: PropTypes.object
+    insets: PropTypes.object,
+    navbarExtras: PropTypes.node
 };
 
 export default ConferenceHeader;

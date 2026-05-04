@@ -205,6 +205,7 @@ ConferenceAudioParticipant.propTypes = {
     status: PropTypes.string,
     loss: PropTypes.number,
     latency: PropTypes.number,
+    codec: PropTypes.string,
     extraButtons: PropTypes.array
 };
 

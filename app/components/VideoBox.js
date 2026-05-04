@@ -4,7 +4,8 @@ import classNames from 'classnames';
 import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
-import { IconButton, ActivityIndicator, Colors, Menu } from 'react-native-paper';
+import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Text as PaperText } from 'react-native-paper';
+import { getZrtpSession } from './CallZrtp';
 import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import {StatusBar} from 'react-native';
@@ -14,6 +15,7 @@ import { Surface } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import CallOverlay from './CallOverlay';
+import NetworkSpeedometer from './NetworkSpeedometer';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
 
@@ -58,10 +60,39 @@ class VideoBox extends Component {
             call: this.props.call,
             reconnectingCall: this.props.reconnectingCall,
             audioMuted: this.props.muted,
-            videoMuted: this.props.videoMuted,
+            // Source of truth for `videoMuted` is the actual local
+            // video track's `enabled` state — that's what we toggle
+            // when the user taps Mute Camera / Enable Camera. The
+            // `props.videoMuted` snapshot is only meaningful at the
+            // very first mount of a call (it tells us "the callee
+            // answered an incoming video call with the camera off").
+            // On every subsequent remount (the user backgrounds and
+            // returns to the call view), reading the prop instead of
+            // the track would resurrect the muted state even after
+            // they'd already enabled the camera. Read the track when
+            // we have one; fall back to the prop on first mount.
+            videoMuted: (() => {
+                try {
+                    const ls = (this.props.call && this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0])
+                        || this.props.localMedia;
+                    if (ls && ls.getVideoTracks) {
+                        const tracks = ls.getVideoTracks();
+                        if (tracks && tracks.length > 0 && typeof tracks[0].enabled === 'boolean') {
+                            return tracks[0].enabled === false;
+                        }
+                    }
+                } catch (e) { /* fall through to prop fallback */ }
+                return !!this.props.videoMuted;
+            })(),
             terminatedReason: this.props.terminatedReason,
             mirror: true,
             callOverlayVisible: true,
+            // Visibility of the network speedometer in the fullscreen
+            // overlay. Hidden by default; user taps the "i" info icon
+            // (top-right) to reveal it, taps the dials themselves to
+            // hide again. Header-embedded speedometer in CallOverlay
+            // is removed entirely — fullscreen-only.
+            showUsage: false,
             showMyself: true,
             remoteVideoShow: true,
             remoteSharesScreen: false,
@@ -69,8 +100,14 @@ class VideoBox extends Component {
             callContact: this.props.callContact,
             selectedContact: this.props.selectedContact,
             selectedContacts: this.props.selectedContacts,
-            localStream: this.props.call.getLocalStreams()[0],
-            remoteStream: this.props.call.getRemoteStreams()[0],
+            // Use props.localMedia as a fallback when the call isn't yet
+            // answered (incoming calls now render VideoBox directly,
+            // before the SDP answer attaches streams to the peer
+            // connection). The remote stream stays null until 'established'.
+            localStream: (this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0])
+                         || this.props.localMedia
+                         || null,
+            remoteStream: (this.props.call.getRemoteStreams && this.props.call.getRemoteStreams()[0]) || null,
             localMedia: this.props.localMedia,
             statistics: [],
             myVideoCorner: 'topLeft',
@@ -84,7 +121,32 @@ class VideoBox extends Component {
 			aspectRatio: 'cover',
 			audioDevicePickerVisible: false,
 			cameraFacing: 'front',
-			videoPickerVisible: false
+			videoPickerVisible: false,
+            // ZRTP state, mirroring AudioCallBox.
+            zrtpState: null,
+            zrtpDialogVisible: false,
+            // zRTP-mandatory handshake-failed prompt — same logic as
+            // AudioCallBox.
+            zrtpMandatoryFailedVisible: false,
+            zrtpMandatoryFailedInfo: null,
+            // "Enable your camera?" prompt — fires once at mount when an
+            // iOS callee answered a video call with the camera defaulted
+            // to muted (set in app.js render). Outgoing callers and
+            // already-unmuted incoming calls skip the prompt.
+            //
+            // Sticky-dismiss: the dismiss flag lives on the call object
+            // (which has the same identity for the entire call lifetime,
+            // even when this component unmounts/remounts as the user
+            // backgrounds the call view and returns). Without this the
+            // prompt re-appeared on every re-entry of the call screen
+            // because the constructor re-evaluated visibility from the
+            // raw videoMuted state. The flag is set in _onKeepAudioOnly
+            // / _onEnableCamera; once set we never show the prompt
+            // again for this call.
+            videoEnableDialogVisible: this.props.call
+                && this.props.call.direction === 'incoming'
+                && !!this.props.videoMuted
+                && !this.props.call._sylkCameraPromptHandled
         };
 
 		this.prevStats = {}; // initialize here
@@ -101,8 +163,17 @@ class VideoBox extends Component {
 		const localStream = this.state.localStream;
 		if (localStream.getVideoTracks().length > 0) {
 			const track = localStream.getVideoTracks()[0];
-			if (this.props.videoMuted) {
+			// Apply the "answered while muted" track disable EXACTLY
+			// ONCE per call. Without this guard every re-mount of
+			// VideoBox (e.g. user navigates back to the contacts list
+			// and returns to the call) would re-disable the track —
+			// stomping on the user's earlier "Enable camera" choice
+			// and leaving the camera-mute icon stuck on. Same sticky-
+			// flag pattern as _sylkCameraPromptHandled above.
+			if (this.props.videoMuted && this.props.call
+					&& !this.props.call._sylkInitialVideoMuteApplied) {
 				track.enabled = false;
+				this.props.call._sylkInitialVideoMuteApplied = true;
 				console.log('Initial video is muted');
 			}
 			// Derive initial camera facing from the actual track
@@ -121,12 +192,17 @@ class VideoBox extends Component {
 				// getSettings not supported — keep the 'front' default.
 			}
 			this.state.cameraFacing = initialFacing;
-			// If the user muted video back in the LocalMedia preview,
-			// the same underlying track is already disabled. Reflect
-			// that in our state so the UI doesn't show the camera as
-			// "live" when it isn't.
+			// Track's actual enabled state is the ultimate source of
+			// truth for `videoMuted` — if the user enabled the camera
+			// earlier in the call and we're remounting now, the track
+			// is enabled and we should reflect that. (My new state
+			// init above already does this; this line covers the case
+			// where the track exists but the LocalMedia preview path
+			// disabled it.)
 			if (track.enabled === false) {
 				this.state.videoMuted = true;
+			} else {
+				this.state.videoMuted = false;
 			}
 		} else {
 			console.log('No video track');
@@ -135,7 +211,7 @@ class VideoBox extends Component {
 
     //getDerivedStateFromProps(nextProps, state) {
     UNSAFE_componentWillReceiveProps(nextProps) {
-        if (nextProps.hasOwnProperty('muted')) {
+        if (nextProps.hasOwnProperty('muted') && nextProps.muted !== this.props.muted) {
             this.setState({audioMuted: nextProps.muted});
         }
 
@@ -143,7 +219,12 @@ class VideoBox extends Component {
             this.setState({info: nextProps.info});
         }
 
-        if (nextProps.hasOwnProperty('videoMuted')) {
+        // Only sync videoMuted when the prop's VALUE changes (not on every
+        // parent re-render). Otherwise a stable upstream flag (e.g. the
+        // iOS incoming-video default) keeps clobbering local state every
+        // time toggleVideoMute flips it to false — leaving the camera
+        // icon stuck on "muted" even though the camera is actually live.
+        if (nextProps.hasOwnProperty('videoMuted') && nextProps.videoMuted !== this.props.videoMuted) {
             this.setState({videoMuted: nextProps.videoMuted});
         }
 
@@ -161,14 +242,28 @@ class VideoBox extends Component {
 
         if (nextProps.call && nextProps.call !== this.state.call) {
             nextProps.call.on('stateChanged', this.callStateChanged);
+            nextProps.call.on('zrtpStateChanged', this.zrtpStateChanged);
+            nextProps.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
 
             if (this.state.call !== null) {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
+                this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
+                this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
             }
+            const existing = getZrtpSession(nextProps.call);
+            const newLocalStream = nextProps.call.getLocalStreams()[0];
             this.setState({call: nextProps.call,
-                           localStream: nextProps.call.getLocalStreams()[0],
-                           remoteStream: nextProps.call.getRemoteStreams()[0]
+                           localStream: newLocalStream,
+                           remoteStream: nextProps.call.getRemoteStreams()[0],
+                           zrtpState: (existing && existing.state) ? existing.state : null
             });
+
+            // Re-attach the local-video-track health listeners to the
+            // new stream. For incoming video calls the SDP answer
+            // arrives after VideoBox mounts and swaps in a different
+            // localStream — without this re-attach we'd silently
+            // monitor the old (discarded) track.
+            this._attachLocalVideoTrackListeners(newLocalStream);
         }
 
         if ('aspectRatio' in nextProps) {
@@ -203,13 +298,275 @@ class VideoBox extends Component {
 	}
 
     callStateChanged(oldState, newState, data) {
+        if (newState === 'terminated') {
+            this.setState({ zrtpState: null, zrtpDialogVisible: false });
+            this._stopVideoStatsProbe();
+        }
+        if (newState === 'established') {
+            // Streams attach to the peer connection on answer. Refresh
+            // our refs so the remote video starts rendering and the
+            // local stream switches from props.localMedia to the
+            // sender's actual track.
+            const ls = this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0];
+            const rs = this.props.call.getRemoteStreams && this.props.call.getRemoteStreams()[0];
+            this.setState({
+                localStream: ls || this.state.localStream,
+                remoteStream: rs || this.state.remoteStream,
+            });
+            this._startVideoStatsProbe();
+        }
         this.forceUpdate();
+    }
+
+    // Diagnostic: periodically dump video receiver stats so we can see
+    // what's happening in the M124 receive pipeline. Logs key counters
+    // (framesReceived/Decoded/Dropped, keyFramesDecoded, nackCount,
+    // pliCount, decoderImplementation) every 5s for the first 30s of
+    // the call. Fires regardless of E2EE state — we want raw info on
+    // the receive path that's been showing black on this build.
+    _startVideoStatsProbe() {
+        if (this._videoStatsTimer) return;
+        // Disable for production — the periodic getStats() calls can
+        // disturb the renderer. Flip back to true when diagnosing.
+        const ENABLE_VIDEO_STATS_PROBE = false;
+        if (!ENABLE_VIDEO_STATS_PROBE) return;
+        const call = this.props.call;
+        const pc = call && call._pc;
+        if (!pc || typeof pc.getStats !== 'function') return;
+
+        let ticks = 0;
+        const dump = async () => {
+            ticks += 1;
+            try {
+                const stats = await pc.getStats(null);
+                let inbound = null, outbound = null;
+                stats.forEach((r) => {
+                    if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
+                    if (r.type === 'outbound-rtp' && r.kind === 'video') outbound = r;
+                });
+                const fmt = (r) => r ? {
+                    frR: r.framesReceived,
+                    frD: r.framesDecoded,
+                    keyF: r.keyFramesDecoded,
+                    drop: r.framesDropped,
+                    nack: r.nackCount,
+                    pli:  r.pliCount,
+                    fir:  r.firCount,
+                    dec:  r.decoderImplementation,
+                    enc:  r.encoderImplementation,
+                    bytes: r.bytesReceived || r.bytesSent,
+                    ssrc: r.ssrc,
+                    codec: r.codecId,
+                } : null;
+                console.log('[VideoStats]', 't=' + (ticks * 5) + 's',
+                            'inbound=', JSON.stringify(fmt(inbound)),
+                            'outbound=', JSON.stringify(fmt(outbound)));
+            } catch (e) {
+                console.log('[VideoStats] getStats failed:', (e && e.message) || e);
+            }
+            if (ticks >= 6) this._stopVideoStatsProbe();
+        };
+        // Fire after 5s, then every 5s thereafter (6 ticks = 30s window).
+        this._videoStatsTimer = setInterval(dump, 5000);
+    }
+
+    _stopVideoStatsProbe() {
+        if (this._videoStatsTimer) {
+            clearInterval(this._videoStatsTimer);
+            this._videoStatsTimer = null;
+        }
+    }
+
+    zrtpStateChanged(newState) {
+        if (this.unmounted) return;
+        this.setState({ zrtpState: newState });
+    }
+
+    // Fired by CallZrtp.js when zRTP-mandatory mode fails to agree on
+    // keys. Surfaces the warning dialog so the user can choose End
+    // call (mandatory enforcement honored) or Continue (downgrade to
+    // optional behavior — DTLS-only between us and the relay).
+    zrtpMandatoryFailed(info) {
+        if (this.unmounted) return;
+        utils.timestampedLog('[ZRTP] VideoBox received zrtpMandatoryFailed:', info);
+        this.setState({
+            zrtpMandatoryFailedVisible: true,
+            zrtpMandatoryFailedInfo: info,
+        });
+    }
+
+    _onZrtpMandatoryEndCall() {
+        this.setState({ zrtpMandatoryFailedVisible: false });
+        if (this.state.call) {
+            try { this.state.call.terminate(); } catch (e) {}
+        }
+    }
+
+    _onZrtpMandatoryContinue() {
+        this.setState({ zrtpMandatoryFailedVisible: false });
+    }
+
+    _zrtpVerificationStatus() {
+        if (this.state.zrtpState !== 'key-agreed') return null;
+        const session = getZrtpSession(this.state.call);
+        if (!session || !session.sas) return null;
+        const stored = this.props.callContact
+            && this.props.callContact.localProperties
+            && this.props.callContact.localProperties.zrtp;
+        if (!stored || !stored.publicKey) return 'unverified';
+        const currentKey = this.props.callContact && this.props.callContact.publicKey;
+        if (currentKey && stored.publicKey === currentKey) return 'verified';
+        return 'mismatch';
+    }
+
+    _onZrtpBadgePress() {
+        if (this.state.zrtpState === 'key-agreed') {
+            this.setState({ zrtpDialogVisible: true });
+        }
+    }
+
+    _onZrtpVerifyConfirm() {
+        const session = getZrtpSession(this.state.call);
+        if (!session || !session.sas) {
+            this.setState({ zrtpDialogVisible: false });
+            return;
+        }
+        if (this.props.markZrtpVerified && this.state.remoteUri) {
+            this.props.markZrtpVerified(this.state.remoteUri, session.sas.chars, session.sas.emojis);
+        }
+        this.setState({ zrtpDialogVisible: false });
+        this.forceUpdate();
+    }
+
+    /** Find the RTCRtpSender carrying the video track on this call's pc. */
+    _videoSender() {
+        const pc = this.props.call && this.props.call._pc;
+        if (!pc || typeof pc.getSenders !== 'function') return null;
+        for (const s of pc.getSenders()) {
+            if (s.track && s.track.kind === 'video') return s;
+        }
+        // Fall back: video sender exists but its track was replaced with null.
+        for (const s of pc.getSenders()) {
+            // sylkrtc tags audio sender separately; whatever's left of
+            // kind 'video' or with a previously-video track is our target.
+            if (!s.track) return s;
+        }
+        return null;
+    }
+
+    /** While the camera-enable prompt is visible the user sees a local
+     *  preview rendered from the live track. To prevent that preview from
+     *  leaking to the remote BEFORE the user has chosen, we detach the
+     *  video track from the RTCRtpSender via replaceTrack(null). The
+     *  track stays alive and the local <RTCView> keeps rendering it; only
+     *  the wire stream stops carrying video. We re-attach (or drop) the
+     *  track based on the user's choice in _onEnableCamera /
+     *  _onKeepAudioOnly.
+     */
+    _enableTrackForPreview() {
+        const localStream = this.state.localStream
+            || (this.props.call && this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0]);
+        if (!localStream || !localStream.getVideoTracks) return;
+        const tracks = localStream.getVideoTracks();
+        if (tracks.length === 0) return;
+        const track = tracks[0];
+
+        // Stash the track so we can re-attach it on Enable; keep a flag
+        // for the cleanup paths.
+        this._previewVideoTrack = track;
+        this._previewTrackWasReEnabled = true;
+
+        // 1. Detach from the wire — peer stops getting frames immediately.
+        const sender = this._videoSender();
+        if (sender && typeof sender.replaceTrack === 'function') {
+            try {
+                sender.replaceTrack(null);
+                this._previewSender = sender;
+            } catch (e) {
+                // Best-effort; if replaceTrack isn't supported here we
+                // fall back to enabling the track without unhooking,
+                // which means brief leak — at least we logged it.
+                console.log('VideoBox: sender.replaceTrack(null) failed:', e && e.message);
+            }
+        }
+
+        // 2. Enable the track so RTCView renders the local preview.
+        if (track.enabled === false) track.enabled = true;
+    }
+
+    /** Camera-enable prompt actions. */
+    _onEnableCamera() {
+        // Sticky: don't show the prompt again on this call even if the
+        // user backgrounds and returns to the call screen.
+        if (this.props.call) this.props.call._sylkCameraPromptHandled = true;
+        this.setState({ videoEnableDialogVisible: false });
+
+        // Re-attach the track to the wire so the remote sees video.
+        if (this._previewSender && this._previewVideoTrack
+            && typeof this._previewSender.replaceTrack === 'function') {
+            try { this._previewSender.replaceTrack(this._previewVideoTrack); }
+            catch (e) { console.log('VideoBox: re-attach replaceTrack failed:', e && e.message); }
+        }
+        this._previewSender = null;
+        this._previewVideoTrack = null;
+
+        if (this.state.videoMuted && typeof this.toggleVideoMute === 'function') {
+            this.toggleVideoMute();
+        }
+        this._previewTrackWasReEnabled = false;
+    }
+
+    _onKeepAudioOnly() {
+        // Track stays detached from the sender (replaceTrack was already
+        // called with null in _enableTrackForPreview). Disable it so the
+        // local preview goes black too, and clear our refs.
+        if (this._previewVideoTrack) {
+            try { this._previewVideoTrack.enabled = false; } catch (e) {}
+        }
+        this._previewSender = null;
+        this._previewVideoTrack = null;
+        this._previewTrackWasReEnabled = false;
+        // Sticky: don't show the prompt again on this call even if the
+        // user backgrounds and returns to the call screen.
+        if (this.props.call) this.props.call._sylkCameraPromptHandled = true;
+        this.setState({ videoEnableDialogVisible: false });
     }
 
     componentDidMount() {
         if (this.state.call) {
             this.state.call.on('stateChanged', this.callStateChanged);
+            this.state.call.on('zrtpStateChanged', this.zrtpStateChanged);
+            this.state.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            const existing = getZrtpSession(this.state.call);
+            if (existing && existing.state) {
+                this.setState({ zrtpState: existing.state });
+            }
+
+            // Trigger the answer for incoming video calls (mirrors what
+            // AudioCallBox does for incoming audio). Previously this
+            // happened inside LocalMedia's componentDidMount, which made
+            // the user briefly see the preview screen flash by; now we
+            // render VideoBox directly and answer from here.
+            if (this.state.call.state === 'incoming' && this.props.mediaPlaying) {
+                this.props.mediaPlaying();
+            }
         }
+
+        // If the camera-enable prompt is up at mount, temporarily switch
+        // the local video track on so the preview shows the actual camera.
+        if (this.state.videoEnableDialogVisible) {
+            this._enableTrackForPreview();
+        }
+
+        // Attach health listeners to the local video track. The native
+        // MediaStreamTrack fires `mute` when the OS suspends frame
+        // production (e.g. Samsung OneUI pausing the camera when the
+        // screen turns off mid-call) and `unmute` when frames resume.
+        // `ended` fires when the track is permanently torn down. These
+        // are the events we need to spot the "peer sees frozen video"
+        // class of bug — without them, applog gives no signal that the
+        // camera stopped producing.
+        this._attachLocalVideoTrackListeners(this.state.localStream);
 
         this.armOverlayTimer();
 
@@ -219,13 +576,110 @@ class VideoBox extends Component {
     }
 
     componentWillUnmount() {
+        this.unmounted = true;
+        this._stopVideoStatsProbe();
         if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
+            this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
+            this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
         }
 
 		if (this.state.call != null && this.state.call.statistics != null) {
 			this.state.call.statistics.removeListener('stats', this.statistics);
         }
+
+        this._detachLocalVideoTrackListeners();
+    }
+
+    // ---------------------------------------------------------------
+    // Local video track health logging
+    //
+    // Logs mute/unmute/ended on the outgoing camera track so applog
+    // captures the moment the OS pauses or resumes the camera. Tagged
+    // [video-track] so it grep's cleanly. Re-attached when the local
+    // stream changes (UNSAFE_componentWillReceiveProps swaps it in
+    // when the SDP answer arrives for incoming calls).
+    // ---------------------------------------------------------------
+    _attachLocalVideoTrackListeners(localStream) {
+        try {
+            if (!localStream || !localStream.getVideoTracks) return;
+            const tracks = localStream.getVideoTracks();
+            if (!tracks || tracks.length === 0) return;
+            const track = tracks[0];
+            if (this._monitoredVideoTrack === track) return; // already attached
+
+            this._detachLocalVideoTrackListeners();
+
+            this._videoTrackOnMute = () => {
+                utils.timestampedLog(
+                    '[video-track] mute',
+                    'id=', track.id,
+                    'enabled=', track.enabled,
+                    'callUUID=', this.state.callUUID
+                );
+            };
+            this._videoTrackOnUnmute = () => {
+                utils.timestampedLog(
+                    '[video-track] unmute',
+                    'id=', track.id,
+                    'enabled=', track.enabled,
+                    'callUUID=', this.state.callUUID
+                );
+            };
+            this._videoTrackOnEnded = () => {
+                utils.timestampedLog(
+                    '[video-track] ended',
+                    'id=', track.id,
+                    'callUUID=', this.state.callUUID
+                );
+            };
+
+            // react-native-webrtc exposes the standard WebRTC track
+            // event surface — addEventListener is preferred over the
+            // on* assignment because it composes with any future
+            // listener (and matches how we tear down below).
+            if (typeof track.addEventListener === 'function') {
+                track.addEventListener('mute',   this._videoTrackOnMute);
+                track.addEventListener('unmute', this._videoTrackOnUnmute);
+                track.addEventListener('ended',  this._videoTrackOnEnded);
+            } else {
+                track.onmute   = this._videoTrackOnMute;
+                track.onunmute = this._videoTrackOnUnmute;
+                track.onended  = this._videoTrackOnEnded;
+            }
+
+            this._monitoredVideoTrack = track;
+
+            utils.timestampedLog(
+                '[video-track] monitor attached',
+                'id=', track.id,
+                'enabled=', track.enabled,
+                'muted=', track.muted,
+                'callUUID=', this.state.callUUID
+            );
+        } catch (e) {
+            console.log('[video-track] attach failed:', e && e.message);
+        }
+    }
+
+    _detachLocalVideoTrackListeners() {
+        const track = this._monitoredVideoTrack;
+        if (!track) return;
+        try {
+            if (typeof track.removeEventListener === 'function') {
+                if (this._videoTrackOnMute)   track.removeEventListener('mute',   this._videoTrackOnMute);
+                if (this._videoTrackOnUnmute) track.removeEventListener('unmute', this._videoTrackOnUnmute);
+                if (this._videoTrackOnEnded)  track.removeEventListener('ended',  this._videoTrackOnEnded);
+            } else {
+                if (track.onmute   === this._videoTrackOnMute)   track.onmute   = null;
+                if (track.onunmute === this._videoTrackOnUnmute) track.onunmute = null;
+                if (track.onended  === this._videoTrackOnEnded)  track.onended  = null;
+            }
+        } catch (e) { /* track may already be torn down */ }
+        this._monitoredVideoTrack = null;
+        this._videoTrackOnMute = null;
+        this._videoTrackOnUnmute = null;
+        this._videoTrackOnEnded = null;
     }
 
     get showMyself() {
@@ -683,21 +1137,28 @@ class VideoBox extends Component {
 		return this.state.remoteVideoShow && !this.state.reconnectingCall;
 	}
 
+	// Called every getStatsInterval ms (5s after task #34) with rich
+	// stats from sylkrtc. Build a compact one-liner for CallOverlay.info.
+	//
+	// Format (variable parts conditional):
+	//   ⇡ 720k ⇣ 1.4M  640×360@24  rtt 120ms ±15  vloss 2%
+	//
+	// Smoothing: keep the last 3 samples (~15s with 5s polling) and
+	// average. With 5s polling the prior 2-second window left only
+	// one sample, so smoothing was a no-op.
 	statistics(stats) {
 	  const { audio, video, remote, connection } = stats.data;
-	  const audioInbound = audio?.inbound?.[0];
+	  const audioInbound  = audio?.inbound?.[0];
 	  const audioOutbound = audio?.outbound?.[0];
-	  const videoInbound = video?.inbound?.[0];
+	  const videoInbound  = video?.inbound?.[0];
 	  const videoOutbound = video?.outbound?.[0];
-	
-	  const remoteAudioInbound = remote?.audio?.inbound?.[0];
-	  const remoteVideoInbound = remote?.video?.inbound?.[0];
-	
-	  if (!videoOutbound && !audioOutbound) return;
-	
+
+	  if (!videoOutbound && !audioOutbound && !videoInbound && !audioInbound) return;
+
 	  if (!this.prevStats) this.prevStats = {};
 	  const now = Date.now();
-	
+
+	  // Per-track bitrate from delta(bytes) / delta(timestamp).
 	  const calcBitrate = (type, currentBytes, currentTimestamp) => {
 		const prev = this.prevStats[type];
 		if (!prev) {
@@ -705,16 +1166,14 @@ class VideoBox extends Component {
 		  return 0;
 		}
 		const bytesDelta = currentBytes - prev.bytes;
-		const timeDelta = (currentTimestamp - prev.ts) / 1000;
+		const timeDelta  = (currentTimestamp - prev.ts) / 1000;
 		this.prevStats[type] = { bytes: currentBytes, ts: currentTimestamp };
 		if (timeDelta <= 0 || bytesDelta < 0) return 0;
-		return (bytesDelta * 8) / timeDelta;
+		return (bytesDelta * 8) / timeDelta; // bits / second
 	  };
-	
-	  let bandwidthUpload = 0;
-	  let bandwidthDownload = 0;
-	
-	  // --- Video bandwidth ---
+
+	  let bandwidthUpload = 0, bandwidthDownload = 0;
+
 	  if (videoOutbound) bandwidthUpload += calcBitrate('videoUpload', videoOutbound.bytesSent, videoOutbound.timestamp);
 	  if (videoInbound) {
 		if (videoInbound.bytesReceived > 0) {
@@ -723,8 +1182,6 @@ class VideoBox extends Component {
 		  bandwidthDownload += videoInbound.packetRate * 1200 * 8;
 		}
 	  }
-	
-	  // --- Audio bandwidth ---
 	  if (audioOutbound) bandwidthUpload += calcBitrate('audioUpload', audioOutbound.bytesSent, audioOutbound.timestamp);
 	  if (audioInbound) {
 		if (audioInbound.bytesReceived > 0) {
@@ -733,38 +1190,52 @@ class VideoBox extends Component {
 		  bandwidthDownload += audioInbound.packetRate * 1200 * 8;
 		}
 	  }
-	
-	  // ---- Round Trip Time ----
-	  const rtt = connection?.currentRoundTripTime ? connection.currentRoundTripTime * 1000 : 0; // ms
-	
-	  // ---- Packet Loss ----
-	  const audioLoss = audioInbound && audioInbound.packetsLost
-		? (audioInbound.packetsLost / audioInbound.packetsReceived) * 100
-		: 0;
-	  const videoLoss = videoInbound && videoInbound.packetsLost
-		? (videoInbound.packetsLost / videoInbound.packetsReceived) * 100
-		: 0;
-	
-	  // ---- Smooth over 2 seconds ----
+
+	  // Smooth over the last ~15s (3 samples at 5s polling).
 	  this.bandwidthHistory = this.bandwidthHistory || [];
 	  this.bandwidthHistory.push({ ts: now, up: bandwidthUpload, down: bandwidthDownload });
-	
-	  this.bandwidthHistory = this.bandwidthHistory.filter(d => now - d.ts < 2000);
-	
-	  const smoothUpload = this.bandwidthHistory.reduce((a, b) => a + b.up, 0) / this.bandwidthHistory.length || 0;
-	  const smoothDownload = this.bandwidthHistory.reduce((a, b) => a + b.down, 0) / this.bandwidthHistory.length || 0;
-	
-	  const appendBits = bits => {
-		if (bits > 1_000_000) return (bits / 1_000_000).toFixed(1) + 'Mbps';
-		if (bits > 1_000) return (bits / 1_000).toFixed(0) + 'kbps';
-		return bits.toFixed(0) + 'bits/s';
+	  this.bandwidthHistory = this.bandwidthHistory.filter(d => now - d.ts < 15000);
+	  const N = this.bandwidthHistory.length || 1;
+	  const smoothUpload   = this.bandwidthHistory.reduce((a, b) => a + b.up,   0) / N;
+	  const smoothDownload = this.bandwidthHistory.reduce((a, b) => a + b.down, 0) / N;
+
+	  // Network quality.
+	  const rtt = connection?.currentRoundTripTime ? connection.currentRoundTripTime * 1000 : 0;
+	  const jitter = videoInbound?.jitter
+		? videoInbound.jitter * 1000
+		: (audioInbound?.jitter ? audioInbound.jitter * 1000 : 0);
+
+	  const lossPct = (rtp) => {
+		if (!rtp) return 0;
+		const recv = rtp.packetsReceived || 0;
+		const lost = rtp.packetsLost || 0;
+		const total = recv + lost;
+		return total > 0 ? (lost / total) * 100 : 0;
 	  };
-	
-	  let info = `⇣${appendBits(smoothDownload)} ${rtt.toFixed(0)}ms`;
-	  if (videoLoss > 10) {
-		  info = info + ` ${videoLoss.toFixed(0)}%loss`;
+	  const audioLoss = lossPct(audioInbound);
+	  const videoLoss = lossPct(videoInbound);
+
+	  // Video resolution and framerate from the receiver.
+	  const w   = videoInbound?.frameWidth      || 0;
+	  const h   = videoInbound?.frameHeight     || 0;
+	  const fps = videoInbound?.framesPerSecond || 0;
+
+	  const fmtBits = b => b > 1_000_000 ? (b / 1_000_000).toFixed(1) + 'M'
+	                    :  b > 1_000     ? (b / 1_000).toFixed(0)     + 'k'
+	                    :                  b.toFixed(0);
+
+	  const parts = [];
+	  parts.push(`⇡${fmtBits(smoothUpload)} ⇣${fmtBits(smoothDownload)}`);
+	  if (w > 0 && h > 0) {
+		parts.push(`${w}×${h}` + (fps > 0 ? `@${Math.round(fps)}` : ''));
 	  }
-	
+	  if (rtt > 0) {
+		parts.push(`${rtt.toFixed(0)}ms` + (jitter > 0 ? ` ±${jitter.toFixed(0)}` : ''));
+	  }
+	  if (videoLoss > 1) parts.push(`vloss ${videoLoss.toFixed(0)}%`);
+	  if (audioLoss > 1) parts.push(`aloss ${audioLoss.toFixed(0)}%`);
+	  const info = parts.join('  ');
+
 	  this.setState(state => ({
 		statistics: [...state.statistics, { up: smoothUpload, down: smoothDownload }].slice(-MAX_POINTS),
 		info,
@@ -787,6 +1258,15 @@ class VideoBox extends Component {
     armOverlayTimer() {
         clearTimeout(this.overlayTimer);
         this.overlayTimer = setTimeout(() => {
+            // Don't drop into fullscreen while the camera-enable modal
+            // is up — that would hide the navbar (caller name + menu)
+            // behind the modal before the user has answered with
+            // video or audio. Re-arm so we try again later in case
+            // the modal stays up briefly.
+            if (this.state.videoEnableDialogVisible) {
+                this.armOverlayTimer();
+                return;
+            }
             this.toggleFullScreen();
         }, 4000);
     }
@@ -1148,8 +1628,248 @@ class VideoBox extends Component {
 			+ '-' + Math.round(width) + 'x' + Math.round(height)
 			+ '-' + this.state.myVideoCorner;
 
+        // ZRTP indicator overlay — pill anchored above the call buttons.
+        // Hidden together with the buttons when the overlay is collapsed
+        // (full-screen video) so the encryption indicator doesn't float
+        // alone on screen. Only shown once the key has been agreed —
+        // the intermediate "negotiating" stage stays hidden so the user
+        // doesn't see a transient yellow pill on every call setup.
+        const renderZrtpBadge = () => {
+            if (!this.state.callOverlayVisible) {
+                return null;
+            }
+            if (this.state.zrtpState !== 'key-agreed') {
+                return null;
+            }
+            let bg, label;
+            const status = this._zrtpVerificationStatus();
+            if (status === 'verified') {
+                bg = 'rgba(0, 170, 80, 0.9)';
+                label = '🔒 zRTP verified';
+            } else if (status === 'mismatch') {
+                bg = 'rgba(200, 30, 30, 0.9)';
+                label = '⚠ SAS changed';
+            } else {
+                bg = 'rgba(230, 120, 0, 0.95)';
+                label = '🔒 zRTP encrypted (tap to verify)';
+            }
+            const isTappable = this.state.zrtpState === 'key-agreed';
+            const inner = (
+                <View style={{
+                    backgroundColor: bg,
+                    paddingVertical: 4,
+                    paddingHorizontal: 10,
+                    borderRadius: 12,
+                }}>
+                    <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>{label}</Text>
+                </View>
+            );
+            // Anchor the pill above the call buttons row. Portrait buttons
+            // sit ~50px from bottom + ~60px tall; landscape buttons sit at
+            // the very bottom + ~60px tall. Add a small gap so the pill
+            // doesn't crowd the icons.
+            const bottomOffset = this.state.isLandscape ? 80 : 130;
+            return (
+                <View pointerEvents="box-none" style={{
+                    position: 'absolute',
+                    bottom: bottomOffset,
+                    left: 0,
+                    right: 0,
+                    alignItems: 'center',
+                    zIndex: 1000,
+                }}>
+                    {isTappable ? (
+                        <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
+                    ) : inner}
+                </View>
+            );
+        };
+
+        const zrtpSession = this.state.zrtpDialogVisible ? getZrtpSession(this.state.call) : null;
+        const zrtpSas = zrtpSession && zrtpSession.sas;
+        const verificationStatus = this._zrtpVerificationStatus();
+        const zrtpStored = this.props.callContact
+            && this.props.callContact.localProperties
+            && this.props.callContact.localProperties.zrtp;
+
         return (
             <View style={styles.container}>
+                <Portal>
+                    {this.state.videoEnableDialogVisible && (() => {
+                        const _topInset = (this.state.insets && this.state.insets.top) ? this.state.insets.top : 24;
+                        const _bottomInset = (this.state.insets && this.state.insets.bottom) ? this.state.insets.bottom : 0;
+                        // Reserve room for the call's Appbar.Header so the
+                        // caller name + kebab menu stay visible while the
+                        // user is deciding on the camera. headerBarHeight
+                        // matches what the rest of VideoBox uses for that
+                        // bar (kept in sync with the constant near render()).
+                        const _headerBarHeight = 60;
+                        const localStreamUrl = this.state.localStream && this.state.localStream.toURL
+                            ? this.state.localStream.toURL()
+                            : null;
+                        return (
+                            <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
+                                {/* Dim backdrop — starts BELOW the navbar so the caller
+                                    name and menu remain readable. Blocks taps on the
+                                    video underneath, but lets header taps pass through. */}
+                                <View style={{position:'absolute', top: _topInset + _headerBarHeight, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.55)'}} pointerEvents="auto" />
+
+                                {/* Local camera preview — fills the screen above the bottom panel.
+                                    Uses top + bottom anchors so the rectangle stretches to use
+                                    all available space; objectFit:'cover' fills with the video.
+                                    A small camera-switch button overlays the top-right corner
+                                    so the user can flip front/back before committing. */}
+                                {localStreamUrl && (
+                                    <View style={{
+                                        position:'absolute',
+                                        top: _topInset + _headerBarHeight + 8,
+                                        left: 12,
+                                        right: 12,
+                                        bottom: _bottomInset + 200,
+                                        borderRadius: 12,
+                                        overflow: 'hidden',
+                                        backgroundColor: '#222',
+                                    }}>
+                                        <RTCView
+                                            objectFit="cover"
+                                            streamURL={localStreamUrl}
+                                            mirror={this.state.cameraFacing !== 'back'}
+                                            style={{flex: 1}}
+                                        />
+                                        {/* Camera-flip button — top-right of the preview. */}
+                                        <View style={{
+                                            position: 'absolute',
+                                            top: 8,
+                                            right: 8,
+                                            backgroundColor: 'rgba(0,0,0,0.55)',
+                                            borderRadius: 24,
+                                        }}>
+                                            <IconButton
+                                                icon="camera-flip"
+                                                size={24}
+                                                color="#ffffff"
+                                                onPress={() => {
+                                                    // Same logic as renderVideoPicker's swap:
+                                                    // toggle front/back via the local track and
+                                                    // mirror the preview accordingly.
+                                                    const localStream = this.state.localStream;
+                                                    if (localStream && localStream.getVideoTracks().length > 0) {
+                                                        const track = localStream.getVideoTracks()[0];
+                                                        try { track._switchCamera(); } catch (e) {}
+                                                        this.setState({
+                                                            cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front',
+                                                        });
+                                                    }
+                                                }}
+                                            />
+                                        </View>
+                                        {/* Small label showing which camera is active. */}
+                                        <View style={{
+                                            position: 'absolute',
+                                            bottom: 8,
+                                            left: 8,
+                                            backgroundColor: 'rgba(0,0,0,0.55)',
+                                            borderRadius: 8,
+                                            paddingHorizontal: 8,
+                                            paddingVertical: 3,
+                                        }}>
+                                            <PaperText style={{ color: '#fff', fontSize: 12 }}>
+                                                {this.state.cameraFacing === 'back' ? 'Back camera' : 'Front camera'}
+                                            </PaperText>
+                                        </View>
+                                    </View>
+                                )}
+
+                                {/* Bottom panel with the question + actions. */}
+                                <View style={{
+                                    position:'absolute',
+                                    bottom: _bottomInset + 12,
+                                    left: 12,
+                                    right: 12,
+                                    backgroundColor: 'white',
+                                    borderRadius: 12,
+                                    paddingTop: 14,
+                                    paddingBottom: 6,
+                                    paddingHorizontal: 16,
+                                    elevation: 8,
+                                }} pointerEvents="auto">
+                                    <PaperText style={{fontSize: 18, fontWeight: 'bold', marginBottom: 8}}>
+                                        Enable your camera?
+                                    </PaperText>
+                                    <PaperText style={{marginBottom: 12}}>
+                                        {(this.state.remoteDisplayName || this.state.remoteUri || 'The other party')} is calling with video. Pick whether to start your camera now, or stay audio-only and turn it on later.
+                                    </PaperText>
+                                    <View style={{flexDirection: 'row', justifyContent: 'flex-end'}}>
+                                        <Button onPress={this._onKeepAudioOnly}>Audio only</Button>
+                                        <Button mode="contained" onPress={this._onEnableCamera} style={{marginLeft: 8}}>Enable camera</Button>
+                                    </View>
+                                </View>
+                            </View>
+                        );
+                    })()}
+                    <Dialog
+                        visible={this.state.zrtpDialogVisible}
+                        onDismiss={() => this.setState({ zrtpDialogVisible: false })}
+                    >
+                        <Dialog.Title>Verify zRTP encryption</Dialog.Title>
+                        <Dialog.Content>
+                            <PaperText style={{ marginBottom: 12 }}>
+                                {`Compare these with ${this.state.remoteDisplayName || this.state.remoteUri || 'the other party'}. Both phones must show the same letters AND emojis.`}
+                            </PaperText>
+                            {zrtpSas ? (
+                                <View style={{ alignItems: 'center', marginVertical: 12 }}>
+                                    <PaperText style={{ fontSize: 36, fontWeight: 'bold', letterSpacing: 8 }}>{zrtpSas.chars}</PaperText>
+                                    <PaperText style={{ fontSize: 32, marginTop: 6, letterSpacing: 6 }}>{zrtpSas.emojis}</PaperText>
+                                </View>
+                            ) : (
+                                <PaperText>Waiting for handshake to complete…</PaperText>
+                            )}
+                            {verificationStatus === 'verified' && zrtpStored && (
+                                <PaperText style={{ color: 'green', marginTop: 8 }}>
+                                    ✓ Previously verified on {new Date(zrtpStored.verifiedAt).toLocaleString()}
+                                </PaperText>
+                            )}
+                            {verificationStatus === 'mismatch' && zrtpStored && (
+                                <PaperText style={{ color: 'red', marginTop: 8 }}>
+                                    ⚠ The other party's identity key has changed since the last verification on {new Date(zrtpStored.verifiedAt).toLocaleString()}. Re-verify carefully before tapping Match.
+                                </PaperText>
+                            )}
+                        </Dialog.Content>
+                        <Dialog.Actions>
+                            <Button onPress={() => this.setState({ zrtpDialogVisible: false })}>Close</Button>
+                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Match</Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                    {/* zRTP mandatory-mode handshake failure prompt. */}
+                    <Dialog
+                        visible={this.state.zrtpMandatoryFailedVisible}
+                        onDismiss={this._onZrtpMandatoryContinue}
+                        dismissable={false}
+                    >
+                        <Dialog.Title>End-to-end encryption failed</Dialog.Title>
+                        <Dialog.Content>
+                            <PaperText>
+                                The zRTP key exchange did not complete. You set
+                                encryption to "mandatory" in Preferences, but the
+                                other party may not support it.
+                                {'\n\n'}
+                                You can end the call now, or continue without
+                                end-to-end encryption. The call will still be
+                                encrypted between your phone and the SylkServer
+                                relay (DTLS), but the relay can read the media.
+                            </PaperText>
+                        </Dialog.Content>
+                        <Dialog.Actions>
+                            <Button onPress={this._onZrtpMandatoryContinue}>
+                                Continue
+                            </Button>
+                            <Button mode="contained" onPress={this._onZrtpMandatoryEndCall}>
+                                End call
+                            </Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                </Portal>
+                {renderZrtpBadge()}
                 <CallOverlay
                     show = {show}
                     remoteUri = {this.state.remoteUri}
@@ -1178,6 +1898,11 @@ class VideoBox extends Component {
 					insets = {this.state.insets}
 					aspectRatio = {this.state.aspectRatio}
 					toggleAspectRatio = {this.toggleAspectRatio}
+					showUsage = {this.state.showUsage}
+					toggleUsage = {() => this.setState(s => ({ showUsage: !s.showUsage }))}
+					hideSpeedometers = {this.state.videoEnableDialogVisible}
+					shareLocationFromCall = {this.props.shareLocationFromCall}
+					requestLocationFromCall = {this.props.requestLocationFromCall}
                 />
 
                 {this.showRemote?
@@ -1259,6 +1984,61 @@ class VideoBox extends Component {
                     close={this.toggleEscalateConferenceModal}
                     escalateToConference={this.escalateToConference}
                 />
+
+                {/* Fullscreen-only network HUD. Two states:
+                    - Hidden behind a small "i" info icon (default).
+                    - User taps the icon → speedometer expands.
+                    - User taps the speedometer → collapses back to icon.
+                    Both elements share the same top-right anchor. */}
+                {this.state.fullScreen && this.state.call && !this.state.videoEnableDialogVisible ? (
+                    <View
+                        style={{
+                            position: 'absolute',
+                            top: (this.state.insets.top || 0) + 16,
+                            right: (this.state.insets.right || 0) + 4,
+                            zIndex: 9999,
+                        }}
+                    >
+                        {this.state.showUsage ? (
+                            <TouchableOpacity
+                                activeOpacity={0.7}
+                                onPress={() => this.setState({ showUsage: false })}
+                                style={{
+                                    backgroundColor: 'rgba(0,0,0,0.35)',
+                                    borderRadius: 6,
+                                    paddingHorizontal: 4,
+                                    paddingVertical: 2,
+                                }}
+                            >
+                                <NetworkSpeedometer
+                                    call={this.state.call}
+                                    videoCodec={this.props.videoCodec}
+                                    audioCodec={this.props.audioCodec}
+                                    showResolution
+                                />
+                            </TouchableOpacity>
+                        ) : (
+                            <TouchableOpacity
+                                activeOpacity={0.7}
+                                onPress={() => this.setState({ showUsage: true })}
+                                style={{
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: 16,
+                                    backgroundColor: 'rgba(0,0,0,0.45)',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                }}
+                            >
+                                <Icon
+                                    name="information-outline"
+                                    size={20}
+                                    color="#ffffff"
+                                />
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                ) : null}
             </View>
         );
     }

@@ -1,9 +1,10 @@
 import React from 'react';
-import { View } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import PropTypes from 'prop-types';
 import assert from 'assert';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import ConferenceBox from './ConferenceBox';
 import LocalMedia from './LocalMedia';
@@ -50,7 +51,11 @@ class Conference extends React.Component {
 			  iceServers: this.props.iceServers,
 			  isLandscape: this.props.isLandscape,
 			  insets: this.props.insets,
-			  publicUrl: this.props.publicUrl
+			  publicUrl: this.props.publicUrl,
+			  // Delayed fallback flag — set by a setTimeout in
+			  // componentDidMount so the "Starting conference… Cancel"
+			  // panel only appears if media takes more than 1.5s.
+			  showFallback: false,
         }
               
         if (this.props.connection) {
@@ -78,10 +83,20 @@ class Conference extends React.Component {
         if (this.state.currentCall) {
             this.state.currentCall.on('stateChanged', this.callStateChanged);
         }
+        // Delay the "Starting conference… Cancel" fallback so it doesn't
+        // flash for a moment when getUserMedia resolves quickly.
+        this._fallbackTimer = setTimeout(() => {
+            this.setState({ showFallback: true });
+        }, 1500);
     }
 
     componentWillUnmount() {
         this.ended = true;
+
+        if (this._fallbackTimer) {
+            clearTimeout(this._fallbackTimer);
+            this._fallbackTimer = null;
+        }
 
         if (this.state.currentCall) {
             this.state.currentCall.removeListener('stateChanged', this.callStateChanged);
@@ -464,8 +479,45 @@ class Conference extends React.Component {
                 );
             }
 
-        } else {
-            //console.log('Waiting for local media');
+        } else if (this.state.showFallback) {
+            // localMedia is still null AND we've been waiting for over
+            // 1.5s. Render a minimal "Acquiring media…" view with a
+            // Cancel button so the user can always escape if it hangs.
+            // Suppressed during the first 1.5s so this UI doesn't flash
+            // when getUserMedia resolves quickly (the common path).
+            const cancel = () => {
+                if (typeof this.props.goBackFunc === 'function') {
+                    this.props.goBackFunc();
+                } else if (typeof this.props.hangupCall === 'function') {
+                    this.props.hangupCall(this.props.callUUID, 'cancel_media');
+                }
+            };
+            box = (
+                <View style={{ flex: 1, backgroundColor: '#111', justifyContent: 'center', alignItems: 'center' }}>
+                    <Text style={{ color: '#eee', fontSize: 18, marginBottom: 24 }}>
+                        Starting conference…
+                    </Text>
+                    <Text style={{ color: '#aaa', fontSize: 13, marginBottom: 32, textAlign: 'center', paddingHorizontal: 32 }}>
+                        Acquiring camera and microphone. If this takes more than a few seconds, the camera may be in use by another app.
+                    </Text>
+                    <TouchableOpacity
+                        onPress={cancel}
+                        style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            backgroundColor: '#c0392b',
+                            paddingHorizontal: 22,
+                            paddingVertical: 12,
+                            borderRadius: 24,
+                        }}
+                    >
+                        <Icon name="phone-hangup" size={20} color="#fff" style={{ marginRight: 8 }} />
+                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>
+                            Cancel
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+            );
         }
 
         return box;

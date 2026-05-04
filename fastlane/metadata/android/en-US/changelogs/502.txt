@@ -1,0 +1,3 @@
+Added request for sharing location dialog
+Location improvements
+Bug fixes

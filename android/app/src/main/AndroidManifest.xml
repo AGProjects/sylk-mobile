@@ -127,6 +127,20 @@
         </intent-filter>
       </service>
 
+      <!-- Self-managed ConnectionService for incoming Sylk calls. Lets the
+           Telecom framework drive the BT Hands-Free Profile so a paired car
+           kit (and Android Auto) display "Incoming call from X" even when
+           the JS bridge is not yet alive. Registered natively from
+           IncomingCallService, no JS dependency. -->
+      <service android:name=".SylkCallConnectionService"
+        android:label="@string/app_name"
+        android:exported="true"
+        android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+        <intent-filter>
+            <action android:name="android.telecom.ConnectionService" />
+        </intent-filter>
+      </service>
+
 <activity
     android:name=".IncomingCallFullScreenActivity"
     android:theme="@android:style/Theme.Translucent.NoTitleBar"

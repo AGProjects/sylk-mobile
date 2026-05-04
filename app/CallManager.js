@@ -517,7 +517,8 @@ export default class CallManager extends events.EventEmitter {
         if (this._calls.has(callUUID)) {
             let call = this._calls.get(callUUID);
             utils.timestampedLog('sending webrtc dtmf', data.digits)
-            call.sendDtmf(data.digits);
+            // TODO restore DTMF after E2EE work — sylkrtc 1.6.5 patch wires audioSender.dtmf
+            // call.sendDtmf(data.digits);
         }
     }
 
@@ -525,7 +526,8 @@ export default class CallManager extends events.EventEmitter {
         let call = this._calls.get(callUUID);
         if (call) {
             //utils.timestampedLog('Callkeep: send DTMF: ', digits);
-            call.sendDtmf(digits);
+            // TODO restore DTMF after E2EE work
+            // call.sendDtmf(digits);
         }
     }
 
@@ -725,7 +727,7 @@ export default class CallManager extends events.EventEmitter {
                          supportsUngrouping: false,
                          supportsDTMF: supportsDTMF}
 
-        utils.timestampedLog('IMPORTANT Callkeep: displayIncomingCall for', callUUID, 'from', from, '(', displayName, ')');
+        utils.timestampedLog('Callkeep: displayIncomingCall for', callUUID, 'from', from, '(', displayName, ')');
         this.callKeep.displayIncomingCall(callUUID, panelFrom, displayName, callerType, hasVideo, options);
     }
 
